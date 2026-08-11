@@ -1,0 +1,80 @@
+# 接入云上 ragforge 库（8.163.30.216），经 SSH 本地端口转发。
+#
+# ⚠️ 该实例无只读副本（pg_is_in_recovery=false，复制槽 0），这是**主库直连**。
+#    技术设计说明书 §8 将此列为禁止项，本次为使用方明确要求后的例外。
+#    因此所有阈值都比本机开发库更严，并且只开放 5 张表。
+#
+# 前置：先建隧道（前台占一个终端，或加 -f 转后台）
+#   ssh -N -L 15432:127.0.0.1:5432 root@8.163.30.216
+#
+# 用法：
+#   askdb check -c config/ragforge-prod.yaml
+#   askdb serve -c config/ragforge-prod.yaml
+#
+# 撤销：ssh root@8.163.30.216 'docker exec -i ragforge-postgres \
+#         psql -U ragforge -d ragforge' < scripts/prod_readonly_rollback.sql
+
+datasource:
+  type: postgresql
+  dsn: "host=127.0.0.1 port=15432 dbname=ragforge user=askdb_ro"
+  password_env: ASKDB_PROD_PG_PASSWORD
+
+tenant:
+  enabled: true
+  column: org_id
+  default_ctx: 323                   # CareerMate求职智能体组织
+  mode: rls_and_predicate            # 应用层 AST 改写 + 数据库 RLS，双层
+  on_unresolved: reject
+
+guard:
+  # 主库场景：宁可查不出来，也不能把库拖慢
+  max_rows: 500
+  max_scan_rows: 200000              # documents 全表 86,546 行，够用；再大的一律打回
+  statement_timeout_ms: 5000         # 与角色级 statement_timeout 一致
+  max_retry: 2
+  allow_select_star: false
+  deny_functions:
+    - pg_read_file
+    - pg_ls_dir
+    - pg_read_binary_file
+    - lo_import
+    - lo_export
+    - dblink
+    - pg_sleep
+    - query_to_xml
+    - pg_stat_file
+
+planner:
+  enabled: false
+  max_steps: 3
+  max_carry_rows: 50
+  cost_cap_tokens: 12000
+
+schema_rag:
+  mode: keyword
+  top_k: 3
+  max_k: 5
+  token_budget: 1500
+
+llm:
+  provider: deepseek
+  base_url: "https://api.deepseek.com"
+  model: deepseek-v4-flash
+  temperature: 0
+  api_key_env: DEEPSEEK_API_KEY
+  price_input_per_1k: 0.001
+  price_output_per_1k: 0.002
+  thinking: false
+  fallback:
+    provider: dashscope
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: qwen-max
+    api_key_env: DASHSCOPE_API_KEY
+
+observability:
+  audit_log: ./data/audit-ragforge-prod.jsonl
+  checkpoint_db: ./data/checkpoints-ragforge-prod.sqlite
+  daily_quota: 100                   # 主库上更保守
+
+tables_file: ./config/ragforge-prod-tables.yaml
+metrics_file: ./config/ragforge-prod-metrics.yaml

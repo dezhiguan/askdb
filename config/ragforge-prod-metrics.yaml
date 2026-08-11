@@ -1,0 +1,47 @@
+# 云上 ragforge 库的业务口径。
+#
+# 这些定义在数据库 schema 里一个字都没有，模型只能猜 —— 而猜错时
+# 输出仍然"看起来合理"。所以必须显式写下来。
+
+metrics:
+  - name: 文档数
+    aliases: [文档数量, 已入库文档, 入库量, 完成数]
+    scope: [documents]
+    expr: "COUNT(*) FILTER (WHERE parse_status = 'COMPLETED')"
+    note: 口径为 COMPLETED 的数量，不是全部行数；缓存字段 knowledge_bases.doc_count 可能漂移，不可作为依据
+    owner: 平台组
+
+  - name: 卡住的文档
+    aliases: [卡住, 卡在解析中, 待解析堆积, 堆积的文档]
+    scope: [documents]
+    predicate: "parse_status = 'PENDING' AND updated_at < now() - INTERVAL '1 hour'"
+    note: 待解析且超过 1 小时状态未变更
+    owner: 平台组
+
+  - name: 顶层文档数
+    aliases: [顶层文档, 不含压缩包子文档]
+    scope: [documents]
+    expr: "COUNT(*) FILTER (WHERE parent_document_id IS NULL)"
+    note: 压缩包展开出的子文档不计入；界面上的文档数通常指这个
+    owner: 平台组
+
+  - name: 解析失败率
+    aliases: [失败率, 失败比例, 解析失败]
+    scope: [documents]
+    expr: "COUNT(*) FILTER (WHERE parse_status = 'FAILED') * 1.0 / NULLIF(COUNT(*), 0)"
+    note: 分母为该范围内全部文档，不排除 PENDING
+    owner: 平台组
+
+  - name: 检索成功率
+    aliases: [检索成功, 检索失败率]
+    scope: [retrieval_logs]
+    expr: "COUNT(*) FILTER (WHERE status = 'SUCCESS') * 1.0 / NULLIF(COUNT(*), 0)"
+    note: 以 retrieval_logs.status 判定
+    owner: 平台组
+
+  - name: 慢检索
+    aliases: [慢查询, 检索慢, 耗时长的检索]
+    scope: [retrieval_logs]
+    predicate: "latency_ms > 3000"
+    note: 端到端超过 3 秒的检索请求
+    owner: 平台组
