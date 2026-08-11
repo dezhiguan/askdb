@@ -76,18 +76,18 @@ question
 | R-03 | Table allowlist (covers subqueries, CTEs, JOINs) | static | ✅ |
 | R-04 | Column existence (blocks hallucinated columns) | static | ✅ partial¹ |
 | R-05 | No `SELECT *` | static | ✅ |
-| R-06 | No cross-schema / cross-database references | static | ⬜ |
+| R-06 | No cross-schema / cross-database references | static | ✅ |
 | R-07 | Dangerous-function denylist | static | ✅ |
-| R-08 | Cartesian product detection | static | ⬜ |
+| R-08 | Cartesian product detection | static | ✅ |
 | R-09 | **Forced `LIMIT` injection** | rewrite | ✅ |
 | R-10 | **Forced tenant-predicate injection** | rewrite | ✅ |
 | R-11 | Estimated scan-row threshold (EXPLAIN) | dry run | ✅ |
 | R-12 | Statement timeout | execution | ✅ |
 | R-13 | Result row cap | execution | ✅ |
 | R-14 | Retry cap | control | ✅ |
-| R-15 | Carry-over result size cap (multi-step) | control | ⬜ |
-| R-16 | Total step cap (multi-step) | control | ⬜ |
-| R-17 | Cumulative cost cap | control | ⬜ |
+| R-15 | Carry-over result size cap (multi-step) | control | ✅ |
+| R-16 | Total step cap (multi-step) | control | ✅ |
+| R-17 | Cumulative cost cap | control | ✅ |
 
 ¹ Covers table-qualified columns, and bare columns when exactly one table is in scope. Full resolution for bare columns under multi-table JOINs is pending.
 
@@ -178,17 +178,17 @@ org_id:
 
 ## Status and roadmap
 
-**Runnable end to end. 12 of 17 guardrail rules enforced. No measured metrics yet — P3 has not started.**
+**Runnable end to end. All 17 guardrail rules enforced. Evaluation harness in place; measured numbers land after a full golden-set run.**
 
 | Phase | Contents | Target | Status |
 |---|---|---|---|
 | P0 | Sample DB, config system, LangGraph skeleton, single-round Q&A | 2026-08-14 | ✅ |
 | P1 | Schema retrieval, read-only execution, guardrails R-01…R-14 | 2026-08-18 | ✅ |
 | P2 | Reflect & retry, EXPLAIN dry run, semantic layer, web UI + HTTP API | 2026-08-21 | ✅ |
-| P2.5 | Remaining static rules R-06 / R-08 | 2026-08-23 | ⬜ |
-| P3 | **58-question golden set, replay harness, five ablation groups** | 2026-08-25 | ⬜ |
-| P4 | MCP packaging (stateless spec), backfill measured numbers | 2026-08-28 | ⬜ |
-| P5 | Multi-step query planning (R-15…R-17), ablation group F | 2026-09-02 | ⬜ |
+| P2.5 | Remaining static rules R-06 / R-08 | 2026-08-23 | ✅ |
+| P3 | **58-question golden set, replay harness, six ablation groups** | 2026-08-25 | ✅ |
+| P4 | MCP packaging (stateless spec) | 2026-08-28 | ✅ |
+| P5 | Multi-step query planning (R-15…R-17), ablation group F | 2026-09-02 | ✅ |
 
 > **No unmeasured metric will appear in this README.** Accuracy, block rate, and cost figures land after P3,
 > published alongside the held-out set score and the unfiltered distribution of failure categories.

@@ -128,3 +128,81 @@ def test_ask_rejects_too_long_question(client):
 
 def test_ask_rejects_empty_question(client):
     assert client.post("/api/ask", json={"question": ""}).status_code == 422
+
+
+# ---------------------------------------------------------------- MCP
+
+def _mcp_call(mcp, name, args):
+    """取出工具返回的文本负载。"""
+    import json
+
+    import anyio
+
+    res = anyio.run(lambda: mcp.call_tool(name, args))
+    blocks = getattr(res, "content", None) or []
+    return json.loads(blocks[0].text)
+
+
+def test_mcp_exposes_three_tools(cfg):
+    import anyio
+
+    from askdb.mcp_server import build_server
+
+    tools = anyio.run(build_server(cfg).list_tools)
+    assert {t.name for t in tools} == {"ask", "run_sql", "schema"}
+    assert all(t.description for t in tools)
+
+
+def test_mcp_run_sql_applies_guard(cfg):
+    """护栏不因调用方是 Agent 而放松 —— 自动发起的查询更没人盯着。"""
+    from askdb.mcp_server import build_server
+
+    p = _mcp_call(build_server(cfg), "run_sql", {"sql": "DELETE FROM documents"})
+    assert p["ok"] is False and p["rejected_by"] == "R-02"
+
+
+def test_mcp_run_sql_injects_tenant(cfg):
+    from askdb.mcp_server import build_server
+
+    p = _mcp_call(build_server(cfg), "run_sql", {"sql": "SELECT id FROM documents"})
+    assert p["ok"] and "org_id = 65" in p["sql"].replace("\n", " ")
+
+
+def test_mcp_run_sql_respects_org_override(cfg):
+    from askdb.mcp_server import build_server
+
+    p = _mcp_call(build_server(cfg), "run_sql",
+                  {"sql": "SELECT id FROM documents", "org_id": 66})
+    assert p["ok"] and "org_id = 66" in p["sql"].replace("\n", " ")
+
+
+def test_mcp_schema_exposes_metrics_and_limits(cfg):
+    from askdb.mcp_server import build_server
+
+    p = _mcp_call(build_server(cfg), "schema", {})
+    assert p["tables"] and p["metrics"]
+    assert p["limits"]["max_rows"] == cfg.max_rows
+    assert "强制注入" in p["tenant"]["note"]
+
+
+def test_mcp_ask_payload_carries_sql_and_caveat(cfg, monkeypatch):
+    """结果必须与 SQL 一并回传 —— 这是唯一的正确性兜底。"""
+    from askdb import graph, mcp_server
+    from askdb.planner import Assessment, Plan
+
+    class Fake:
+        def generate_sql(self, *a, **k):
+            return SqlDraft(sql="SELECT file_name AS 文件名 FROM documents",
+                            reasoning="r"), LlmUsage(5, 2)
+
+        def structured(self, schema, system, human):
+            if schema is Plan:
+                return Plan(multi_step=False, reason="替身"), LlmUsage(1, 1)
+            return Assessment(enough=True, reason="替身"), LlmUsage(1, 1)
+
+    monkeypatch.setattr(mcp_server, "run_ask",
+                        lambda q, c, org_id=None: graph.ask(q, c, org_id=org_id, llm=Fake()))
+    p = _mcp_call(build := mcp_server.build_server(cfg), "ask", {"question": "有哪些文档"})
+    assert p["ok"] and p["sql"] and p["rewrites"]      # 强制改写要让调用方看见
+    assert "人工核对" in p["caveat"]
+    assert p["trace_id"]
