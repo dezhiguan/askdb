@@ -21,8 +21,12 @@ import duckdb
 
 from .config import Config
 
-# DuckDB EXPLAIN 输出中的基数估计，形如 "EC: 12345"
-_EC = re.compile(r"EC:\s*(\d+)")
+# DuckDB EXPLAIN 计划里的基数估计。
+#   1.5+ 渲染成 "~34,656 rows"；更早的版本用 "EC: 34656"。两种都认。
+_EST_PATTERNS = (
+    re.compile(r"~\s*([\d,]+)\s+rows?"),
+    re.compile(r"EC:\s*([\d,]+)"),
+)
 
 
 class DataSourceError(RuntimeError):
@@ -150,7 +154,12 @@ class Executor:
             return ExplainResult(est_rows=None, ok=False, reason=f"执行计划生成失败：{e}")
 
         plan = "\n".join(str(c) for r in rows for c in r if c is not None)
-        nums = [int(m) for m in _EC.findall(plan)]
+        nums: list[int] = []
+        for pat in _EST_PATTERNS:
+            nums = [int(m.replace(",", "")) for m in pat.findall(plan)]
+            if nums:
+                break
+        # 取全计划的最大值 —— 关心的是最宽的那一层扫了多少，不是最终返回多少
         est = max(nums) if nums else None
 
         cap = int(self.cfg.raw["guard"]["max_scan_rows"])

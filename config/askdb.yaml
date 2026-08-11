@@ -45,6 +45,8 @@ llm:
   model: qwen-max
   temperature: 0
   api_key_env: DASHSCOPE_API_KEY     # 仅走环境变量，禁止写入配置文件
+  price_input_per_1k: 0.0024         # 元 / 千 token，用于成本归因
+  price_output_per_1k: 0.0096
 
 observability:
   audit_log: ./data/audit.jsonl
