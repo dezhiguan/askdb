@@ -1,206 +1,209 @@
+<div align="right">
+
+**English** · [简体中文](README.zh-CN.md)
+
+</div>
+
 # askdb
 
-**可信数据问答 Agent —— 把自然语言转换为受控 SQL 并安全执行。**
+**Turn natural language into *constrained* SQL, and execute it safely.**
 
-> Turn natural language into *constrained* SQL, and execute it safely.
-
-核心命题不是"让模型会写 SQL"，而是**在模型不可靠的前提下，让整条执行链路可靠**。
+The premise is not "make the model good at writing SQL." It is: **the model will be wrong — make the pipeline around it reliable anyway.**
 
 ---
 
-## 它和通用 Agent 的区别
+## How this differs from a general-purpose agent
 
-给一个通用 Agent（Claude Code、Cursor，或任何带 `run_sql` 工具的 ReAct agent）一个数据库连接，它也能回答这些问题，而且更灵活 —— 探索能力更强、长尾覆盖更广、不需要预先配置。
+Hand a general-purpose agent (Claude Code, Cursor, or any ReAct agent with a `run_sql` tool) a database connection, and it will answer these questions too — with more flexibility. It explores better, covers the long tail better, and needs no upfront configuration.
 
-**askdb 不追求更聪明，追求可以被信任地重复执行。**
+**askdb does not aim to be smarter. It aims to be safe to run repeatedly.**
 
-| | 通用 Agent | askdb |
+| | General agent | askdb |
 |---|---|---|
-| 灵活性 / 探索 / 长尾覆盖 | **胜** | 受限于表白名单 |
-| 约束强度 | 软约束（提示词层面） | **硬约束（AST 改写 + 数据库权限）** |
-| 可测量性 | 每次行为不同，无法回归 | **链路固定，可回放、可消融** |
-| 成本 | 探索式，事先不可预测 | **有界，可封顶** |
-| 结构化审计 | 散落在对话里 | **每次调用一条 JSON 记录** |
+| Flexibility / exploration / long-tail coverage | **wins** | limited to an allowlist of tables |
+| Constraint strength | soft (prompt-level) | **hard (AST rewriting + database privileges)** |
+| Measurability | behaves differently each run; no regression testing | **fixed pipeline — replayable, ablatable** |
+| Cost | exploratory, unpredictable in advance | **bounded, capped** |
+| Structured audit | scattered across a conversation | **one JSON record per call** |
 
-一句话：**通用 Agent 是探针，askdb 是产线。**
+In one line: **a general-purpose agent is a probe; askdb is a production line.**
 
-| 场景 | 建议 |
+| Situation | Use |
 |---|---|
-| 自己临时查个数、探索不熟悉的库 | 用通用 Agent，askdb 打不过 |
-| 高频重复调用 / 给不写 SQL 的人用 / 要保证不跨租户 / 要能说出准确率 / 要留审计 | 用 askdb |
+| Ad-hoc lookups, exploring an unfamiliar database | A general agent — askdb loses here, and that's fine |
+| High-frequency repeated calls · non-SQL users · tenant isolation guarantees · a number you can quote for accuracy · audit trails | askdb |
 
 ---
 
-## 文档
+## Documentation
 
-| 文件 | 内容 |
+| File | Contents |
 |---|---|
-| [`docs/tech-design.html`](docs/tech-design.html) | 技术设计说明书 V1.1 —— 11 章 + 2 附录，含 17 条护栏规则、评测方案、生产使用边界 |
-| [`docs/prototype.html`](docs/prototype.html) | 交互原型 —— 数据接入向导、提问链路、多步规划 |
+| [`docs/tech-design.html`](docs/tech-design.html) | Technical design spec V1.1 — 11 chapters + 2 appendices: 17 guardrail rules, evaluation plan, production boundaries |
+| [`docs/prototype.html`](docs/prototype.html) | Interactive prototype — data onboarding wizard, query pipeline, multi-step planning |
 
-单文件 HTML，下载后浏览器直接打开（GitHub 网页不渲染 HTML）。
-**其中全部指标均为设计阶段占位值**，说明见 [`docs/README.md`](docs/README.md)。
+Single-file HTML, no external dependencies — download and open in a browser (GitHub does not render HTML).
+**Every metric in those documents is a design-stage placeholder**; see [`docs/README.md`](docs/README.md).
 
 ---
 
-## 执行链路
+## Execution pipeline
 
 ```
-用户问题
+question
    │
-   ├─▶ [1] Schema 召回      仅注入命中的表与业务口径，不做全库注入
-   ├─▶ [2] 规划 / 重规划    判定单步可答或需多步
-   ├─▶ [3] SQL 生成         结构化输出，强制 JSON schema
-   ├─▶ [4] 静态校验         AST 判定 + 强制改写 · 零 token 成本
-   │        └── 不通过 ──▶ [7] 反思重试 ──▶ 回到 [3]（次数受限）
-   ├─▶ [5] EXPLAIN 干跑     预估扫描行数，超阈值打回
-   ├─▶ [6] 只读执行         独立只读账号 + 超时 + 行数上限
-   ├─▶ [8] 结果评估         本步是否足以作答？不足则回到 [2]
-   └─▶ [9] 结果与溯源       结果 + 全部轮次 SQL + 数据时间
+   ├─▶ [1] Schema retrieval   inject only matched tables and business metrics — never the whole schema
+   ├─▶ [2] Plan / replan      decide single-step vs multi-step
+   ├─▶ [3] SQL generation     structured output, enforced JSON schema
+   ├─▶ [4] Static validation  AST checks + forced rewriting · zero token cost
+   │        └── fails ──▶ [7] reflect & retry ──▶ back to [3] (bounded)
+   ├─▶ [5] EXPLAIN dry run    reject if estimated scan exceeds threshold
+   ├─▶ [6] Read-only execute  dedicated read-only role + timeout + row cap
+   ├─▶ [8] Result assessment  enough to answer? if not, back to [2]
+   └─▶ [9] Answer + lineage   result + SQL for every round + data timestamp
 ```
 
-**设计原则：第 4 步永远是代码判定，不是模型判定。** 让模型审查自己的产出等同于没有护栏。
+**Design principle: step 4 is always code, never the model.** Letting a model review its own output is the same as having no guardrail at all.
 
 ---
 
-## 护栏规则
+## Guardrails
 
-| 编号 | 规则 | 类型 | 状态 |
+| ID | Rule | Type | Status |
 |---|---|---|---|
-| R-01 | 单语句限制（防多语句夹带） | 静态校验 | ✅ |
-| R-02 | 语句类型白名单（仅 SELECT / WITH…SELECT） | 静态校验 | ✅ |
-| R-03 | 表白名单（含子查询、CTE、JOIN 中的全部引用） | 静态校验 | ✅ |
-| R-04 | 字段真实性（拦截幻觉字段） | 静态校验 | ✅ 部分¹ |
-| R-05 | 禁止 `SELECT *` | 静态校验 | ✅ |
-| R-06 | 禁止跨 schema / 跨库引用 | 静态校验 | ⬜ |
-| R-07 | 危险函数黑名单 | 静态校验 | ✅ |
-| R-08 | 笛卡尔积检测 | 静态校验 | ⬜ |
-| R-09 | **强制 LIMIT 注入** | 强制改写 | ✅ |
-| R-10 | **强制租户谓词注入** | 强制改写 | ✅ |
-| R-11 | 扫描行数阈值（EXPLAIN） | 干跑 | ⬜ |
-| R-12 | 语句超时 | 执行限制 | ⬜ |
-| R-13 | 结果行上限 | 执行限制 | ⬜ |
-| R-14 | 重试次数上限 | 链路控制 | ⬜ |
-| R-15 | 中间结果规模上限（多步） | 链路控制 | ⬜ |
-| R-16 | 总步数上限（多步） | 链路控制 | ⬜ |
-| R-17 | 累计成本上限 | 链路控制 | ⬜ |
+| R-01 | Single statement only (blocks statement stacking) | static | ✅ |
+| R-02 | Statement-type allowlist (`SELECT` / `WITH…SELECT` only) | static | ✅ |
+| R-03 | Table allowlist (covers subqueries, CTEs, JOINs) | static | ✅ |
+| R-04 | Column existence (blocks hallucinated columns) | static | ✅ partial¹ |
+| R-05 | No `SELECT *` | static | ✅ |
+| R-06 | No cross-schema / cross-database references | static | ⬜ |
+| R-07 | Dangerous-function denylist | static | ✅ |
+| R-08 | Cartesian product detection | static | ⬜ |
+| R-09 | **Forced `LIMIT` injection** | rewrite | ✅ |
+| R-10 | **Forced tenant-predicate injection** | rewrite | ✅ |
+| R-11 | Estimated scan-row threshold (EXPLAIN) | dry run | ⬜ |
+| R-12 | Statement timeout | execution | ⬜ |
+| R-13 | Result row cap | execution | ⬜ |
+| R-14 | Retry cap | control | ⬜ |
+| R-15 | Carry-over result size cap (multi-step) | control | ⬜ |
+| R-16 | Total step cap (multi-step) | control | ⬜ |
+| R-17 | Cumulative cost cap | control | ⬜ |
 
-¹ 已覆盖带表限定的字段、以及作用域内只有一张表时的裸字段；多表 JOIN 下的裸字段解析待补。
+¹ Covers table-qualified columns, and bare columns when exactly one table is in scope. Full resolution for bare columns under multi-table JOINs is pending.
 
-**强制改写在 AST 上完成后重新生成 SQL，模型无法通过任何提示词手段覆盖：**
+**Rewriting happens on the AST and the SQL is regenerated from it — no prompt can override it:**
 
 ```sql
--- 模型产出
+-- model output
 SELECT file_name, status FROM documents WHERE status = 'PROCESSING';
 
--- 实际执行
+-- what actually executes
 SELECT file_name, status FROM documents
 WHERE status = 'PROCESSING'
-  AND documents.org_id = 65   -- R-10 强制注入
-LIMIT 1000;                   -- R-09 强制注入
+  AND documents.org_id = 65   -- R-10, injected
+LIMIT 1000;                   -- R-09, injected
 ```
 
-多租户隔离采用双层：**应用层 AST 改写**（R-10）+ **数据库行级安全 RLS**（PostgreSQL）。
-仅靠应用层改写不足以保证隔离 —— 子查询、CTE、UNION、视图任一分支遗漏即构成越权路径。
+Tenant isolation is **two-layer**: application-level AST rewriting (R-10) **plus** database row-level security (PostgreSQL RLS).
+Application-level rewriting alone is not sufficient — a single missed branch in a subquery, CTE, UNION, or view is an escalation path.
 
 ---
 
-## 快速开始
+## Quick start
 
 ```bash
 git clone https://github.com/dezhiguan/askdb.git && cd askdb
 
-# 依赖 Python >= 3.10；推荐用 uv
+# Requires Python >= 3.10; uv recommended
 uv venv --python 3.12 && uv pip install -e .
 
-# 生成本机样例库（固定随机种子，任何人生成的数据完全一致）
+# Build the local sample database (fixed seed — byte-identical for everyone)
 python -m data.seed
 
-# 配置模型密钥
-cp .env.example .env   # 填入 DASHSCOPE_API_KEY
+# Configure the model key
+cp .env.example .env   # set DASHSCOPE_API_KEY
 ```
 
-不接入任何外部数据源即可运行 —— 样例库自带文档、知识库、组织、token 计量四张表。
+Runs without connecting to anything external — the sample database ships with documents, knowledge bases, organizations, and token-usage tables.
 
 ---
 
-## 配置
+## Configuration
 
-三份 YAML，职责分离：
+Three YAML files with separate concerns:
 
-| 文件 | 内容 |
+| File | Contents |
 |---|---|
-| `config/askdb.yaml` | 数据源、租户策略、护栏阈值、模型 |
-| `config/tables.yaml` | **表白名单与字段语义注释** |
-| `config/metrics.yaml` | **业务口径定义** |
+| `config/askdb.yaml` | Data source, tenant policy, guardrail thresholds, model |
+| `config/tables.yaml` | **Table allowlist and column semantics** |
+| `config/metrics.yaml` | **Business metric definitions** |
 
-后两份是准确率的决定因素，而不是提示词调优：
+The last two determine accuracy far more than prompt tuning does:
 
 ```yaml
-# tables.yaml —— 字段名不具自解释性，必须补业务语义
+# tables.yaml — column names are not self-explanatory; supply the business meaning
 status:
-  desc: "处理状态。注意：「文档数」口径为 COMPLETED 的数量，不是全部行数"
+  desc: "Processing state. Note: 'document count' means COMPLETED rows, not all rows"
   enum: [PENDING, PROCESSING, COMPLETED, FAILED]
 org_id:
-  desc: 组织 ID
-  tenant: true        # ← 标记租户列，触发 R-10 强制改写
+  desc: Organization ID
+  tenant: true        # ← marks the tenant column, triggering R-10 rewriting
 ```
 
 ```yaml
-# metrics.yaml —— 模型永远猜不出来的那一层
-- name: 卡住的文档
-  aliases: [卡住, 处理中不动, 堆积的文档]
+# metrics.yaml — the layer a model can never infer
+- name: stuck documents
+  aliases: [stuck, stalled, not progressing]
   predicate: "status = 'PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR"
 ```
 
 ---
 
-## 状态与路线图
+## Status and roadmap
 
-**当前：P0 进行中。** 尚不可端到端运行。
+**Currently P0, in progress. Not yet runnable end to end.**
 
-| 阶段 | 内容 | 目标日期 | 状态 |
+| Phase | Contents | Target | Status |
 |---|---|---|---|
-| P0 | 样例库、配置体系、LangGraph 骨架、单轮问答跑通 | 2026-08-14 | 🚧 |
-| P1 | Schema 召回、护栏 17 条规则补全、只读执行 | 2026-08-18 | ⬜ |
-| P2 | 反思重试、EXPLAIN 干跑、语义层、Web 界面 | 2026-08-21 | ⬜ |
-| P3 | **黄金集 58 题、回放脚本、五组消融实验** | 2026-08-25 | ⬜ |
-| P4 | MCP 封装（无状态规范）、实测数字回填 | 2026-08-28 | ⬜ |
-| P5 | 多步查询规划、消融组 F | 2026-09-02 | ⬜ |
+| P0 | Sample DB, config system, LangGraph skeleton, single-round Q&A working | 2026-08-14 | 🚧 |
+| P1 | Schema retrieval, all 17 guardrail rules, read-only execution | 2026-08-18 | ⬜ |
+| P2 | Reflect & retry, EXPLAIN dry run, semantic layer, web UI | 2026-08-21 | ⬜ |
+| P3 | **58-question golden set, replay harness, five ablation groups** | 2026-08-25 | ⬜ |
+| P4 | MCP packaging (stateless spec), backfill measured numbers | 2026-08-28 | ⬜ |
+| P5 | Multi-step query planning, ablation group F | 2026-09-02 | ⬜ |
 
-> **README 中不会出现未经实测的指标。** 准确率、拦截率、成本等数字将在 P3 完成后回填，
-> 并同时公开失败样本分类分布与盲测集成绩。
+> **No unmeasured metric will appear in this README.** Accuracy, block rate, and cost figures land after P3,
+> published alongside the held-out set score and the unfiltered distribution of failure categories.
 
 ---
 
-## 技术栈
+## Stack
 
-| 层 | 选型 | 说明 |
+| Layer | Choice | Why |
 |---|---|---|
-| 编排 | `langgraph` | 需要条件路由与状态持久化 |
-| 抽象 / 模型 | `langchain-core`、`langchain-openai` | 结构化输出；OpenAI 兼容端点 |
-| **SQL 解析与改写** | `sqlglot` | AST 可改写，是强制注入的前提 |
-| 数据 | DuckDB（内置样例）/ PostgreSQL | |
-| 对外 | FastAPI + MCP | MCP 按 2026-07-28 无状态规范 |
+| Orchestration | `langgraph` | Needs conditional routing and state persistence |
+| Abstractions / model | `langchain-core`, `langchain-openai` | Structured output; OpenAI-compatible endpoints |
+| **SQL parsing & rewriting** | `sqlglot` | A rewritable AST is the prerequisite for forced injection |
+| Data | DuckDB (bundled sample) / PostgreSQL | |
+| Interface | FastAPI + MCP | MCP per the 2026-07-28 stateless spec |
 
-**不使用 `langchain` 主包**：`AgentExecutor` 不支持条件路由与状态持久化，失败无法从中间节点续跑，而这三项是本设计的必要条件。
+**The `langchain` meta-package is deliberately not used.** `AgentExecutor` supports neither conditional routing nor state persistence, and cannot resume from an intermediate node after a failure — all three are requirements here.
 
 ---
 
-## 生产使用边界
+## Production boundaries
 
-| 场景 | 结论 |
+| Scenario | Verdict |
 |---|---|
-| 连接生产**主库** | **禁止** —— 无人值守的聚合查询有拖垮主库的现实风险 |
-| 连接**只读副本**，限具备 SQL 阅读能力的人员使用 | 有条件允许（需满足只读账号 + RLS + 审计 + 配额等 8 项准入条件） |
-| 面向**终端用户**开放 | **禁止** —— 终端用户无法核对 SQL，错误口径将直接进入决策 |
+| Connect to a **primary** production database | **Prohibited** — unattended aggregate queries can realistically take down the primary |
+| Connect to a **read replica**, for people who can read SQL | Conditionally allowed — 8 admission criteria (read-only role, RLS, audit, quota, …) |
+| Expose to **end users** | **Prohibited** — end users cannot verify the SQL, so a wrong metric definition goes straight into a decision |
 
-**关于"可信"的定义**：只要底层由 LLM 生成 SQL，就不存在"结果一定正确"。
-本项目所称可信指**过程可信**（危险操作可被拦截、结果可被自验、判定链路可被追溯），
-而非**结果可信**。输出必须附带 SQL 供人工核对。
+**On the word "trustworthy":** as long as an LLM writes the SQL, "the result is always correct" does not exist.
+What this project claims is a **trustworthy process** — dangerous operations are blocked, results are self-verifiable, decisions are traceable — **not trustworthy results**. Output always ships with the SQL that produced it.
 
 ---
 
-## 许可
+## License
 
 MIT
