@@ -240,7 +240,12 @@ tbody tr.sel{background:var(--wash)}
     <div class="logo"><b>askdb</b><span>可信数据问答 Agent</span></div>
     <span class="pill" id="pillDs">连接中…</span>
     <span class="pill" id="pillLlm">检查中…</span>
-    <span class="pill" id="pillOrg"></span>
+    <span class="pill" id="pillOrg" style="display:inline-flex;align-items:center;gap:6px">
+      <span id="orgLabel"></span>
+      <input id="orgInput" type="number" min="0" style="width:64px;font:inherit;font-size:11.5px;
+        padding:1px 5px;border:1px solid var(--border);border-radius:5px;background:var(--surface);
+        color:var(--ink);font-family:ui-monospace,Menlo,monospace">
+    </span>
     <span class="spacer"></span>
     <button class="ctl" id="themeBtn">切换主题</button>
   </div>
@@ -417,12 +422,19 @@ tbody tr.sel{background:var(--wash)}
 const $ = id => document.getElementById(id);
 let HEALTH = null, SCHEMA = null, MODE = "nl", BUSY = false;
 
+/* 当前租户。单租户模式或输入非法时返回 null，由后端用配置默认值。 */
+function currentOrg() {
+  if (!HEALTH || !HEALTH.tenant.enabled) return null;
+  const v = ($("orgInput") || {}).value;
+  return v === "" || v === undefined || isNaN(+v) ? null : +v;
+}
+
 /* ---------- 规则的人话解释 + 建议动作 ---------- */
 const RULES = {
   "R-01": ["只能执行一条语句", "把多条语句拆开，一次问一件事。"],
   "R-02": ["只允许查询，不允许改数据", "askdb 是只读工具。要改数据请走正常的运维流程。"],
   "R-03": ["用到了没有开放的表", "在 config/tables.yaml 里把这张表加进白名单，然后重启服务。"],
-  "R-04": ["用到了不存在的字段", "多半是模型把字段名记混了。换个说法再问一次，或到「数据源」页确认真实字段名。"],
+  "R-04": ["用到了不存在的字段", "错误信息里已经列出该表的真实字段名，照着改即可；也可到「① 接入数据」第 3 步逐字段核对。"],
   "R-05": ["不允许 SELECT *", "显式写出需要的列，避免把不该看的字段也带出来。"],
   "R-07": ["用到了被禁用的函数", "这些函数能读文件或访问外部资源，不在只读查询的范围内。"],
   "R-10": ["无法确定这条查询属于哪个租户", "查询涉及的表带租户列，但系统没能定位到它。换个写法，别用会掩盖表来源的构造。"],
@@ -488,7 +500,15 @@ async function boot() {
   $("pillDs").textContent = d.ok ? `${d.type} · ${d.detail}` : "数据源不可用";
   $("pillLlm").className = "pill " + (l.ok ? "ok" : "warn");
   $("pillLlm").textContent = l.ok ? l.model : "未配置密钥";
-  $("pillOrg").textContent = `${HEALTH.tenant.column} = ${HEALTH.tenant.org_id}`;
+  if (HEALTH.tenant.enabled) {
+    $("orgLabel").textContent = HEALTH.tenant.column + " =";
+    $("orgInput").value = HEALTH.tenant.org_id;
+    $("orgInput").title = "切换租户后重新提问，结果会随之变化；护栏按这个值强制注入";
+  } else {
+    // 单租户库：不做行级隔离，必须让人一眼看出来
+    $("pillOrg").className = "pill warn";
+    $("pillOrg").innerHTML = "单租户模式 · 不做行级隔离";
+  }
   renderBanners(HEALTH);
   renderStep1();
 
@@ -505,6 +525,7 @@ async function boot() {
 
   try {
     SCHEMA = await (await fetch("/api/schema")).json();
+    buildExamples();
     renderChips();
   } catch { /* 数据源不可用时已有横幅提示 */ }
 
@@ -513,21 +534,59 @@ async function boot() {
   });
 }
 
-/* ---------- 示例 ---------- */
-const EXAMPLES = [
-  { k: "命中业务口径", q: "有哪些文档卡在处理中超过一小时" },
-  { k: "跨表聚合", q: "各知识库的文档数和失败率，按失败率从高到低" },
-  { k: "时间窗口", q: "这个月各模型的 token 消耗和成本" },
-  { k: "会被拦截", q: "把失败的文档删掉", kind: "danger" },
-];
-const SQL_EXAMPLES = [
-  { k: "正常查询", q: "SELECT file_name AS 文件名, status AS 状态\nFROM documents\nWHERE status = 'PROCESSING'" },
-  { k: "会被拦截 · R-02", q: "DELETE FROM documents WHERE status = 'FAILED'", kind: "danger" },
-  { k: "会被拦截 · R-04", q: "SELECT member_level FROM documents", kind: "danger" },
-  { k: "会被拦截 · R-01", q: "SELECT id FROM documents; UPDATE orgs SET name = 'x'", kind: "danger" },
-];
+/* ---------- 示例：按真实 schema 生成 ---------- */
+/* 写死示例会在换数据源后全部失效 —— 样例库叫 file_name，别的库叫 filename。 */
+let EXAMPLES = [], SQL_EXAMPLES = [];
+
+function buildExamples() {
+  EXAMPLES = []; SQL_EXAMPLES = [];
+  if (!SCHEMA || !SCHEMA.tables.length) return;
+
+  const tables = SCHEMA.tables;
+  const main = tables.slice().sort((a, b) => b.columns.length - a.columns.length)[0];
+  const alias = t => (t.aliases && t.aliases[0]) || t.name;
+  const plain = t => t.columns.filter(c => !c.tenant && !/^id$/i.test(c.name));
+  const enumCol = t => t.columns.find(c => c.enum && c.enum.length);
+
+  // 自然语言：优先用已定义的业务口径，那是最能体现价值的一类问题。
+  // 谓词型口径（筛出一批行）问"有哪些"，表达式型（算出一个数）问"是多少"。
+  SCHEMA.metrics.slice(0, 3).forEach(m => {
+    const scope = tables.find(t => (m.scope || []).includes(t.name));
+    const where = scope ? alias(scope) : "";
+    const isPredicate = !/\bCOUNT\s*\(|\bSUM\s*\(|\bAVG\s*\(/i.test(m.definition || "");
+    EXAMPLES.push({
+      k: "命中业务口径",
+      q: isPredicate ? `有哪些${m.name}` : `各${where}的${m.name}分别是多少`,
+    });
+  });
+  if (tables.length >= 2) {
+    const a = tables[0], b = tables[1];
+    EXAMPLES.push({ k: "跨表聚合", q: `各${alias(a)}下面有多少${alias(b)}，从多到少排` });
+  }
+  const ec = enumCol(main);
+  if (ec) EXAMPLES.push({ k: "分组统计", q: `${alias(main)}按${ec.desc.split("。")[0].slice(0, 10)}分组各有多少` });
+  EXAMPLES.push({ k: "会被拦截", q: `把${alias(main)}删掉`, kind: "danger" });
+
+  // 直查 SQL：列名全部取自真实 schema
+  const cols = plain(main).slice(0, 2).map(c => c.name);
+  const filter = ec ? `\nWHERE ${ec.name} = '${ec.enum[0]}'` : "";
+  if (cols.length) {
+    SQL_EXAMPLES.push({ k: "正常查询",
+      q: `SELECT ${cols.join(", ")}\nFROM ${main.name}${filter}` });
+  }
+  SQL_EXAMPLES.push({ k: "会被拦截 · R-02", q: `DELETE FROM ${main.name}`, kind: "danger" });
+  SQL_EXAMPLES.push({ k: "会被拦截 · R-04",
+    q: `SELECT no_such_column FROM ${main.name}`, kind: "danger" });
+  if (tables.length >= 2) {
+    SQL_EXAMPLES.push({ k: "会被拦截 · R-01",
+      q: `SELECT ${cols[0] || "id"} FROM ${main.name}; UPDATE ${tables[1].name} SET name = 'x'`,
+      kind: "danger" });
+  }
+}
+
 function renderChips() {
   const list = MODE === "nl" ? EXAMPLES : SQL_EXAMPLES;
+  if (!list.length) { $("chips").innerHTML = ""; return; }
   $("chips").innerHTML = list.map((e, i) =>
     `<button class="chip" data-i="${i}" ${e.kind ? `data-kind="${e.kind}"` : ""}>
        <span class="k">${esc(e.k)}</span>${esc(e.q.replace(/\n/g, " "))}</button>`).join("");
@@ -589,7 +648,9 @@ async function submit() {
   try {
     const res = await fetch(MODE === "sql" ? "/api/sql" : "/api/ask", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(MODE === "sql" ? { sql: text } : { question: text }),
+      body: JSON.stringify(Object.assign(
+        MODE === "sql" ? { sql: text } : { question: text },
+        currentOrg() === null ? {} : { org_id: currentOrg() })),
     });
     if (!res.ok) throw new Error(`服务返回 ${res.status}`);
     data = await res.json();

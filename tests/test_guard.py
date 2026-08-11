@@ -352,3 +352,18 @@ def test_left_join_keeps_rows_without_match(cfg, ex):
     res = ex.run(r.sql)
     assert res.row_count > 0, "外连接被降级成内连接，无匹配的左表行被吃掉了"
     assert all(row[1] == 0 for row in res.rows)
+
+
+def test_single_tenant_mode_skips_r10(cfg):
+    """单租户库不做行级隔离，R-10 整体不参与，但其余护栏照常。"""
+    cfg.raw["tenant"]["enabled"] = False
+    r = chk("SELECT id FROM documents", cfg)
+    assert r.ok and "R-10" not in r.rules_fired
+    assert "ORG_ID" not in _where_of(r.sql)
+    assert "R-09" in r.rules_fired          # LIMIT 仍然注入
+
+
+def test_single_tenant_mode_still_blocks_writes(cfg):
+    cfg.raw["tenant"]["enabled"] = False
+    r = chk("DELETE FROM documents", cfg)
+    assert not r.ok and r.rejected_by == "R-02"

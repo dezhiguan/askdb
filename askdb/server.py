@@ -68,7 +68,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "model": cfg.llm["model"],
                 "env": cfg.llm["api_key_env"],
             },
-            "tenant": {"column": cfg.tenant_column, "org_id": cfg.default_org},
+            "tenant": {
+                "enabled": cfg.tenant_enabled,
+                "column": cfg.tenant_column,
+                "org_id": cfg.default_org,
+            },
             "guard": {
                 "max_rows": cfg.max_rows,
                 "max_retry": cfg.max_retry,

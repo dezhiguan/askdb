@@ -165,7 +165,7 @@ def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardR
     tcol = cfg.tenant_column
     injected: list[str] = []
     unresolved: set[str] = set()
-    for s in root.find_all(exp.Select):
+    for s in (root.find_all(exp.Select) if cfg.tenant_enabled else []):
         for t, join in _direct_tables(s):
             name = (t.name or "").lower()
             spec = cfg.tables.get(name)
@@ -310,12 +310,23 @@ def _check_columns(root: exp.Expression, cfg: Config, ctes: set[str]) -> str | N
                 if tbl is None:
                     continue                       # 不在本作用域，交给外层处理
                 if cname not in cfg.tables[tbl].columns:
-                    return f"字段不存在：{qualifier}.{col.name}（表 {tbl} 无此列）"
+                    return _no_column(cfg, tbl, f"{qualifier}.{col.name}")
             else:
                 real = {v for k, v in scope.items() if v in cfg.tables}
                 if len(real) != 1:
                     continue                       # 多表作用域，P1 再做完整解析
                 tbl = next(iter(real))
                 if cname not in cfg.tables[tbl].columns:
-                    return f"字段不存在：{col.name}（表 {tbl} 无此列）"
+                    return _no_column(cfg, tbl, col.name)
     return None
+
+
+def _no_column(cfg: Config, table: str, shown: str) -> str:
+    """报错时把真实列名一并给出。
+
+    只说"字段不存在"，人和模型都得再问一轮才知道该写什么；
+    直接列出可用字段，重试一次就能改对。
+    """
+    cols = list(cfg.tables[table].columns)
+    listed = "、".join(cols[:12]) + ("…" if len(cols) > 12 else "")
+    return f"字段不存在：{shown}（表 {table} 无此列）。该表可用字段：{listed}"

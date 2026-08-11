@@ -96,6 +96,16 @@ class Config:
         return {"duckdb": "duckdb", "postgresql": "postgres"}[self.db_type]
 
     @property
+    def tenant_enabled(self) -> bool:
+        """是否做租户隔离。
+
+        单租户库（整库属于同一主体）设为 false —— 大多数数据库其实是单租户，
+        强行要求每张表交代归属只会逼人乱填。关掉必须是有意为之：
+        自检与界面都会显著标出当前处于单租户模式。
+        """
+        return bool(self.raw["tenant"].get("enabled", True))
+
+    @property
     def tenant_column(self) -> str:
         return self.raw["tenant"]["column"]
 
@@ -141,7 +151,10 @@ class Config:
         """需要注入租户约束的表 —— 强制改写 R-10 的作用范围。
 
         含两类：表上直接有租户列的，以及靠 tenant_filter 声明间接归属的。
+        单租户模式下为空集，R-10 整体不参与。
         """
+        if not self.tenant_enabled:
+            return set()
         return {t.name for t in self.tables.values()
                 if (t.tenant_column or t.tenant_filter) and not t.tenant_exempt}
 
@@ -210,23 +223,35 @@ def _validate(cfg: Config) -> None:
     errs: list[str] = []
 
     tcol = cfg.tenant_column
-    tenant_tables = cfg.tenant_tables()
-    if not tenant_tables:
-        errs.append(f"没有任何表声明租户归属（租户列 tenant:true 或 tenant_filter）")
-
-    for t in cfg.tables.values():
-        col = t.tenant_column
-        if col and col != tcol:
-            errs.append(f"表 {t.name} 的租户列是 {col}，与全局配置 tenant.column={tcol} 不一致")
-        # 白名单里的表必须对租户归属有明确交代 —— 失败要朝安全的方向失败。
-        # 漏配一张表就是一条越权路径，所以这里不给默认值。
-        if not t.has_tenancy:
+    if cfg.tenant_enabled:
+        if not cfg.tenant_tables():
             errs.append(
-                f"表 {t.name} 未声明租户归属：需要标记租户列 tenant:true、"
-                f"或给出 tenant_filter、或显式 tenant_exempt:true"
+                "开启了租户隔离，但没有任何表声明归属。"
+                "若这是单租户库，请显式设置 tenant.enabled: false"
             )
-        if t.tenant_filter and "{ctx}" not in t.tenant_filter:
-            errs.append(f"表 {t.name} 的 tenant_filter 缺少 {{ctx}} 占位符，租户不会被代入")
+        for t in cfg.tables.values():
+            col = t.tenant_column
+            if col and col != tcol:
+                errs.append(f"表 {t.name} 的租户列是 {col}，与全局配置 tenant.column={tcol} 不一致")
+            # 白名单里的表必须对租户归属有明确交代 —— 失败要朝安全的方向失败。
+            # 漏配一张表就是一条越权路径，所以这里不给默认值。
+            if not t.has_tenancy:
+                errs.append(
+                    f"表 {t.name} 未声明租户归属：需要标记租户列 tenant:true、"
+                    f"或给出 tenant_filter、或显式 tenant_exempt:true；"
+                    f"若整库单租户，改用 tenant.enabled: false"
+                )
+            if t.tenant_filter and "{ctx}" not in t.tenant_filter:
+                errs.append(f"表 {t.name} 的 tenant_filter 缺少 {{ctx}} 占位符，租户不会被代入")
+    else:
+        # 单租户模式下仍然禁止半吊子配置：既然说了整库同属一个主体，
+        # 就不该再有表声明自己的租户归属，否则两套语义并存。
+        declared = [t.name for t in cfg.tables.values() if t.tenant_column or t.tenant_filter]
+        if declared:
+            errs.append(
+                f"tenant.enabled=false（单租户）与表级租户声明冲突：{'、'.join(declared)}。"
+                f"要么开启租户隔离，要么去掉这些声明"
+            )
 
     known = set(cfg.tables)
     for m in cfg.metrics:

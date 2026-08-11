@@ -168,11 +168,36 @@ def test_accepts_tenant_filter_as_declaration(tmp_path):
 
 
 def test_exemption_alone_is_not_enough(tmp_path):
-    """全部表都豁免时仍然报错 —— 豁免不能拿来兜底。"""
+    """全表豁免仍然报错，并指出单租户库该走 tenant.enabled: false。"""
     tables = BASE_TABLES.replace(", tenant: true", "").replace(
         "        aliases: [文档]", "        aliases: [文档]\n        tenant_exempt: true")
-    with pytest.raises(ValueError, match="没有任何表声明租户归属"):
+    with pytest.raises(ValueError, match="tenant.enabled"):
         load(_write(tmp_path, BASE_MAIN, tables, "metrics: []"))
+
+
+def test_single_tenant_mode_needs_no_declarations(tmp_path):
+    """大多数库其实是单租户，不该被逼着给每张表乱填归属。"""
+    main = BASE_MAIN.replace(
+        "tenant: {column: org_id, default_ctx: 65, mode: predicate, on_unresolved: reject}",
+        "tenant: {enabled: false, column: org_id, default_ctx: 0, mode: predicate, on_unresolved: reject}")
+    tables = BASE_TABLES.replace(", tenant: true", "")
+    cfg = load(_write(tmp_path, main, tables, "metrics: []"))
+    assert cfg.tenant_enabled is False
+    assert cfg.tenant_tables() == set()
+
+
+def test_single_tenant_mode_rejects_conflicting_declarations(tmp_path):
+    """说了整库单租户，就不该再有表声明自己的归属 —— 两套语义不能并存。"""
+    main = BASE_MAIN.replace(
+        "tenant: {column: org_id, default_ctx: 65, mode: predicate, on_unresolved: reject}",
+        "tenant: {enabled: false, column: org_id, default_ctx: 0, mode: predicate, on_unresolved: reject}")
+    with pytest.raises(ValueError, match="冲突"):
+        load(_write(tmp_path, main, BASE_TABLES, "metrics: []"))
+
+
+def test_tenant_enabled_defaults_to_true():
+    cfg = load(ROOT / "config" / "askdb.yaml")
+    assert cfg.tenant_enabled is True
 
 
 def test_rejects_tenant_filter_without_ctx_placeholder(tmp_path):
