@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -40,7 +41,7 @@ SYSTEM = """你是一个只读数据查询助手，把用户的问题翻译成�
 USER = """{schema}
 
 【用户问题】
-{question}"""
+{question}{step}"""
 
 RETRY = """{schema}
 
@@ -139,6 +140,29 @@ class LlmClient:
         )
         return self._model
 
+    def structured(self, schema, system: str, human: str) -> tuple[Any, LlmUsage]:
+        """通用的结构化调用 —— 规划与评估节点共用，不重复一套调用逻辑。"""
+        model = self._build().with_structured_output(
+            schema, method="function_calling", include_raw=True
+        )
+        try:
+            out = model.invoke([("system", system), ("human", human)])
+        except Exception as primary_err:
+            fb = self._fallback_client()
+            if fb is None:
+                raise
+            try:
+                return fb.structured(schema, system, human)
+            except Exception as fb_err:
+                raise RuntimeError(
+                    f"主模型 {self.model_name} 调用失败：{primary_err}；"
+                    f"备选 {fb.model_name} 也失败：{fb_err}"
+                ) from primary_err
+        parsed = out["parsed"] if isinstance(out, dict) else out
+        if parsed is None:
+            raise RuntimeError("模型未按结构化格式返回，请重试或更换模型。")
+        return parsed, _usage_of(out)
+
     def generate_sql(
         self,
         question: str,
@@ -146,6 +170,7 @@ class LlmClient:
         dialect: str = "duckdb",
         last_sql: str = "",
         error: str = "",
+        step: str = "",
     ) -> tuple[SqlDraft, LlmUsage]:
         # 必须显式指定 function_calling：
         #   默认可能落到 JSON mode（response_format=json_object），而百炼要求
@@ -156,9 +181,10 @@ class LlmClient:
         )
         system = SYSTEM.format(dialect=dialect)
         if error:
-            human = RETRY.format(schema=schema_prompt, question=question, last_sql=last_sql, error=error)
+            human = RETRY.format(schema=schema_prompt, question=question,
+                                 last_sql=last_sql, error=error)
         else:
-            human = USER.format(schema=schema_prompt, question=question)
+            human = USER.format(schema=schema_prompt, question=question, step=step)
 
         try:
             out = model.invoke([("system", system), ("human", human)])

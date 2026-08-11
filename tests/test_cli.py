@@ -91,6 +91,13 @@ def test_ask_command_renders_pipeline(tmp_path, cfg, monkeypatch):
         def generate_sql(self, *a, **k):
             return SqlDraft(sql="SELECT file_name AS 文件名 FROM documents", reasoning="r"), LlmUsage(9, 4)
 
+        def structured(self, schema, system, human):
+            from askdb.planner import Assessment, Plan
+            if schema is Plan:
+                return Plan(multi_step=False, reason="替身"), LlmUsage(1, 1)
+            return Assessment(enough=True, reason="替身"), LlmUsage(1, 1)
+
+
     from askdb import graph
     monkeypatch.setattr(cli, "run_ask",
                         lambda q, c, org_id=None: graph.ask(q, c, org_id=org_id, llm=Fake()))
@@ -103,6 +110,13 @@ def test_ask_command_exits_nonzero_on_block(tmp_path, cfg, monkeypatch):
     class Fake:
         def generate_sql(self, *a, **k):
             return SqlDraft(sql="DELETE FROM documents", reasoning="r"), LlmUsage(1, 1)
+
+        def structured(self, schema, system, human):
+            from askdb.planner import Assessment, Plan
+            if schema is Plan:
+                return Plan(multi_step=False, reason="替身"), LlmUsage(1, 1)
+            return Assessment(enough=True, reason="替身"), LlmUsage(1, 1)
+
 
     from askdb import graph
     monkeypatch.setattr(cli, "run_ask",

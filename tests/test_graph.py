@@ -24,12 +24,22 @@ class FakeLlm:
         self.reasoning = reasoning
         self.calls: list[dict] = []
 
-    def generate_sql(self, question, schema_prompt, dialect="duckdb", last_sql="", error=""):
-        self.calls.append({"error": error, "last_sql": last_sql})
+    def generate_sql(self, question, schema_prompt, dialect="duckdb",
+                     last_sql="", error="", step=""):
+        self.calls.append({"error": error, "last_sql": last_sql, "step": step})
         if self.raises:
             raise self.raises
         sql = self.sqls.pop(0) if self.sqls else ""
         return SqlDraft(sql=sql, reasoning=self.reasoning), LlmUsage(100, 50)
+
+    def structured(self, schema, system, human):
+        """规划与评估节点用。默认判定单步、结果足够 —— 多步用例单独覆写。"""
+        from askdb.planner import Assessment, Plan
+
+        self.calls.append({"structured": schema.__name__})
+        if schema is Plan:
+            return Plan(multi_step=False, reason="测试替身默认单步"), LlmUsage(10, 5)
+        return Assessment(enough=True, reason="测试替身默认足够"), LlmUsage(10, 5)
 
 
 def run(cfg, ex, *sqls, **kw):
@@ -54,10 +64,13 @@ def test_records_rewrites_and_hits(cfg, ex):
 
 
 def test_cost_is_accounted(cfg, ex):
+    """成本按步累计 —— 规划节点的开销也要算进去，不能只算 SQL 生成。"""
     r = run(cfg, ex, OK_SQL)
-    assert r.tok_in == 100 and r.tok_out == 50
-    assert r.cost_cny > 0
-    assert r.elapsed_ms >= 0
+    assert r.tok_in >= 100 and r.tok_out >= 50      # 至少含 generate 的那笔
+    per_step = {s["step"]: s for s in r.steps}
+    assert per_step["generate_sql"]["tok_in"] == 100
+    assert r.tok_in == sum(s["tok_in"] for s in r.steps)
+    assert r.cost_cny > 0 and r.elapsed_ms >= 0
 
 
 def test_result_is_json_serializable(cfg, ex):
@@ -79,7 +92,8 @@ def test_guard_block_triggers_retry_then_succeeds(cfg, ex):
     fake = FakeLlm("SELECT member_level FROM documents", OK_SQL)
     r = graph.ask("q", cfg, executor=ex, llm=fake)
     assert r.ok and r.attempts == 2
-    assert "字段不存在" in fake.calls[1]["error"]          # 真实错误被回灌
+    gen = [c for c in fake.calls if "error" in c]
+    assert "字段不存在" in gen[1]["error"]                 # 真实错误被回灌
     assert any(s["step"] == "reflect" for s in r.steps)
 
 
@@ -206,7 +220,8 @@ def test_daily_quota_blocks_before_any_model_call(cfg, ex):
     graph.ask("第一次", cfg, executor=ex, llm=fake)
     r = graph.ask("第二次", cfg, executor=ex, llm=fake)
     assert not r.ok and r.rejected_by == "QUOTA"
-    assert len(fake.calls) == 1                 # 第二次没有调用模型
+    gen = [c for c in fake.calls if "error" in c]
+    assert len(gen) == 1                        # 第二次一次模型都没调
     assert "daily_quota" in r.hint
 
 
@@ -224,3 +239,150 @@ def test_audit_has_timestamp_and_explain_rows(cfg, ex):
     rec = json.loads(cfg.audit_log.read_text(encoding="utf-8").strip().splitlines()[-1])
     assert rec["ts"] and rec["ts"][:4].isdigit()
     assert rec["explain_rows"] is None or rec["explain_rows"] >= 0
+
+
+# ---------------------------------------------------------------- 多步规划
+
+class PlanLlm(FakeLlm):
+    """可编排规划/评估行为的替身。
+
+    plans:   每次 plan 节点返回的 (multi_step, goal)
+    assess:  每次 assess 节点返回的 (enough, carry)
+    """
+
+    def __init__(self, *sqls, plans=(), assess=()):
+        super().__init__(*sqls)
+        self.plans = list(plans)
+        self.assess = list(assess)
+
+    def structured(self, schema, system, human):
+        from askdb.planner import Assessment, Plan
+
+        if schema is Plan:
+            multi, goal = self.plans.pop(0) if self.plans else (False, "")
+            self.calls.append({"plan": goal, "human": human})
+            return Plan(multi_step=multi, reason="替身", goal=goal), LlmUsage(20, 10)
+        enough, carry = self.assess.pop(0) if self.assess else (True, {})
+        self.calls.append({"assess": enough, "human": human})
+        return Assessment(enough=enough, reason="替身", carry=carry), LlmUsage(20, 10)
+
+
+def _enable_planner(cfg, **kw):
+    cfg.raw["planner"] = {"enabled": True, "max_steps": 3, "max_carry_rows": 50,
+                          "cost_cap_tokens": 0, **kw}
+
+
+SQL2 = "SELECT file_type AS 类型 FROM documents WHERE kb_id IN (1)"
+
+
+def test_planner_disabled_costs_no_model_call(cfg, ex):
+    """禁用多步时，plan 节点一次调用都不该花。"""
+    cfg.raw["planner"] = {"enabled": False}
+    fake = PlanLlm(OK_SQL)
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and not r.multi_step
+    assert not any("plan" in c for c in fake.calls)
+
+
+def test_single_step_when_planner_says_so(cfg, ex):
+    _enable_planner(cfg)
+    r = graph.ask("q", cfg, executor=ex, llm=PlanLlm(OK_SQL, plans=[(False, "")]))
+    assert r.ok and not r.multi_step and r.step_count == 1
+    assert len(r.sub_steps) == 1
+
+
+def test_two_step_flow_carries_literals_forward(cfg, ex):
+    """中间结果只下传标识列，并作为字面量拼进下一步。"""
+    fake = PlanLlm(OK_SQL, SQL2,
+                   plans=[(True, "先看分布"), (True, "再拉明细")],
+                   assess=[(False, {"kb_ids": [1]}), (True, {})])
+    _enable_planner(cfg)
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and r.multi_step and r.step_count == 2
+    assert len(r.sub_steps) == 2 and r.sub_steps[0]["goal"] == "先看分布"
+    # 第二次生成时，本步目标与下传值都进了提示词
+    gen = [c for c in fake.calls if "step" in c]
+    assert "再拉明细" in gen[1]["step"] and "kb_ids" in gen[1]["step"]
+
+
+def test_every_step_passes_full_guard(cfg, ex):
+    """不存在"因为是第二步所以已被信任"的路径。"""
+    fake = PlanLlm(OK_SQL, "DELETE FROM documents",
+                   plans=[(True, "一"), (True, "二")],
+                   assess=[(False, {"kb_ids": [1]}), (True, {})])
+    _enable_planner(cfg)
+    cfg.raw["guard"]["max_retry"] = 0
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert not r.ok and r.rejected_by == "R-02"
+
+
+def test_r16_step_cap_converges_and_flags(cfg, ex):
+    """触及步数上限收敛作答，且必须标注结论可能不完整。"""
+    _enable_planner(cfg, max_steps=2)
+    fake = PlanLlm(*[OK_SQL] * 4,
+                   plans=[(True, f"第{i}步") for i in range(4)],
+                   assess=[(False, {"kb_ids": [1]})] * 4)
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and r.step_count == 2
+    assert "步数上限" in r.converged_early
+
+
+def test_r15_oversized_carry_stops_multi_step(cfg, ex):
+    """下传规模超限往往说明上一步筛选本身有问题。"""
+    _enable_planner(cfg, max_carry_rows=3)
+    fake = PlanLlm(OK_SQL, plans=[(True, "一")], assess=[(False, {"ids": list(range(10))})])
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and r.step_count == 1
+    assert "超过上限" in r.converged_early
+
+
+def test_r17_cost_cap_converges(cfg, ex):
+    _enable_planner(cfg, cost_cap_tokens=1)
+    fake = PlanLlm(*[OK_SQL] * 3, plans=[(True, "一")] * 3,
+                   assess=[(False, {"kb_ids": [1]})] * 3)
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and "成本上限" in r.converged_early
+
+
+def test_multi_step_state_survives_checkpointing(cfg, ex):
+    """多步字段必须可序列化，否则检查点直接崩。"""
+    _enable_planner(cfg)
+    fake = PlanLlm(OK_SQL, SQL2, plans=[(True, "一"), (True, "二")],
+                   assess=[(False, {"kb_ids": [1]}), (True, {})])
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and graph.replay(r.trace_id, cfg)
+
+
+def test_assess_failure_is_treated_as_enough(cfg, ex):
+    """评估本身出错时按足够处理 —— 宁可少答一步，不要卡死链路。"""
+    class Broken(PlanLlm):
+        def structured(self, schema, system, human):
+            from askdb.planner import Plan
+            if schema is Plan:
+                return Plan(multi_step=True, reason="x", goal="一"), LlmUsage(1, 1)
+            raise RuntimeError("评估服务挂了")
+
+    _enable_planner(cfg)
+    r = graph.ask("q", cfg, executor=ex, llm=Broken(OK_SQL))
+    assert r.ok and r.step_count == 1
+
+
+def test_replan_without_goal_converges_without_extra_sql(cfg, ex):
+    """重规划给不出下一步就该收敛 —— 再走 generate 只是空转一条 SQL。"""
+    _enable_planner(cfg)
+    fake = PlanLlm(OK_SQL, OK_SQL,
+                   plans=[(True, "一"), (True, "")],      # 第二次目标为空
+                   assess=[(False, {"kb_ids": [1]}), (True, {})])
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and r.step_count == 1
+    gen = [c for c in fake.calls if "step" in c]
+    assert len(gen) == 1                                  # 只生成过一条 SQL
+
+
+def test_replan_saying_single_step_also_converges(cfg, ex):
+    _enable_planner(cfg)
+    fake = PlanLlm(OK_SQL, OK_SQL,
+                   plans=[(True, "一"), (False, "还想再查")],
+                   assess=[(False, {"kb_ids": [1]}), (True, {})])
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and len([c for c in fake.calls if "step" in c]) == 1

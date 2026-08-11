@@ -107,6 +107,13 @@ def test_ask_uses_pipeline(client, monkeypatch):
         def generate_sql(self, *a, **k):
             return SqlDraft(sql="SELECT file_name AS 文件名 FROM documents", reasoning="r"), LlmUsage(10, 5)
 
+        def structured(self, schema, system, human):
+            from askdb.planner import Assessment, Plan
+            if schema is Plan:
+                return Plan(multi_step=False, reason="替身"), LlmUsage(1, 1)
+            return Assessment(enough=True, reason="替身"), LlmUsage(1, 1)
+
+
     monkeypatch.setattr(server, "run_ask",
                         lambda q, cfg, org_id=None: __import__("askdb.graph", fromlist=["ask"])
                         .ask(q, cfg, org_id=org_id, llm=Fake()))

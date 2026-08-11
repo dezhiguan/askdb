@@ -28,11 +28,12 @@ guard:
     - lo_import
     - dblink
 
-planner:                             # P5 才启用，P0 恒为单步
-  enabled: false
-  max_steps: 3                       # R-16
-  max_carry_rows: 50                 # R-15
-  cost_cap_tokens: 12000             # R-17
+planner:
+  # 多步是兜底路径不是默认路径：能用一条 SQL（含 CTE）表达的一律单步。
+  enabled: true
+  max_steps: 3                       # R-16 总步数上限
+  max_carry_rows: 50                 # R-15 中间结果规模上限，超限即收敛
+  cost_cap_tokens: 12000             # R-17 单次问答累计 token 上限，0 表示不限
 
 schema_rag:
   mode: keyword                    # keyword（P0）| all | vector（P1）
