@@ -1,0 +1,69 @@
+# 接入本机 ragforge 开发库（Postgres.app，非容器）。
+#
+# 用法：askdb check -c config/ragforge.yaml
+#       askdb serve -c config/ragforge.yaml
+#
+# 只连本机开发库。按技术设计说明书 §8：生产主库禁止连接，
+# 线上只允许连只读副本，且需满足 8 项准入条件。
+
+datasource:
+  type: postgresql
+  dsn: "host=127.0.0.1 port=5432 dbname=ragforge user=askdb_ro"
+  password_env: ASKDB_PG_PASSWORD    # 密码只走环境变量，不落配置文件
+
+tenant:
+  column: org_id
+  default_ctx: 1                     # 广州日不落科技有限公司；用 --org 覆盖
+  mode: rls_and_predicate            # 应用层 AST 改写 + 数据库行级安全，双层
+  on_unresolved: reject
+
+guard:
+  max_rows: 1000
+  max_scan_rows: 500000
+  statement_timeout_ms: 8000
+  max_retry: 2
+  allow_select_star: false
+  deny_functions:
+    - pg_read_file
+    - pg_ls_dir
+    - pg_read_binary_file
+    - lo_import
+    - lo_export
+    - dblink
+    - pg_sleep
+    - query_to_xml
+
+planner:
+  enabled: false
+  max_steps: 3
+  max_carry_rows: 50
+  cost_cap_tokens: 12000
+
+schema_rag:
+  mode: keyword
+  top_k: 3
+  max_k: 5
+  token_budget: 1500
+
+llm:
+  provider: deepseek
+  base_url: "https://api.deepseek.com"
+  model: deepseek-v4-flash
+  temperature: 0
+  api_key_env: DEEPSEEK_API_KEY
+  price_input_per_1k: 0.001
+  price_output_per_1k: 0.002
+  thinking: false
+  fallback:
+    provider: dashscope
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: qwen-max
+    api_key_env: DASHSCOPE_API_KEY
+
+observability:
+  audit_log: ./data/audit-ragforge.jsonl
+  checkpoint_db: ./data/checkpoints-ragforge.sqlite
+  daily_quota: 200
+
+tables_file: ./config/ragforge-tables.yaml
+metrics_file: ./config/ragforge-metrics.yaml

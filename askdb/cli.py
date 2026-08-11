@@ -113,7 +113,7 @@ def cmd_sql(
     cfg = _load(config)
     org_id = cfg.default_org if org is None else org
 
-    g = guard.check(statement, cfg, org_id=org_id)
+    g = guard.check(statement, cfg, org_id=org_id, dialect=cfg.dialect)
     if not g.ok:
         con.print(f"[bold red]✗ [{g.rejected_by}][/] {g.reason}")
         raise typer.Exit(1)
@@ -127,6 +127,7 @@ def cmd_sql(
         con.print(f"[green]✓[/] 干跑通过   预估扫描 {ep.est_rows:,} 行" if ep.est_rows
                   else "[green]✓[/] 干跑通过")
         try:
+            ex.set_org(org_id)
             res = ex.run(g.sql)
         except DataSourceError as e:
             _fail(str(e), e.hint)

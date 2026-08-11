@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>askdb · 可信数据问答</title>
+<title>askdb · 可信数据问答 Agent</title>
 <style>
 :root{
   color-scheme: light;
@@ -173,6 +173,48 @@ tbody tr:hover{background:var(--plane)}
 .tag{font-size:10.5px;padding:1.5px 7px;border-radius:5px;background:var(--wash);color:var(--accent);
   font-family:ui-monospace,Menlo,monospace;margin:0 4px 4px 0;display:inline-block}
 
+/* 向导 */
+.stepper{display:flex;align-items:center;margin-bottom:16px}
+.sstep{display:flex;align-items:center;gap:9px;cursor:pointer;background:none;border:0;font:inherit;padding:0}
+.sdot{width:25px;height:25px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;
+  border:1.5px solid var(--axis);color:var(--muted);background:var(--surface);flex:none}
+.sstep[aria-current="true"] .sdot{border-color:var(--accent);background:var(--accent);color:#fff}
+.sstep.done .sdot{border-color:var(--good);background:var(--good);color:#fff}
+.slab{font-size:13px;color:var(--muted);white-space:nowrap}
+.sstep[aria-current="true"] .slab{color:var(--ink);font-weight:600}
+.sstep.done .slab{color:var(--ink-2)}
+.sline{flex:1;height:1px;background:var(--grid);margin:0 14px;min-width:18px}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px}
+label.f{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
+.inp{width:100%;font:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;
+  background:var(--plane);color:var(--ink);font-family:ui-monospace,Menlo,monospace}
+.inp[readonly]{color:var(--ink-2);cursor:default}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:14px}
+.btn.ghost{background:none;border:1px solid var(--border);color:var(--ink-2);font-weight:500}
+.btn.ghost:hover{border-color:var(--axis)}
+pre.code{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:12px 14px;
+  overflow-x:auto;font-size:11.5px;line-height:1.7;white-space:pre;max-height:330px}
+input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;vertical-align:-2px}
+tbody tr.sel{background:var(--wash)}
+.tag2{font-size:10.5px;padding:1.5px 6px;border-radius:5px;font-weight:600}
+.tag2.ten{background:var(--wash);color:var(--accent)}
+.tag2.hi{background:var(--good-bg);color:var(--good-ink)}
+.tag2.low{background:var(--warn-bg);color:var(--warn-ink)}
+.summary{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-2);margin-top:11px;align-items:center}
+.fields{list-style:none}
+.fields li{display:grid;grid-template-columns:170px minmax(0,1fr);gap:10px;align-items:start;
+  padding:7px 0;border-top:1px solid var(--grid)}
+.fields li:first-child{border-top:0}
+.fname{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.ftype{font-size:10.5px;color:var(--muted);margin-left:6px}
+.fdesc{font-size:12.5px;color:var(--ink-2)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:13px 15px}
+.tile .lab{font-size:11.5px;color:var(--muted);margin-bottom:4px}
+.tile .val{font-size:23px;font-weight:650;letter-spacing:-.02em;line-height:1.15}
+.tile .val small{font-size:13px;font-weight:600;color:var(--ink-2);margin-left:2px}
+.tile .foot{font-size:11.5px;color:var(--muted);margin-top:3px}
+
 /* schema 页 */
 .tlist{list-style:none;border:1px solid var(--border);border-radius:9px;overflow:hidden}
 .tlist li{padding:9px 12px;border-bottom:1px solid var(--grid);cursor:pointer;font-size:12.5px;
@@ -195,7 +237,7 @@ tbody tr:hover{background:var(--plane)}
 
 <header class="topbar">
   <div class="topbar-in">
-    <div class="logo"><b>askdb</b><span>可信数据问答</span></div>
+    <div class="logo"><b>askdb</b><span>可信数据问答 Agent</span></div>
     <span class="pill" id="pillDs">连接中…</span>
     <span class="pill" id="pillLlm">检查中…</span>
     <span class="pill" id="pillOrg"></span>
@@ -206,14 +248,95 @@ tbody tr:hover{background:var(--plane)}
 
 <div class="wrap">
   <nav class="tabs" role="tablist">
-    <button class="tab" role="tab" aria-selected="true" data-p="ask">提问</button>
-    <button class="tab" role="tab" aria-selected="false" data-p="meta">数据源</button>
+    <button class="tab" role="tab" aria-selected="true" data-p="setup">① 接入数据</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="ask">② 提问</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="eval">③ 评测</button>
   </nav>
 
   <div id="banners"></div>
 
-  <!-- ============ 提问 ============ -->
-  <section id="ask">
+  <!-- ============ ① 接入数据 ============ -->
+  <section id="setup">
+    <div class="stepper">
+      <button class="sstep" data-s="0" aria-current="true"><span class="sdot">1</span><span class="slab">连接数据源</span></button>
+      <span class="sline"></span>
+      <button class="sstep" data-s="1"><span class="sdot">2</span><span class="slab">选择开放的表</span></button>
+      <span class="sline"></span>
+      <button class="sstep" data-s="2"><span class="sdot">3</span><span class="slab">补注释与口径</span></button>
+    </div>
+
+    <!-- 第 1 步 -->
+    <div id="w0">
+      <div class="cols">
+        <div class="card">
+          <h2>连接数据源</h2>
+          <p class="sub">建议先连本机开发库；线上只连只读副本，绝不连主库</p>
+          <div class="form" id="dsForm"></div>
+          <div class="row">
+            <button class="btn" id="testBtn">测试连接</button>
+            <button class="btn ghost" id="next0">下一步 · 选择表</button>
+          </div>
+          <div id="checks" style="margin-top:12px"></div>
+        </div>
+        <aside class="card">
+          <h2>还没有只读账号？</h2>
+          <p class="sub">把这段跑一遍，护栏做在数据库层</p>
+          <pre class="code" id="roSql"></pre>
+          <div class="notice info" style="margin-top:10px">
+            <div class="why">就算应用层校验被绕过，数据库这边也执行不了 —— <b>双保险</b>。</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- 第 2 步 -->
+    <div id="w1" class="hide">
+      <div class="card">
+        <h2>选择开放的表</h2>
+        <p class="sub">白名单既是安全边界，也是准确率边界 —— 只开你真正会问的表</p>
+        <div class="tablewrap" style="max-height:360px"><table id="tblTable"></table></div>
+        <div class="summary" id="tblSummary"></div>
+        <div class="notice info" style="margin-top:12px">
+          <div class="t">◇ 白名单由配置文件决定</div>
+          <div class="why">勾选变化会生成对应的 <code>tables.yaml</code> 片段，在第 3 步复制。
+            askdb 是配置即代码 —— 网页不直接改文件，避免线上被人误点。</div>
+        </div>
+        <div class="row">
+          <button class="btn ghost" id="back1">上一步</button>
+          <button class="btn" id="next1">下一步 · 补注释</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 第 3 步 -->
+    <div id="w2" class="hide">
+      <div class="cols">
+        <div class="card">
+          <h2>补字段注释</h2>
+          <p class="sub">库里的 COMMENT 大概率是空的，而这份说明的质量 ≈ 项目的准确率</p>
+          <div class="cols" style="grid-template-columns:170px minmax(0,1fr)">
+            <ul class="tlist" id="annTables"></ul>
+            <div><ul class="fields" id="annFields"></ul></div>
+          </div>
+          <div class="summary" id="annSummary"></div>
+          <div class="row">
+            <button class="btn ghost" id="back2">上一步</button>
+            <button class="btn" id="genYaml">生成 tables.yaml 片段</button>
+            <button class="btn ghost" id="gotoAsk">去提问</button>
+          </div>
+          <pre class="code hide" id="yamlOut" style="margin-top:12px"></pre>
+        </div>
+        <aside class="card">
+          <h2>业务口径</h2>
+          <p class="sub">模型猜不出来的那一层，必须写下来</p>
+          <div id="metrics"></div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ② 提问 ============ -->
+  <section id="ask" hidden>
     <div class="card">
       <div class="modes">
         <button class="mode" data-m="nl" aria-pressed="true">自然语言</button>
@@ -279,29 +402,13 @@ tbody tr:hover{background:var(--plane)}
     </div>
   </section>
 
-  <!-- ============ 数据源 ============ -->
-  <section id="meta" hidden>
-    <div class="cols">
-      <div class="card">
-        <h2>开放的表</h2>
-        <p class="sub">白名单既是安全边界，也是准确率边界 —— 未列出的表模型看不到，也查不到</p>
-        <div class="cols" style="grid-template-columns:168px minmax(0,1fr)">
-          <ul class="tlist" id="tblList"></ul>
-          <div id="tblDetail"></div>
-        </div>
-      </div>
-      <aside>
-        <div class="card">
-          <h2>连接自检</h2>
-          <p class="sub">最后一项是写操作实探</p>
-          <div id="checks"><span class="spin"></span> 检测中…</div>
-        </div>
-        <div class="card">
-          <h2>业务口径</h2>
-          <p class="sub">模型猜不出来的那一层</p>
-          <div id="metrics"></div>
-        </div>
-      </aside>
+  <!-- ============ ③ 评测 ============ -->
+  <section id="eval" hidden>
+    <div class="tiles" id="evalTiles"></div>
+    <div class="card">
+      <h2>消融实验</h2>
+      <p class="sub">同一黄金集、同一模型、同一随机种子，仅改变链路配置</p>
+      <div id="evalBody"></div>
     </div>
   </section>
 </div>
@@ -337,7 +444,7 @@ $("themeBtn").onclick = () => {
 };
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t));
-  ["ask", "meta"].forEach(id => $(id).hidden = id !== t.dataset.p);
+  ["setup", "ask", "eval"].forEach(id => $(id).hidden = id !== t.dataset.p);
 });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function copyBtn(text, label = "复制") {
@@ -375,6 +482,7 @@ async function boot() {
       <b>连不上 askdb 服务</b><p>确认 <code>askdb serve</code> 还在运行，然后刷新页面。</p></div></div>`;
     return;
   }
+  renderEval();
   const d = HEALTH.datasource, l = HEALTH.llm;
   $("pillDs").className = "pill " + (d.ok ? "ok" : "bad");
   $("pillDs").textContent = d.ok ? `${d.type} · ${d.detail}` : "数据源不可用";
@@ -382,6 +490,7 @@ async function boot() {
   $("pillLlm").textContent = l.ok ? l.model : "未配置密钥";
   $("pillOrg").textContent = `${HEALTH.tenant.column} = ${HEALTH.tenant.org_id}`;
   renderBanners(HEALTH);
+  renderStep1();
 
   const g = HEALTH.guard;
   $("guardBox").innerHTML = `
@@ -396,7 +505,6 @@ async function boot() {
 
   try {
     SCHEMA = await (await fetch("/api/schema")).json();
-    renderSchema();
     renderChips();
   } catch { /* 数据源不可用时已有横幅提示 */ }
 
@@ -609,17 +717,157 @@ function renderOutput(d) {
   $("outBody").innerHTML = `<div class="tablewrap"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
 }
 
-/* ---------- 数据源页 ---------- */
-function renderSchema() {
-  const ts = SCHEMA.tables;
-  $("tblList").innerHTML = ts.map((t, i) =>
-    `<li data-i="${i}" aria-selected="${i === 0}"><span class="mono">${esc(t.name)}</span>
-     ${t.tenant_column ? '<span class="tag" style="margin:0">租户</span>' : ""}</li>`).join("");
-  $("tblList").querySelectorAll("li").forEach(li => li.onclick = () => {
-    $("tblList").querySelectorAll("li").forEach(x => x.setAttribute("aria-selected", x === li));
-    detail(ts[+li.dataset.i]);
+/* ---------- ① 接入数据：三步向导 ---------- */
+let STEP = 0, INTRO = null, PICK = new Set(), CURT = null;
+
+function showStep(n) {
+  STEP = n;
+  [0, 1, 2].forEach(i => $("w" + i).classList.toggle("hide", i !== n));
+  document.querySelectorAll(".sstep").forEach(s => {
+    const i = +s.dataset.s;
+    s.setAttribute("aria-current", i === n);
+    s.classList.toggle("done", i < n);
   });
-  detail(ts[0]);
+  if (n === 1) loadIntrospect();
+  if (n === 2) renderAnnotate();
+}
+document.querySelectorAll(".sstep").forEach(s => s.onclick = () => showStep(+s.dataset.s));
+$("next0").onclick = () => showStep(1);
+$("back1").onclick = () => showStep(0);
+$("next1").onclick = () => showStep(2);
+$("back2").onclick = () => showStep(1);
+$("gotoAsk").onclick = () => document.querySelector('.tab[data-p="ask"]').click();
+
+/* 第 1 步 —— 连接信息与自检 */
+function renderStep1() {
+  const d = HEALTH.datasource, isPg = d.type === "postgresql";
+  const f = [["类型", d.type], ["连接", d.detail],
+             ["租户列", HEALTH.tenant.column], ["当前租户", HEALTH.tenant.org_id],
+             ["语句超时", HEALTH.guard.timeout_ms / 1000 + " s"],
+             ["扫描行阈值", HEALTH.guard.max_scan_rows.toLocaleString()]];
+  $("dsForm").innerHTML = f.map(([k, v]) =>
+    `<div><label class="f">${esc(k)}</label><input class="inp" value="${esc(v)}" readonly></div>`).join("");
+
+  $("roSql").textContent = isPg ? `-- PostgreSQL 只读角色
+CREATE ROLE askdb_ro LOGIN PASSWORD '***';
+
+GRANT CONNECT ON DATABASE ${(d.detail.split("@")[0] || "").trim()} TO askdb_ro;
+GRANT USAGE   ON SCHEMA public TO askdb_ro;
+
+-- 逐表授权，禁止 ALL TABLES
+GRANT SELECT ON documents, knowledge_bases TO askdb_ro;
+
+-- 三道数据库级硬护栏
+ALTER ROLE askdb_ro SET default_transaction_read_only = on;
+ALTER ROLE askdb_ro SET statement_timeout = '${HEALTH.guard.timeout_ms}ms';
+ALTER ROLE askdb_ro CONNECTION LIMIT 3;
+
+-- 行级安全：应用层 AST 改写之外的第二道
+ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+CREATE POLICY org_isolation ON documents FOR SELECT TO askdb_ro
+  USING (${HEALTH.tenant.column} = current_setting('app.org_id', true)::bigint);`
+  : `-- DuckDB 无需建账号：连接以 read_only 打开，
+-- 写操作在引擎层即被拒绝。
+
+python -m data.seed        # 生成样例库
+askdb check                # 六项自检，含写操作实探`;
+}
+
+$("testBtn").onclick = async () => {
+  $("checks").innerHTML = '<span class="spin"></span> 检测中…';
+  try {
+    renderChecks(await (await fetch("/api/selfcheck")).json());
+  } catch {
+    $("checks").innerHTML = `<div class="notice bad"><div class="t">✕ 自检没跑起来</div>
+      <div class="why">确认 askdb serve 仍在运行。</div></div>`;
+  }
+};
+function renderChecks(r) {
+  $("checks").innerHTML = r.checks.map(c => `
+    <div class="chk"><span class="m ${c.ok ? "ok" : "no"}">${c.ok ? "✓" : "✕"}</span>
+      <span>${esc(c.name)}</span><span class="d">${esc(c.detail)}</span></div>`).join("")
+    + (r.ok ? "" : `<div class="notice bad" style="margin-top:10px">
+        <div class="t">✕ 自检未全部通过</div>
+        <div class="why">有检查项没过，查询结果可能不可靠。</div></div>`);
+}
+
+/* 第 2 步 —— 选表 */
+async function loadIntrospect() {
+  if (INTRO) return;
+  $("tblTable").innerHTML = '<tbody><tr><td><span class="spin"></span> 读取表清单…</td></tr></tbody>';
+  try {
+    INTRO = await (await fetch("/api/introspect")).json();
+  } catch {
+    $("tblTable").innerHTML = '<tbody><tr><td>读取失败</td></tr></tbody>'; return;
+  }
+  if (!INTRO.ok) {
+    $("tblTable").innerHTML = `<tbody><tr><td style="white-space:normal">${esc(INTRO.error)}<br>
+      <span style="color:var(--muted)">${esc(INTRO.hint || "")}</span></td></tr></tbody>`;
+    return;
+  }
+  PICK = new Set(INTRO.tables.filter(t => t.allowed).map(t => t.name));
+  renderTables();
+}
+function renderTables() {
+  const ts = INTRO.tables;
+  $("tblTable").innerHTML =
+    `<thead><tr><th style="width:34px"></th><th>表名</th><th>说明</th><th style="text-align:right">行数</th>
+     <th style="text-align:right">列</th><th>租户列</th><th>注释覆盖</th></tr></thead><tbody>` +
+    ts.map((t, i) => `<tr class="${PICK.has(t.name) ? "sel" : ""}">
+      <td><input type="checkbox" data-i="${i}" ${PICK.has(t.name) ? "checked" : ""}></td>
+      <td class="mono">${esc(t.name)}</td>
+      <td style="color:var(--ink-2);white-space:normal">${esc(t.desc || "—")}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${t.rows.toLocaleString()}</td>
+      <td style="text-align:right">${t.cols}</td>
+      <td>${t.tenant_column ? `<span class="tag2 ten">${esc(t.tenant_column)}</span>`
+        : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${t.allowed ? `<span class="tag2 ${t.coverage >= 60 ? "hi" : "low"}">${t.coverage}%</span>`
+        : '<span style="color:var(--muted)">未开放</span>'}</td>
+    </tr>`).join("") + "</tbody>";
+  $("tblTable").querySelectorAll("input").forEach(cb => cb.onchange = () => {
+    const t = ts[+cb.dataset.i];
+    cb.checked ? PICK.add(t.name) : PICK.delete(t.name);
+    cb.closest("tr").classList.toggle("sel", cb.checked);
+    updateSummary();
+  });
+  updateSummary();
+}
+function updateSummary() {
+  const ts = INTRO.tables, sel = ts.filter(t => PICK.has(t.name));
+  const tok = sel.reduce((a, t) => a + t.cols * 9 + 40, 0);
+  const changed = sel.length !== INTRO.allowed_count
+    || sel.some(t => !t.allowed) ;
+  $("tblSummary").innerHTML =
+    `<span>已选 <b>${sel.length}</b> / <b>${ts.length}</b> 张</span>
+     <span style="color:var(--muted)">预计注入 <b>${tok.toLocaleString()}</b> tokens/次</span>
+     <span style="color:var(--muted)">含租户列 <b>${sel.filter(t => t.tenant_column).length}</b> 张</span>
+     ${changed ? '<span style="color:var(--warn-ink)">与当前配置不一致，第 3 步可生成新配置</span>' : ""}`;
+}
+
+/* 第 3 步 —— 注释与口径 */
+function renderAnnotate() {
+  if (!SCHEMA) return;
+  const ts = SCHEMA.tables;
+  CURT = CURT || (ts[0] && ts[0].name);
+  $("annTables").innerHTML = ts.map(t =>
+    `<li data-t="${esc(t.name)}" aria-selected="${t.name === CURT}">
+       <span class="mono" style="font-size:12px">${esc(t.name)}</span></li>`).join("");
+  $("annTables").querySelectorAll("li").forEach(li => li.onclick = () => {
+    CURT = li.dataset.t; renderAnnotate();
+  });
+  const t = ts.find(x => x.name === CURT) || ts[0];
+  if (!t) return;
+  $("annFields").innerHTML = t.columns.map(c => `
+    <li><span class="fname">${esc(c.name)}<span class="ftype">${esc(c.type)}</span>
+      ${c.tenant ? '<span class="tag2 ten" style="margin-left:6px">租户列</span>' : ""}</span>
+    <span class="fdesc">${c.desc ? esc(c.desc)
+      : '<span style="color:var(--warn-ink)">缺说明 —— 这一句直接决定准确率</span>'}
+      ${c.enum.length ? `<br><span style="color:var(--muted);font-size:11.5px">取值：${esc(c.enum.join(" / "))}</span>` : ""}
+    </span></li>`).join("");
+
+  const all = ts.flatMap(x => x.columns);
+  const cov = Math.round(all.filter(c => c.desc).length / Math.max(all.length, 1) * 100);
+  $("annSummary").innerHTML = `<span>注释覆盖率 <b>${cov}%</b>（${all.filter(c => c.desc).length}/${all.length} 个字段）</span>`;
 
   $("metrics").innerHTML = SCHEMA.metrics.map(m => `
     <div style="padding:9px 0;border-top:1px solid var(--grid)">
@@ -629,25 +877,47 @@ function renderSchema() {
       ${m.note ? `<div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(m.note)}</div>` : ""}
     </div>`).join("") || '<p class="sub">还没有定义业务口径。</p>';
 }
-function detail(t) {
-  $("tblDetail").innerHTML = `
-    <div style="font-size:13px;font-weight:600">${esc(t.name)}</div>
-    <div style="font-size:12.5px;color:var(--ink-2);margin:2px 0 10px">${esc(t.desc)}</div>
-    <div class="tablewrap"><table><thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead><tbody>
-    ${t.columns.map(c => `<tr>
-      <td class="mono">${esc(c.name)}${c.tenant ? ' <span class="tag" style="margin:0">租户列</span>' : ""}</td>
-      <td style="color:var(--muted)">${esc(c.type)}</td>
-      <td style="white-space:normal">${esc(c.desc)}${
-        c.enum.length ? `<br><span style="color:var(--muted);font-size:11.5px">取值：${esc(c.enum.join(" / "))}</span>` : ""}</td>
-    </tr>`).join("")}</tbody></table></div>`;
-}
-function renderChecks(r) {
-  $("checks").innerHTML = r.checks.map(c => `
-    <div class="chk"><span class="m ${c.ok ? "ok" : "no"}">${c.ok ? "✓" : "✕"}</span>
-      <span>${esc(c.name)}</span><span class="d">${esc(c.detail)}</span></div>`).join("")
-    + (r.ok ? "" : `<div class="notice bad" style="margin-top:10px">
-        <div class="t">✕ 自检未全部通过</div>
-        <div class="why">有检查项没过，查询结果可能不可靠。</div></div>`);
+
+$("genYaml").onclick = () => {
+  const known = new Map((SCHEMA ? SCHEMA.tables : []).map(t => [t.name, t]));
+  const lines = ["tables:"];
+  [...PICK].forEach(name => {
+    const t = known.get(name);
+    lines.push(`  - name: ${name}`);
+    lines.push(`    desc: ${t && t.desc ? t.desc : "TODO 一句话说明这张表是什么"}`);
+    lines.push(`    aliases: [${t ? t.aliases.join(", ") : ""}]`);
+    lines.push("    columns:");
+    if (t) {
+      t.columns.forEach(c => {
+        lines.push(`      ${c.name}: { type: ${c.type}, desc: ${c.desc || "TODO"}` +
+          (c.enum.length ? `, enum: [${c.enum.join(", ")}]` : "") +
+          (c.tenant ? ", tenant: true" : "") + " }");
+      });
+    } else {
+      lines.push("      # 该表尚未纳入配置，补全字段说明后再开放");
+    }
+  });
+  $("yamlOut").textContent = lines.join("\n");
+  $("yamlOut").classList.remove("hide");
+};
+
+/* ---------- ③ 评测 ---------- */
+function renderEval() {
+  $("evalTiles").innerHTML = [
+    ["黄金集", "—", "P3 阶段产出"],
+    ["执行准确率", "—", "尚未测量"],
+    ["静态校验拦截", "—", "尚未测量"],
+    ["单次平均成本", "—", "尚未测量"],
+  ].map(([lab, val, foot]) => `<div class="tile"><div class="lab">${lab}</div>
+      <div class="val">${val}</div><div class="foot">${foot}</div></div>`).join("");
+
+  $("evalBody").innerHTML = `<div class="notice info">
+    <div class="t">◇ 评测尚未运行</div>
+    <div class="why">黄金集 58 题、回放脚本与五组消融实验属于 <b>P3 阶段</b>，尚未开始。</div>
+    <div class="fix"><b>为什么这里是空的：</b>本项目不展示未经实测的指标。
+      准确率、拦截率、成本这些数字会在 P3 跑完后回填，并同时公开
+      <b>盲测集成绩</b>与<b>失败样本的分类分布</b>（不做筛选）。
+      在那之前放任何数字都是编的。</div></div>`;
 }
 
 boot();

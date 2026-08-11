@@ -177,7 +177,7 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
 def _n_guard(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     d = _deps(config)
     t = d.tracer.start()
-    r = guard.check(state["sql_raw"], d.cfg, org_id=state["org_id"])
+    r = guard.check(state["sql_raw"], d.cfg, org_id=state["org_id"], dialect=d.cfg.dialect)
     if not r.ok:
         d.tracer.add("guard", t, f"{r.rejected_by} {r.reason}", status="blocked")
         return {"error": r.reason, "rejected_by": r.rejected_by}
@@ -214,6 +214,7 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     d = _deps(config)
     t = d.tracer.start()
     try:
+        d.executor.set_org(state["org_id"])   # RLS 兜底层读这个上下文
         res = d.executor.run(state["sql_final"])
     except DataSourceError as e:
         d.tracer.add("execute", t, str(e), status="failed")

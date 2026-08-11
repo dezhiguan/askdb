@@ -31,6 +31,8 @@ tables:
   - name: orgs
     desc: 组织（租户）
     aliases: [组织, 租户]
+    # 这张表本身就是租户维表，id 即租户 ID
+    tenant_filter: "{ref}.id = {ctx}"
     columns:
       id:   { type: BIGINT,  desc: 组织 ID }
       name: { type: VARCHAR, desc: 组织名称 }

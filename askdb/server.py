@@ -22,6 +22,15 @@ from .graph import ask as run_ask
 WEB = Path(__file__).resolve().parent / "web"
 
 
+def _dsn_label(dsn: str) -> str:
+    """连接串的可展示摘要 —— 绝不带出密码。"""
+    parts = dict(
+        kv.split("=", 1) for kv in dsn.split() if "=" in kv and not kv.startswith("password=")
+    )
+    host = parts.get("host", "?")
+    return f"{parts.get('dbname', '?')} @ {host}:{parts.get('port', '5432')}"
+
+
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
     org_id: int | None = None
@@ -47,7 +56,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         try:
             with Executor(cfg) as ex:
                 ex.connect()
-            db_msg = str(cfg.db_path.name)
+            db_msg = (cfg.db_path.name if cfg.db_type == "duckdb"
+                      else _dsn_label(cfg.dsn))
         except DataSourceError as e:
             db_ok, db_msg, db_hint = False, str(e), e.hint
         return {
@@ -97,6 +107,34 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             checks = ex.self_check()
         return {"ok": all(c["ok"] for c in checks), "checks": checks}
 
+    @app.get("/api/introspect")
+    def introspect() -> dict[str, Any]:
+        """列出数据源里全部的表，供接入向导第 2 步选表。
+
+        白名单之外的表也要列出来 —— 用户得先看见，才谈得上决定开不开放。
+        """
+        try:
+            with Executor(cfg) as ex:
+                found = ex.introspect()
+        except DataSourceError as e:
+            return {"ok": False, "error": str(e), "hint": e.hint, "tables": []}
+
+        tcol = cfg.tenant_column
+        out = []
+        for t in found:
+            spec = cfg.tables.get(t["name"])
+            described = sum(1 for c in spec.columns.values() if c.desc) if spec else 0
+            total = len(spec.columns) if spec else t["cols"]
+            out.append({
+                **t,
+                "allowed": spec is not None,
+                "tenant_column": (spec.tenant_column if spec else (tcol if t["tenant"] else None)),
+                "coverage": round(described / total * 100) if total else 0,
+                "desc": spec.desc if spec else "",
+            })
+        return {"ok": True, "tables": out,
+                "allowed_count": sum(1 for t in out if t["allowed"]), "total": len(out)}
+
     @app.post("/api/ask")
     def ask(req: AskRequest) -> JSONResponse:
         r = run_ask(req.question.strip(), cfg, org_id=req.org_id)
@@ -107,7 +145,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """直查模式：跳过模型，只跑 护栏 → 干跑 → 执行。未配密钥时也能用。"""
         org = cfg.default_org if req.org_id is None else req.org_id
         steps: list[dict[str, Any]] = []
-        g = guard.check(req.sql, cfg, org_id=org)
+        g = guard.check(req.sql, cfg, org_id=org, dialect=cfg.dialect)
         if not g.ok:
             steps.append({"step": "guard", "ms": 0, "status": "blocked",
                           "note": f"{g.rejected_by} {g.reason}"})
@@ -133,6 +171,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             steps.append({"step": "dry_run", "ms": 0, "status": "ok",
                           "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
             try:
+                ex.set_org(org)
                 res = ex.run(g.sql)
             except DataSourceError as e:
                 steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})

@@ -148,3 +148,37 @@ def test_dotenv_does_not_override_existing_env(tmp_path, monkeypatch):
 def test_dotenv_missing_file_is_fine(tmp_path):
     from askdb.config import _load_dotenv
     _load_dotenv(tmp_path / "nowhere")
+
+
+def test_rejects_table_without_declared_tenancy(tmp_path):
+    """白名单里的表必须对租户归属有交代，漏配就是越权路径。"""
+    tables = BASE_TABLES.replace(", tenant: true", "")
+    p = _write(tmp_path, BASE_MAIN, tables, "metrics: []")
+    with pytest.raises(ValueError, match="未声明租户归属"):
+        load(p)
+
+
+def test_accepts_tenant_filter_as_declaration(tmp_path):
+    tables = BASE_TABLES.replace(", tenant: true", "").replace(
+        "        aliases: [文档]",
+        '        aliases: [文档]\n        tenant_filter: "{ref}.id = {ctx}"')
+    cfg = load(_write(tmp_path, BASE_MAIN, tables, "metrics: []"))
+    assert cfg.tables["documents"].tenant_filter
+    assert "documents" in cfg.tenant_tables()
+
+
+def test_exemption_alone_is_not_enough(tmp_path):
+    """全部表都豁免时仍然报错 —— 豁免不能拿来兜底。"""
+    tables = BASE_TABLES.replace(", tenant: true", "").replace(
+        "        aliases: [文档]", "        aliases: [文档]\n        tenant_exempt: true")
+    with pytest.raises(ValueError, match="没有任何表声明租户归属"):
+        load(_write(tmp_path, BASE_MAIN, tables, "metrics: []"))
+
+
+def test_rejects_tenant_filter_without_ctx_placeholder(tmp_path):
+    """缺 {ctx} 意味着租户不会被代入 —— 谓词恒真，等于没隔离。"""
+    tables = BASE_TABLES.replace(
+        "        aliases: [文档]",
+        '        aliases: [文档]\n        tenant_filter: "{ref}.id > 0"')
+    with pytest.raises(ValueError, match="缺少"):
+        load(_write(tmp_path, BASE_MAIN, tables, "metrics: []"))

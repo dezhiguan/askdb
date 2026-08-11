@@ -29,6 +29,11 @@ class Table:
     desc: str
     aliases: list[str]
     columns: dict[str, Column]
+    # 表本身没有租户列时，用一段谓词表达间接归属。
+    # 支持 {ref}（表名或别名）与 {ctx}（当前租户 ID）两个占位符。
+    tenant_filter: str | None = None
+    # 显式声明该表与租户无关（如全局字典表）。必须是有意为之，不能靠遗漏。
+    tenant_exempt: bool = False
 
     @property
     def tenant_column(self) -> str | None:
@@ -36,6 +41,10 @@ class Table:
             if c.tenant:
                 return c.name
         return None
+
+    @property
+    def has_tenancy(self) -> bool:
+        return bool(self.tenant_column or self.tenant_filter or self.tenant_exempt)
 
 
 @dataclass
@@ -67,6 +76,24 @@ class Config:
     @property
     def db_type(self) -> str:
         return self.raw["datasource"]["type"]
+
+    @property
+    def dsn(self) -> str:
+        """PostgreSQL 连接串。密码只走环境变量，不落配置文件。"""
+        import os
+
+        ds = self.raw["datasource"]
+        base = str(ds.get("dsn", ""))
+        env = ds.get("password_env")
+        pwd = os.environ.get(env) if env else None
+        if pwd and "password=" not in base:
+            base = f"{base} password={pwd}"
+        return base.strip()
+
+    @property
+    def dialect(self) -> str:
+        """sqlglot 方言名 —— 与数据源类型对应，改写后的 SQL 才能正确回写。"""
+        return {"duckdb": "duckdb", "postgresql": "postgres"}[self.db_type]
 
     @property
     def tenant_column(self) -> str:
@@ -111,8 +138,12 @@ class Config:
         return self.raw["llm"]
 
     def tenant_tables(self) -> set[str]:
-        """带租户列的表 —— 强制改写 R-10 的作用范围。"""
-        return {t.name for t in self.tables.values() if t.tenant_column}
+        """需要注入租户约束的表 —— 强制改写 R-10 的作用范围。
+
+        含两类：表上直接有租户列的，以及靠 tenant_filter 声明间接归属的。
+        """
+        return {t.name for t in self.tables.values()
+                if (t.tenant_column or t.tenant_filter) and not t.tenant_exempt}
 
     def api_key(self) -> str | None:
         return os.environ.get(self.llm["api_key_env"]) or None
@@ -161,7 +192,10 @@ def load(config_path: str | Path = "config/askdb.yaml") -> Config:
             for name, spec in t["columns"].items()
         }
         tables[t["name"]] = Table(
-            name=t["name"], desc=t.get("desc", ""), aliases=t.get("aliases", []) or [], columns=cols
+            name=t["name"], desc=t.get("desc", ""), aliases=t.get("aliases", []) or [],
+            columns=cols,
+            tenant_filter=t.get("tenant_filter"),
+            tenant_exempt=bool(t.get("tenant_exempt", False)),
         )
 
     metrics = [Metric(**m) for m in (_load_yaml(root / raw["metrics_file"])["metrics"] or [])]
@@ -178,12 +212,21 @@ def _validate(cfg: Config) -> None:
     tcol = cfg.tenant_column
     tenant_tables = cfg.tenant_tables()
     if not tenant_tables:
-        errs.append(f"没有任何表标记了租户列 tenant:true（期望列名 {tcol}）")
+        errs.append(f"没有任何表声明租户归属（租户列 tenant:true 或 tenant_filter）")
 
     for t in cfg.tables.values():
         col = t.tenant_column
         if col and col != tcol:
             errs.append(f"表 {t.name} 的租户列是 {col}，与全局配置 tenant.column={tcol} 不一致")
+        # 白名单里的表必须对租户归属有明确交代 —— 失败要朝安全的方向失败。
+        # 漏配一张表就是一条越权路径，所以这里不给默认值。
+        if not t.has_tenancy:
+            errs.append(
+                f"表 {t.name} 未声明租户归属：需要标记租户列 tenant:true、"
+                f"或给出 tenant_filter、或显式 tenant_exempt:true"
+            )
+        if t.tenant_filter and "{ctx}" not in t.tenant_filter:
+            errs.append(f"表 {t.name} 的 tenant_filter 缺少 {{ctx}} 占位符，租户不会被代入")
 
     known = set(cfg.tables)
     for m in cfg.metrics:

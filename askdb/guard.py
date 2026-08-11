@@ -60,23 +60,32 @@ def _from_node(select: exp.Select) -> exp.From | None:
     return None
 
 
-def _direct_tables(select: exp.Select) -> list[exp.Table]:
+def _is_outer(join: exp.Join) -> bool:
+    side = str(join.args.get("side") or "").upper()
+    kind = str(join.args.get("kind") or "").upper()
+    return side in ("LEFT", "RIGHT", "FULL") or kind == "OUTER"
+
+
+def _direct_tables(select: exp.Select) -> list[tuple[exp.Table, exp.Join | None]]:
     """该 SELECT 自身 FROM/JOIN 上的表，不递归进子查询。
+
+    同时带回该表所属的 JOIN 节点（FROM 上的表为 None）——
+    外连接的租户谓词要注进 ON 而不是 WHERE，否则会改变连接语义。
 
     子查询里的 SELECT 会被 find_all(exp.Select) 单独遍历到，
     各自独立注入租户谓词 —— 这正是设计要求的"每一层都注入"。
     """
-    out: list[exp.Table] = []
+    out: list[tuple[exp.Table, exp.Join | None]] = []
     frm = _from_node(select)
     if frm is not None:
         if isinstance(frm.this, exp.Table):
-            out.append(frm.this)
+            out.append((frm.this, None))
         for e in (frm.args.get("expressions") or []):   # 旧版 sqlglot 的多表 FROM 形式
             if isinstance(e, exp.Table):
-                out.append(e)
+                out.append((e, None))
     for j in select.args.get("joins") or []:
         if isinstance(j.this, exp.Table):
-            out.append(j.this)
+            out.append((j.this, j))
     return out
 
 
@@ -149,25 +158,52 @@ def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardR
             rewrites.append(f"展开 SELECT * 为显式列（{expanded} 处）")
 
     # ---------- R-10 强制租户谓词注入 ----------
-    tenant_tables = cfg.tenant_tables()
+    # 两种归属方式：
+    #   直接 —— 表上有租户列，注入 ref.col = ctx
+    #   间接 —— 表上没有租户列（真实库里很常见），用 tenant_filter 声明的谓词
+    # 两者都没有、又没显式豁免的表，在配置加载期就会被拒，走不到这里。
     tcol = cfg.tenant_column
     injected: list[str] = []
+    unresolved: set[str] = set()
     for s in root.find_all(exp.Select):
-        for t in _direct_tables(s):
-            if (t.name or "").lower() in tenant_tables:
-                ref = t.alias_or_name
-                cond = exp.condition(f"{ref}.{tcol} = {int(org_id)}", dialect=dialect)
+        for t, join in _direct_tables(s):
+            name = (t.name or "").lower()
+            spec = cfg.tables.get(name)
+            if spec is None or spec.tenant_exempt:
+                continue
+            ref = t.alias_or_name
+            if spec.tenant_column:
+                text = f"{ref}.{spec.tenant_column} = {int(org_id)}"
+            elif spec.tenant_filter:
+                text = spec.tenant_filter.format(ref=ref, ctx=int(org_id))
+            else:
+                unresolved.add(name)
+                continue
+            try:
+                cond = exp.condition(text, dialect=dialect)
+            except Exception:
+                return GuardResult(
+                    ok=False, rejected_by="R-10",
+                    reason=f"表 {name} 的租户谓词无法解析：{text}",
+                )
+            # 外连接的谓词必须进 ON，不能进 WHERE ——
+            # 放进 WHERE 会把 LEFT/RIGHT/FULL JOIN 悄悄降级成 INNER JOIN，
+            # 结果少行且不报错，属于最难发现的一类改写事故。
+            if join is not None and _is_outer(join):
+                join.on(cond, copy=False)
+            else:
                 s.where(cond, copy=False)
-                injected.append(f"{ref}.{tcol} = {org_id}")
+            injected.append(text)
+
+    if unresolved:
+        # 失败要朝安全的方向失败（tenant.on_unresolved=reject）
+        return GuardResult(
+            ok=False, rejected_by="R-10",
+            reason=f"无法确定租户归属，拒绝执行：{'、'.join(sorted(unresolved))}",
+        )
     if injected:
         fired.append("R-10")
         rewrites.append("注入租户谓词：" + "、".join(dict.fromkeys(injected)))
-    elif referenced & tenant_tables:
-        # 引用了带租户列的表却没能注入 —— 按 on_unresolved=reject 处理
-        return GuardResult(
-            ok=False, rejected_by="R-10",
-            reason="无法确定租户归属，拒绝执行（tenant.on_unresolved=reject）",
-        )
 
     # ---------- R-09 强制 LIMIT 注入 ----------
     cap = cfg.max_rows
@@ -208,7 +244,7 @@ def _expand_stars(root: exp.Expression, cfg: Config, ctes: set[str]) -> tuple[in
     """
     count = 0
     for s in root.find_all(exp.Select):
-        scope = [t for t in _direct_tables(s) if (t.name or "").lower() in cfg.tables]
+        scope = [t for t, _ in _direct_tables(s) if (t.name or "").lower() in cfg.tables]
         new_exprs: list[exp.Expression] = []
         changed = False
 
@@ -255,7 +291,7 @@ def _check_columns(root: exp.Expression, cfg: Config, ctes: set[str]) -> str | N
     for s in root.find_all(exp.Select):
         # 该作用域内 别名/表名 -> 表定义
         scope: dict[str, str] = {}
-        for t in _direct_tables(s):
+        for t, _join in _direct_tables(s):
             n = (t.name or "").lower()
             if n in cfg.tables:
                 scope[t.alias_or_name.lower()] = n

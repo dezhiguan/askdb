@@ -246,9 +246,46 @@ def test_r10_model_supplied_org_id_cannot_replace_injection(cfg):
     assert "ORG_ID = 999" in s and "DOCUMENTS.ORG_ID = 65" in s
 
 
-def test_r10_non_tenant_table_needs_no_injection(cfg):
+def test_r10_uses_tenant_filter_for_indirect_ownership(cfg):
+    """真实库里很多表没有租户列，靠外键间接归属 —— tenant_filter 覆盖这种情况。"""
+    r = chk("SELECT id, name FROM orgs", cfg)
+    assert r.ok and "R-10" in r.rules_fired
+    assert "ORGS.ID = 65" in _where_of(r.sql)
+
+
+def test_r10_tenant_filter_supports_subquery(cfg):
+    """间接归属常常要子查询（documents.kb_id → knowledge_bases.org_id）。"""
+    cfg.tables["documents"].columns["org_id"].tenant = False
+    cfg.tables["documents"].tenant_filter = (
+        "{ref}.kb_id IN (SELECT id FROM knowledge_bases WHERE org_id = {ctx})")
+    r = chk("SELECT d.file_name FROM documents d", cfg)
+    assert r.ok and "R-10" in r.rules_fired
+    s = _where_of(r.sql)
+    assert "D.KB_ID IN" in s and "ORG_ID = 65" in s
+
+
+def test_r10_rejects_table_without_any_tenancy(cfg):
+    """漏配一张表就是一条越权路径 —— 失败要朝安全的方向失败。"""
+    t = cfg.tables["orgs"]
+    t.tenant_filter = None
+    r = chk("SELECT id, name FROM orgs", cfg)
+    assert not r.ok and r.rejected_by == "R-10"
+    assert "无法确定租户归属" in r.reason
+
+
+def test_r10_exempt_table_is_skipped(cfg):
+    """全局字典表可以豁免，但必须是显式声明。"""
+    t = cfg.tables["orgs"]
+    t.tenant_filter = None
+    t.tenant_exempt = True
     r = chk("SELECT id, name FROM orgs", cfg)
     assert r.ok and "R-10" not in r.rules_fired
+
+
+def test_r10_rejects_unparsable_tenant_filter(cfg):
+    cfg.tables["orgs"].tenant_filter = "{ref}.id === {ctx} BROKEN ((("
+    r = chk("SELECT id FROM orgs", cfg)
+    assert not r.ok and r.rejected_by == "R-10"
 
 
 # --------------------------------------------------------------------- 综合
@@ -282,3 +319,36 @@ def test_union_is_accepted_and_injected(cfg):
     r = chk("SELECT id FROM documents UNION SELECT id FROM knowledge_bases", cfg)
     assert r.ok
     assert _where_of(r.sql).count("ORG_ID = 65") == 2
+
+
+def test_r10_outer_join_predicate_goes_to_on_not_where(cfg):
+    """把外连接的租户谓词放进 WHERE 会把 LEFT JOIN 悄悄降级成 INNER JOIN。
+
+    表现是结果少行且不报错 —— 最难发现的一类改写事故。
+    """
+    r = chk("SELECT k.name, COUNT(d.id) AS n FROM knowledge_bases k "
+            "LEFT JOIN documents d ON d.kb_id = k.id GROUP BY k.id, k.name", cfg)
+    assert r.ok
+    s = " ".join(r.sql.split())
+    on_part = s.split("WHERE")[0]
+    assert "D.ORG_ID = 65" in on_part.upper()          # 进了 ON
+    assert "K.ORG_ID = 65" in s.upper().split("WHERE")[1]   # FROM 上的表仍进 WHERE
+
+
+def test_r10_inner_join_predicate_may_stay_in_where(cfg):
+    """内连接没有这个问题，放 WHERE 语义等价。"""
+    r = chk("SELECT k.name FROM knowledge_bases k JOIN documents d ON d.kb_id = k.id", cfg)
+    assert r.ok
+    s = " ".join(r.sql.split()).upper()
+    assert "D.ORG_ID = 65" in s.split("WHERE")[1]
+
+
+def test_left_join_keeps_rows_without_match(cfg, ex):
+    """端到端验证：0 文档的知识库不能因为改写而消失。"""
+    r = chk("SELECT k.name AS 库, COUNT(d.id) AS 文档数 FROM knowledge_bases k "
+            "LEFT JOIN documents d ON d.kb_id = k.id AND d.status = 'NOPE_NEVER_MATCHES' "
+            "GROUP BY k.id, k.name", cfg)
+    assert r.ok
+    res = ex.run(r.sql)
+    assert res.row_count > 0, "外连接被降级成内连接，无匹配的左表行被吃掉了"
+    assert all(row[1] == 0 for row in res.rows)
