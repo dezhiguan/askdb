@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+import csv
 import random
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -94,19 +96,29 @@ CREATE TABLE model_usage (
 """
 
 
-def build() -> None:
-    rnd = random.Random(SEED)
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    if OUT.exists():
-        OUT.unlink()
+def _bulk_load(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple], tmp: Path) -> None:
+    """经 CSV + COPY 批量导入。
 
-    con = duckdb.connect(str(OUT))
+    逐条 executemany 灌 10 万行需要十几分钟，COPY 只要几秒 ——
+    差别不在 DuckDB，在于每行一次往返的开销。
+    """
+    path = tmp / f"{table}.csv"
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        for r in rows:
+            w.writerow(["" if v is None else v for v in r])
+    con.execute(f"COPY {table} FROM '{path}' (FORMAT CSV, HEADER false, NULLSTR '')")
+
+
+def build(out: Path | None = None, quiet: bool = False) -> Path:
+    rnd = random.Random(SEED)
+    target = out or OUT
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+
+    con = duckdb.connect(str(target))
     con.execute(DDL)
-    con.executemany("INSERT INTO orgs VALUES (?, ?)", ORGS)
-    con.executemany(
-        "INSERT INTO knowledge_bases VALUES (?, ?, ?, ?)",
-        [(k, o, n, cnt) for k, o, n, cnt, _, _ in KBS],
-    )
 
     docs = []
     doc_id = 1
@@ -137,9 +149,7 @@ def build() -> None:
                          ftype, "PROCESSING", None, created, updated))
             doc_id += 1
 
-    con.executemany("INSERT INTO documents VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", docs)
-
-    usage = []
+    usage: list[tuple] = []
     uid = 1
     for org_id, _ in ORGS:
         n = 4000 if org_id == 65 else 600
@@ -151,7 +161,13 @@ def build() -> None:
             ts = NOW - timedelta(minutes=rnd.randint(0, 60 * 24 * 40))
             usage.append((uid, org_id, model, stage, tin, tout, round(cost, 6), ts))
             uid += 1
-    con.executemany("INSERT INTO model_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?)", usage)
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        _bulk_load(con, "orgs", [tuple(o) for o in ORGS], tmp)
+        _bulk_load(con, "knowledge_bases", [(k, o, n, cnt) for k, o, n, cnt, _, _ in KBS], tmp)
+        _bulk_load(con, "documents", docs, tmp)
+        _bulk_load(con, "model_usage", usage, tmp)
 
     stats = con.execute("""
         SELECT (SELECT COUNT(*) FROM documents),
@@ -161,10 +177,12 @@ def build() -> None:
     """).fetchone()
     con.close()
 
-    print(f"样例库已生成：{OUT}")
-    print(f"  documents    {stats[0]:>8,}  （FAILED {stats[1]:,} · PROCESSING {stats[2]:,}）")
-    print(f"  model_usage  {stats[3]:>8,}")
-    print(f"  knowledge_bases {len(KBS)} · orgs {len(ORGS)}")
+    if not quiet:
+        print(f"样例库已生成：{target}")
+        print(f"  documents    {stats[0]:>8,}  （FAILED {stats[1]:,} · PROCESSING {stats[2]:,}）")
+        print(f"  model_usage  {stats[3]:>8,}")
+        print(f"  knowledge_bases {len(KBS)} · orgs {len(ORGS)}")
+    return target
 
 
 if __name__ == "__main__":

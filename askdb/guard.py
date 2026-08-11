@@ -46,6 +46,20 @@ def _cte_names(root: exp.Expression) -> set[str]:
     return out
 
 
+def _from_node(select: exp.Select) -> exp.From | None:
+    """取该 SELECT 自身的 FROM 节点。
+
+    sqlglot 30 把 args 键从 "from" 改成了 "from_"（破坏性变更），
+    这里同时兼容两种，避免升级依赖时静默失效 ——
+    一旦取不到 FROM，R-04 与 R-10 会一起失效，属于高危静默故障。
+    """
+    for key in ("from_", "from"):
+        node = select.args.get(key)
+        if isinstance(node, exp.From):
+            return node
+    return None
+
+
 def _direct_tables(select: exp.Select) -> list[exp.Table]:
     """该 SELECT 自身 FROM/JOIN 上的表，不递归进子查询。
 
@@ -53,13 +67,11 @@ def _direct_tables(select: exp.Select) -> list[exp.Table]:
     各自独立注入租户谓词 —— 这正是设计要求的"每一层都注入"。
     """
     out: list[exp.Table] = []
-    frm = select.args.get("from")
+    frm = _from_node(select)
     if frm is not None:
-        node = frm.this if hasattr(frm, "this") else None
-        if isinstance(node, exp.Table):
-            out.append(node)
-        # 兼容旧版 sqlglot 的 expressions 形式
-        for e in (frm.args.get("expressions") or []):
+        if isinstance(frm.this, exp.Table):
+            out.append(frm.this)
+        for e in (frm.args.get("expressions") or []):   # 旧版 sqlglot 的多表 FROM 形式
             if isinstance(e, exp.Table):
                 out.append(e)
     for j in select.args.get("joins") or []:
