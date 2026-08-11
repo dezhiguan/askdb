@@ -47,7 +47,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(WEB / "index.html")
+        # 不缓存：页面会随配置与数据源变化，缓存住旧版本会让人误判为 bug
+        return FileResponse(WEB / "index.html", headers={
+            "Cache-Control": "no-store, must-revalidate",
+            "Pragma": "no-cache",
+        })
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:

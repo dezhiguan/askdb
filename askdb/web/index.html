@@ -83,7 +83,16 @@ h2{font-size:13px;font-weight:600;letter-spacing:.02em}
 .cmd button:hover{border-color:var(--accent);color:var(--accent)}
 
 /* 输入 */
-.modes{display:flex;gap:6px;margin-bottom:11px}
+.modes{display:flex;gap:6px;margin-bottom:11px;align-items:center;flex-wrap:wrap}
+.orgbox{display:inline-flex;align-items:center;gap:7px;padding:3px 4px 3px 11px;border-radius:8px;
+  border:1px solid var(--border);background:var(--plane)}
+.orgbox label{font-size:12px;color:var(--muted);white-space:nowrap}
+.orgbox input{width:72px;font:inherit;font-size:12.5px;padding:4px 7px;border:1px solid var(--border);
+  border-radius:6px;background:var(--surface);color:var(--ink);
+  font-family:ui-monospace,Menlo,monospace;text-align:right}
+.orgbox input:focus{outline:2px solid var(--wash);border-color:var(--accent)}
+.orgbox button{font-size:12px;padding:4px 10px}
+.orgbox.off{opacity:.6}
 .mode{font:inherit;font-size:12.5px;padding:5px 13px;border-radius:8px;cursor:pointer;
   border:1px solid var(--border);background:var(--plane);color:var(--ink-2)}
 .mode[aria-pressed="true"]{background:var(--wash);border-color:var(--accent);color:var(--accent);font-weight:600}
@@ -240,12 +249,7 @@ tbody tr.sel{background:var(--wash)}
     <div class="logo"><b>askdb</b><span>可信数据问答 Agent</span></div>
     <span class="pill" id="pillDs">连接中…</span>
     <span class="pill" id="pillLlm">检查中…</span>
-    <span class="pill" id="pillOrg" style="display:inline-flex;align-items:center;gap:6px">
-      <span id="orgLabel"></span>
-      <input id="orgInput" type="number" min="0" style="width:64px;font:inherit;font-size:11.5px;
-        padding:1px 5px;border:1px solid var(--border);border-radius:5px;background:var(--surface);
-        color:var(--ink);font-family:ui-monospace,Menlo,monospace">
-    </span>
+    <span class="pill" id="pillOrg"></span>
     <span class="spacer"></span>
     <button class="ctl" id="themeBtn">切换主题</button>
   </div>
@@ -346,6 +350,12 @@ tbody tr.sel{background:var(--wash)}
       <div class="modes">
         <button class="mode" data-m="nl" aria-pressed="true">自然语言</button>
         <button class="mode" data-m="sql" aria-pressed="false">直查 SQL</button>
+        <span class="spacer"></span>
+        <span class="orgbox" id="orgBox">
+          <label class="f" for="orgInput" style="margin:0" id="orgLabel">租户</label>
+          <input id="orgInput" type="number" min="0" inputmode="numeric">
+          <button class="ctl" id="orgApply" title="按新租户重跑上一个问题">切换</button>
+        </span>
       </div>
       <div class="qrow">
         <textarea id="q" rows="1" placeholder="用一句话问数据，例如：有哪些文档卡在处理中超过一小时"></textarea>
@@ -501,14 +511,26 @@ async function boot() {
   $("pillLlm").className = "pill " + (l.ok ? "ok" : "warn");
   $("pillLlm").textContent = l.ok ? l.model : "未配置密钥";
   if (HEALTH.tenant.enabled) {
-    $("orgLabel").textContent = HEALTH.tenant.column + " =";
+    $("pillOrg").textContent = `${HEALTH.tenant.column} = ${HEALTH.tenant.org_id}`;
+    $("orgLabel").textContent = "租户 " + HEALTH.tenant.column;
     $("orgInput").value = HEALTH.tenant.org_id;
-    $("orgInput").title = "切换租户后重新提问，结果会随之变化；护栏按这个值强制注入";
+    $("orgInput").title = "护栏按这个值强制注入租户谓词；改完点「切换」重跑上一个问题";
   } else {
     // 单租户库：不做行级隔离，必须让人一眼看出来
     $("pillOrg").className = "pill warn";
-    $("pillOrg").innerHTML = "单租户模式 · 不做行级隔离";
+    $("pillOrg").textContent = "单租户模式 · 不做行级隔离";
+    $("orgBox").classList.add("off");
+    $("orgInput").disabled = true;
+    $("orgApply").disabled = true;
+    $("orgLabel").textContent = "单租户，无需切换";
   }
+  $("orgApply").onclick = () => {
+    $("pillOrg").textContent = `${HEALTH.tenant.column} = ${currentOrg()}`;
+    if ($("q").value.trim()) submit();
+  };
+  $("orgInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); $("orgApply").click(); }
+  });
   renderBanners(HEALTH);
   renderStep1();
 
