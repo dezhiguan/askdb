@@ -75,3 +75,93 @@ def test_score_prefers_name_and_alias(cfg):
 def test_table_doc_renders_columns(cfg):
     doc = schema_rag.table_doc(cfg.tables["documents"])
     assert "documents" in doc and "status" in doc
+
+
+# ---------------------------------------------------------------- 向量召回
+
+class FakeIndex:
+    """按预置顺序返回命中，不打网络。"""
+
+    def __init__(self, *pairs):        # (key, score)
+        self.pairs = list(pairs)
+        self.asked: list[int] = []
+
+    def search(self, question, k):
+        from askdb.vectors import Hit
+        self.asked.append(k)
+        return [Hit(key=key, score=score) for key, score in self.pairs][:k]
+
+
+def test_vector_mode_uses_index_ranking(cfg):
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    cfg.raw["schema_rag"]["top_k"] = 2          # 否则保底逻辑会把第 3 张也补进来
+    idx = FakeIndex(("table:model_usage", 0.81), ("table:documents", 0.42), ("table:orgs", 0.10))
+    r = schema_rag.recall("这个月烧了多少钱", cfg, index=idx)
+    assert r.mode == "vector"
+    assert r.table_names[0] == "model_usage"
+    assert "orgs" not in r.table_names          # 0.10 低于阈值，视为干扰
+
+
+def test_vector_mode_keeps_top_k_even_below_threshold(cfg):
+    """全都不过线时也要保底，不能让模型无表可用。"""
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    cfg.raw["schema_rag"]["top_k"] = 2
+    idx = FakeIndex(("table:documents", 0.05), ("table:orgs", 0.04))
+    r = schema_rag.recall("完全无关的问题", cfg, index=idx)
+    assert len(r.tables) == 2
+
+
+def test_vector_mode_recalls_metrics_by_semantics(cfg):
+    """别名没写全时，靠语义把口径捞回来。"""
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    idx = FakeIndex(("table:documents", 0.7), ("metric:卡住的文档", 0.55))
+    r = schema_rag.recall("哪些资料一直没解析完", cfg, index=idx)
+    assert "卡住的文档" in [m.name for m in r.metrics]
+
+
+def test_vector_mode_caps_metric_count(cfg):
+    """口径是强约束，塞多了会误导模型。"""
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    cfg.raw["schema_rag"]["max_metrics"] = 1
+    idx = FakeIndex(("table:documents", 0.7),
+                    ("metric:卡住的文档", 0.6), ("metric:文档数", 0.55), ("metric:失败率", 0.5))
+    r = schema_rag.recall("随便问问", cfg, index=idx)
+    assert len(r.metrics) <= 1
+
+
+def test_vector_mode_ignores_low_score_metrics(cfg):
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    idx = FakeIndex(("table:documents", 0.7), ("metric:文档数", 0.05))
+    r = schema_rag.recall("随便问问", cfg, index=idx)
+    assert r.metrics == []
+
+
+def test_vector_failure_falls_back_to_keyword(cfg):
+    """召回退化只是准确率下降，不该让整条链路不可用。"""
+    from askdb.vectors import EmbeddingUnavailable
+
+    class Broken:
+        def search(self, q, k):
+            raise EmbeddingUnavailable("没有密钥")
+
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    r = schema_rag.recall("有哪些文档", cfg, index=Broken())
+    assert r.mode == "keyword" and r.tables
+    assert "回落" in r.note
+
+
+def test_vector_requests_more_than_max_k(cfg):
+    """表和口径同在一个索引里，只取 max_k 会互相挤占名额。"""
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    idx = FakeIndex(("table:documents", 0.7))
+    schema_rag.recall("q", cfg, index=idx)
+    assert idx.asked[0] > cfg.raw["schema_rag"]["max_k"]
+
+
+def test_fingerprint_changes_with_schema(cfg):
+    """schema 变了索引必须重建，否则召回的是旧结构 —— 这种错极难定位。"""
+    from askdb.vectors import _fingerprint
+
+    before = _fingerprint(cfg)
+    cfg.tables["documents"].desc += "（改过）"
+    assert _fingerprint(cfg) != before

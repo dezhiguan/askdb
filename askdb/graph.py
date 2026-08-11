@@ -131,6 +131,8 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         note += f"；命中口径 {'、'.join(m.name for m in r.metrics)}"
     if r.truncated:
         note += f"；因 token 预算裁掉 {'、'.join(r.truncated)}"
+    if r.note:
+        note += f"；{r.note}"
     d.tracer.add("schema_recall", t, note)
     return {
         "schema_prompt": r.prompt,

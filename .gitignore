@@ -34,3 +34,6 @@ data/checkpoints.sqlite
 .coverage.*
 coverage.xml
 htmlcov/
+
+# 向量索引
+.chroma/

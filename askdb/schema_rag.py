@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from .config import Config, Metric, Table
 
@@ -23,6 +24,7 @@ class Recall:
     est_tokens: int = 0
     truncated: list[str] = field(default_factory=list)   # 因预算被裁掉的表名
     mode: str = ""
+    note: str = ""                                      # 降级等需要告知的情况
 
     @property
     def table_names(self) -> list[str]:
@@ -83,7 +85,21 @@ def _score(t: Table, question: str) -> int:
     return s
 
 
-def recall(question: str, cfg: Config) -> Recall:
+def _keyword_pick(question: str, cfg: Config, top_k: int, max_k: int) -> list[Table]:
+    all_tables = list(cfg.tables.values())
+    scored = sorted(((_score(t, question), t) for t in all_tables), key=lambda x: -x[0])
+    picked = [t for s, t in scored if s > 0][:max_k]
+    if len(picked) < top_k:
+        # 召回不足时补齐，宁可多给一张表，也不要让模型无表可用
+        for _, t in scored:
+            if t not in picked:
+                picked.append(t)
+            if len(picked) >= top_k:
+                break
+    return picked
+
+
+def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     mode = cfg.raw["schema_rag"].get("mode", "keyword")
     budget = int(cfg.raw["schema_rag"].get("token_budget", 1500))
     top_k = int(cfg.raw["schema_rag"].get("top_k", 3))
@@ -91,19 +107,55 @@ def recall(question: str, cfg: Config) -> Recall:
 
     all_tables = list(cfg.tables.values())
     metrics = [m for m in cfg.metrics if m.matches(question)]
+    note = ""
 
     if mode == "all":
         picked = all_tables
-    else:
-        scored = sorted(((_score(t, question), t) for t in all_tables), key=lambda x: -x[0])
-        picked = [t for s, t in scored if s > 0][:max_k]
-        if len(picked) < top_k:
-            # 召回不足时补齐，宁可多给一张表，也不要让模型无表可用
-            for _, t in scored:
-                if t not in picked:
-                    picked.append(t)
-                if len(picked) >= top_k:
+    elif mode == "vector":
+        from .vectors import EmbeddingUnavailable, VectorIndex
+
+        idx = index or VectorIndex(cfg)
+        # 表和口径在同一个索引里，若只取 max_k 条，两者会互相挤占名额 ——
+        # 于是多取一些，再各自按配额与阈值筛。
+        want = max_k + len(cfg.metrics) + 2
+        min_score = float(cfg.raw["schema_rag"].get("min_score", 0.35))
+        max_metrics = int(cfg.raw["schema_rag"].get("max_metrics", 2))
+        try:
+            hits = idx.search(question, want)
+        except EmbeddingUnavailable as e:
+            # 召回退化只是准确率下降，不该让整条链路不可用
+            picked = _keyword_pick(question, cfg, top_k, max_k)
+            mode, note = "keyword", f"向量召回不可用，已回落关键词：{e}"
+        else:
+            ranked = [(h.score, cfg.tables[h.key.split(":", 1)[1]])
+                      for h in hits
+                      if h.key.startswith("table:") and h.key.split(":", 1)[1] in cfg.tables]
+            # 过线的才要，但至少保底 top_k 张 —— 宁可多给一张，
+            # 也不要让模型无表可用；相关度太低的表纯属干扰。
+            picked = [t for s, t in ranked if s >= min_score][:max_k]
+            if len(picked) < top_k:
+                picked = [t for _, t in ranked[:top_k]]
+            # 向量也能召回口径 —— 别名没写全时靠语义补上。
+            # 但口径是强约束（"必须用此定义"），塞多了反而会误导模型，
+            # 所以只收相似度过线的前若干条。
+            for h in hits:
+                if not h.key.startswith("metric:") or h.score < min_score:
+                    continue
+                if sum(1 for _ in metrics) >= max_metrics + len(
+                        [m for m in cfg.metrics if m.matches(question)]):
                     break
+                name = h.key.split(":", 1)[1]
+                m = next((x for x in cfg.metrics if x.name == name), None)
+                if m and m not in metrics:
+                    metrics.append(m)
+            if len(picked) < top_k:
+                for t in _keyword_pick(question, cfg, top_k, max_k):
+                    if t not in picked:
+                        picked.append(t)
+                    if len(picked) >= top_k:
+                        break
+    else:
+        picked = _keyword_pick(question, cfg, top_k, max_k)
 
     # 命中口径涉及的表必须一并注入，否则口径表达式引用的列不可见
     by_name = {t.name: t for t in picked}
@@ -130,6 +182,7 @@ def recall(question: str, cfg: Config) -> Recall:
         est_tokens=_est_tokens(prompt),
         truncated=truncated,
         mode=mode,
+        note=note,
     )
 
 
