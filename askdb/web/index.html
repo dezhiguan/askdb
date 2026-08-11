@@ -193,6 +193,8 @@ tbody tr:hover{background:var(--plane)}
 .sstep[aria-current="true"] .slab{color:var(--ink);font-weight:600}
 .sstep.done .slab{color:var(--ink-2)}
 .sline{flex:1;height:1px;background:var(--grid);margin:0 14px;min-width:18px}
+.gtitle{font-size:11.5px;font-weight:700;letter-spacing:.04em;color:var(--ink-2);
+  padding-bottom:6px;margin-bottom:9px;border-bottom:1px solid var(--grid)}
 .form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px}
 label.f{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
 .inp{width:100%;font:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;
@@ -280,7 +282,11 @@ tbody tr.sel{background:var(--wash)}
         <div class="card">
           <h2>连接数据源</h2>
           <p class="sub">建议先连本机开发库；线上只连只读副本，绝不连主库</p>
+          <div class="gtitle">连接参数</div>
           <div class="form" id="dsForm"></div>
+          <div class="gtitle" style="margin-top:16px">租户隔离</div>
+          <div class="form" id="tenantForm"></div>
+          <div id="tenantNote"></div>
           <div class="row">
             <button class="btn" id="testBtn">测试连接</button>
             <button class="btn ghost" id="next0">下一步 · 选择表</button>
@@ -822,14 +828,52 @@ $("back2").onclick = () => showStep(1);
 $("gotoAsk").onclick = () => document.querySelector('.tab[data-p="ask"]').click();
 
 /* 第 1 步 —— 连接信息与自检 */
+const MODE_LABEL = {
+  predicate: "应用层 AST 改写",
+  rls: "数据库行级安全（RLS）",
+  rls_and_predicate: "双层：AST 改写 + 数据库 RLS",
+};
+
 function renderStep1() {
-  const d = HEALTH.datasource, isPg = d.type === "postgresql";
-  const f = [["类型", d.type], ["连接", d.detail],
-             ["租户列", HEALTH.tenant.column], ["当前租户", HEALTH.tenant.org_id],
-             ["语句超时", HEALTH.guard.timeout_ms / 1000 + " s"],
-             ["扫描行阈值", HEALTH.guard.max_scan_rows.toLocaleString()]];
-  $("dsForm").innerHTML = f.map(([k, v]) =>
-    `<div><label class="f">${esc(k)}</label><input class="inp" value="${esc(v)}" readonly></div>`).join("");
+  const d = HEALTH.datasource, t = HEALTH.tenant, isPg = d.type === "postgresql";
+  const field = ([k, v]) =>
+    `<div><label class="f">${esc(k)}</label><input class="inp" value="${esc(v)}" readonly></div>`;
+
+  // 连接参数：静态的、属于数据源本身的
+  $("dsForm").innerHTML = [
+    ["类型", d.type], ["连接", d.detail],
+    ["语句超时", HEALTH.guard.timeout_ms / 1000 + " s"],
+    ["扫描行阈值", HEALTH.guard.max_scan_rows.toLocaleString()],
+    ["结果行上限", HEALTH.guard.max_rows.toLocaleString()],
+    ["重试上限", HEALTH.guard.max_retry + " 次"],
+  ].map(field).join("");
+
+  // 租户隔离：单独成组。默认租户是运行时上下文，不属于连接配置 ——
+  // 混在一起会让人以为它跟连接串一样是固定的。
+  if (t.enabled) {
+    $("tenantForm").innerHTML = [
+      ["状态", "已启用"],
+      ["租户列", t.column],
+      ["隔离方式", MODE_LABEL[t.mode] || t.mode],
+      ["默认租户", t.org_id],
+      ["无法判定归属时", t.on_unresolved === "reject" ? "拒绝执行" : t.on_unresolved],
+      ["受约束的表", t.tables.length + " 张"],
+    ].map(field).join("");
+    $("tenantNote").innerHTML = `<div class="notice info" style="margin-top:11px">
+      <div class="why"><b>默认租户</b>是配置里的起始值（<code>tenant.default_ctx</code>），
+        属于运行时上下文而非连接参数 —— 在「② 提问」页可随时临时切换，不改配置文件。
+        护栏会按当时选定的值强制注入谓词。</div></div>`;
+  } else {
+    $("tenantForm").innerHTML = [
+      ["状态", "未启用（单租户库）"],
+      ["隔离方式", "不做行级隔离"],
+    ].map(field).join("");
+    $("tenantNote").innerHTML = `<div class="notice bad" style="margin-top:11px">
+      <div class="t">◇ 当前为单租户模式</div>
+      <div class="why">整库视为同属一个主体，<b>R-10 不参与</b>，查询不会被注入任何租户谓词。</div>
+      <div class="fix"><b>其余护栏照常：</b>写操作拦截、表白名单、幻觉字段、LIMIT 注入、
+        扫描阈值全部生效。若这其实是多租户库，请把 <code>tenant.enabled</code> 改回 true。</div></div>`;
+  }
 
   $("roSql").textContent = isPg ? `-- PostgreSQL 只读角色
 CREATE ROLE askdb_ro LOGIN PASSWORD '***';

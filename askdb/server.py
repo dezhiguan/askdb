@@ -76,6 +76,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "enabled": cfg.tenant_enabled,
                 "column": cfg.tenant_column,
                 "org_id": cfg.default_org,
+                "mode": cfg.raw["tenant"].get("mode", "predicate"),
+                "on_unresolved": cfg.raw["tenant"].get("on_unresolved", "reject"),
+                "tables": sorted(cfg.tenant_tables()),
             },
             "guard": {
                 "max_rows": cfg.max_rows,
