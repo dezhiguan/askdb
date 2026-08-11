@@ -7,8 +7,7 @@
   3. 表引用收集必须遍历完整 AST：FROM / JOIN / 子查询 / CTE / IN(SELECT) / EXISTS / UNION。
      **漏掉任一分支即构成绕过路径。**
 
-P0 已实现：R-01 R-02 R-03 R-04 R-05 R-07 R-09 R-10
-P1 待补：  R-06（跨 schema）R-08（笛卡尔积）R-11（EXPLAIN 扫描行数）
+本模块实现 R-01～R-10；R-11～R-14 在 executor / graph，R-15～R-17 在 planner。
 """
 
 from __future__ import annotations
@@ -20,8 +19,14 @@ from sqlglot import exp
 
 from .config import Config
 
-# P1 待补规则 —— 显式列出，避免"看起来全都实现了"的错觉
-NOT_YET_ENFORCED = ["R-06", "R-08", "R-11"]
+# 本模块之外实现的规则 —— 显式列出，避免误以为护栏只有这里这些
+ENFORCED_ELSEWHERE = {
+    "R-11": "executor.explain（EXPLAIN 扫描行数阈值）",
+    "R-12": "executor（语句超时）",
+    "R-13": "executor.run（结果行上限）",
+    "R-14": "graph 路由（重试次数上限）",
+}
+NOT_YET_ENFORCED: list[str] = []
 
 
 @dataclass
@@ -131,6 +136,32 @@ def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardR
             reason=f"引用了不在白名单内的表：{', '.join(sorted(unknown))}",
         )
 
+    # ---------- R-06 禁止跨 schema / 跨库引用 ----------
+    # 表白名单只按表名匹配，`other_schema.documents` 会照样过 R-03 ——
+    # 不拦住限定名，白名单就形同虚设。
+    default_schemas = {s.lower() for s in cfg.raw["guard"].get("allowed_schemas", ["public", "main"])}
+    for t in root.find_all(exp.Table):
+        if (t.name or "").lower() in ctes:
+            continue
+        catalog = (t.args.get("catalog").name if t.args.get("catalog") else "") or ""
+        schema = (t.args.get("db").name if t.args.get("db") else "") or ""
+        if catalog:
+            return GuardResult(
+                ok=False, rejected_by="R-06",
+                reason=f"禁止跨库引用：{catalog}.{schema or '?'}.{t.name}",
+            )
+        if schema and schema.lower() not in default_schemas:
+            return GuardResult(
+                ok=False, rejected_by="R-06",
+                reason=f"禁止跨 schema 引用：{schema}.{t.name}"
+                       f"（仅允许 {'、'.join(sorted(default_schemas))}）",
+            )
+
+    # ---------- R-08 笛卡尔积检测 ----------
+    err = _check_cartesian(root)
+    if err:
+        return GuardResult(ok=False, rejected_by="R-08", reason=err)
+
     # ---------- R-07 危险函数黑名单 ----------
     deny = {_normalize(f) for f in cfg.deny_functions}
     for fn in root.find_all(exp.Func):
@@ -231,6 +262,48 @@ def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardR
         rules_fired=fired,
         rewrites=rewrites,
     )
+
+
+def _is_tautology(cond: exp.Expression) -> bool:
+    """恒真的连接条件等同于没有条件 —— `ON 1=1` 是最常见的绕过写法。"""
+    if isinstance(cond, exp.Boolean) and cond.this is True:
+        return True
+    if isinstance(cond, exp.EQ):
+        left, right = cond.this, cond.expression
+        if isinstance(left, exp.Literal) and isinstance(right, exp.Literal):
+            return left.name == right.name
+    if isinstance(cond, exp.And):
+        return all(_is_tautology(x) for x in (cond.this, cond.expression))
+    return False
+
+
+def _check_cartesian(root: exp.Expression) -> str | None:
+    """R-08：拦截笛卡尔积。
+
+    三种写法都要认：CROSS JOIN、JOIN 缺 ON、以及 `FROM a, b` 这种逗号连接
+    （sqlglot 把它也解析成一个没有 ON 的 Join）。
+    再加上 `ON 1=1` 这类恒真条件 —— 写了等于没写。
+
+    笛卡尔积在小表上只是慢，在几十万行的表之间会直接把库压垮，
+    所以这条是阻断而非改写。
+    """
+    for s in root.find_all(exp.Select):
+        for j in s.args.get("joins") or []:
+            if not isinstance(j.this, (exp.Table, exp.Subquery)):
+                continue
+            name = j.this.alias_or_name or "子查询"
+            kind = str(j.args.get("kind") or "").upper()
+            on = j.args.get("on")
+            using = j.args.get("using")
+
+            if kind == "CROSS":
+                return f"禁止 CROSS JOIN（笛卡尔积）：{name}"
+            if on is None and not using:
+                return (f"连接 {name} 时缺少 ON 条件，会产生笛卡尔积；"
+                        f"逗号分隔的多表 FROM 也属于此类，请改写成显式 JOIN … ON")
+            if on is not None and _is_tautology(on):
+                return f"连接 {name} 的 ON 条件恒真（{on.sql()}），等同于笛卡尔积"
+    return None
 
 
 def _expand_stars(root: exp.Expression, cfg: Config, ctes: set[str]) -> tuple[int, str | None]:

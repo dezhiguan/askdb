@@ -302,9 +302,9 @@ def test_rewrites_are_reported_for_display(cfg):
     assert any("LIMIT" in x for x in r.rewrites)
 
 
-def test_not_yet_enforced_is_declared(cfg):
-    """未实现的规则必须显式列出，避免"看起来全都实现了"的错觉。"""
-    assert set(guard.NOT_YET_ENFORCED) == {"R-06", "R-08", "R-11"}
+def test_nothing_is_left_unenforced(cfg):
+    """曾经的 R-06 / R-08 / R-11 已全部落地，清单应为空。"""
+    assert guard.NOT_YET_ENFORCED == []
 
 
 def test_from_node_handles_both_sqlglot_key_names(cfg):
@@ -367,3 +367,72 @@ def test_single_tenant_mode_still_blocks_writes(cfg):
     cfg.raw["tenant"]["enabled"] = False
     r = chk("DELETE FROM documents", cfg)
     assert not r.ok and r.rejected_by == "R-02"
+
+
+# --------------------------------------------------------------------- R-06
+
+def test_r06_rejects_cross_schema(cfg):
+    """表白名单只按表名匹配，不拦限定名的话白名单就形同虚设。"""
+    r = chk("SELECT id FROM pg_catalog.documents", cfg)
+    assert not r.ok and r.rejected_by == "R-06"
+
+
+def test_r06_rejects_cross_database(cfg):
+    r = chk("SELECT id FROM otherdb.public.documents", cfg)
+    assert not r.ok and r.rejected_by == "R-06" and "跨库" in r.reason
+
+
+def test_r06_allows_default_schema(cfg):
+    assert chk("SELECT id FROM main.documents", cfg).ok
+    assert chk("SELECT id FROM public.documents", cfg).ok
+
+
+def test_r06_allowed_schemas_configurable(cfg):
+    cfg.raw["guard"]["allowed_schemas"] = ["analytics"]
+    assert chk("SELECT id FROM analytics.documents", cfg).ok
+    assert not chk("SELECT id FROM public.documents", cfg).ok
+
+
+# --------------------------------------------------------------------- R-08
+
+@pytest.mark.parametrize("sql,why", [
+    ("SELECT a.id FROM documents a, orgs b", "逗号连接"),
+    ("SELECT a.id FROM documents a CROSS JOIN orgs b", "CROSS JOIN"),
+    ("SELECT a.id FROM documents a JOIN orgs b", "缺 ON"),
+    ("SELECT a.id FROM documents a JOIN orgs b ON 1=1", "ON 恒真"),
+    ("SELECT a.id FROM documents a JOIN orgs b ON TRUE", "ON TRUE"),
+])
+def test_r08_rejects_cartesian(sql, why, cfg):
+    r = chk(sql, cfg)
+    assert not r.ok and r.rejected_by == "R-08", why
+
+
+def test_r08_allows_real_join(cfg):
+    assert chk("SELECT d.id FROM documents d JOIN orgs o ON o.id = d.org_id", cfg).ok
+
+
+def test_r08_allows_outer_join_with_condition(cfg):
+    r = chk("SELECT k.name FROM knowledge_bases k "
+            "LEFT JOIN documents d ON d.kb_id = k.id", cfg)
+    assert r.ok
+
+
+def test_r08_catches_cartesian_inside_subquery(cfg):
+    r = chk("SELECT id FROM documents WHERE kb_id IN "
+            "(SELECT a.id FROM knowledge_bases a CROSS JOIN orgs b)", cfg)
+    assert not r.ok and r.rejected_by == "R-08"
+
+
+def test_tautology_detection():
+    import sqlglot
+    from askdb.guard import _is_tautology
+    t = lambda s: _is_tautology(sqlglot.parse_one(s, into=sqlglot.exp.Condition))
+    assert t("1 = 1") and t("TRUE") and t("1=1 AND 2=2")
+    assert not t("a.id = b.id") and not t("1 = 2")
+
+
+def test_all_seventeen_rules_are_accounted_for():
+    """17 条规则要么在本模块实现，要么显式记明在别处 —— 不留含糊地带。"""
+    from askdb.guard import ENFORCED_ELSEWHERE, NOT_YET_ENFORCED
+    assert NOT_YET_ENFORCED == []
+    assert set(ENFORCED_ELSEWHERE) == {"R-11", "R-12", "R-13", "R-14"}

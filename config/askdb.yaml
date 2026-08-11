@@ -18,6 +18,7 @@ guard:
   statement_timeout_ms: 8000         # R-12（PostgreSQL 生效；DuckDB 见 executor 说明）
   max_retry: 2                       # R-14，按步重置
   allow_select_star: false           # R-05
+  allowed_schemas: [public, main]    # R-06：其余 schema 与跨库引用一律拒绝
   deny_functions:                    # R-07
     - read_csv
     - read_parquet

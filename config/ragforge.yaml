@@ -23,6 +23,7 @@ guard:
   statement_timeout_ms: 8000
   max_retry: 2
   allow_select_star: false
+  allowed_schemas: [public, main]   # R-06：其余 schema 与跨库引用一律拒绝
   deny_functions:
     - pg_read_file
     - pg_ls_dir
