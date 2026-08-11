@@ -139,14 +139,14 @@ def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardR
     if err:
         return GuardResult(ok=False, rejected_by="R-04", reason=err)
 
-    # ---------- R-05 禁止 SELECT * ----------
+    # ---------- R-05 展开 SELECT *（改写而非阻断）----------
     if not cfg.allow_select_star:
-        for s in root.find_all(exp.Select):
-            if any(isinstance(e, exp.Star) for e in s.expressions):
-                return GuardResult(
-                    ok=False, rejected_by="R-05",
-                    reason="禁止 SELECT *，请显式列出需要的字段（控制列暴露面）",
-                )
+        expanded, err = _expand_stars(root, cfg, ctes)
+        if err:
+            return GuardResult(ok=False, rejected_by="R-05", reason=err)
+        if expanded:
+            fired.append("R-05")
+            rewrites.append(f"展开 SELECT * 为显式列（{expanded} 处）")
 
     # ---------- R-10 强制租户谓词注入 ----------
     tenant_tables = cfg.tenant_tables()
@@ -195,6 +195,59 @@ def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardR
         rules_fired=fired,
         rewrites=rewrites,
     )
+
+
+def _expand_stars(root: exp.Expression, cfg: Config, ctes: set[str]) -> tuple[int, str | None]:
+    """R-05：把 `*` / `t.*` 展开成显式列。
+
+    设计要求这一条是**改写**而非阻断（§4.1，阻断=否）：目的是控制列暴露面，
+    而不是给用户添堵。展开后列固定，schema 变更也不会悄悄多带出字段。
+
+    无法安全展开时（涉及 CTE 等本模块看不到列定义的来源）才拒绝。
+    返回 (展开处数, 错误信息)。
+    """
+    count = 0
+    for s in root.find_all(exp.Select):
+        scope = [t for t in _direct_tables(s) if (t.name or "").lower() in cfg.tables]
+        new_exprs: list[exp.Expression] = []
+        changed = False
+
+        for item in s.expressions:
+            # `t.*`
+            if isinstance(item, exp.Column) and isinstance(item.this, exp.Star):
+                qual = (item.table or "").lower()
+                if qual in ctes:
+                    return count, f"无法展开 {item.table}.*：该来源是 CTE，列由其自身 SELECT 决定"
+                tbl = next((t for t in scope if t.alias_or_name.lower() == qual
+                            or (t.name or "").lower() == qual), None)
+                if tbl is None:
+                    return count, f"无法展开 {item.table}.*：{item.table} 不在本层查询的表引用中"
+                ref = tbl.alias_or_name
+                for c in cfg.tables[(tbl.name or "").lower()].columns:
+                    new_exprs.append(exp.column(c, table=ref))
+                changed = True
+                count += 1
+                continue
+
+            # 裸 `*`
+            if isinstance(item, exp.Star):
+                if not scope:
+                    return count, "无法展开 SELECT *：本层查询没有可解析的表引用"
+                if any((t.name or "").lower() in ctes for t in scope):
+                    return count, "无法展开 SELECT *：查询引用了 CTE，列不可静态确定"
+                for t in scope:
+                    ref = t.alias_or_name
+                    for c in cfg.tables[(t.name or "").lower()].columns:
+                        new_exprs.append(exp.column(c, table=ref))
+                changed = True
+                count += 1
+                continue
+
+            new_exprs.append(item)
+
+        if changed:
+            s.set("expressions", new_exprs)
+    return count, None
 
 
 def _check_columns(root: exp.Expression, cfg: Config, ctes: set[str]) -> str | None:

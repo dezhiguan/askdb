@@ -123,14 +123,41 @@ def test_r04_skips_ambiguous_multi_table_scope(cfg):
 
 # --------------------------------------------------------------------- R-05
 
-def test_r05_rejects_select_star(cfg):
-    r = chk("SELECT * FROM documents", cfg)
+def test_r05_expands_bare_star(cfg):
+    """设计要求 R-05 是「改写」而非「阻断」（§4.1 阻断=否）。"""
+    r = chk("SELECT * FROM orgs", cfg)
+    assert r.ok and "R-05" in r.rules_fired
+    assert "*" not in r.sql
+    for col in cfg.tables["orgs"].columns:
+        assert col in r.sql
+
+
+def test_r05_expands_qualified_star_with_alias(cfg):
+    r = chk("SELECT o.* FROM orgs o", cfg)
+    assert r.ok and "o.id" in r.sql and "o.name" in r.sql
+
+
+def test_r05_expands_every_table_in_multi_table_scope(cfg):
+    r = chk("SELECT * FROM documents d JOIN orgs o ON o.id = d.org_id", cfg)
+    assert r.ok
+    assert "d.file_name" in r.sql and "o.name" in r.sql
+
+
+def test_r05_keeps_other_select_items(cfg):
+    r = chk("SELECT o.*, 1 AS x FROM orgs o", cfg)
+    assert r.ok and "AS x" in r.sql
+
+
+def test_r05_rejects_when_expansion_is_unsafe(cfg):
+    """列来自 CTE 时无法静态确定，只能拒绝 —— 不能瞎展开。"""
+    r = chk("WITH w AS (SELECT id FROM orgs) SELECT * FROM w", cfg)
     assert not r.ok and r.rejected_by == "R-05"
 
 
 def test_r05_can_be_disabled(cfg):
     cfg.raw["guard"]["allow_select_star"] = True
-    assert chk("SELECT * FROM documents", cfg).ok
+    r = chk("SELECT * FROM documents", cfg)
+    assert r.ok and "R-05" not in r.rules_fired and "*" in r.sql
 
 
 # --------------------------------------------------------------------- R-07

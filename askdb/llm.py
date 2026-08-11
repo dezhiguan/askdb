@@ -67,16 +67,49 @@ class LlmUsage:
 
 
 class LlmClient:
-    def __init__(self, cfg: Config):
+    """主模型 + 可选备选模型。
+
+    备选只在主模型**调用失败**时兜底（限流、超时、厂商故障），
+    不在"生成的 SQL 不对"时切换 —— 那是反思重试该干的事，两者不要混。
+    """
+
+    def __init__(self, cfg: Config, llm_cfg: dict | None = None, is_fallback: bool = False):
         self.cfg = cfg
+        self.llm_cfg = llm_cfg if llm_cfg is not None else cfg.llm
+        self.is_fallback = is_fallback
         self._model = None
+        self._fallback: LlmClient | None = None
+
+    # ---- 备选模型 ----
+
+    def _fallback_client(self) -> "LlmClient | None":
+        if self.is_fallback:
+            return None
+        spec = self.llm_cfg.get("fallback")
+        if not spec:
+            return None
+        if isinstance(spec, str):          # 仅换模型名，其余沿用主配置
+            spec = {"model": spec}
+        merged = {**{k: v for k, v in self.llm_cfg.items() if k != "fallback"}, **spec}
+        if self._fallback is None:
+            self._fallback = LlmClient(self.cfg, llm_cfg=merged, is_fallback=True)
+        return self._fallback
+
+    @property
+    def model_name(self) -> str:
+        return str(self.llm_cfg.get("model", "?"))
+
+    def _api_key(self) -> str | None:
+        import os
+
+        return os.environ.get(self.llm_cfg["api_key_env"]) or None
 
     def _build(self):
         if self._model is not None:
             return self._model
-        key = self.cfg.api_key()
+        key = self._api_key()
         if not key:
-            env = self.cfg.llm["api_key_env"]
+            env = self.llm_cfg["api_key_env"]
             raise LlmNotConfigured(
                 f"未配置模型密钥（环境变量 {env}）。\n"
                 f"  1. cp .env.example .env\n"
@@ -91,15 +124,15 @@ class LlmClient:
         # 结构化输出会直接 400。SQL 生成也用不上长链思考 —— 输出是最贵的一档，
         # 白烧 reasoning token 没有意义。默认关掉，可在配置里显式打开。
         # 仅对 DeepSeek 下发：这是厂商私有参数，发给别家可能被拒。
-        if "deepseek" in str(self.cfg.llm.get("provider", "")).lower():
-            state = "enabled" if self.cfg.llm.get("thinking", False) else "disabled"
+        if "deepseek" in str(self.llm_cfg.get("provider", "")).lower():
+            state = "enabled" if self.llm_cfg.get("thinking", False) else "disabled"
             kwargs["extra_body"] = {"thinking": {"type": state}}
 
         self._model = ChatOpenAI(
-            model=self.cfg.llm["model"],
-            base_url=self.cfg.llm["base_url"],
+            model=self.llm_cfg["model"],
+            base_url=self.llm_cfg["base_url"],
             api_key=key,
-            temperature=float(self.cfg.llm.get("temperature", 0)),
+            temperature=float(self.llm_cfg.get("temperature", 0)),
             timeout=90,
             max_retries=1,
             **kwargs,
@@ -127,7 +160,22 @@ class LlmClient:
         else:
             human = USER.format(schema=schema_prompt, question=question)
 
-        out = model.invoke([("system", system), ("human", human)])
+        try:
+            out = model.invoke([("system", system), ("human", human)])
+        except Exception as primary_err:
+            fb = self._fallback_client()
+            if fb is None:
+                raise
+            # 主模型不可用时兜底一次。失败原因串在一起抛出，便于定位到底是谁挂了。
+            try:
+                draft, usage = fb.generate_sql(question, schema_prompt, dialect, last_sql, error)
+            except Exception as fb_err:
+                raise RuntimeError(
+                    f"主模型 {self.model_name} 调用失败：{primary_err}；"
+                    f"备选 {fb.model_name} 也失败：{fb_err}"
+                ) from primary_err
+            return draft, usage
+
         draft = out["parsed"] if isinstance(out, dict) else out
         usage = _usage_of(out)
         if draft is None:

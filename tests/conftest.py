@@ -39,12 +39,17 @@ def sample_db(tmp_path_factory: pytest.TempPathFactory, request) -> Path:
 
 
 @pytest.fixture
-def cfg(sample_db: Path):
-    """指向裁剪样例库的配置。每个用例拿到独立副本，改阈值互不影响。"""
+def cfg(sample_db: Path, tmp_path: Path):
+    """指向裁剪样例库的配置。
+
+    审计日志与检查点库按用例隔离到 tmp_path —— 它们是**跨调用累积**的状态，
+    共享会让每日配额一类的用例互相干扰（曾因此假失败）。
+    """
     c = load(ROOT / "config" / "askdb.yaml")
     c.raw = copy.deepcopy(c.raw)
     c.raw["datasource"]["path"] = str(sample_db)
-    c.raw["observability"]["audit_log"] = str(sample_db.parent / "audit.jsonl")
+    c.raw["observability"]["audit_log"] = str(tmp_path / "audit.jsonl")
+    c.raw["observability"]["checkpoint_db"] = str(tmp_path / "checkpoints.sqlite")
     return c
 
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,11 @@ def cost_cny(tok_in: int, tok_out: int, llm_cfg: dict[str, Any]) -> float:
     return round(tok_in / 1000 * p_in + tok_out / 1000 * p_out, 6)
 
 
+def now_iso() -> str:
+    """带时区的本地时间戳。审计记录没有时间等于没有审计。"""
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
 def write_audit(path: Path, record: dict[str, Any]) -> None:
     """审计记录追加落盘。写失败不能影响主链路 —— 查询已经完成了。"""
     try:
@@ -73,3 +79,23 @@ def write_audit(path: Path, record: dict[str, Any]) -> None:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except OSError:
         pass
+
+
+def today_calls(path: Path) -> int:
+    """当日已发生的调用次数，用于 daily_quota。
+
+    直接数审计记录，不另开计数存储 —— 少一处状态就少一处不一致。
+    审计文件不可读时返回 0（放行），配额不该成为可用性的单点。
+    """
+    if not path.exists():
+        return 0
+    today = datetime.now().astimezone().date().isoformat()
+    n = 0
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if f'"ts": "{today}' in line or f'"ts":"{today}' in line:
+                    n += 1
+    except OSError:
+        return 0
+    return n

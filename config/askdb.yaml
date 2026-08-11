@@ -48,6 +48,15 @@ llm:
   price_input_per_1k: 0.0024         # ⚠️ 未经核对的估值，待以官方单价校正
   price_output_per_1k: 0.0096        # ⚠️ 同上
 
+  # 备选模型：仅在主模型「调用失败」时兜底一次（限流 / 超时 / 厂商故障）。
+  # 生成的 SQL 不对不会切备选 —— 那是反思重试的职责，两者不要混。
+  # 未列出的字段沿用上面的主配置。
+  fallback:
+    provider: deepseek
+    base_url: "https://api.deepseek.com"
+    model: deepseek-v4-flash
+    api_key_env: DEEPSEEK_API_KEY
+
   # ---- 备选：DeepSeek V4（官方单价，2026-08 核对）----
   # provider: deepseek
   # base_url: "https://api.deepseek.com"
@@ -60,6 +69,8 @@ llm:
 
 observability:
   audit_log: ./data/audit.jsonl
+  checkpoint_db: ./data/checkpoints.sqlite   # 失败样本原样复现，供 P3 评测归因
+  daily_quota: 500                           # 每日调用上限，防循环调用导致成本失控
 
 tables_file: ./config/tables.yaml
 metrics_file: ./config/metrics.yaml

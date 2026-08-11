@@ -97,6 +97,16 @@ class Config:
         return (self.root / self.raw["observability"]["audit_log"]).resolve()
 
     @property
+    def checkpoint_db(self) -> Path:
+        obs = self.raw["observability"]
+        return (self.root / obs.get("checkpoint_db", "./data/checkpoints.sqlite")).resolve()
+
+    @property
+    def daily_quota(self) -> int:
+        """0 或负数表示不限量。"""
+        return int(self.raw["observability"].get("daily_quota", 0) or 0)
+
+    @property
     def llm(self) -> dict[str, Any]:
         return self.raw["llm"]
 

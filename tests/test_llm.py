@@ -165,3 +165,86 @@ def test_structured_output_forces_function_calling(cfg):
     c._model = FakeChat()
     c.generate_sql("q", "schema")
     assert seen["method"] == "function_calling"
+
+
+def test_fallback_is_used_when_primary_call_fails(cfg):
+    """备选只在主模型「调用失败」时兜底，不在 SQL 不对时切换。"""
+    monkey = {"calls": []}
+
+    class FailingModel:
+        def invoke(self, m):
+            monkey["calls"].append("primary")
+            raise RuntimeError("429 限流")
+
+    class OkModel:
+        def invoke(self, m):
+            monkey["calls"].append("fallback")
+            return {"parsed": SqlDraft(sql="SELECT 1 AS a"), "raw": None}
+
+    class Chat:
+        def __init__(self, model): self.m = model
+        def with_structured_output(self, *a, **k): return self.m
+
+    cfg.raw["llm"]["fallback"] = {"model": "backup-model"}
+    c = LlmClient(cfg)
+    c._model = Chat(FailingModel())
+    fb = c._fallback_client()
+    fb._model = Chat(OkModel())
+
+    draft, _ = c.generate_sql("q", "schema")
+    assert draft.sql == "SELECT 1 AS a"
+    assert monkey["calls"] == ["primary", "fallback"]
+
+
+def test_fallback_inherits_unspecified_fields(cfg):
+    cfg.raw["llm"]["fallback"] = {"model": "backup-model"}
+    fb = LlmClient(cfg)._fallback_client()
+    assert fb.model_name == "backup-model"
+    assert fb.llm_cfg["base_url"] == cfg.llm["base_url"]
+    assert fb.is_fallback
+
+
+def test_fallback_can_switch_provider(cfg):
+    cfg.raw["llm"]["fallback"] = {"provider": "deepseek", "model": "deepseek-v4-flash",
+                                  "base_url": "https://api.deepseek.com",
+                                  "api_key_env": "OTHER_KEY"}
+    fb = LlmClient(cfg)._fallback_client()
+    assert fb.llm_cfg["provider"] == "deepseek" and fb.llm_cfg["api_key_env"] == "OTHER_KEY"
+
+
+def test_no_fallback_configured_reraises(cfg):
+    class FailingModel:
+        def invoke(self, m):
+            raise RuntimeError("boom")
+
+    class Chat:
+        def with_structured_output(self, *a, **k): return FailingModel()
+
+    cfg.raw["llm"].pop("fallback", None)
+    c = LlmClient(cfg)
+    c._model = Chat()
+    with pytest.raises(RuntimeError, match="boom"):
+        c.generate_sql("q", "schema")
+
+
+def test_fallback_failure_reports_both_models(cfg):
+    class Boom:
+        def invoke(self, m):
+            raise RuntimeError("挂了")
+
+    class Chat:
+        def with_structured_output(self, *a, **k): return Boom()
+
+    cfg.raw["llm"]["fallback"] = {"model": "backup-model"}
+    c = LlmClient(cfg)
+    c._model = Chat()
+    c._fallback_client()._model = Chat()
+    with pytest.raises(RuntimeError) as e:
+        c.generate_sql("q", "schema")
+    assert "backup-model" in str(e.value) and cfg.llm["model"] in str(e.value)
+
+
+def test_fallback_does_not_chain_infinitely(cfg):
+    cfg.raw["llm"]["fallback"] = {"model": "backup-model"}
+    fb = LlmClient(cfg)._fallback_client()
+    assert fb._fallback_client() is None

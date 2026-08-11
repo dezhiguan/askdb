@@ -170,3 +170,57 @@ def test_executor_is_closed_when_owned(cfg, tmp_path):
     """未注入 executor 时由 ask() 自行关闭，不能泄漏连接。"""
     r = graph.ask("q", cfg, llm=FakeLlm(OK_SQL))
     assert r.ok
+
+
+# ---------------------------------------------------------------- 检查点与复现
+
+def test_state_is_fully_serializable(cfg, ex):
+    """运行时依赖若混进状态，检查点会直接崩。这条守住这个边界。"""
+    r = run(cfg, ex, OK_SQL)
+    assert r.ok
+    snaps = graph.replay(r.trace_id, cfg)
+    assert snaps, "检查点没有落盘"
+
+
+def test_replay_reconstructs_retry_path(cfg, ex):
+    """失败样本原样复现 —— P3 失败归因的前提（技术设计说明书 §5）。"""
+    r = graph.ask("q", cfg, executor=ex,
+                  llm=FakeLlm("SELECT member_level FROM documents", OK_SQL))
+    assert r.ok and r.attempts == 2
+    snaps = graph.replay(r.trace_id, cfg)
+    assert any(s["rejected_by"] == "R-04" for s in snaps)
+    assert any(s["sql_raw"] == "SELECT member_level FROM documents" for s in snaps)
+    assert [s["attempt"] for s in snaps if s["attempt"] is not None][-1] == 1
+
+
+def test_replay_unknown_trace_is_empty(cfg):
+    assert graph.replay("no-such-trace", cfg) == []
+
+
+# ---------------------------------------------------------------- 配额
+
+def test_daily_quota_blocks_before_any_model_call(cfg, ex):
+    """超限的请求一个 token 都不该花 —— 必须拦在模型调用之前。"""
+    cfg.raw["observability"]["daily_quota"] = 1
+    fake = FakeLlm(OK_SQL, OK_SQL)
+    graph.ask("第一次", cfg, executor=ex, llm=fake)
+    r = graph.ask("第二次", cfg, executor=ex, llm=fake)
+    assert not r.ok and r.rejected_by == "QUOTA"
+    assert len(fake.calls) == 1                 # 第二次没有调用模型
+    assert "daily_quota" in r.hint
+
+
+def test_quota_zero_means_unlimited(cfg, ex):
+    cfg.raw["observability"]["daily_quota"] = 0
+    for _ in range(3):
+        assert run(cfg, ex, OK_SQL).ok
+
+
+# ---------------------------------------------------------------- 审计
+
+def test_audit_has_timestamp_and_explain_rows(cfg, ex):
+    """审计记录没有时间戳等于没有审计（技术设计说明书 §7）。"""
+    graph.ask("审计字段", cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    rec = json.loads(cfg.audit_log.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert rec["ts"] and rec["ts"][:4].isdigit()
+    assert rec["explain_rows"] is None or rec["explain_rows"] >= 0
