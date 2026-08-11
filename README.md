@@ -81,10 +81,10 @@ question
 | R-08 | Cartesian product detection | static | ⬜ |
 | R-09 | **Forced `LIMIT` injection** | rewrite | ✅ |
 | R-10 | **Forced tenant-predicate injection** | rewrite | ✅ |
-| R-11 | Estimated scan-row threshold (EXPLAIN) | dry run | ⬜ |
-| R-12 | Statement timeout | execution | ⬜ |
-| R-13 | Result row cap | execution | ⬜ |
-| R-14 | Retry cap | control | ⬜ |
+| R-11 | Estimated scan-row threshold (EXPLAIN) | dry run | ✅ |
+| R-12 | Statement timeout | execution | ✅ |
+| R-13 | Result row cap | execution | ✅ |
+| R-14 | Retry cap | control | ✅ |
 | R-15 | Carry-over result size cap (multi-step) | control | ⬜ |
 | R-16 | Total step cap (multi-step) | control | ⬜ |
 | R-17 | Cumulative cost cap | control | ⬜ |
@@ -126,6 +126,23 @@ cp .env.example .env   # set DASHSCOPE_API_KEY
 
 Runs without connecting to anything external — the sample database ships with documents, knowledge bases, organizations, and token-usage tables.
 
+```bash
+askdb check                              # config + datasource self-check (run this first)
+askdb sql "SELECT file_name FROM documents WHERE status='PROCESSING'"
+askdb ask  "which documents have been stuck processing for over an hour"
+askdb serve                              # web UI at http://127.0.0.1:8000
+```
+
+**`askdb sql` needs no model key.** It skips generation and runs guard → dry run → execute,
+so you can verify the entire guardrail chain before configuring anything.
+
+### Development
+
+```bash
+uv pip install -e ".[dev]"
+pytest              # 146 tests · coverage gate at 81%
+```
+
 ---
 
 ## Configuration
@@ -161,16 +178,17 @@ org_id:
 
 ## Status and roadmap
 
-**Currently P0, in progress. Not yet runnable end to end.**
+**Runnable end to end. 12 of 17 guardrail rules enforced. No measured metrics yet — P3 has not started.**
 
 | Phase | Contents | Target | Status |
 |---|---|---|---|
-| P0 | Sample DB, config system, LangGraph skeleton, single-round Q&A working | 2026-08-14 | 🚧 |
-| P1 | Schema retrieval, all 17 guardrail rules, read-only execution | 2026-08-18 | ⬜ |
-| P2 | Reflect & retry, EXPLAIN dry run, semantic layer, web UI | 2026-08-21 | ⬜ |
+| P0 | Sample DB, config system, LangGraph skeleton, single-round Q&A | 2026-08-14 | ✅ |
+| P1 | Schema retrieval, read-only execution, guardrails R-01…R-14 | 2026-08-18 | ✅ |
+| P2 | Reflect & retry, EXPLAIN dry run, semantic layer, web UI + HTTP API | 2026-08-21 | ✅ |
+| P2.5 | Remaining static rules R-06 / R-08 | 2026-08-23 | ⬜ |
 | P3 | **58-question golden set, replay harness, five ablation groups** | 2026-08-25 | ⬜ |
 | P4 | MCP packaging (stateless spec), backfill measured numbers | 2026-08-28 | ⬜ |
-| P5 | Multi-step query planning, ablation group F | 2026-09-02 | ⬜ |
+| P5 | Multi-step query planning (R-15…R-17), ablation group F | 2026-09-02 | ⬜ |
 
 > **No unmeasured metric will appear in this README.** Accuracy, block rate, and cost figures land after P3,
 > published alongside the held-out set score and the unfiltered distribution of failure categories.
