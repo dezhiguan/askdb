@@ -113,9 +113,29 @@ def _load_yaml(p: Path) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def _load_dotenv(root: Path) -> None:
+    """把项目根目录的 .env 读进环境变量。
+
+    刻意自己实现而不引入 python-dotenv：只需要 KEY=VALUE 这一种语法，
+    多一个依赖不值得。**已存在的环境变量优先**，便于用 export 临时覆盖。
+    """
+    p = root / ".env"
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip().strip('"').strip("'")
+        if key and val and key not in os.environ:
+            os.environ[key] = val
+
+
 def load(config_path: str | Path = "config/askdb.yaml") -> Config:
     cfg_path = Path(config_path).resolve()
     root = cfg_path.parent.parent
+    _load_dotenv(root)
     raw = _load_yaml(cfg_path)
 
     tables: dict[str, Table] = {}

@@ -45,8 +45,18 @@ llm:
   model: qwen-max
   temperature: 0
   api_key_env: DASHSCOPE_API_KEY     # 仅走环境变量，禁止写入配置文件
-  price_input_per_1k: 0.0024         # 元 / 千 token，用于成本归因
-  price_output_per_1k: 0.0096
+  price_input_per_1k: 0.0024         # ⚠️ 未经核对的估值，待以官方单价校正
+  price_output_per_1k: 0.0096        # ⚠️ 同上
+
+  # ---- 备选：DeepSeek V4（官方单价，2026-08 核对）----
+  # provider: deepseek
+  # base_url: "https://api.deepseek.com"
+  # model: deepseek-v4-flash         # 或 deepseek-v4-pro
+  # api_key_env: DEEPSEEK_API_KEY
+  # price_input_per_1k: 0.001        # 缓存未命中 1 元/1M；命中 0.02 元/1M（自动前缀缓存）
+  # price_output_per_1k: 0.002       # 2 元/1M（pro 为 3 元 / 6 元）
+  # thinking: false                  # 默认即 false。思考模式不支持强制 tool_choice，
+  #                                  # 开启会导致结构化输出直接 400；SQL 生成也用不上长链思考。
 
 observability:
   audit_log: ./data/audit.jsonl

@@ -101,3 +101,67 @@ def test_build_is_cached(cfg):
 def test_sql_draft_defaults():
     d = SqlDraft(sql="SELECT 1")
     assert d.reasoning == ""
+
+
+def test_thinking_disabled_by_default_for_deepseek(cfg, monkeypatch):
+    """DeepSeek 思考模式默认开启，但它不支持强制 tool_choice —— 必须显式关掉。"""
+    captured: dict = {}
+
+    class FakeChat:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setitem(cfg.raw["llm"], "provider", "deepseek")
+    monkeypatch.setenv(cfg.llm["api_key_env"], "sk-x")
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", FakeChat)
+    LlmClient(cfg)._build()
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+def test_thinking_can_be_enabled_explicitly(cfg, monkeypatch):
+    captured: dict = {}
+
+    class FakeChat:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setitem(cfg.raw["llm"], "provider", "deepseek")
+    monkeypatch.setitem(cfg.raw["llm"], "thinking", True)
+    monkeypatch.setenv(cfg.llm["api_key_env"], "sk-x")
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", FakeChat)
+    LlmClient(cfg)._build()
+    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
+
+
+def test_vendor_param_not_sent_to_other_providers(cfg, monkeypatch):
+    """thinking 是 DeepSeek 私有参数，发给百炼可能被拒。"""
+    captured: dict = {}
+
+    class FakeChat:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setitem(cfg.raw["llm"], "provider", "dashscope")
+    monkeypatch.setenv(cfg.llm["api_key_env"], "sk-x")
+    monkeypatch.setattr("langchain_openai.ChatOpenAI", FakeChat)
+    LlmClient(cfg)._build()
+    assert "extra_body" not in captured
+
+
+def test_structured_output_forces_function_calling(cfg):
+    """默认可能落到 JSON mode，百炼会因缺少 'json' 字样直接 400。"""
+    seen: dict = {}
+
+    class FakeModel:
+        def invoke(self, m):
+            return {"parsed": SqlDraft(sql="SELECT 1 AS a"), "raw": None}
+
+    class FakeChat:
+        def with_structured_output(self, schema, **kw):
+            seen.update(kw)
+            return FakeModel()
+
+    c = LlmClient(cfg)
+    c._model = FakeChat()
+    c.generate_sql("q", "schema")
+    assert seen["method"] == "function_calling"

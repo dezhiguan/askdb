@@ -118,3 +118,33 @@ def test_metric_matches_by_name_and_alias():
     assert m.matches("有哪些卡住的文档")
     assert m.matches("最近堆积得厉害吗")
     assert not m.matches("这个月的成本是多少")
+
+
+def test_dotenv_is_loaded(tmp_path, monkeypatch):
+    from askdb.config import _load_dotenv
+
+    (tmp_path / ".env").write_text(
+        '# 注释\n\nFOO_KEY="abc"\nBAR_KEY = bare \nBAD_LINE\nEMPTY=\n', encoding="utf-8")
+    for k in ("FOO_KEY", "BAR_KEY", "EMPTY"):
+        monkeypatch.delenv(k, raising=False)
+    _load_dotenv(tmp_path)
+    import os
+    assert os.environ["FOO_KEY"] == "abc"
+    assert os.environ["BAR_KEY"] == "bare"
+    assert "EMPTY" not in os.environ
+
+
+def test_dotenv_does_not_override_existing_env(tmp_path, monkeypatch):
+    """已 export 的值优先，便于临时覆盖。"""
+    import os
+
+    (tmp_path / ".env").write_text("SOME_KEY=from_file\n", encoding="utf-8")
+    monkeypatch.setenv("SOME_KEY", "from_shell")
+    from askdb.config import _load_dotenv
+    _load_dotenv(tmp_path)
+    assert os.environ["SOME_KEY"] == "from_shell"
+
+
+def test_dotenv_missing_file_is_fine(tmp_path):
+    from askdb.config import _load_dotenv
+    _load_dotenv(tmp_path / "nowhere")

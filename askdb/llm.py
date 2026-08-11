@@ -86,13 +86,23 @@ class LlmClient:
             )
         from langchain_openai import ChatOpenAI  # 延迟导入，未配密钥时不必加载
 
+        kwargs: dict = {}
+        # DeepSeek V4 默认开启思考模式，而思考模式不支持强制 tool_choice，
+        # 结构化输出会直接 400。SQL 生成也用不上长链思考 —— 输出是最贵的一档，
+        # 白烧 reasoning token 没有意义。默认关掉，可在配置里显式打开。
+        # 仅对 DeepSeek 下发：这是厂商私有参数，发给别家可能被拒。
+        if "deepseek" in str(self.cfg.llm.get("provider", "")).lower():
+            state = "enabled" if self.cfg.llm.get("thinking", False) else "disabled"
+            kwargs["extra_body"] = {"thinking": {"type": state}}
+
         self._model = ChatOpenAI(
             model=self.cfg.llm["model"],
             base_url=self.cfg.llm["base_url"],
             api_key=key,
             temperature=float(self.cfg.llm.get("temperature", 0)),
-            timeout=60,
+            timeout=90,
             max_retries=1,
+            **kwargs,
         )
         return self._model
 
@@ -104,7 +114,13 @@ class LlmClient:
         last_sql: str = "",
         error: str = "",
     ) -> tuple[SqlDraft, LlmUsage]:
-        model = self._build().with_structured_output(SqlDraft, include_raw=True)
+        # 必须显式指定 function_calling：
+        #   默认可能落到 JSON mode（response_format=json_object），而百炼要求
+        #   该模式下消息里必须出现 "json" 字样，否则直接 400。
+        #   Tool Calls 在 DashScope 与 DeepSeek 两边都支持，且比 JSON mode 更稳。
+        model = self._build().with_structured_output(
+            SqlDraft, method="function_calling", include_raw=True
+        )
         system = SYSTEM.format(dialect=dialect)
         if error:
             human = RETRY.format(schema=schema_prompt, question=question, last_sql=last_sql, error=error)
