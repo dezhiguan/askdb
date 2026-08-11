@@ -1,0 +1,172 @@
+"""状态机测试 —— 用假模型覆盖每条分支，不依赖真实密钥。
+
+重点验证条件路由：什么时候重试、什么时候不重试、什么时候直接终止。
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from askdb import graph
+from askdb.llm import LlmNotConfigured, LlmUsage, SqlDraft
+
+OK_SQL = "SELECT file_name AS 文件名 FROM documents WHERE status = 'PROCESSING'"
+
+
+class FakeLlm:
+    """按序吐出预置结果；raise 传入异常类型。"""
+
+    def __init__(self, *sqls, raises: Exception | None = None, reasoning: str = "test"):
+        self.sqls = list(sqls)
+        self.raises = raises
+        self.reasoning = reasoning
+        self.calls: list[dict] = []
+
+    def generate_sql(self, question, schema_prompt, dialect="duckdb", last_sql="", error=""):
+        self.calls.append({"error": error, "last_sql": last_sql})
+        if self.raises:
+            raise self.raises
+        sql = self.sqls.pop(0) if self.sqls else ""
+        return SqlDraft(sql=sql, reasoning=self.reasoning), LlmUsage(100, 50)
+
+
+def run(cfg, ex, *sqls, **kw):
+    return graph.ask("测试问题", cfg, executor=ex, llm=FakeLlm(*sqls, **kw))
+
+
+# ---------------------------------------------------------------- 正常路径
+
+def test_happy_path(cfg, ex):
+    r = run(cfg, ex, OK_SQL)
+    assert r.ok and r.row_count > 0
+    assert r.attempts == 1
+    assert [s["step"] for s in r.steps][-1] == "finalize"
+    assert r.columns == ["文件名"]
+
+
+def test_records_rewrites_and_hits(cfg, ex):
+    r = graph.ask("有哪些文档卡在处理中超过一小时", cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    assert "documents" in r.tables_hit
+    assert "卡住的文档" in r.metrics_hit
+    assert any("租户" in x for x in r.rewrites)
+
+
+def test_cost_is_accounted(cfg, ex):
+    r = run(cfg, ex, OK_SQL)
+    assert r.tok_in == 100 and r.tok_out == 50
+    assert r.cost_cny > 0
+    assert r.elapsed_ms >= 0
+
+
+def test_result_is_json_serializable(cfg, ex):
+    r = run(cfg, ex, "SELECT updated_at AS t FROM documents LIMIT 3")
+    json.dumps(r.to_dict())          # datetime 必须被转成字符串
+
+
+def test_audit_record_written(cfg, ex):
+    graph.ask("审计测试", cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    lines = cfg.audit_log.read_text(encoding="utf-8").strip().splitlines()
+    rec = json.loads(lines[-1])
+    assert rec["question"] == "审计测试"
+    assert rec["sql_final"] and rec["steps"]
+
+
+# ---------------------------------------------------------------- 重试
+
+def test_guard_block_triggers_retry_then_succeeds(cfg, ex):
+    fake = FakeLlm("SELECT member_level FROM documents", OK_SQL)
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and r.attempts == 2
+    assert "字段不存在" in fake.calls[1]["error"]          # 真实错误被回灌
+    assert any(s["step"] == "reflect" for s in r.steps)
+
+
+def test_retry_exhausts_and_terminates(cfg, ex):
+    bad = "DELETE FROM documents"
+    r = run(cfg, ex, bad, bad, bad, bad)
+    assert not r.ok and r.rejected_by == "R-02"
+    assert r.attempts == cfg.max_retry + 1
+    assert sum(1 for s in r.steps if s["step"] == "reflect") == cfg.max_retry
+
+
+def test_no_retry_when_max_retry_zero(cfg, ex):
+    cfg.raw["guard"]["max_retry"] = 0
+    r = run(cfg, ex, "DELETE FROM documents")
+    assert not r.ok and r.attempts == 1
+    assert not any(s["step"] == "reflect" for s in r.steps)
+
+
+def test_semantic_error_at_dry_run_retries(cfg, ex):
+    """护栏能过、但 EXPLAIN 生成失败（类型不匹配）—— 属于语义错，应回灌重试。"""
+    fake = FakeLlm("SELECT id + file_name AS x FROM documents", OK_SQL)
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and r.attempts == 2
+    assert any(s["step"] == "reflect" for s in r.steps)
+
+
+# ---------------------------------------------------------------- 终止分支
+
+def test_llm_not_configured_stops_immediately(cfg, ex):
+    r = run(cfg, ex, raises=LlmNotConfigured("没有密钥"))
+    assert not r.ok and r.rejected_by == "LLM"
+    assert "没有密钥" in r.error
+    assert not any(s["step"] == "guard" for s in r.steps)
+
+
+def test_llm_exception_is_wrapped_friendly(cfg, ex):
+    r = run(cfg, ex, raises=RuntimeError("连接被重置"))
+    assert not r.ok and r.rejected_by == "LLM"
+    assert "模型调用失败" in r.error and r.hint
+
+
+def test_empty_sql_from_model_is_explained(cfg, ex):
+    r = graph.ask("q", cfg, executor=ex,
+                  llm=FakeLlm("", reasoning="缺少订单表，回答不了"))
+    assert not r.ok and r.rejected_by == "NO_SQL"
+    assert "订单表" in r.error and r.hint
+
+
+def test_dry_run_over_threshold_retries_then_gives_up(cfg, ex):
+    """扫描量超限先给模型机会补筛选条件，重试耗尽才终止，且始终不碰数据库。"""
+    cfg.raw["guard"]["max_scan_rows"] = 1
+    r = run(cfg, ex, OK_SQL, OK_SQL, OK_SQL, OK_SQL)
+    assert not r.ok and r.rejected_by == "R-11"
+    assert not any(s["step"] == "execute" for s in r.steps)
+    assert r.attempts == cfg.max_retry + 1
+    assert "筛选条件" in r.hint
+
+
+def test_datasource_error_does_not_retry(cfg, tmp_path):
+    """数据源不可用不是模型的错，重试没有意义。"""
+    from askdb.executor import Executor
+    cfg.raw["datasource"]["path"] = str(tmp_path / "gone.duckdb")
+    r = graph.ask("q", cfg, executor=Executor(cfg), llm=FakeLlm(OK_SQL, OK_SQL, OK_SQL))
+    assert not r.ok
+    assert not any(s["step"] == "reflect" for s in r.steps)
+
+
+# ---------------------------------------------------------------- 其它
+
+def test_org_id_override_flows_through(cfg, ex):
+    r = graph.ask("q", cfg, executor=ex, llm=FakeLlm(OK_SQL), org_id=66)
+    assert r.org_id == 66
+    assert "org_id = 66" in r.sql_final.replace("\n", " ")
+
+
+def test_default_org_used_when_absent(cfg, ex):
+    r = run(cfg, ex, OK_SQL)
+    assert r.org_id == cfg.default_org
+
+
+def test_graph_builds_once_and_is_reusable(cfg, ex):
+    a = run(cfg, ex, OK_SQL)
+    b = run(cfg, ex, OK_SQL)
+    assert a.ok and b.ok and a.trace_id != b.trace_id
+
+
+def test_executor_is_closed_when_owned(cfg, tmp_path):
+    """未注入 executor 时由 ask() 自行关闭，不能泄漏连接。"""
+    r = graph.ask("q", cfg, llm=FakeLlm(OK_SQL))
+    assert r.ok

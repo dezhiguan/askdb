@@ -158,7 +158,12 @@ def _n_guard(state: AskState) -> dict[str, Any]:
 def _n_dry_run(state: AskState) -> dict[str, Any]:
     tr, ex = state["_tracer"], state["_exec"]
     t = tr.start()
-    r = ex.explain(state["sql_final"])
+    try:
+        r = ex.explain(state["sql_final"])
+    except DataSourceError as e:
+        # 数据源在链路中途不可用 —— 不是模型的错，别重试
+        tr.add("dry_run", t, str(e), status="failed")
+        return {"error": str(e), "error_hint": e.hint, "rejected_by": "EXEC"}
     if not r.ok:
         tr.add("dry_run", t, r.reason, status="blocked")
         return {
@@ -223,8 +228,15 @@ def _route_after_guard(state: AskState) -> Literal["dry_run", "reflect", "finali
     return "reflect" if state.get("attempt", 0) < cfg.max_retry else "finalize"
 
 
-def _route_after_dry_run(state: AskState) -> Literal["execute", "finalize"]:
-    return "finalize" if state.get("rejected_by") else "execute"
+def _route_after_dry_run(state: AskState) -> Literal["execute", "reflect", "finalize"]:
+    if not state.get("rejected_by"):
+        return "execute"
+    if state.get("rejected_by") == "EXEC":
+        return "finalize"
+    # 干跑失败两种情形都值得重试：计划生成失败是语义错，
+    # 扫描量超限则可以让模型补上筛选条件。次数仍受 R-14 约束。
+    cfg: Config = state["_cfg"]
+    return "reflect" if state.get("attempt", 0) < cfg.max_retry else "finalize"
 
 
 def _route_after_execute(state: AskState) -> Literal["finalize", "reflect"]:
@@ -254,7 +266,7 @@ def build_graph():
     g.add_conditional_edges("guard", _route_after_guard,
                             {"dry_run": "dry_run", "reflect": "reflect", "finalize": "finalize"})
     g.add_conditional_edges("dry_run", _route_after_dry_run,
-                            {"execute": "execute", "finalize": "finalize"})
+                            {"execute": "execute", "reflect": "reflect", "finalize": "finalize"})
     g.add_conditional_edges("execute", _route_after_execute,
                             {"finalize": "finalize", "reflect": "reflect"})
     g.add_edge("reflect", "generate")

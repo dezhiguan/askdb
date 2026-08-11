@@ -30,3 +30,20 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["askdb*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --cov=askdb --cov=data --cov-report=term-missing --cov-fail-under=81"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+branch = true
+omit = ["*/__init__.py"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pragma: no cover",
+]
