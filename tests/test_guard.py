@@ -436,3 +436,21 @@ def test_all_seventeen_rules_are_accounted_for():
     from askdb.guard import ENFORCED_ELSEWHERE, NOT_YET_ENFORCED
     assert NOT_YET_ENFORCED == []
     assert set(ENFORCED_ELSEWHERE) == {"R-11", "R-12", "R-13", "R-14"}
+
+
+def test_r04_allows_order_by_select_alias(cfg):
+    """ORDER BY 引用 SELECT 别名是合法 SQL —— 不排除会误杀正确查询。"""
+    r = chk("SELECT status AS 状态, COUNT(*) AS 数量 FROM documents "
+            "GROUP BY status ORDER BY 数量 DESC", cfg)
+    assert r.ok, r.reason
+
+
+def test_r04_allows_group_by_select_alias(cfg):
+    r = chk("SELECT file_type AS 类型, COUNT(*) AS n FROM documents GROUP BY 类型", cfg)
+    assert r.ok, r.reason
+
+
+def test_r04_still_catches_hallucination_alongside_alias(cfg):
+    """有别名不代表放行一切 —— 真幻觉字段照样要拦。"""
+    r = chk("SELECT status AS 状态, nope_col FROM documents ORDER BY 状态", cfg)
+    assert not r.ok and r.rejected_by == "R-04"

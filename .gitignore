@@ -37,3 +37,5 @@ htmlcov/
 
 # 向量索引
 .chroma/
+evals/*.json
+evals/results/

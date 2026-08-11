@@ -363,6 +363,13 @@ def _check_columns(root: exp.Expression, cfg: Config, ctes: set[str]) -> str | N
     """R-04：拦截幻觉字段。返回错误信息，None 表示通过。"""
     for s in root.find_all(exp.Select):
         # 该作用域内 别名/表名 -> 表定义
+        # SELECT 列表里定义的输出别名。ORDER BY / GROUP BY / HAVING 引用它们是
+        # 合法 SQL，但它们并不是任何表的列 —— 不排除就会误杀正确查询。
+        aliases = {
+            (e.alias or "").lower()
+            for e in s.expressions if isinstance(e, exp.Alias) and e.alias
+        }
+
         scope: dict[str, str] = {}
         for t, _join in _direct_tables(s):
             n = (t.name or "").lower()
@@ -375,6 +382,8 @@ def _check_columns(root: exp.Expression, cfg: Config, ctes: set[str]) -> str | N
             if not cname or cname == "*":
                 continue
             qualifier = (col.table or "").lower()
+            if not qualifier and cname in aliases:
+                continue                       # 引用的是本层的输出别名，不是表列
 
             if qualifier:
                 if qualifier in ctes:
