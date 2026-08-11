@@ -1,0 +1,49 @@
+# 表白名单与字段语义注释
+#
+# 这份文件的质量约等于项目的准确率（技术设计说明书 §3.2.2）。
+# 白名单同时是安全边界与准确率边界：未列出的表，模型看不到，也查不到。
+
+tables:
+  - name: documents
+    desc: 文档主表，一行 = 一个上传的文件
+    aliases: [文档, 文件, 资料]
+    columns:
+      id:         { type: BIGINT,      desc: 文档 ID }
+      org_id:     { type: BIGINT,      desc: 组织 ID, tenant: true }
+      kb_id:      { type: BIGINT,      desc: 所属知识库 ID，关联 knowledge_bases.id }
+      file_name:  { type: VARCHAR,     desc: 原始文件名 }
+      file_type:  { type: VARCHAR,     desc: 文件类型, enum: [pdf, docx, xlsx, pptx, md, txt] }
+      status:     { type: VARCHAR,     desc: "处理状态。注意：「文档数」口径为 COMPLETED 的数量，不是全部行数",
+                    enum: [PENDING, PROCESSING, COMPLETED, FAILED] }
+      error_code: { type: VARCHAR,     desc: 失败原因码，仅 status=FAILED 时非空 }
+      created_at: { type: TIMESTAMP,   desc: 上传时间 }
+      updated_at: { type: TIMESTAMP,   desc: 最后状态变更时间（不是内容更新时间） }
+
+  - name: knowledge_bases
+    desc: 知识库
+    aliases: [知识库, 库]
+    columns:
+      id:        { type: BIGINT,  desc: 知识库 ID }
+      org_id:    { type: BIGINT,  desc: 组织 ID, tenant: true }
+      name:      { type: VARCHAR, desc: 知识库名称 }
+      doc_count: { type: BIGINT,  desc: 文档数缓存计数器，可能与实际漂移，以 documents 实际统计为准 }
+
+  - name: orgs
+    desc: 组织（租户）
+    aliases: [组织, 租户]
+    columns:
+      id:   { type: BIGINT,  desc: 组织 ID }
+      name: { type: VARCHAR, desc: 组织名称 }
+
+  - name: model_usage
+    desc: 模型调用与 token 计量，一行 = 一次模型调用
+    aliases: [token, 成本, 用量, 调用量]
+    columns:
+      id:            { type: BIGINT,    desc: 记录 ID }
+      org_id:        { type: BIGINT,    desc: 组织 ID, tenant: true }
+      model:         { type: VARCHAR,   desc: 模型名 }
+      stage:         { type: VARCHAR,   desc: 链路阶段, enum: [REWRITE, ANSWER, RERANK, EMBED] }
+      input_tokens:  { type: BIGINT,    desc: 输入 token 数 }
+      output_tokens: { type: BIGINT,    desc: 输出 token 数 }
+      cost_cny:      { type: DOUBLE,    desc: 按当期单价折算的成本（元） }
+      created_at:    { type: TIMESTAMP, desc: 调用时间 }

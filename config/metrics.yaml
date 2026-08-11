@@ -1,0 +1,27 @@
+# 业务口径 —— 模型永远猜不出来的那一层（技术设计说明书 §3.3）
+#
+# 未显式定义时，模型只能猜测，且猜错时输出仍然"看起来合理"。
+# 命中 name 或 aliases 时，口径定义随 schema 一并注入提示词，
+# 并约束模型必须使用给定表达式，不得自行构造。
+
+metrics:
+  - name: 文档数
+    aliases: [文档数量, 已入库文档, 完成数, 入库量]
+    scope: [documents]
+    expr: "COUNT(*) FILTER (WHERE status = 'COMPLETED')"
+    note: 口径为 COMPLETED 的数量，不是全部行数
+    owner: 平台组
+
+  - name: 卡住的文档
+    aliases: [卡住, 卡在处理中, 处理中不动, 堆积的文档, 卡住的任务]
+    scope: [documents]
+    predicate: "status = 'PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR"
+    note: 处理中且超过 1 小时状态未变更
+    owner: 平台组
+
+  - name: 失败率
+    aliases: [失败比例, 处理失败率]
+    scope: [documents]
+    expr: "COUNT(*) FILTER (WHERE status = 'FAILED') * 1.0 / NULLIF(COUNT(*), 0)"
+    note: 分母为该范围内全部文档，不排除 PENDING
+    owner: 平台组

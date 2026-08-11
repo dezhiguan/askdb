@@ -1,0 +1,30 @@
+# 环境与密钥 —— 绝不入库
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 运行时产物
+data/*.duckdb
+data/*.duckdb.wal
+data/audit.jsonl
+data/checkpoints.sqlite
+.chroma/
+
+# 编辑器与系统
+.idea/
+.vscode/
+.DS_Store

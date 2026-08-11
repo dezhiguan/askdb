@@ -1,0 +1,32 @@
+[project]
+name = "askdb"
+version = "0.1.0"
+description = "可信数据问答 Agent —— 把自然语言转换为受控 SQL 并安全执行"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+dependencies = [
+    "langgraph>=0.3",
+    "langchain-core>=0.3",
+    "langchain-openai>=0.3",
+    "sqlglot>=25.0",
+    "duckdb>=1.0",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+
+[project.scripts]
+askdb = "askdb.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["askdb*"]

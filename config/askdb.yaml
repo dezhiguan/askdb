@@ -1,0 +1,53 @@
+# askdb 主配置 —— 对应技术设计说明书 V1.1 附录 A
+# 拟制日期 2026-08-11
+
+datasource:
+  type: duckdb                       # duckdb | postgresql
+  path: ./data/sample.duckdb
+  read_only: true                    # DuckDB 以只读模式打开，写操作在引擎层即被拒绝
+
+tenant:
+  column: org_id
+  default_ctx: 65                    # P0 由 CLI --org 覆盖；后续由调用方上下文传入
+  mode: predicate                    # predicate | rls | rls_and_predicate（rls 需 PostgreSQL）
+  on_unresolved: reject              # 无法确定租户归属时拒绝，不放行
+
+guard:
+  max_rows: 1000                     # R-13
+  max_scan_rows: 500000              # R-11（P1 接入 EXPLAIN 后生效）
+  statement_timeout_ms: 8000         # R-12（PostgreSQL 生效；DuckDB 见 executor 说明）
+  max_retry: 2                       # R-14，按步重置
+  allow_select_star: false           # R-05
+  deny_functions:                    # R-07
+    - read_csv
+    - read_parquet
+    - read_json
+    - glob
+    - pg_read_file
+    - lo_import
+    - dblink
+
+planner:                             # P5 才启用，P0 恒为单步
+  enabled: false
+  max_steps: 3                       # R-16
+  max_carry_rows: 50                 # R-15
+  cost_cap_tokens: 12000             # R-17
+
+schema_rag:
+  mode: all                          # P0：全量注入白名单表；P1 换 vector
+  top_k: 3
+  max_k: 5
+  token_budget: 1500
+
+llm:
+  provider: dashscope
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: qwen-max
+  temperature: 0
+  api_key_env: DASHSCOPE_API_KEY     # 仅走环境变量，禁止写入配置文件
+
+observability:
+  audit_log: ./data/audit.jsonl
+
+tables_file: ./config/tables.yaml
+metrics_file: ./config/metrics.yaml
