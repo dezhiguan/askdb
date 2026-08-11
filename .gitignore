@@ -28,3 +28,9 @@ data/checkpoints.sqlite
 .idea/
 .vscode/
 .DS_Store
+
+# 测试产物
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
