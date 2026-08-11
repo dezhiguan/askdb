@@ -1,0 +1,1098 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdb · 可信数据问答 Agent</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+  --accent:#2a78d6;
+  --seq-1:#86b6ef; --seq-2:#5598e7; --seq-3:#2a78d6; --seq-4:#1c5cab;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --good-ink:#0a7a0a; --crit-ink:#c22f2f; --warn-ink:#8a6300;
+  --wash:rgba(42,120,214,0.08);
+  --code-bg:#f4f4f1;
+  --inj:rgba(42,120,214,0.16);
+  --pass-bg:rgba(12,163,12,.08); --crit-bg:rgba(208,59,59,.08);
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --accent:#3987e5;
+    --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+    --wash:rgba(57,135,229,0.14); --code-bg:#141413;
+    --inj:rgba(57,135,229,0.26);
+    --pass-bg:rgba(12,163,12,.12); --crit-bg:rgba(208,59,59,.12);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19;
+  --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+  --accent:#3987e5;
+  --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+  --wash:rgba(57,135,229,0.14); --code-bg:#141413;
+  --inj:rgba(57,135,229,0.26);
+  --pass-bg:rgba(12,163,12,.12); --crit-bg:rgba(208,59,59,.12);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{max-width:100%;overflow-x:hidden}
+body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--plane);color:var(--ink);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1200px;margin:0 auto;padding:0 20px 64px}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.hide{display:none!important}
+
+/* top */
+.topbar{border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:30}
+.topbar-in{max-width:1200px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.logo{display:flex;align-items:baseline;gap:9px}
+.logo b{font-size:17px;letter-spacing:-.01em}
+.logo span{font-size:12px;color:var(--muted)}
+.pill{font-size:11.5px;padding:2.5px 9px;border-radius:999px;border:1px solid var(--border);color:var(--ink-2);white-space:nowrap}
+.pill.on{border-color:transparent;background:var(--wash);color:var(--accent)}
+.pill.ok{border-color:transparent;background:rgba(12,163,12,.13);color:var(--good-ink)}
+.spacer{flex:1}
+.ctl{font:inherit;font-size:12.5px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);background:var(--surface);color:var(--ink-2);cursor:pointer}
+.ctl:hover{border-color:var(--axis)}
+
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:20px}
+.tab{font:inherit;font-size:13.5px;padding:11px 16px;background:none;border:0;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab:hover{color:var(--ink-2)}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+.card + .card{margin-top:14px}
+h2{font-size:13px;font-weight:600;letter-spacing:.02em}
+h3{font-size:12px;font-weight:600;color:var(--ink-2)}
+.sub{font-size:12px;color:var(--muted);margin:2px 0 14px}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 272px;gap:14px;align-items:start}
+@media (max-width:980px){.cols{grid-template-columns:minmax(0,1fr)}}
+.note{border-left:2.5px solid var(--accent);padding:2px 0 2px 13px;font-size:12.5px;color:var(--ink-2);margin-top:12px}
+.note.warn{border-left-color:var(--serious)}
+.note.crit{border-left-color:var(--critical)}
+
+/* ===== stepper ===== */
+.stepper{display:flex;align-items:center;gap:0;margin-bottom:18px}
+.sstep{display:flex;align-items:center;gap:9px;cursor:pointer;background:none;border:0;font:inherit;padding:0}
+.sdot{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;
+  border:1.5px solid var(--axis);color:var(--muted);background:var(--surface);flex:none}
+.sstep[aria-current="true"] .sdot{border-color:var(--accent);background:var(--accent);color:#fff}
+.sstep.done .sdot{border-color:var(--good);background:var(--good);color:#fff}
+.slab{font-size:13px;color:var(--muted);white-space:nowrap}
+.sstep[aria-current="true"] .slab{color:var(--ink);font-weight:600}
+.sstep.done .slab{color:var(--ink-2)}
+.sline{flex:1;height:1px;background:var(--grid);margin:0 14px;min-width:20px}
+
+/* forms */
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px}
+label.f{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
+.inp{width:100%;font:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;
+  background:var(--plane);color:var(--ink);font-family:ui-monospace,Menlo,monospace}
+.inp:focus{outline:2px solid var(--wash);border-color:var(--accent)}
+select.inp{font-family:inherit}
+.btn{font:inherit;font-size:13px;font-weight:600;padding:9px 18px;border:0;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer}
+.btn:disabled{opacity:.45;cursor:default}
+.btn.ghost{background:none;border:1px solid var(--border);color:var(--ink-2);font-weight:500}
+.btn.ghost:hover{border-color:var(--axis)}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:14px}
+
+/* code */
+pre.code{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:12px 14px;overflow-x:auto;
+  font-size:12px;line-height:1.75;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre}
+pre.code .k{color:var(--accent);font-weight:600}
+pre.code .s{color:var(--good-ink)}
+pre.code .c{color:var(--muted)}
+pre.code .inj{background:var(--inj);border-radius:3px;padding:1px 3px;font-weight:600}
+.codehead{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+.copy{font:inherit;font-size:11.5px;padding:3px 9px;border-radius:6px;cursor:pointer;border:1px solid var(--border);
+  background:var(--surface);color:var(--ink-2);margin-left:auto}
+.copy:hover{border-color:var(--accent);color:var(--accent)}
+
+/* check result */
+.checks{list-style:none;margin-top:12px}
+.checks li{display:flex;gap:9px;align-items:flex-start;padding:6px 0;font-size:12.5px;border-top:1px solid var(--grid)}
+.checks li:first-child{border-top:0}
+.ck{width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:700;flex:none;margin-top:2px}
+.ck.ok{background:var(--good);color:#fff}
+.ck.no{background:var(--critical);color:#fff}
+.ck.run{border:1.5px solid var(--accent);color:var(--accent);animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.checks .d{color:var(--muted);margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;white-space:nowrap}
+
+/* tables */
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:9px}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--grid);white-space:nowrap}
+th{font-weight:600;color:var(--ink-2);background:var(--plane);font-size:11.5px;position:sticky;top:0}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right}
+td.num{font-variant-numeric:tabular-nums}
+tbody tr.sel{background:var(--wash)}
+tbody tr:hover{background:var(--plane)}
+input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;vertical-align:-2px}
+.tag{font-size:10.5px;padding:1.5px 6px;border-radius:5px;font-weight:600}
+.tag.ten{background:var(--wash);color:var(--accent)}
+.tag.low{background:rgba(236,131,90,.16);color:var(--warn-ink)}
+.tag.hi{background:rgba(12,163,12,.14);color:var(--good-ink)}
+.summary{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-2);margin-top:11px;align-items:center}
+.summary b{font-variant-numeric:tabular-nums}
+
+/* annotate */
+.ann{display:grid;grid-template-columns:150px minmax(0,1fr);gap:12px}
+@media (max-width:720px){.ann{grid-template-columns:1fr}}
+.tlist{list-style:none;border:1px solid var(--border);border-radius:9px;overflow:hidden;max-height:288px;overflow-y:auto}
+.tlist li{padding:8px 11px;font-size:12.5px;cursor:pointer;border-bottom:1px solid var(--grid);display:flex;justify-content:space-between;gap:8px;align-items:center}
+.tlist li:last-child{border-bottom:0}
+.tlist li[aria-selected="true"]{background:var(--wash);color:var(--accent);font-weight:600}
+.tlist .pct{font-size:10.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.fields{list-style:none}
+.fields li{display:grid;grid-template-columns:150px minmax(0,1fr);gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--grid)}
+.fields li:first-child{border-top:0}
+.fname{font-family:ui-monospace,Menlo,monospace;font-size:12px;display:flex;gap:6px;align-items:center}
+.ftype{font-size:10.5px;color:var(--muted)}
+.fdesc{width:100%;font:inherit;font-size:12.5px;padding:5px 9px;border:1px solid var(--border);border-radius:7px;background:var(--plane);color:var(--ink)}
+.fdesc::placeholder{color:var(--muted)}
+.fdesc:focus{outline:2px solid var(--wash);border-color:var(--accent)}
+textarea.yaml{width:100%;min-height:186px;font:inherit;font-size:12px;line-height:1.7;padding:12px 14px;
+  border:1px solid var(--border);border-radius:9px;background:var(--code-bg);color:var(--ink);
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;resize:vertical}
+.yaml:focus{outline:2px solid var(--wash);border-color:var(--accent)}
+
+/* ready */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:13px 15px}
+.tile .lab{font-size:11.5px;color:var(--muted);margin-bottom:4px}
+.tile .val{font-size:24px;font-weight:650;letter-spacing:-.02em;line-height:1.15}
+.tile .val small{font-size:13px;font-weight:600;color:var(--ink-2);margin-left:2px}
+.tile .foot{font-size:11.5px;color:var(--muted);margin-top:3px}
+.tile .foot.g{color:var(--good-ink);font-weight:600}
+
+/* ask */
+.qbox{display:flex;gap:8px;align-items:center}
+.qbox input{flex:1;min-width:0;font:inherit;font-size:14.5px;padding:11px 13px;border:1px solid var(--border);
+  border-radius:9px;background:var(--plane);color:var(--ink)}
+.qbox input:focus{outline:2px solid var(--wash);border-color:var(--accent)}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}
+.chip{font:inherit;font-size:12.5px;padding:6px 11px;border-radius:999px;cursor:pointer;border:1px solid var(--border);
+  background:var(--plane);color:var(--ink-2)}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.chip[data-danger="1"]{border-style:dashed}
+
+.steps{list-style:none}
+.step{display:grid;grid-template-columns:24px minmax(0,1fr) auto;gap:11px;align-items:start;padding:9px 0;border-top:1px solid var(--grid)}
+.step:first-child{border-top:0}
+.step.idle{opacity:.4}
+.dot{width:19px;height:19px;border-radius:50%;margin-top:2px;display:grid;place-items:center;font-size:10.5px;font-weight:700;
+  border:1.5px solid var(--axis);color:var(--muted);background:var(--surface)}
+.step.run .dot{border-color:var(--accent);color:var(--accent);animation:pulse 1s infinite}
+.step.ok .dot{border-color:var(--good);background:var(--good);color:#fff}
+.step.fail .dot{border-color:var(--warning);background:var(--warning);color:#3a2a00}
+.step.block .dot{border-color:var(--critical);background:var(--critical);color:#fff}
+.step.skip .dot{border-style:dashed}
+.step-name{font-size:13.5px;font-weight:600}
+.step-name em{font-style:normal;font-weight:400;color:var(--muted);font-size:12px;margin-left:7px}
+.step-note{font-size:12.5px;color:var(--ink-2);margin-top:1px}
+.step.block .step-note{color:var(--crit-ink);font-weight:600}
+.step.fail .step-note{color:var(--serious)}
+.step-meta{font-size:11.5px;color:var(--muted);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;padding-top:3px}
+.hits{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+.hit{font-size:10.5px;padding:1.5px 7px;border-radius:5px;background:var(--wash);color:var(--accent);
+  font-family:ui-monospace,Menlo,monospace}
+
+.badge{font-size:11px;padding:2px 8px;border-radius:5px;font-weight:600}
+.badge.good{background:rgba(12,163,12,.13);color:var(--good-ink)}
+.badge.crit{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.badge.warn{background:rgba(236,131,90,.16);color:var(--warn-ink)}
+
+.kv{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--grid);font-size:12.5px}
+.kv:first-of-type{border-top:0}
+.kv dt{color:var(--muted)}
+.kv dd{font-weight:600;text-align:right}
+
+.legend{display:flex;gap:14px;font-size:11.5px;color:var(--ink-2);margin-top:10px;flex-wrap:wrap}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+.sw.injs{background:var(--inj);border:1px solid var(--accent)}
+
+/* 多步面板 */
+.rcard{border:1px solid var(--border);border-radius:10px;padding:13px 15px;margin-top:11px;background:var(--plane)}
+.rcard:first-child{margin-top:0}
+.rhead{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.rhead b{font-size:13.5px}
+.rnum{width:21px;height:21px;border-radius:6px;display:grid;place-items:center;font-size:11px;font-weight:700;
+  background:var(--wash);color:var(--accent);flex:none}
+.rgoal{font-size:12.5px;color:var(--ink-2);margin:4px 0 9px}
+.rsql{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;
+  overflow-x:auto;font-size:11.5px;line-height:1.7;font-family:ui-monospace,Menlo,monospace;white-space:pre}
+.rsql .k{color:var(--accent);font-weight:600}
+.rsql .s{color:var(--good-ink)}
+.rsql .c{color:var(--muted)}
+.rsql .inj{background:var(--inj);border-radius:3px;padding:1px 3px;font-weight:600}
+.rassess{margin-top:9px;padding:9px 12px;border-radius:8px;font-size:12.5px;border:1px solid var(--border)}
+.rassess.no{background:var(--crit-bg);border-color:rgba(208,59,59,.28)}
+.rassess.yes{background:var(--pass-bg);border-color:rgba(12,163,12,.28)}
+.rassess .t{font-size:11px;font-weight:700;letter-spacing:.04em;margin-bottom:3px}
+.rassess.no .t{color:var(--crit-ink)}
+.rassess.yes .t{color:var(--good-ink)}
+.carry{display:inline-block;margin-top:7px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+  background:var(--inj);border-radius:5px;padding:2.5px 8px;font-weight:600}
+.rrows{margin-top:9px}
+.rrows table{font-size:12px}
+.rrows th,.rrows td{padding:6px 11px}
+.rmeta{font-size:11.5px;color:var(--muted);margin-top:6px;font-variant-numeric:tabular-nums}
+.roundpill{font-size:10.5px;padding:1.5px 7px;border-radius:5px;background:var(--wash);color:var(--accent);font-weight:700}
+
+/* chart */
+.chartbox{position:relative}
+svg{display:block;width:100%;height:auto;overflow:visible}
+.tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-118%);background:var(--surface);
+  border:1px solid var(--border);border-radius:8px;padding:7px 11px;font-size:12px;white-space:nowrap;
+  box-shadow:0 4px 16px rgba(0,0,0,.14);transition:opacity .1s;z-index:5}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="logo"><b>askdb</b><span>可信数据问答 Agent</span></div>
+    <span class="pill on">无需登录</span>
+    <span class="pill" id="dsPill">未接入数据源</span>
+    <span class="pill ok hide" id="roPill">只读账号已校验</span>
+    <span class="spacer"></span>
+    <button class="ctl" id="themeBtn">切换主题</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-panel="setup">① 接入数据</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="ask">② 提问</button>
+    <button class="tab" role="tab" aria-selected="false" data-panel="eval">③ 评测</button>
+  </nav>
+
+<!-- ================= 接入 ================= -->
+<section id="setup">
+  <div class="stepper">
+    <button class="sstep" data-s="0" aria-current="true"><span class="sdot">1</span><span class="slab">连接数据源</span></button>
+    <span class="sline"></span>
+    <button class="sstep" data-s="1"><span class="sdot">2</span><span class="slab">选择开放的表</span></button>
+    <span class="sline"></span>
+    <button class="sstep" data-s="2"><span class="sdot">3</span><span class="slab">补注释与口径</span></button>
+  </div>
+
+  <!-- step 1 -->
+  <div id="w0">
+    <div class="cols">
+      <div class="card">
+        <h2>连接数据源</h2>
+        <p class="sub">建议先连本机开发库；线上只连只读副本，绝不连主库</p>
+        <div class="form">
+          <div><label class="f">类型</label>
+            <select class="inp" id="dbType"><option>PostgreSQL</option><option>MySQL</option><option>DuckDB（内置样例）</option></select></div>
+          <div><label class="f">Host</label><input class="inp" id="dbHost" value="127.0.0.1"></div>
+          <div><label class="f">Port</label><input class="inp" id="dbPort" value="5432"></div>
+          <div><label class="f">Database</label><input class="inp" id="dbName" value="ragforge_local"></div>
+          <div><label class="f">用户</label><input class="inp" id="dbUser" value="askdb_ro"></div>
+          <div><label class="f">密码</label><input class="inp" id="dbPass" type="password" value="••••••••"></div>
+        </div>
+        <div class="row">
+          <button class="btn" id="testBtn">测试连接</button>
+          <button class="btn ghost" id="next0" disabled>下一步 · 选择表</button>
+        </div>
+        <ul class="checks hide" id="checkList"></ul>
+        <div class="note crit hide" id="failNote"></div>
+      </div>
+
+      <aside class="card">
+        <h2>还没有只读账号？</h2>
+        <p class="sub">把这段跑一遍，护栏做在数据库层</p>
+        <div class="codehead"><h3>PostgreSQL</h3><button class="copy" data-copy="roSql">复制</button></div>
+        <pre class="code" id="roSql"><span class="k">CREATE ROLE</span> askdb_ro <span class="k">LOGIN PASSWORD</span> <span class="s">'***'</span>;
+
+<span class="k">GRANT CONNECT</span> <span class="k">ON DATABASE</span> ragforge <span class="k">TO</span> askdb_ro;
+<span class="k">GRANT USAGE</span>   <span class="k">ON SCHEMA</span> public   <span class="k">TO</span> askdb_ro;
+
+<span class="c">-- 只授白名单表，绝不用 ALL TABLES</span>
+<span class="k">GRANT SELECT ON</span> documents, knowledge_bases,
+                 orgs, model_usage <span class="k">TO</span> askdb_ro;
+
+<span class="c">-- 三道数据库级硬护栏</span>
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">SET</span> default_transaction_read_only = <span class="k">on</span>;
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">SET</span> statement_timeout = <span class="s">'8s'</span>;
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">CONNECTION LIMIT</span> 3;</pre>
+        <div class="note">就算应用层校验被绕过，数据库这边也执行不了 —— <b>双保险</b>。</div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- step 2 -->
+  <div id="w1" class="hide">
+    <div class="card">
+      <h2>选择开放的表</h2>
+      <p class="sub">白名单既是安全边界，也是准确率边界 —— 只开你真正会问的表</p>
+      <div class="tablewrap" style="max-height:340px;overflow-y:auto">
+        <table id="tblTable"></table>
+      </div>
+      <div class="summary">
+        <span>已选 <b id="selN">0</b> / <b id="allN">0</b> 张</span>
+        <span style="color:var(--muted)">预计注入 <b id="tokN">0</b> tokens/次</span>
+        <span style="color:var(--muted)">自动识别到租户列 <b id="tenN">0</b> 张</span>
+        <span class="spacer" style="flex:1"></span>
+        <button class="btn ghost" id="back1">上一步</button>
+        <button class="btn" id="next1">下一步 · 补注释</button>
+      </div>
+      <div class="note warn">
+        表越多不是越好。全库注入会让 token 爆炸，还会让模型被无关表干扰 ——
+        <b>常问的通常就 10–20 张</b>。
+      </div>
+    </div>
+  </div>
+
+  <!-- step 3 -->
+  <div id="w2" class="hide">
+    <div class="cols">
+      <div class="card">
+        <h2>补字段注释</h2>
+        <p class="sub">库里的 COMMENT 大概率是空的，而这份说明的质量 ≈ 项目的准确率</p>
+        <div class="ann">
+          <ul class="tlist" id="annTables"></ul>
+          <div>
+            <ul class="fields" id="annFields"></ul>
+          </div>
+        </div>
+        <div class="summary">
+          <span>注释覆盖率 <b id="covPct">0%</b></span>
+          <span class="spacer" style="flex:1"></span>
+          <button class="btn ghost" id="back2">上一步</button>
+          <button class="btn" id="doneBtn">完成接入</button>
+        </div>
+      </div>
+
+      <aside class="card">
+        <h2>业务口径</h2>
+        <p class="sub">模型永远猜不出来的那一层，必须写下来</p>
+        <textarea class="yaml" id="metricsYaml">metrics:
+  - name: 文档数
+    定义: status = 'COMPLETED' 的条数
+         （不是全部行数）
+    sql: COUNT(*) FILTER
+         (WHERE status = 'COMPLETED')
+    同义词: [文档数量, 已入库文档]
+
+  - name: 卡住的文档
+    定义: status='PROCESSING' 且
+         updated_at 超过 1 小时未变
+    sql: status='PROCESSING' AND
+         updated_at &lt; now() - interval '1 hour'
+    同义词: [卡住, 处理中不动, 堆积]</textarea>
+        <div class="note">写进去以后，直接问"有哪些卡住的文档"就能得到正确答案，不用每次重新描述判据。</div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- ready -->
+  <div id="ready" class="hide">
+    <div class="tiles" style="margin-bottom:14px">
+      <div class="tile"><div class="lab">数据源</div><div class="val" style="font-size:17px">ragforge_local</div><div class="foot">PostgreSQL · 127.0.0.1</div></div>
+      <div class="tile"><div class="lab">开放表</div><div class="val" id="rdTbl">8<small> 张</small></div><div class="foot">共 42 张，其余不可见</div></div>
+      <div class="tile"><div class="lab">注释覆盖率</div><div class="val" id="rdCov">100<small>%</small></div><div class="foot g">已达可用水平</div></div>
+      <div class="tile"><div class="lab">业务口径</div><div class="val">2<small> 条</small></div><div class="foot">文档数 · 卡住的文档</div></div>
+      <div class="tile"><div class="lab">租户列</div><div class="val" style="font-size:17px">org_id</div><div class="foot g">已绑定，强制注入</div></div>
+    </div>
+    <div class="card">
+      <h2>接入完成</h2>
+      <p class="sub">现在可以去「② 提问」了</p>
+      <div class="row" style="margin-top:0">
+        <button class="btn" id="gotoAsk">开始提问</button>
+        <button class="btn ghost" id="redo">重新配置</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 提问 ================= -->
+<section id="ask" hidden>
+  <div class="card" id="noDs">
+    <h2>还没有接入数据源</h2>
+    <p class="sub" style="margin-bottom:0">先到「① 接入数据」走完三步，再回来提问。</p>
+  </div>
+
+  <div id="askMain" class="hide">
+    <div class="card">
+      <div class="qbox">
+        <input id="q" placeholder="用一句话问数据，例如：有哪些文档卡在处理中超过一小时" autocomplete="off">
+        <button class="btn" id="runBtn">提问</button>
+      </div>
+      <div class="chips" id="chips"></div>
+    </div>
+
+    <div class="cols" style="margin-top:14px">
+      <div>
+        <div class="card">
+          <h2>执行链路</h2>
+          <p class="sub">每步状态、耗时、token 都可归因；未通过的步骤不会流向下一步</p>
+          <ul class="steps" id="steps"></ul>
+
+          <div class="hide" id="sqlwrap" style="margin-top:14px">
+            <div class="codehead">
+              <h3 id="sqlTitle">生成的 SQL</h3>
+              <span class="badge" id="sqlBadge"></span>
+              <button class="copy" data-copy="sql">复制</button>
+            </div>
+            <pre class="code" id="sql"></pre>
+            <div class="legend"><span><i class="sw injs"></i>系统强制注入，模型改不掉</span></div>
+          </div>
+        </div>
+
+        <div class="card hide" id="multiCard">
+          <h2>分步执行过程 <span class="roundpill" id="stepCount"></span></h2>
+          <p class="sub">每一步独立生成、独立过完整护栏；中间结果只下传标识列字面量</p>
+          <div id="rounds"></div>
+          <div class="note hide" id="multiNote" style="border-left:2.5px solid var(--accent);padding:2px 0 2px 13px;font-size:12.5px;color:var(--ink-2);margin-top:12px"></div>
+        </div>
+
+        <div class="card hide" id="resCard">
+          <h2 id="resTitle">查询结果</h2>
+          <p class="sub" id="resSub"></p>
+          <div class="tablewrap"><table id="resTable"></table></div>
+        </div>
+      </div>
+
+      <aside>
+        <div class="card">
+          <h2>本次调用</h2>
+          <dl>
+            <div class="kv"><dt>执行步数</dt><dd id="mSteps">—</dd></div>
+            <div class="kv"><dt>端到端延迟</dt><dd id="mLat">—</dd></div>
+            <div class="kv"><dt>输入 token</dt><dd id="mIn">—</dd></div>
+            <div class="kv"><dt>输出 token</dt><dd id="mOut">—</dd></div>
+            <div class="kv"><dt>本次成本</dt><dd id="mCost">—</dd></div>
+          </dl>
+        </div>
+        <div class="card">
+          <h2>护栏状态</h2>
+          <dl>
+            <div class="kv"><dt>连接账号</dt><dd class="mono" style="font-size:11.5px">askdb_ro</dd></div>
+            <div class="kv"><dt>写操作</dt><dd style="color:var(--crit-ink)">数据库层禁用</dd></div>
+            <div class="kv"><dt>语句超时</dt><dd>8 s</dd></div>
+            <div class="kv"><dt>结果行上限</dt><dd>1 000</dd></div>
+            <div class="kv"><dt>租户谓词</dt><dd style="color:var(--good-ink)">强制注入</dd></div>
+          </dl>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 评测 ================= -->
+<section id="eval" hidden>
+  <div class="tiles" style="margin-bottom:14px">
+    <div class="tile"><div class="lab">黄金集</div><div class="val">50<small> 题</small></div><div class="foot">人工核对答案</div></div>
+    <div class="tile"><div class="lab">执行准确率</div><div class="val">89.2<small>%</small></div><div class="foot g">↑ 27.0pp vs 裸 Prompt</div></div>
+    <div class="tile"><div class="lab">静态校验拦截</div><div class="val">34.6<small>%</small></div><div class="foot">不调模型、不打库</div></div>
+    <div class="tile"><div class="lab">单次成本</div><div class="val">¥0.011</div><div class="foot g">↓ 79% vs 全量 Schema</div></div>
+  </div>
+
+  <div class="card">
+    <h2>消融实验 · 执行准确率</h2>
+    <p class="sub">逐项累加，每一项优化都能单独归因</p>
+    <div class="chartbox">
+      <svg id="chart" viewBox="0 0 720 236" role="img" aria-label="消融实验执行准确率横向条形图"></svg>
+      <div class="tip" id="tip"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>明细</h2>
+    <p class="sub">同一黄金集、同一模型、同一随机种子，仅改变链路配置</p>
+    <div class="tablewrap"><table id="ablTable"></table></div>
+    <div class="note">
+      第三行最值得说：<b>静态校验重试</b> 抬了 12.4pp，而成本几乎为零 ——
+      错误 SQL 在 AST 层就被拦下，既没多调模型，也没打到数据库。
+    </div>
+    <div class="note warn">
+      页面上的数字目前是占位。真跑完评测才替换 —— 没有这一步，这个项目和其它同类项目没区别。
+    </div>
+  </div>
+</section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+/* theme + tabs */
+$('themeBtn').onclick = () => {
+  const r = document.documentElement;
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = (r.dataset.theme || (dark?'dark':'light')) === 'dark' ? 'light' : 'dark';
+};
+function goTab(name){
+  document.querySelectorAll('.tab').forEach(x => x.setAttribute('aria-selected', x.dataset.panel === name));
+  ['setup','ask','eval'].forEach(id => $(id).hidden = (id !== name));
+}
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => goTab(t.dataset.panel));
+document.addEventListener('click', e => {
+  const b = e.target.closest('.copy'); if(!b) return;
+  navigator.clipboard?.writeText($(b.dataset.copy).textContent);
+  b.textContent = '已复制'; setTimeout(()=> b.textContent='复制', 1400);
+});
+
+/* ============ 接入向导 ============ */
+let step = 0, connected = false, ready = false;
+function showStep(n){
+  if(ready) return;
+  step = n;
+  [0,1,2].forEach(i => $('w'+i).classList.toggle('hide', i !== n));
+  document.querySelectorAll('.sstep').forEach(s => {
+    const i = +s.dataset.s;
+    s.setAttribute('aria-current', i === n);
+    s.classList.toggle('done', i < n);
+  });
+}
+document.querySelectorAll('.sstep').forEach(s => s.onclick = () => {
+  const i = +s.dataset.s;
+  if(i > 0 && !connected) return;
+  showStep(i);
+});
+
+/* --- step1 连接测试 --- */
+const CHECKS = [
+  ['网络可达 & 认证通过', 'TCP 5432 · 82 ms'],
+  ['账号为只读', 'default_transaction_read_only = on'],
+  ['语句超时已设置', 'statement_timeout = 8s'],
+  ['连接数上限已设置', 'CONNECTION LIMIT = 3'],
+  ['已授权表数量', '8 张（全库 42 张）'],
+  ['写操作探测', 'INSERT 被拒 ✓ 符合预期'],
+];
+$('testBtn').onclick = () => {
+  const ul = $('checkList'); ul.classList.remove('hide'); $('failNote').classList.add('hide');
+  ul.innerHTML = CHECKS.map(c => `<li><span class="ck run">·</span><span>${c[0]}</span><span class="d">检测中…</span></li>`).join('');
+  $('testBtn').disabled = true;
+  CHECKS.forEach((c,i) => setTimeout(() => {
+    const li = ul.children[i];
+    li.querySelector('.ck').className = 'ck ok'; li.querySelector('.ck').textContent = '✓';
+    li.querySelector('.d').textContent = c[1];
+    if(i === CHECKS.length-1){
+      connected = true;
+      $('next0').disabled = false; $('testBtn').disabled = false;
+      $('dsPill').textContent = 'ragforge_local'; $('roPill').classList.remove('hide');
+    }
+  }, 320 + i*280));
+};
+$('next0').onclick = () => showStep(1);
+$('back1').onclick = () => showStep(0);
+$('back2').onclick = () => showStep(1);
+
+/* --- step2 表白名单 --- */
+const TABLES = [
+  {t:'documents',        rows:'1 284 506', cols:18, ten:1, cov:35, on:1, desc:'知识库文档主表'},
+  {t:'knowledge_bases',  rows:'642',       cols:12, ten:1, cov:58, on:1, desc:'知识库'},
+  {t:'orgs',             rows:'318',       cols:9,  ten:0, cov:77, on:1, desc:'组织/租户'},
+  {t:'model_usage',      rows:'2 913 440', cols:14, ten:1, cov:21, on:1, desc:'模型调用与 token 计量'},
+  {t:'retrieval_logs',   rows:'8 106 233', cols:16, ten:1, cov:18, on:1, desc:'检索请求日志'},
+  {t:'eval_runs',        rows:'1 204',     cols:11, ten:1, cov:44, on:1, desc:'评测实验运行记录'},
+  {t:'users',            rows:'1 801 136', cols:15, ten:1, cov:62, on:1, desc:'用户'},
+  {t:'api_keys',         rows:'946',       cols:10, ten:1, cov:40, on:1, desc:'开发者密钥'},
+  {t:'chunks',           rows:'96 442 108',cols:13, ten:1, cov:12, on:0, desc:'切片正文（体量过大，不建议开放）'},
+  {t:'audit_events',     rows:'12 660 471',cols:17, ten:1, cov:9,  on:0, desc:'审计事件'},
+  {t:'flyway_history',   rows:'214',       cols:10, ten:0, cov:0,  on:0, desc:'迁移记录（无业务含义）'},
+  {t:'t_tmp_migrate_v2', rows:'0',         cols:6,  ten:0, cov:0,  on:0, desc:'历史遗留临时表'},
+];
+function renderTables(){
+  $('tblTable').innerHTML =
+    `<thead><tr><th style="width:34px"></th><th>表名</th><th>说明</th><th class="num">行数</th>
+      <th class="num">列</th><th>租户列</th><th>注释覆盖</th></tr></thead><tbody>` +
+    TABLES.map((r,i)=>`<tr class="${r.on?'sel':''}" data-i="${i}">
+      <td><input type="checkbox" ${r.on?'checked':''} data-c="${i}"></td>
+      <td class="mono">${r.t}</td>
+      <td style="color:var(--ink-2)">${r.desc}</td>
+      <td class="num">${r.rows}</td><td class="num">${r.cols}</td>
+      <td>${r.ten?'<span class="tag ten">org_id</span>':'<span style="color:var(--muted)">—</span>'}</td>
+      <td><span class="tag ${r.cov>=60?'hi':'low'}">${r.cov}%</span></td>
+    </tr>`).join('') + '</tbody>';
+  updateSummary();
+}
+function updateSummary(){
+  const sel = TABLES.filter(r=>r.on);
+  $('selN').textContent = sel.length; $('allN').textContent = TABLES.length;
+  $('tokN').textContent = (sel.reduce((a,r)=>a+r.cols*9+40,0)).toLocaleString();
+  $('tenN').textContent = sel.filter(r=>r.ten).length;
+  $('rdTbl').innerHTML = sel.length + '<small> 张</small>';
+}
+$('tblTable').addEventListener('change', e => {
+  const c = e.target.closest('[data-c]'); if(!c) return;
+  const i = +c.dataset.c; TABLES[i].on = c.checked ? 1 : 0;
+  c.closest('tr').classList.toggle('sel', c.checked);
+  updateSummary();
+});
+renderTables();
+$('next1').onclick = () => { showStep(2); renderAnn(); };
+
+/* --- step3 注释 --- */
+const FIELDS = {
+  documents:[
+    ['id','bigint','文档ID'],
+    ['org_id','bigint','组织ID。多租户隔离列，任何查询必须带'],
+    ['kb_id','bigint','所属知识库'],
+    ['file_name','text','原始文件名'],
+    ['status','varchar',"处理状态 PENDING/PROCESSING/COMPLETED/FAILED。文档数口径 = COMPLETED"],
+    ['created_at','timestamptz','上传时间'],
+    ['updated_at','timestamptz','最后状态变更时间'],
+  ],
+  knowledge_bases:[
+    ['id','bigint','知识库ID'],
+    ['org_id','bigint','组织ID，隔离列'],
+    ['name','text','知识库名称'],
+    ['doc_count','int','文档数缓存计数器（可能漂移，以 documents 实际为准）'],
+  ],
+  model_usage:[
+    ['org_id','bigint','组织ID，隔离列'],
+    ['model','varchar','模型名'],
+    ['stage','varchar','链路阶段 REWRITE/ANSWER/RERANK'],
+    ['input_tokens','bigint',''],
+    ['output_tokens','bigint',''],
+    ['cost_cny','numeric','按当期单价折算的成本'],
+  ],
+};
+let curT = 'documents';
+function renderAnn(){
+  const sel = TABLES.filter(r=>r.on);
+  $('annTables').innerHTML = sel.map(r=>
+    `<li data-t="${r.t}" aria-selected="${r.t===curT}"><span class="mono" style="font-size:12px">${r.t}</span>
+     <span class="pct">${r.cov}%</span></li>`).join('');
+  renderFields();
+  const cov = Math.round(sel.reduce((a,r)=>a+r.cov,0)/Math.max(sel.length,1));
+  $('covPct').textContent = cov + '%';
+}
+function renderFields(){
+  const f = FIELDS[curT] || [['—','','该表的字段说明尚未导入']];
+  $('annFields').innerHTML = f.map(x=>`
+    <li><span class="fname">${x[0]}<span class="ftype">${x[1]}</span></span>
+    <input class="fdesc" value="${x[2]}" placeholder="补一句业务说明 —— 这句话直接决定准确率"></li>`).join('');
+}
+$('annTables').onclick = e => {
+  const li = e.target.closest('[data-t]'); if(!li) return;
+  curT = li.dataset.t;
+  document.querySelectorAll('#annTables li').forEach(x=>x.setAttribute('aria-selected', x===li));
+  renderFields();
+};
+$('doneBtn').onclick = () => {
+  ready = true;
+  ['w0','w1','w2'].forEach(i=>$(i).classList.add('hide'));
+  document.querySelector('.stepper').classList.add('hide');
+  $('ready').classList.remove('hide');
+  $('rdCov').innerHTML = '100<small>%</small>';
+  $('noDs').classList.add('hide'); $('askMain').classList.remove('hide');
+};
+$('gotoAsk').onclick = () => goTab('ask');
+$('redo').onclick = () => {
+  ready = false; $('ready').classList.add('hide');
+  document.querySelector('.stepper').classList.remove('hide'); showStep(0);
+};
+
+/* ============ 提问 ============ */
+const STEPS = [
+  ['Schema 召回','向量检索相关表/字段/口径'],
+  ['规划 / 重规划','判定单步可答或需多步'],
+  ['SQL 生成','结构化输出'],
+  ['静态校验','AST · 强制注入 · 零成本'],
+  ['EXPLAIN 干跑','预估扫描行数'],
+  ['只读执行','超时 8s · 行数上限'],
+  ['反思重试','真实报错回灌'],
+  ['结果评估','本步是否足以作答'],
+  ['结果与溯源','附全部轮次 SQL'],
+];
+function renderSteps(){
+  $('steps').innerHTML = STEPS.map((s,i)=>`
+    <li class="step idle" data-i="${i}"><span class="dot">${i+1}</span>
+      <div><div class="step-name">${s[0]}<em>${s[1]}</em></div>
+        <div class="step-note"></div><div class="hits"></div></div>
+      <div class="step-meta"></div></li>`).join('');
+}
+renderSteps();
+
+const SC = {
+  stuck:{
+    q:'有哪些文档卡在处理中超过一小时',
+    tag:'用到口径定义',
+    hits:['documents','knowledge_bases'],
+    sql:`<span class="c">-- 命中口径「卡住的文档」 · 单步</span>
+<span class="k">SELECT</span>  d.file_name    <span class="k">AS</span> 文件名,
+        k.name         <span class="k">AS</span> 知识库,
+        d.updated_at   <span class="k">AS</span> 最后变更,
+        <span class="k">ROUND</span>(<span class="k">EXTRACT</span>(<span class="k">epoch</span> <span class="k">FROM</span> now()-d.updated_at)/3600,1) <span class="k">AS</span> 卡住小时
+<span class="k">FROM</span>    documents d
+<span class="k">JOIN</span>    knowledge_bases k <span class="k">ON</span> k.id = d.kb_id
+<span class="k">WHERE</span>   d.status = <span class="s">'PROCESSING'</span>
+  <span class="k">AND</span>   d.updated_at &lt; now() - <span class="k">interval</span> <span class="s">'1 hour'</span>
+  <span class="k">AND</span>   <span class="inj">d.org_id = 65</span>
+<span class="k">ORDER BY</span> d.updated_at
+<span class="inj">LIMIT   1000</span>;`,
+    badge:['good','✓ AST 校验通过 · 只读'],
+    frames:[
+      {i:0,ms:180,note:'命中 2 张表（全库 42 张，仅注入这 2 张）'},
+      {i:1,ms:610,note:'判定单步可答；命中口径「卡住的文档」，直接复用其判据'},
+      {i:2,ms:1080,note:'生成 1 条 SELECT'},
+      {i:3,ms:12,note:'表/字段真实；已注入 org_id 谓词与 LIMIT'},
+      {i:4,ms:31,note:'预估扫描 3.4 万行，低于阈值'},
+      {i:5,ms:190,note:'返回 6 行'},
+      {i:6,ms:0,st:'skip',note:'无需重试'},
+      {i:7,ms:270,note:'足以作答 ✓ 单步收敛'},
+    ],
+    final:{i:8,ms:8,note:'已附 SQL 与数据时间'},
+    m:{lat:'2.11 s',in:'1 106',out:'288',cost:'¥0.008',steps:'1 步'},
+    res:{title:'查询结果',sub:'6 行 · org_id=65 · 数据截至 2026-08-11 14:20',
+      cols:['文件名','知识库',{t:'最后变更',n:0},{t:'卡住小时',n:1}],
+      rows:[['2025年报_合并.pdf','财务档案','08-11 09:12','5.2'],
+            ['产品手册v3.docx','产品中心','08-11 10:03','4.3'],
+            ['风控细则.pdf','合规库','08-11 11:41','2.7'],
+            ['会议纪要_0810.md','项目库','08-11 12:08','2.2'],
+            ['接口文档.pdf','研发库','08-11 12:55','1.4'],
+            ['培训材料.pptx','人事库','08-11 13:10','1.2']]}
+  },
+  cost:{
+    q:'这个月各模型的 token 消耗和成本',
+    tag:'跨表聚合',
+    hits:['model_usage','orgs'],
+    sql:`<span class="k">SELECT</span>  m.model                      <span class="k">AS</span> 模型,
+        <span class="k">SUM</span>(m.input_tokens)          <span class="k">AS</span> 输入token,
+        <span class="k">SUM</span>(m.output_tokens)         <span class="k">AS</span> 输出token,
+        <span class="k">ROUND</span>(<span class="k">SUM</span>(m.cost_cny), 2)   <span class="k">AS</span> 成本
+<span class="k">FROM</span>    model_usage m
+<span class="k">WHERE</span>   m.created_at &gt;= date_trunc(<span class="s">'month'</span>, now())
+  <span class="k">AND</span>   <span class="inj">m.org_id = 65</span>
+<span class="k">GROUP BY</span> m.model
+<span class="k">ORDER BY</span> 成本 <span class="k">DESC</span>
+<span class="inj">LIMIT   1000</span>;`,
+    badge:['good','✓ AST 校验通过 · 只读'],
+    frames:[
+      {i:0,ms:160,note:'命中 model_usage'},
+      {i:1,ms:540,note:'判定单步可答：单表分组聚合'},
+      {i:2,ms:980,note:'生成 1 条 SELECT'},
+      {i:3,ms:11,note:'已注入 org_id 谓词与 LIMIT'},
+      {i:4,ms:44,note:'预估扫描 21.7 万行，低于阈值'},
+      {i:5,ms:260,note:'返回 4 行'},
+      {i:6,ms:0,st:'skip',note:'无需重试'},
+      {i:7,ms:250,note:'足以作答 ✓ 单步收敛'},
+    ],
+    final:{i:8,ms:7,note:'已附 SQL'},
+    m:{lat:'2.00 s',in:'968',out:'251',cost:'¥0.007',steps:'1 步'},
+    res:{title:'查询结果',sub:'4 行 · org_id=65 · 2026-08 至今',
+      cols:['模型',{t:'输入 token',n:1},{t:'输出 token',n:1},{t:'成本 (元)',n:1}],
+      rows:[['qwen3.8-max','48 210 663','6 044 812','1 284.60'],
+            ['qwen3-rerank','21 906 448','—','312.44'],
+            ['deepseek-v4','9 118 240','1 806 335','206.18'],
+            ['text-embedding-v4','6 442 900','—','48.32']]}
+  },
+  danger:{
+    q:'把失败的文档删掉',
+    tag:'危险操作拦截', danger:1,
+    hits:['documents'],
+    sql:`<span class="k">DELETE FROM</span> documents
+<span class="k">WHERE</span> status = <span class="s">'FAILED'</span>;`,
+    badge:['crit','✗ 已拦截 · 非 SELECT 语句'],
+    frames:[
+      {i:0,ms:150,note:'命中 documents'},
+      {i:1,ms:470,note:'识别为写操作意图'},
+      {i:2,ms:820,note:'模型仍生成了 DELETE 语句'},
+      {i:3,ms:9,st:'block',note:'已拦截：非 SELECT 不在白名单；链路终止'},
+      {i:4,st:'idle'},{i:5,st:'idle'},{i:6,st:'idle'},{i:7,st:'idle'},
+    ],
+    final:null,
+    m:{lat:'1.44 s',in:'602',out:'98',cost:'¥0.004',steps:'0 步（未执行）'},
+    res:null,
+    blockMsg:'模型确实会生成危险语句 —— 所以正确性不能交给模型自觉。这一步是纯代码的 AST 判断，不花 token、不可被 prompt 绕过。就算它漏了，askdb_ro 账号在数据库层也执行不了 DELETE。'
+  },
+
+  /* ---------- 多步规划：真正需要两步 ---------- */
+  multi:{
+    q:'最近哪些知识库不太正常？把最严重的那个的失败明细拉出来',
+    tag:'多步规划 · 2 步',
+    showRounds:1,
+    stepPill:'2 步 / 上限 3',
+    rounds:[
+      {
+        title:'探明分布',
+        goal:'"不正常"的判据必须先看到数据分布才能确定 —— SQL 无法表达"异常"，因此判定需要多步',
+        hits:['documents','knowledge_bases'],
+        sql:`<span class="c">-- 第 1 步：各知识库失败率分布</span>
+<span class="k">SELECT</span>  k.id <span class="k">AS</span> kb_id, k.name <span class="k">AS</span> 知识库,
+        <span class="k">COUNT</span>(*) <span class="k">AS</span> 总数,
+        <span class="k">COUNT</span>(*) <span class="k">FILTER</span> (<span class="k">WHERE</span> d.status=<span class="s">'FAILED'</span>) <span class="k">AS</span> 失败数,
+        <span class="k">ROUND</span>(100.0*<span class="k">COUNT</span>(*) <span class="k">FILTER</span> (<span class="k">WHERE</span> d.status=<span class="s">'FAILED'</span>)/<span class="k">COUNT</span>(*),1) <span class="k">AS</span> 失败率
+<span class="k">FROM</span>    documents d
+<span class="k">JOIN</span>    knowledge_bases k <span class="k">ON</span> k.id = d.kb_id
+<span class="k">WHERE</span>   <span class="inj">d.org_id = 65</span>
+<span class="k">GROUP BY</span> k.id, k.name
+<span class="k">ORDER BY</span> 失败率 <span class="k">DESC</span>
+<span class="inj">LIMIT   20</span>;`,
+        frames:[
+          {i:0,ms:190,note:'命中 2 张表'},
+          {i:1,ms:730,note:'判定需多步：异常阈值依赖数据分布，SQL 无法表达'},
+          {i:2,ms:1010,note:'生成第 1 步 SQL'},
+          {i:3,ms:12,note:'已注入 org_id 谓词与 LIMIT'},
+          {i:4,ms:36,note:'预估扫描 12.8 万行，低于阈值'},
+          {i:5,ms:240,note:'返回 20 行'},
+          {i:6,ms:0,st:'skip',note:'无需重试'},
+          {i:7,ms:640,st:'fail',note:'不足以作答 → 重规划（第 1/3 步，成本未超限）'},
+        ],
+        rows:{cols:[{t:'kb_id',n:1},'知识库',{t:'总数',n:1},{t:'失败数',n:1},{t:'失败率 %',n:1}],
+          rows:[['12','历史归档库','8 640','2 946','34.1'],
+                ['7','外部采集库','12 204','3 368','27.6'],
+                ['31','测试沙箱库','1 902','426','22.4'],
+                ['3','产品中心','24 108','482','2.0'],
+                ['9','合规库','15 663','188','1.2'],
+                ['…','其余 15 个','—','—','0.4 – 1.8']]},
+        assess:{ok:0,
+          why:'失败率整体在 0.4–2.0% 区间，三个知识库显著偏离（34.1% / 27.6% / 22.4%）。问题问的是"最严重的那个" → 取 kb_id = 12。',
+          carry:'carry = { kb_id: 12 }',
+          meta:'中间结果 20 行 ≤ 50（R-15 通过）· 仅下传标识列，不下传整行'}
+      },
+      {
+        title:'拉取明细',
+        goal:'用上一步得到的 kb_id 字面量，查该库失败文档的类型与错误码分布',
+        hits:['documents'],
+        sql:`<span class="c">-- 第 2 步：字面量注入 kb_id = 12</span>
+<span class="k">SELECT</span>  d.file_type   <span class="k">AS</span> 文件类型,
+        d.error_code  <span class="k">AS</span> 错误码,
+        <span class="k">COUNT</span>(*)      <span class="k">AS</span> 数量
+<span class="k">FROM</span>    documents d
+<span class="k">WHERE</span>   d.status = <span class="s">'FAILED'</span>
+  <span class="k">AND</span>   d.kb_id  = 12          <span class="c">-- ← 来自第 1 步</span>
+  <span class="k">AND</span>   <span class="inj">d.org_id = 65</span>
+<span class="k">GROUP BY</span> d.file_type, d.error_code
+<span class="k">ORDER BY</span> 数量 <span class="k">DESC</span>
+<span class="inj">LIMIT   1000</span>;`,
+        frames:[
+          {i:1,ms:580,note:'本步目标：kb_id=12 的失败文档按类型与错误码分布'},
+          {i:2,ms:940,note:'生成第 2 步 SQL，kb_id 以字面量注入'},
+          {i:3,ms:11,note:'独立过完整 R-01～R-13；已注入 org_id 与 LIMIT'},
+          {i:4,ms:22,note:'预估扫描 8 640 行'},
+          {i:5,ms:150,note:'返回 4 行'},
+          {i:6,ms:0,st:'skip',note:'无需重试'},
+          {i:7,ms:410,note:'足以作答 ✓ 收敛'},
+        ],
+        assess:{ok:1, why:'已取得失败类型与错误码分布，可以作答。累计 2 步，未触及 R-16 / R-17 上限。'}
+      }
+    ],
+    final:{i:8,ms:9,note:'已附 2 轮全部 SQL 与数据时间'},
+    m:{lat:'5.34 s',in:'2 418',out:'702',cost:'¥0.019',steps:'2 步 / 上限 3'},
+    res:{title:'最终结果',sub:'4 行 · 历史归档库(kb_id=12) 失败明细 · 由 2 步查询得出',
+      cols:['文件类型','错误码',{t:'数量',n:1}],
+      rows:[['pdf','OCR_TIMEOUT','1 842'],['pdf','ENCRYPTED_FILE','604'],
+            ['docx','UNSUPPORTED_VERSION','388'],['xlsx','PARSE_ERROR','112']]},
+    note:'两步都独立过了完整护栏 —— 不存在"因为是第二步所以已被信任"的路径。中间结果只下传 <b>kb_id = 12</b> 这一个字面量，而不是把 20 行结果集塞回提示词。'
+  },
+
+  /* ---------- 看似多跳，实际单步 ---------- */
+  oneshot:{
+    q:'哪个知识库失败率最高，它的失败文档是什么类型',
+    tag:'看似多跳 · 判定单步',
+    showRounds:1,
+    stepPill:'1 步（判定无需多步）',
+    rounds:[{
+      title:'单步完成',
+      goal:'依赖关系可由 CTE 表达 → 不触发多步。走多步会让成本翻倍而准确率不变',
+      hits:['documents','knowledge_bases'],
+      sql:`<span class="c">-- 依赖关系用 CTE 表达，一条 SQL 完成</span>
+<span class="k">WITH</span> worst <span class="k">AS</span> (
+  <span class="k">SELECT</span> d.kb_id
+  <span class="k">FROM</span>   documents d
+  <span class="k">WHERE</span>  <span class="inj">d.org_id = 65</span>
+  <span class="k">GROUP BY</span> d.kb_id
+  <span class="k">ORDER BY</span> <span class="k">COUNT</span>(*) <span class="k">FILTER</span> (<span class="k">WHERE</span> d.status=<span class="s">'FAILED'</span>)::float/<span class="k">COUNT</span>(*) <span class="k">DESC</span>
+  <span class="k">LIMIT</span> 1
+)
+<span class="k">SELECT</span>  d.file_type <span class="k">AS</span> 文件类型, <span class="k">COUNT</span>(*) <span class="k">AS</span> 数量
+<span class="k">FROM</span>    documents d <span class="k">JOIN</span> worst w <span class="k">ON</span> w.kb_id = d.kb_id
+<span class="k">WHERE</span>   d.status = <span class="s">'FAILED'</span>
+  <span class="k">AND</span>   <span class="inj">d.org_id = 65</span>
+<span class="k">GROUP BY</span> d.file_type
+<span class="k">ORDER BY</span> 数量 <span class="k">DESC</span>
+<span class="inj">LIMIT   1000</span>;`,
+      frames:[
+        {i:0,ms:180,note:'命中 2 张表'},
+        {i:1,ms:690,note:'判定单步可答：依赖关系可用 CTE 表达，不触发多步'},
+        {i:2,ms:1180,note:'生成 1 条含 CTE 的 SELECT'},
+        {i:3,ms:14,note:'CTE 内层与外层均已独立注入 org_id 谓词'},
+        {i:4,ms:41,note:'预估扫描 13.1 万行，低于阈值'},
+        {i:5,ms:220,note:'返回 4 行'},
+        {i:6,ms:0,st:'skip',note:'无需重试'},
+        {i:7,ms:300,note:'足以作答 ✓ 无需第二步'},
+      ],
+      assess:{ok:1, why:'单步即得完整答案。若此题走多步，成本约为当前的 2.4 倍，准确率不变 —— 会被计入「多步误用率」。'}
+    }],
+    final:{i:8,ms:8,note:'已附 SQL 与数据时间'},
+    m:{lat:'2.63 s',in:'1 188',out:'341',cost:'¥0.009',steps:'1 步'},
+    res:{title:'查询结果',sub:'4 行 · 历史归档库(失败率最高) · 单条 CTE 查询得出',
+      cols:['文件类型',{t:'数量',n:1}],
+      rows:[['pdf','2 446'],['docx','388'],['xlsx','112'],['pptx','—']]},
+    note:'这道题表面是两跳，实际能用 CTE 一条搞定。<b>规划节点必须识别这一点，否则「多步误用率」就会失控</b> —— 这也是设计里把多步定为兜底路径、而非默认路径的原因。'
+  },
+};
+
+$('chips').innerHTML = Object.entries(SC).map(([k,s])=>
+  `<button class="chip" data-s="${k}" ${s.danger?'data-danger="1"':''}>
+     <span style="color:var(--muted);font-size:11px;margin-right:7px">${s.tag}</span>${s.q}</button>`).join('');
+$('chips').onclick = e => { const b = e.target.closest('.chip'); if(b) play(b.dataset.s); };
+$('runBtn').onclick = () => play('stuck');
+$('q').addEventListener('keydown', e => { if(e.key==='Enter') play('stuck'); });
+
+let timers = [], running = false;
+function setStep(i,state,note,meta,hits){
+  const li = $('steps').querySelector(`[data-i="${i}"]`); if(!li) return;
+  li.className = 'step ' + state;
+  li.querySelector('.dot').textContent = state==='ok'?'✓':state==='block'?'✕':state==='fail'?'!':(i+1);
+  if(note!==undefined) li.querySelector('.step-note').textContent = note;
+  if(meta!==undefined) li.querySelector('.step-meta').textContent = meta;
+  if(hits) li.querySelector('.hits').innerHTML = hits.map(h=>`<span class="hit">${h}</span>`).join('');
+  if(state==='idle') li.querySelector('.hits').innerHTML='';
+}
+function tableHTML(r){
+  return '<thead><tr>'+r.cols.map(c=>typeof c==='string'?`<th>${c}</th>`:
+    `<th class="${c.n?'num':''}">${c.t}</th>`).join('')+'</tr></thead><tbody>'+
+    r.rows.map(row=>'<tr>'+row.map((v,i)=>{const c=r.cols[i];
+      return `<td class="${(typeof c!=='string'&&c.n)?'num':''}">${v}</td>`;}).join('')+'</tr>').join('')+'</tbody>';
+}
+function appendRound(rd, idx){
+  const a = rd.assess || {};
+  const html = `<div class="rcard">
+    <div class="rhead"><span class="rnum">${idx+1}</span><b>第 ${idx+1} 步 · ${rd.title}</b></div>
+    <div class="rgoal">${rd.goal}</div>
+    <pre class="rsql">${rd.sql}</pre>
+    ${rd.rows ? `<div class="rrows"><div class="tablewrap"><table>${tableHTML(rd.rows)}</table></div></div>` : ''}
+    <div class="rassess ${a.ok?'yes':'no'}">
+      <div class="t">${a.ok?'✓ 结果评估：足以作答':'✕ 结果评估：不足以作答，触发重规划'}</div>
+      <div>${a.why||''}</div>
+      ${a.carry?`<span class="carry">${a.carry}</span>`:''}
+      ${a.meta?`<div class="rmeta">${a.meta}</div>`:''}
+    </div>
+  </div>`;
+  $('rounds').insertAdjacentHTML('beforeend', html);
+}
+function play(key){
+  if(running) return;
+  const s = SC[key]; running = true;
+  timers.forEach(clearTimeout); timers = [];
+  renderSteps();
+  $('q').value = s.q;
+  $('sqlwrap').classList.add('hide'); $('resCard').classList.add('hide');
+  $('multiCard').classList.add('hide'); $('rounds').innerHTML=''; $('multiNote').classList.add('hide');
+  ['mLat','mIn','mOut','mCost','mSteps'].forEach(k=>{ if($(k)) $(k).textContent='—'; });
+  document.querySelectorAll('.chip').forEach(c=>c.disabled=true); $('runBtn').disabled=true;
+
+  // 统一成 rounds 结构
+  const rounds = s.rounds || [{frames:s.frames, sql:s.sql, hits:s.hits}];
+  const badge = s.badge || ['good','✓ AST 校验通过 · 只读'];
+
+  let t = 200;
+  rounds.forEach((rd, ri) => {
+    if(ri > 0){
+      timers.push(setTimeout(()=>{ for(let i=1;i<=7;i++) setStep(i,'idle','',''); }, t));
+      t += 300;
+    }
+    rd.frames.forEach(f => {
+      if(f.st === 'idle') return;
+      timers.push(setTimeout(()=>setStep(f.i,'run','执行中…',''), t));
+      t += Math.max(170, Math.min(f.ms||0, 780));
+      timers.push(setTimeout(()=>{
+        const st = f.st==='skip'?'skip':f.st==='block'?'block':f.st==='fail'?'fail':'ok';
+        const meta = f.ms ? (rounds.length>1 ? `第${ri+1}步 · ${f.ms} ms` : `${f.ms} ms`) : '';
+        setStep(f.i, st, f.note, meta, f.i===0?rd.hits:null);
+        if(f.i===2){ $('sqlwrap').classList.remove('hide'); $('sql').innerHTML = rd.sql;
+          $('sqlTitle').textContent = rounds.length>1 ? `生成的 SQL（第 ${ri+1} 步）` : '生成的 SQL';
+          $('sqlBadge').className='badge'; $('sqlBadge').textContent='校验中…'; }
+        if(f.i===3){ $('sqlBadge').className='badge '+(f.st==='block'?badge[0]:badge[0]);
+          $('sqlBadge').textContent = badge[1]; }
+      }, t));
+      t += 85;
+    });
+    if(s.showRounds){
+      timers.push(setTimeout(()=>{
+        $('multiCard').classList.remove('hide');
+        $('stepCount').textContent = s.stepPill || '';
+        appendRound(rd, ri);
+      }, t));
+      t += 160;
+    }
+  });
+
+  if(s.final){
+    const f = s.final;
+    timers.push(setTimeout(()=>setStep(f.i,'run','执行中…',''), t));
+    t += 220;
+    timers.push(setTimeout(()=>setStep(f.i,'ok',f.note,`${f.ms} ms`), t));
+    t += 85;
+  }
+
+  timers.push(setTimeout(()=>{
+    $('mLat').textContent=s.m.lat; $('mIn').textContent=s.m.in;
+    $('mOut').textContent=s.m.out; $('mCost').textContent=s.m.cost;
+    if($('mSteps')) $('mSteps').textContent = s.m.steps || '1 步';
+    if(s.note){ $('multiNote').innerHTML = s.note; $('multiNote').classList.remove('hide'); }
+    if(s.res){
+      const r=s.res; $('resTitle').textContent=r.title; $('resSub').textContent=r.sub;
+      $('resTable').innerHTML = tableHTML(r);
+      $('resCard').classList.remove('hide');
+    } else if(s.blockMsg){
+      $('resTitle').textContent='链路已终止'; $('resSub').textContent='';
+      $('resTable').innerHTML=`<tbody><tr><td style="white-space:normal;color:var(--ink-2);padding:14px;line-height:1.7">${s.blockMsg}</td></tr></tbody>`;
+      $('resCard').classList.remove('hide');
+    }
+    document.querySelectorAll('.chip').forEach(c=>c.disabled=false); $('runBtn').disabled=false;
+    running=false;
+  }, t+130));
+}
+
+/* ============ 评测图表 ============ */
+const ABL = [
+  {name:'裸 Prompt',       v:62.2, tok:8140, cost:0.052, p95:'3.1 s'},
+  {name:'+ Schema RAG',    v:74.8, tok:1210, cost:0.010, p95:'2.4 s'},
+  {name:'+ 静态校验重试',   v:87.2, tok:1284, cost:0.011, p95:'3.8 s'},
+  {name:'+ 全链路',        v:89.2, tok:1302, cost:0.011, p95:'4.0 s'},
+];
+const SEQ = ['var(--seq-1)','var(--seq-2)','var(--seq-3)','var(--seq-4)'];
+function barPath(x,y,w,h,r){ r=Math.min(r,Math.max(w,0));
+  if(w<=0.5) return `M${x},${y} h0.5 v${h} h-0.5 Z`;
+  return `M${x},${y} H${x+w-r} A${r},${r} 0 0 1 ${x+w},${y+r} V${y+h-r} A${r},${r} 0 0 1 ${x+w-r},${y+h} H${x} Z`; }
+(function(){
+  const svg=$('chart'), tip=$('tip');
+  const W=720,H=236,L=124,R=52,T=10,B=26, pw=W-L-R, ph=H-T-B, band=ph/ABL.length, bh=22;
+  let s='';
+  [0,25,50,75,100].forEach(g=>{ const x=L+(g/100)*pw;
+    s+=`<line x1="${x}" y1="${T}" x2="${x}" y2="${T+ph}" stroke="var(--grid)" stroke-width="1"/>`;
+    s+=`<text x="${x}" y="${T+ph+17}" fill="var(--muted)" font-size="11" text-anchor="middle" style="font-variant-numeric:tabular-nums">${g}%</text>`; });
+  s+=`<line x1="${L}" y1="${T}" x2="${L}" y2="${T+ph}" stroke="var(--axis)" stroke-width="1"/>`;
+  ABL.forEach((d,i)=>{ const y=T+i*band+(band-bh)/2, w=(d.v/100)*pw;
+    s+=`<text x="${L-11}" y="${y+bh/2+4}" fill="var(--ink-2)" font-size="12" text-anchor="end">${d.name}</text>`;
+    s+=`<path d="${barPath(L,y,w,bh,4)}" fill="${SEQ[i]}"/>`;
+    s+=`<text x="${L+w+9}" y="${y+bh/2+4}" fill="var(--ink)" font-size="12.5" font-weight="600" style="font-variant-numeric:tabular-nums">${d.v}%</text>`;
+    s+=`<rect x="${L}" y="${T+i*band}" width="${pw}" height="${band}" fill="transparent" data-hit="${i}"/>`; });
+  svg.innerHTML=s;
+  svg.addEventListener('mousemove',e=>{ const h=e.target.closest('[data-hit]'); if(!h){tip.style.opacity=0;return;}
+    const d=ABL[+h.dataset.hit], box=svg.getBoundingClientRect();
+    tip.innerHTML=`<b>${d.name}</b> · 准确率 <b>${d.v}%</b><br><span style="color:var(--muted)">平均输入 ${d.tok.toLocaleString()} tok · ¥${d.cost.toFixed(3)}/次 · P95 ${d.p95}</span>`;
+    tip.style.left=(e.clientX-box.left)+'px'; tip.style.top=(e.clientY-box.top)+'px'; tip.style.opacity=1; });
+  svg.addEventListener('mouseleave',()=>tip.style.opacity=0);
+})();
+$('ablTable').innerHTML =
+  `<thead><tr><th>链路配置</th><th class="num">执行准确率</th><th class="num">增量</th>
+   <th class="num">平均输入 token</th><th class="num">单次成本</th><th class="num">P95 延迟</th></tr></thead><tbody>`+
+  ABL.map((d,i)=>{ const dt = i===0?'—':`+${(d.v-ABL[i-1].v).toFixed(1)}pp`;
+    return `<tr><td>${d.name}</td><td class="num">${d.v}%</td>
+      <td class="num" style="color:${i?'var(--good-ink)':'var(--muted)'};font-weight:${i?600:400}">${dt}</td>
+      <td class="num">${d.tok.toLocaleString()}</td><td class="num">¥${d.cost.toFixed(3)}</td>
+      <td class="num">${d.p95}</td></tr>`; }).join('')+'</tbody>';
+</script>
+</body>
+</html>

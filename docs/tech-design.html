@@ -1,0 +1,962 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdb 技术设计说明书 V1.1</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+  --accent:#2a78d6;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --good-ink:#0a7a0a; --crit-ink:#c22f2f; --warn-ink:#8a6300;
+  --wash:rgba(42,120,214,0.08);
+  --code-bg:#f4f4f1;
+  --inj:rgba(42,120,214,0.16);
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --accent:#3987e5;
+    --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+    --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19;
+  --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+  --accent:#3987e5;
+  --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+  --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+html,body{max-width:100%;overflow-x:hidden}
+body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--plane);color:var(--ink);font-size:14.5px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.mono,code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* header */
+.doc-head{border-bottom:1px solid var(--border);background:var(--surface)}
+.doc-head-in{max-width:1180px;margin:0 auto;padding:26px 24px 20px}
+.doc-title{font-size:26px;font-weight:650;letter-spacing:-.02em;line-height:1.3}
+.doc-sub{font-size:14px;color:var(--muted);margin-top:4px}
+.meta{display:flex;gap:10px 26px;flex-wrap:wrap;margin-top:16px;font-size:12.5px}
+.meta div{display:flex;gap:7px}
+.meta dt{color:var(--muted)}
+.meta dd{font-weight:600}
+.status{font-size:11.5px;padding:2px 9px;border-radius:999px;background:var(--wash);color:var(--accent);font-weight:600}
+.themebtn{position:absolute;right:24px;top:24px;font:inherit;font-size:12.5px;padding:5px 10px;border-radius:7px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink-2);cursor:pointer}
+
+/* layout */
+.shell{max-width:1180px;margin:0 auto;padding:0 24px 100px;display:grid;grid-template-columns:214px minmax(0,1fr);gap:40px}
+@media (max-width:940px){.shell{grid-template-columns:minmax(0,1fr);gap:0}.toc{display:none}}
+.toc{position:sticky;top:0;align-self:start;padding-top:28px;max-height:100vh;overflow-y:auto}
+.toc h4{font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:9px}
+.toc a{display:block;font-size:12.5px;color:var(--ink-2);text-decoration:none;padding:3.5px 0 3.5px 10px;
+  border-left:2px solid transparent;line-height:1.45}
+.toc a:hover{color:var(--accent)}
+.toc a.on{color:var(--accent);border-left-color:var(--accent);font-weight:600}
+.toc a.sub{padding-left:22px;font-size:12px;color:var(--muted)}
+.toc a.sub:hover,.toc a.sub.on{color:var(--accent)}
+
+main{padding-top:28px;min-width:0}
+section{margin-bottom:44px;scroll-margin-top:20px}
+h2{font-size:20px;font-weight:650;letter-spacing:-.01em;margin-bottom:6px;padding-bottom:9px;border-bottom:1px solid var(--border)}
+h2 .n{color:var(--muted);font-weight:500;margin-right:9px}
+h3{font-size:15.5px;font-weight:650;margin:26px 0 8px}
+h3 .n{color:var(--muted);font-weight:500;margin-right:7px}
+h4{font-size:13.5px;font-weight:650;margin:18px 0 6px;color:var(--ink-2)}
+p{margin:9px 0}
+ul,ol{margin:9px 0 9px 22px}
+li{margin:4px 0}
+b,strong{font-weight:650}
+code{background:var(--code-bg);border:1px solid var(--border);padding:1px 5px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:14px 16px;
+  overflow-x:auto;font-size:12.5px;line-height:1.72;margin:12px 0}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+pre .k{color:var(--accent);font-weight:600}
+pre .s{color:var(--good-ink)}
+pre .c{color:var(--muted)}
+pre .inj{background:var(--inj);border-radius:3px;padding:1px 3px;font-weight:600}
+
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:9px;margin:12px 0}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--grid);vertical-align:top}
+th{font-weight:650;color:var(--ink-2);background:var(--plane);font-size:12px;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.c,th.c{text-align:center;white-space:nowrap}
+td .mono{font-size:12.5px}
+
+.note{border-left:3px solid var(--accent);background:var(--surface);padding:11px 15px;border-radius:0 9px 9px 0;
+  font-size:13.5px;color:var(--ink-2);margin:14px 0}
+.note.warn{border-left-color:var(--serious)}
+.note.crit{border-left-color:var(--critical)}
+.note.good{border-left-color:var(--good)}
+.note b{color:var(--ink)}
+.note .lbl{display:block;font-size:11.5px;font-weight:700;letter-spacing:.04em;margin-bottom:3px}
+.note .lbl{color:var(--accent)}
+.note.warn .lbl{color:var(--warn-ink)}
+.note.crit .lbl{color:var(--crit-ink)}
+.note.good .lbl{color:var(--good-ink)}
+
+.pipe{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin:14px 0;
+  font-size:12.5px;line-height:1.95;overflow-x:auto;white-space:pre}
+.pipe .b{color:var(--accent);font-weight:700}
+.pipe .g{color:var(--muted)}
+.pipe .r{color:var(--crit-ink);font-weight:600}
+
+.tag{font-size:11px;padding:1.5px 7px;border-radius:5px;font-weight:650;white-space:nowrap}
+.tag.p0{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.tag.p1{background:rgba(236,131,90,.16);color:var(--warn-ink)}
+.tag.p2{background:var(--wash);color:var(--accent)}
+.tag.done{background:rgba(12,163,12,.14);color:var(--good-ink)}
+.tag.hard{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.tag.soft{background:var(--wash);color:var(--accent)}
+
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:760px){.two{grid-template-columns:1fr}}
+.box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.box h4{margin-top:0}
+hr{border:0;border-top:1px solid var(--border);margin:32px 0}
+.foot{max-width:1180px;margin:0 auto;padding:0 24px 60px;font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+
+<header class="doc-head">
+  <button class="themebtn" id="themeBtn">切换主题</button>
+  <div class="doc-head-in">
+    <div class="doc-title">askdb 技术设计说明书</div>
+    <div class="doc-sub">可信数据问答 Agent · 面向自然语言到 SQL 的受控执行链路</div>
+    <dl class="meta">
+      <div><dt>拟制日期</dt><dd>2026-08-11</dd></div>
+      <div><dt>版本</dt><dd>V1.1</dd></div>
+      <div><dt>状态</dt><dd><span class="status">设计定版 · 待实施</span></dd></div>
+      <div><dt>拟制</dt><dd>架构组</dd></div>
+      <div><dt>适用范围</dt><dd>独立工具，不与既有系统耦合</dd></div>
+    </dl>
+  </div>
+</header>
+
+<div class="shell">
+<nav class="toc" id="toc">
+  <h4>目录</h4>
+  <a href="#rev">修订记录</a>
+  <a href="#s1">1 概述</a>
+  <a href="#s1-2" class="sub">1.2 目标与非目标</a>
+  <a href="#s2">2 总体架构</a>
+  <a href="#s2-2" class="sub">2.2 模块划分</a>
+  <a href="#s2-3" class="sub">2.3 技术选型</a>
+  <a href="#s3">3 数据接入</a>
+  <a href="#s3-1" class="sub">3.1 连接层</a>
+  <a href="#s3-2" class="sub">3.2 Schema 层</a>
+  <a href="#s3-3" class="sub">3.3 语义层</a>
+  <a href="#s4">4 护栏设计</a>
+  <a href="#s4-1" class="sub">4.1 规则清单</a>
+  <a href="#s4-3" class="sub">4.3 强制改写</a>
+  <a href="#s4-4" class="sub">4.4 租户隔离</a>
+  <a href="#s5">5 状态机</a>
+  <a href="#s5-3" class="sub">5.3 多步规划</a>
+  <a href="#s6">6 评测方案</a>
+  <a href="#s7">7 可观测与成本</a>
+  <a href="#s8">8 生产使用边界</a>
+  <a href="#s9">9 分阶段计划</a>
+  <a href="#s10">10 风险与未决</a>
+  <a href="#s11">11 Agent 能力</a>
+  <a href="#a1">附录 A 配置样例</a>
+  <a href="#a2">附录 B 初始化脚本</a>
+</nav>
+
+<main>
+
+<section id="rev">
+  <h2><span class="n">§</span>修订记录</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>版本</th><th>日期</th><th>修订内容</th><th>拟制</th></tr></thead>
+    <tbody>
+      <tr><td>V0.1</td><td>2026-08-11</td><td>初稿：NL2SQL 应用形态，含既有系统集成方案</td><td>架构组</td></tr>
+      <tr><td>V0.2</td><td>2026-08-11</td><td>移除全部既有系统耦合，收敛为独立工具</td><td>架构组</td></tr>
+      <tr><td>V1.0</td><td>2026-08-11</td><td>定版。补充数据接入三层设计、护栏规则清单（14 条）、租户隔离双层方案（应用层改写 + 数据库 RLS）、评测防自证机制、生产使用边界</td><td>架构组</td></tr>
+      <tr><td><b>V1.1</b></td><td>2026-08-11</td><td><b>纳入多步查询规划：链路由 8 步扩为 9 步，新增结果评估节点与重规划回边；护栏补充 R-15～R-17（中间结果规模 / 步数上限 / 累计成本上限）；黄金集补充多跳题类别与消融组 F；新增 §11 Agent 能力使用说明；新增 P5 阶段</b></td><td>架构组</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s1">
+  <h2><span class="n">1</span>概述</h2>
+
+  <h3><span class="n">1.1</span>定位</h3>
+  <p>askdb 是一个<b>把自然语言问题转换为受控 SQL 并安全执行</b>的独立工具。它的核心命题不是"让模型会写 SQL"，而是<b>在模型不可靠的前提下，让整条执行链路可靠</b>。</p>
+  <p>产品形态为贴着数据源运行的本地/内网工具，不设账号体系 —— 数据库连接本身即权限边界。同时对外暴露 MCP 接口，可被其他 Agent 作为工具调用。</p>
+
+  <h3 id="s1-2"><span class="n">1.2</span>目标与非目标</h3>
+  <div class="two">
+    <div class="box">
+      <h4 style="color:var(--good-ink)">目标</h4>
+      <ul>
+        <li>自然语言问题 → 可执行、可核对的 SQL</li>
+        <li>危险操作在执行前被<b>零成本</b>拦截</li>
+        <li>多租户场景下不发生跨租户数据可见</li>
+        <li>输出必须附带 SQL，支持人工自验</li>
+        <li>每次调用的 token 与耗时可归因到链路步骤</li>
+        <li>准确率提升可通过消融实验逐项归因</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h4 style="color:var(--crit-ink)">非目标</h4>
+      <ul>
+        <li>不做账号/会话/权限体系</li>
+        <li>不做多轮对话上下文</li>
+        <li>不做图表生成与报表编排</li>
+        <li>不做数据写入与运维操作</li>
+        <li>不追求覆盖任意复杂分析型查询</li>
+        <li>不替代 BI 与数据分析岗位</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <span class="lbl">前提认知</span>
+    NL2SQL 在真实企业库（表命名不规范、存在历史遗留表、业务口径隐含于人）的执行准确率通常落在
+    <b>40–60%</b> 区间，与学术基准上的 85%+ 不具可比性。本设计的一切护栏、口径层与评测机制，
+    都是围绕"承认模型会错"这一前提展开，而非试图消除错误。
+  </div>
+
+  <h3><span class="n">1.3</span>术语</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>术语</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><b>产出物 / Artifact</b></td><td>模型生成的、将被真实执行的内容。本项目中特指 SQL 语句</td></tr>
+      <tr><td><b>静态校验</b></td><td>在 AST 层完成的纯代码判定，不调用模型、不访问数据库，成本为零</td></tr>
+      <tr><td><b>强制改写</b></td><td>在 AST 上追加不可被生成内容覆盖的约束（LIMIT、租户谓词）</td></tr>
+      <tr><td><b>语义层 / 口径</b></td><td>业务指标的机器可读定义，数据库 schema 中不存在的知识</td></tr>
+      <tr><td><b>执行准确率</b></td><td>生成 SQL 的执行结果集与标准答案结果集一致的比例</td></tr>
+      <tr><td><b>盲测集</b></td><td>实现阶段全程不可见、仅在验收时一次性运行的评测子集</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s2">
+  <h2><span class="n">2</span>总体架构</h2>
+
+  <h3><span class="n">2.1</span>链路总览</h3>
+  <div class="pipe">用户问题
+   │
+   ├─▶ <span class="b">[1] Schema 召回</span>      向量检索相关表/字段/口径，仅注入命中项
+   │
+   ├─▶ <span class="b">[2] 规划 / 重规划</span>    判定单步可答或需多步；多步时给出本步目标
+   │        <span class="g">▲</span>
+   │        <span class="g">└──────────────────────────────────┐</span>
+   ├─▶ <span class="b">[3] SQL 生成</span>        结构化输出，强制 JSON schema     <span class="g">│</span>
+   │                                                     <span class="g">│</span>
+   ├─▶ <span class="b">[4] 静态校验</span>        <span class="g">AST 判定 + 强制改写 · 零 token 成本</span>   <span class="g">│</span>
+   │        └── 不通过 ──▶ <span class="b">[7] 反思重试</span> ──▶ 回到 [3]        <span class="g">│</span>
+   │                                                     <span class="g">│</span>
+   ├─▶ <span class="b">[5] EXPLAIN 干跑</span>    预估扫描行数，超阈值打回          <span class="g">│</span>
+   │                                                     <span class="g">│</span>
+   ├─▶ <span class="b">[6] 只读执行</span>        独立只读账号 + 超时 + 行数上限     <span class="g">│</span>
+   │        └── 执行报错 ──▶ <span class="b">[7] 反思重试</span> ──▶ 回到 [3]      <span class="g">│</span>
+   │                                                     <span class="g">│</span>
+   ├─▶ <span class="b">[8] 结果评估</span>        本步结果是否足以作答？            <span class="g">│</span>
+   │        └── <span class="r">不足</span> ─── 携带中间结果摘要，重规划 ───────<span class="g">┘</span>
+   │                <span class="g">（受 R-16 步数上限 / R-17 累计成本上限约束）</span>
+   │
+   └─▶ <span class="b">[9] 结果与溯源</span>      最终结果 + 全部轮次 SQL + 数据时间 + 步数</div>
+
+  <div class="note">
+    <span class="lbl">设计原则</span>
+    <b>第 4 步永远是代码判定，不是模型判定。</b>让模型审查自己的产出等同于没有护栏。
+    静态校验不引入任何 LLM 调用，这是它能够"零成本拦截"的前提，也是整条链路成本可控的关键。
+  </div>
+
+  <h3 id="s2-2"><span class="n">2.2</span>模块划分</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>模块</th><th>职责</th><th class="num">预估 LOC</th><th class="c">关键度</th></tr></thead>
+    <tbody>
+      <tr><td><code>config.py</code></td><td>配置加载与校验；启动期完成表白名单、口径、租户列的一致性检查</td><td class="num">120</td><td class="c"><span class="tag soft">中</span></td></tr>
+      <tr><td><code>schema_rag.py</code></td><td>表/字段/口径文档化、向量化、召回；命中项裁剪与 token 预算控制</td><td class="num">180</td><td class="c"><span class="tag hard">高</span></td></tr>
+      <tr><td><code>graph.py</code></td><td>LangGraph 状态机：节点、条件边、重试回边、<b>重规划回边</b>、检查点</td><td class="num">300</td><td class="c"><span class="tag hard">高</span></td></tr>
+      <tr><td><code>planner.py</code></td><td>单步/多步判定、本步目标生成、中间结果摘要与字面量下传</td><td class="num">150</td><td class="c"><span class="tag hard">高</span></td></tr>
+      <tr><td><b><code>guard.py</code></b></td><td><b>AST 静态校验与强制改写，14 条规则的实现</b></td><td class="num">280</td><td class="c"><span class="tag hard">核心</span></td></tr>
+      <tr><td><code>executor.py</code></td><td>只读连接池、会话变量注入、EXPLAIN 干跑、超时与行数截断</td><td class="num">140</td><td class="c"><span class="tag hard">高</span></td></tr>
+      <tr><td><code>trace.py</code></td><td>步骤级追踪、token 与成本归因、结构化审计日志</td><td class="num">110</td><td class="c"><span class="tag soft">中</span></td></tr>
+      <tr><td><code>server.py</code></td><td>FastAPI 接口 + 静态页面 + MCP server（无状态）</td><td class="num">190</td><td class="c"><span class="tag soft">中</span></td></tr>
+      <tr><td colspan="2" style="text-align:right"><b>合计（不含评测）</b></td><td class="num"><b>≈ 1 470</b></td><td></td></tr>
+    </tbody>
+  </table></div>
+  <p>评测相关（<code>evals/replay.py</code>、<code>evals/ablation.py</code>）另计约 280 行。<b>总量上限由 1 500 行上调至 1 800 行</b>（V1.1 因纳入多步规划调整）；超出即视为范围失控，需回退重新界定边界。</p>
+
+  <h3 id="s2-3"><span class="n">2.3</span>技术选型与理由</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>层</th><th>选型</th><th>理由</th><th>被排除项</th></tr></thead>
+    <tbody>
+      <tr><td>运行时</td><td>Python 3.12</td><td>3.9 已 EOL；LangGraph 要求 ≥3.10</td><td>3.9</td></tr>
+      <tr><td>编排</td><td>LangGraph</td><td>需要条件边与重试回边；检查点支持断点续跑</td><td>裸 Chain（无状态、不可续跑）</td></tr>
+      <tr><td>SQL 解析</td><td>sqlglot</td><td>多方言 AST，支持解析后重新生成，是强制改写的前提</td><td>正则、sqlparse（不产出可改写 AST）</td></tr>
+      <tr><td>模型</td><td>Qwen3.8-Max，DeepSeek-V4 备选</td><td>OpenAI 兼容端点，便于对照实验；成本可控</td><td>—</td></tr>
+      <tr><td>向量</td><td>Chroma（嵌入式）</td><td>schema 文档量级在百条内，无需独立服务</td><td>Qdrant / PGVector（过重）</td></tr>
+      <tr><td>接口</td><td>FastAPI + MCP</td><td>MCP 按 2026-07-28 无状态规范实现，可被其他 Agent 直接调用</td><td>—</td></tr>
+      <tr><td>可观测</td><td>结构化日志 + 成本归因脚本</td><td>规模不需要完整 OTel 链路</td><td>完整 OTel Collector</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s3">
+  <h2><span class="n">3</span>数据接入设计</h2>
+  <p>数据接入分三层。工程难度集中在第二、三层，而多数同类实现只处理了第一层。</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">层</th><th>内容</th><th class="c">难度</th><th>失败后果</th></tr></thead>
+    <tbody>
+      <tr><td class="c">①</td><td>连接层：只读账号、连接池、数据库级限制</td><td class="c"><span class="tag soft">低</span></td><td>无法连接，问题显性</td></tr>
+      <tr><td class="c">②</td><td>Schema 层：表白名单、字段语义注释、向量召回</td><td class="c"><span class="tag hard">高</span></td><td><b>准确率塌方</b>，且不易察觉</td></tr>
+      <tr><td class="c">③</td><td>语义层：业务指标口径定义</td><td class="c"><span class="tag hard">最高</span></td><td><b>答案看似合理但口径错</b></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="s3-1"><span class="n">3.1</span>连接层</h3>
+  <p>护栏优先做在<b>数据库侧</b>而非应用侧。应用层校验可能被绕过，数据库权限不会。</p>
+  <pre><code><span class="k">CREATE ROLE</span> askdb_ro <span class="k">LOGIN PASSWORD</span> <span class="s">'***'</span>;
+
+<span class="k">GRANT CONNECT</span> <span class="k">ON DATABASE</span> ragforge <span class="k">TO</span> askdb_ro;
+<span class="k">GRANT USAGE</span>   <span class="k">ON SCHEMA</span> public   <span class="k">TO</span> askdb_ro;
+
+<span class="c">-- 逐表授权，禁止 ALL TABLES</span>
+<span class="k">GRANT SELECT ON</span> documents, knowledge_bases, orgs, model_usage <span class="k">TO</span> askdb_ro;
+
+<span class="c">-- 数据库级硬护栏</span>
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">SET</span> default_transaction_read_only = <span class="k">on</span>;
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">SET</span> statement_timeout = <span class="s">'8s'</span>;
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">SET</span> idle_in_transaction_session_timeout = <span class="s">'10s'</span>;
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">CONNECTION LIMIT</span> 3;</code></pre>
+
+  <h4>连接自检</h4>
+  <p>启动与「测试连接」时执行六项自检，任一项不通过则拒绝进入可用状态：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">#</th><th>检查项</th><th>判定方式</th></tr></thead>
+    <tbody>
+      <tr><td class="c">1</td><td>网络可达与认证</td><td>建立连接并记录 RTT</td></tr>
+      <tr><td class="c">2</td><td>账号为只读</td><td><code>SHOW default_transaction_read_only</code> = on</td></tr>
+      <tr><td class="c">3</td><td>语句超时已设置</td><td><code>SHOW statement_timeout</code> ≤ 配置值</td></tr>
+      <tr><td class="c">4</td><td>连接数上限已设置</td><td>查询 <code>pg_roles.rolconnlimit</code> &gt; 0</td></tr>
+      <tr><td class="c">5</td><td>授权表集合</td><td><code>information_schema.role_table_grants</code> 与白名单比对</td></tr>
+      <tr><td class="c">6</td><td><b>写操作实探</b></td><td>发起一条 INSERT，<b>必须被拒绝</b>；成功则判定失败</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note good">
+    <span class="lbl">第 6 项的意义</span>
+    前五项检查的是"配置声称什么"，第六项检查的是"实际拦不拦"。
+    配置漂移、角色继承、连接串指向错误库等情况，只有实探能发现。
+  </div>
+
+  <h3 id="s3-2"><span class="n">3.2</span>Schema 层</h3>
+  <h4>3.2.1 表白名单</h4>
+  <p>禁止全库注入。白名单同时是安全边界与准确率边界 —— 无关表会干扰模型选表。经验规模为 <b>10–20 张</b>。排除标准：</p>
+  <ul>
+    <li>超大表（如切片正文表，亿级行）—— 任何聚合都是风险</li>
+    <li>无业务语义表（迁移记录、临时表、历史遗留表）</li>
+    <li>含敏感字段且无脱敏方案的表</li>
+  </ul>
+
+  <h4>3.2.2 字段语义注释</h4>
+  <p>生产库的 <code>COMMENT</code> 覆盖率通常极低，而字段名（如 <code>t_doc_stat</code>、<code>kb_cnt</code>）不具自解释性。因此维护一份独立的 schema 增强文件，与数据库解耦。</p>
+  <pre><code>tables:
+  - name: documents
+    desc: 知识库文档主表，一行 = 一个上传的文件
+    aliases: [文档, 文件, 资料]
+    columns:
+      status:
+        type: varchar
+        desc: 处理状态
+        enum: [PENDING, PROCESSING, COMPLETED, FAILED]
+        <span class="c">note: 「文档数」口径为 COMPLETED 的数量，非全部行数</span>
+      org_id:
+        type: bigint
+        desc: 组织 ID
+        <span class="k">tenant: true</span>          <span class="c"># 租户隔离列，触发强制改写</span>
+      updated_at:
+        type: timestamptz
+        desc: 最后状态变更时间（非内容更新时间）</code></pre>
+  <div class="note warn">
+    <span class="lbl">关键判断</span>
+    <b>这份文件的质量约等于项目的准确率。</b>它的边际收益高于更换更大的模型，
+    且成本是一次性的。实施时应把主要人力投在此处，而非提示词调优。
+  </div>
+
+  <h4>3.2.3 向量召回</h4>
+  <p>每张表构造一段检索文档：<code>表名 + 描述 + 别名 + 字段清单（名/类型/说明/枚举）</code>，向量化后建立索引。提问时召回 Top-K（默认 3，上限 5）表，仅将命中表的 schema 注入提示词。</p>
+  <p>token 预算：单次注入控制在 <b>1 500 tokens</b> 以内。超出时按相似度截断并记录告警 —— 静默截断会造成不可解释的准确率下降。</p>
+
+  <h3 id="s3-3"><span class="n">3.3</span>语义层</h3>
+  <p>业务口径是 schema 中不存在、模型无法推断的知识。未显式定义时，模型只能猜测，且猜错时输出仍然"看起来合理"。</p>
+  <pre><code>metrics:
+  - name: 文档数
+    aliases: [文档数量, 已入库文档, 完成数]
+    expr: <span class="s">"COUNT(*) FILTER (WHERE status = 'COMPLETED')"</span>
+    scope: [documents]
+    owner: 平台组
+
+  - name: 卡住的文档
+    aliases: [卡住, 处理中不动, 堆积的文档]
+    predicate: <span class="s">"status = 'PROCESSING' AND updated_at &lt; now() - interval '1 hour'"</span>
+    scope: [documents]
+    owner: 平台组</code></pre>
+  <p>召回逻辑：问题文本命中 <code>name</code> 或 <code>aliases</code> 时，将口径定义随 schema 一并注入，并在提示词中约束"涉及该指标必须使用给定表达式，不得自行构造"。</p>
+</section>
+
+<section id="s4">
+  <h2><span class="n">4</span>护栏设计</h2>
+  <p>本章是项目核心。护栏分为<b>静态校验</b>（AST 层，零成本）、<b>强制改写</b>（AST 层，不可绕过）、<b>执行限制</b>（数据库层，兜底）三类。</p>
+
+  <h3 id="s4-1"><span class="n">4.1</span>规则清单</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编号</th><th>规则</th><th>类型</th><th class="c">阻断</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">R-01</td><td>单语句限制</td><td>静态校验</td><td class="c"><span class="tag hard">是</span></td><td>解析结果必须恰好 1 条语句，防多语句夹带</td></tr>
+      <tr><td class="mono">R-02</td><td>语句类型白名单</td><td>静态校验</td><td class="c"><span class="tag hard">是</span></td><td>仅允许 <code>SELECT</code> 与 <code>WITH…SELECT</code></td></tr>
+      <tr><td class="mono">R-03</td><td>表白名单</td><td>静态校验</td><td class="c"><span class="tag hard">是</span></td><td>含子查询、CTE、JOIN 中出现的全部表引用</td></tr>
+      <tr><td class="mono">R-04</td><td>字段真实性</td><td>静态校验</td><td class="c"><span class="tag hard">是</span></td><td>比对 schema，拦截幻觉字段</td></tr>
+      <tr><td class="mono">R-05</td><td>禁止 <code>SELECT *</code></td><td>静态校验</td><td class="c"><span class="tag soft">否</span></td><td>改写为显式列，控制列暴露面</td></tr>
+      <tr><td class="mono">R-06</td><td>禁止跨 schema / 跨库引用</td><td>静态校验</td><td class="c"><span class="tag hard">是</span></td><td>拦截 <code>other_schema.tbl</code>、dblink</td></tr>
+      <tr><td class="mono">R-07</td><td>危险函数黑名单</td><td>静态校验</td><td class="c"><span class="tag hard">是</span></td><td><code>pg_read_file</code> / <code>lo_import</code> / <code>dblink</code> / <code>pg_sleep</code> 等</td></tr>
+      <tr><td class="mono">R-08</td><td>笛卡尔积检测</td><td>静态校验</td><td class="c"><span class="tag hard">是</span></td><td>JOIN 缺少 ON 条件或恒真条件</td></tr>
+      <tr><td class="mono">R-09</td><td><b>强制 LIMIT 注入</b></td><td>强制改写</td><td class="c">—</td><td>无 LIMIT 则追加；已有且超上限则下调</td></tr>
+      <tr><td class="mono">R-10</td><td><b>强制租户谓词注入</b></td><td>强制改写</td><td class="c">—</td><td>见 4.4，含子查询与 CTE 的每一层</td></tr>
+      <tr><td class="mono">R-11</td><td>扫描行数阈值</td><td>干跑</td><td class="c"><span class="tag hard">是</span></td><td><code>EXPLAIN</code> 预估行数超阈值则打回</td></tr>
+      <tr><td class="mono">R-12</td><td>语句超时</td><td>执行限制</td><td class="c"><span class="tag hard">是</span></td><td>数据库会话级，默认 8s</td></tr>
+      <tr><td class="mono">R-13</td><td>结果行上限</td><td>执行限制</td><td class="c"><span class="tag hard">是</span></td><td>默认 1 000 行，超出截断并标注</td></tr>
+      <tr><td class="mono">R-14</td><td>重试次数上限</td><td>链路控制</td><td class="c"><span class="tag hard">是</span></td><td>默认 2 次，防无限循环与成本失控</td></tr>
+      <tr><td class="mono">R-15</td><td><b>中间结果规模上限</b></td><td>链路控制</td><td class="c"><span class="tag hard">是</span></td><td>多步规划中，上一步结果超过 50 行则拒绝作为下一步输入</td></tr>
+      <tr><td class="mono">R-16</td><td><b>总步数上限</b></td><td>链路控制</td><td class="c"><span class="tag hard">是</span></td><td>单次问答最多 3 步，达上限即收敛作答</td></tr>
+      <tr><td class="mono">R-17</td><td><b>累计成本上限</b></td><td>链路控制</td><td class="c"><span class="tag hard">是</span></td><td>单次问答全部步骤与重试的 token 总和封顶</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note warn">
+    <span class="lbl">R-15～R-17 的必要性</span>
+    多步规划把单次问答的成本与不确定性从"有界"变成"可增长"。
+    这三条是把它<b>重新变回有界</b>的机制 —— 缺任何一条，一次提问都可能演变为不收敛的循环。
+  </div>
+
+  <h3><span class="n">4.2</span>静态校验实现要点</h3>
+  <p>全部判定基于 sqlglot 解析出的 AST，<b>不做任何字符串匹配</b>。理由：注释、大小写、编码变形、Unicode 同形字都能绕过字符串匹配，但解析器会先行规范化。</p>
+  <p>表引用收集必须遍历完整 AST，覆盖：<code>FROM</code> / <code>JOIN</code> / 子查询 / CTE / <code>IN (SELECT …)</code> / <code>EXISTS</code> / <code>LATERAL</code> / <code>UNION</code> 各分支。<b>漏掉任一分支即构成绕过路径。</b></p>
+
+  <h3 id="s4-3"><span class="n">4.3</span>强制改写</h3>
+  <p>改写在 AST 上完成后重新生成 SQL，模型无法通过任何提示词手段覆盖。改写结果对用户可见并高亮标注，保证透明性。</p>
+  <pre><code><span class="c">-- 模型产出</span>
+<span class="k">SELECT</span> file_name, status <span class="k">FROM</span> documents <span class="k">WHERE</span> status = <span class="s">'PROCESSING'</span>;
+
+<span class="c">-- 强制改写后（实际执行）</span>
+<span class="k">SELECT</span> file_name, status <span class="k">FROM</span> documents
+<span class="k">WHERE</span> status = <span class="s">'PROCESSING'</span>
+  <span class="k">AND</span> <span class="inj">org_id = 65</span>          <span class="c">-- R-10</span>
+<span class="inj">LIMIT 1000</span>;                    <span class="c">-- R-09</span></code></pre>
+
+  <h3 id="s4-4"><span class="n">4.4</span>租户隔离（双层）</h3>
+  <div class="note crit">
+    <span class="lbl">重要</span>
+    <b>仅依赖应用层 AST 改写不足以保证多租户隔离。</b>需覆盖子查询、CTE、UNION、
+    多层 JOIN、视图、LATERAL 等全部分支，任一分支遗漏即构成越权路径。
+    因此隔离必须下沉至数据库层。
+  </div>
+
+  <h4>第一层：应用层 AST 改写（R-10）</h4>
+  <p>对每一层查询块中出现的、带 <code>tenant: true</code> 标记列的表，追加租户谓词。无法确定租户归属的查询直接拒绝执行，而非放行。</p>
+
+  <h4>第二层：数据库行级安全（RLS）</h4>
+  <pre><code><span class="k">ALTER TABLE</span> documents <span class="k">ENABLE ROW LEVEL SECURITY</span>;
+
+<span class="k">CREATE POLICY</span> org_isolation <span class="k">ON</span> documents
+  <span class="k">FOR SELECT TO</span> askdb_ro
+  <span class="k">USING</span> (org_id = current_setting(<span class="s">'app.org_id'</span>)::bigint);</code></pre>
+  <p>连接取出后、执行前注入会话变量：</p>
+  <pre><code><span class="k">SET LOCAL</span> app.org_id = <span class="s">'65'</span>;</code></pre>
+  <p><b>效果</b>：即使生成的 SQL 中完全不含租户条件，数据库也只返回该租户的行，SQL 层面无法绕过。</p>
+  <div class="note warn">
+    <span class="lbl">RLS 使用约束</span>
+    ① <code>askdb_ro</code> 必须为普通角色 —— superuser 与具备 <code>BYPASSRLS</code> 的角色会跳过策略；
+    ② RLS 谓词参与查询计划，大表上需确保租户列已建索引，否则退化为全表扫描；
+    ③ 视图默认以定义者权限执行，需显式使用 <code>security_invoker</code>（PG 15+）否则策略被绕过。
+  </div>
+
+  <h3><span class="n">4.5</span>反思重试</h3>
+  <p>触发条件：静态校验未通过（R-01～R-08）或执行报错。将<b>真实错误信息</b>与失败 SQL 一并回灌模型重新生成，同时按错误类型补充召回（例如字段不存在时，扩大 schema 召回范围）。</p>
+  <p>重试次数上限 2 次（R-14）。达到上限后返回失败并附完整判定链路，<b>不做静默降级</b> —— 返回一个"差不多的答案"比返回失败更危险。</p>
+</section>
+
+<section id="s5">
+  <h2><span class="n">5</span>状态机设计</h2>
+  <p>使用 LangGraph 建模。选择状态机而非线性链的原因：存在条件分支（校验失败回边）与重试计数，且需支持检查点以便失败复现。</p>
+
+  <h4>状态结构</h4>
+  <pre><code><span class="k">class</span> AskState(TypedDict):
+    question:   str
+    ctx:        QueryContext      <span class="c"># org_id / trace_id / 发起方</span>
+    tables:     list[TableSpec]   <span class="c"># [1] 召回结果</span>
+    metrics:    list[Metric]      <span class="c"># [1] 命中的口径</span>
+    plan:       str               <span class="c"># [2] 本步目标</span>
+    multi_step: bool              <span class="c"># [2] 规划判定：是否需要多步</span>
+    sql_raw:    str               <span class="c"># [3] 模型原始产出</span>
+    sql_final:  str               <span class="c"># [4] 强制改写后</span>
+    guard:      GuardResult       <span class="c"># 命中规则、改写项、拒绝原因</span>
+    explain:    ExplainResult     <span class="c"># [5] 预估行数与代价</span>
+    rows:       list[dict]        <span class="c"># [6] 本步结果</span>
+    error:      str | None
+    attempt:    int               <span class="c"># [7] 本步重试计数，上限 2（R-14）</span>
+
+    <span class="c"># ---- 多步规划（V1.1 新增）----</span>
+    <span class="k">step_no</span>:    int               <span class="c"># 当前第几步，上限 3（R-16）</span>
+    <span class="k">steps_done</span>: list[SubStep]     <span class="c"># 每步的目标 / SQL / 结果摘要</span>
+    <span class="k">carry</span>:      dict              <span class="c"># 下传给下一步的字面量（受 R-15 约束）</span>
+    <span class="k">enough</span>:     bool              <span class="c"># [8] 结果评估：是否足以作答</span>
+    <span class="k">cost_acc</span>:   CostAcc           <span class="c"># 累计 token 与成本（R-17）</span>
+
+    trace:      list[StepTrace]   <span class="c"># 步骤级耗时与 token</span></code></pre>
+
+  <h4>节点与边</h4>
+  <div class="tablewrap"><table>
+    <thead><tr><th>节点</th><th>出边</th><th>条件</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">retrieve_schema</td><td>→ plan</td><td>无条件</td></tr>
+      <tr><td class="mono">plan</td><td>→ generate_sql</td><td>产出本步目标；首次进入时判定 multi_step</td></tr>
+      <tr><td class="mono">generate_sql</td><td>→ guard</td><td>无条件</td></tr>
+      <tr><td class="mono">guard</td><td>→ dry_run<br>→ reflect<br>→ finalize_error</td><td>通过<br>不通过且 attempt &lt; 2<br>不通过且 attempt ≥ 2</td></tr>
+      <tr><td class="mono">dry_run</td><td>→ execute<br>→ finalize_error</td><td>行数低于阈值<br>超阈值</td></tr>
+      <tr><td class="mono">execute</td><td>→ assess<br>→ reflect</td><td>成功<br>报错且 attempt &lt; 2</td></tr>
+      <tr><td class="mono">reflect</td><td>→ generate_sql</td><td>attempt += 1；错误信息回灌</td></tr>
+      <tr><td class="mono"><b>assess</b></td><td>→ finalize<br><b>→ plan</b><br>→ finalize</td><td>enough = true<br><b>enough = false 且 step_no &lt; 3 且成本未超限</b><br>触及 R-16 / R-17 上限（收敛作答并标注）</td></tr>
+      <tr><td class="mono">finalize</td><td>END</td><td>组装结果 + 全部轮次 SQL + 数据时间 + 步数</td></tr>
+    </tbody>
+  </table></div>
+  <p>检查点持久化至本地 SQLite。作用是失败样本可原样复现，用于评测归因，而非在线断点续跑。</p>
+
+  <h3 id="s5-3"><span class="n">5.3</span>多步查询规划</h3>
+
+  <div class="note crit">
+    <span class="lbl">首要设计原则</span>
+    <b>能用一条 SQL 表达的依赖，一律交给 SQL，不走多步。</b>
+    大量看似"多跳"的问题（如"哪个知识库失败率最高，它的失败文档是什么类型"）
+    用 CTE 或窗口函数单条即可完成，且更快、更便宜、更准。
+    多步规划是<b>兜底路径，不是默认路径</b> —— 滥用会同时抬高成本、延迟与错误率。
+  </div>
+
+  <h4>5.3.1 触发条件</h4>
+  <p><code>plan</code> 节点仅在满足以下情形之一时判定 <code>multi_step = true</code>：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>情形</th><th>说明</th><th>示例</th></tr></thead>
+    <tbody>
+      <tr><td><b>探索型</b></td><td>需要先观察数据的实际取值分布，才能确定筛选条件</td><td>"看看处理状态都有哪些取值，再统计非正常状态的分布"</td></tr>
+      <tr><td><b>结果驱动分支</b></td><td>第一步的结果决定第二步查哪张表或用哪套口径</td><td>"最近异常的是哪个模块，把它对应的明细拉出来"</td></tr>
+      <tr><td><b>超出 SQL 表达能力</b></td><td>中间需要 LLM 做语义判断，SQL 无法表达</td><td>"找出命名不规范的知识库，统计它们的文档量"</td></tr>
+    </tbody>
+  </table></div>
+  <p>不满足上述任一情形时，即便问题表面包含多个子问题，也应生成单条 SQL。<code>plan</code> 节点的提示词中须显式给出上述判据与反例。</p>
+
+  <h4>5.3.2 中间结果下传</h4>
+  <p>中间结果<b>不以结果集形式回灌提示词</b>（体量不可控且浪费 token），而是提取为<b>字面量</b>注入下一步：</p>
+  <pre><code><span class="c">-- 第 1 步：找出失败率最高的 3 个知识库</span>
+<span class="k">SELECT</span> kb_id, ... <span class="k">FROM</span> documents <span class="k">WHERE</span> <span class="inj">org_id = 65</span>
+<span class="k">GROUP BY</span> kb_id <span class="k">ORDER BY</span> fail_rate <span class="k">DESC</span> <span class="inj">LIMIT 3</span>;
+<span class="c">-- 结果：kb_id = 12, 7, 31</span>
+
+<span class="c">-- carry = {"kb_ids": [12, 7, 31]}   ← 仅下传标识列，不下传整行</span>
+
+<span class="c">-- 第 2 步：由规划节点生成新目标，字面量注入</span>
+<span class="k">SELECT</span> kb_id, file_type, <span class="k">COUNT</span>(*) <span class="k">FROM</span> documents
+<span class="k">WHERE</span> status = <span class="s">'FAILED'</span> <span class="k">AND</span> kb_id <span class="k">IN</span> (12, 7, 31)
+  <span class="k">AND</span> <span class="inj">org_id = 65</span>
+<span class="k">GROUP BY</span> kb_id, file_type <span class="inj">LIMIT 1000</span>;</code></pre>
+  <p>下传内容受 <b>R-15</b> 约束：中间结果超过 50 行时拒绝下传，转为提示用户细化问题。原因是字面量列表过长会导致提示词膨胀、SQL 长度失控，且往往意味着第一步的筛选本身有问题。</p>
+
+  <h4>5.3.3 每步独立过全量护栏</h4>
+  <div class="note">
+    <span class="lbl">不得放松</span>
+    第 2、3 步生成的 SQL <b>必须完整通过 R-01～R-13 全部规则</b>，
+    包括表白名单、字段真实性、租户谓词强制注入。
+    不存在"因为是后续步骤所以已被信任"的路径 —— 每一步都是独立的不可信产出。
+  </div>
+
+  <h4>5.3.4 重试与步数的计数关系</h4>
+  <p>两个计数器相互独立：</p>
+  <ul>
+    <li><code>attempt</code> —— <b>按步重置</b>。第 2 步失败重试，不影响也不重跑第 1 步</li>
+    <li><code>step_no</code> —— 全局递增，上限 3（R-16）</li>
+  </ul>
+  <p>因此单次问答的最坏情况为 3 步 × 3 次生成 = 9 次模型调用，由 R-17 累计成本上限做最终兜底。</p>
+
+  <h4>5.3.5 收敛与降级</h4>
+  <p>触及 R-16 或 R-17 上限时，<b>不静默返回部分结果</b>，而是：基于已完成步骤作答，并在输出中明确标注「因步数/成本上限提前收敛，结论可能不完整」，同时附全部轮次的 SQL 供人工继续。</p>
+</section>
+
+<section id="s6">
+  <h2><span class="n">6</span>评测方案</h2>
+  <div class="note">
+    <span class="lbl">定位</span>
+    评测不是附属工作，而是本项目的<b>主要产出之一</b>。没有可复现的评测结果，
+    本项目与任意一个同类实现无法区分。
+  </div>
+
+  <h3><span class="n">6.1</span>黄金集</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>项</th><th>设定</th></tr></thead>
+    <tbody>
+      <tr><td>规模</td><td>58 题（其中 <b>18 题为盲测集</b>）</td></tr>
+      <tr><td>构成</td><td>单表聚合 15 · 多表关联 15 · 口径依赖 10 · 时间窗口 5 · <b>应被拒绝 5</b> · <b>多跳 8</b></td></tr>
+      <tr><td>多跳题标注</td><td>除标准结果外，额外标注<b>期望步数</b>与<b>是否本应单步完成</b> —— 后者用于检出多步规划的滥用</td></tr>
+      <tr><td>标注</td><td>每题含标准 SQL 与标准结果集，人工核对</td></tr>
+      <tr><td>存储</td><td><code>evals/golden.jsonl</code>，纳入版本管理，<b>冻结后不得修改</b></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="n">6.2</span>指标定义</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>指标</th><th>定义</th></tr></thead>
+    <tbody>
+      <tr><td><b>执行准确率</b></td><td>生成 SQL 执行结果集与标准结果集一致的题目占比。列顺序无关；行顺序在未显式要求排序时按集合比对</td></tr>
+      <tr><td>静态校验拦截率</td><td>在 R-01～R-08 阶段被拦截的错误 SQL 占全部错误 SQL 的比例（衡量零成本拦截的贡献）</td></tr>
+      <tr><td>误拒率</td><td>正确 SQL 被护栏错误拦截的比例（衡量护栏是否过严）</td></tr>
+      <tr><td>平均输入 token</td><td>单次问答注入提示词的 token 数（衡量 Schema 召回的收益）</td></tr>
+      <tr><td>单次成本</td><td>按当期单价折算，含全部重试轮次</td></tr>
+      <tr><td>P95 端到端延迟</td><td>从提问到返回结果</td></tr>
+      <tr><td>重试率</td><td>需要 ≥1 次重试的题目占比</td></tr>
+      <tr><td><b>多步误用率</b></td><td>本应单步完成却走了多步的题目占比。<b>该指标必须与多跳准确率同时报告</b> —— 否则可以通过"所有题都走多步"来虚高多跳成绩</td></tr>
+      <tr><td>平均步数</td><td>单次问答实际执行的 SQL 条数</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note warn">
+    <span class="lbl">指标须成对观察</span>
+    执行准确率与误拒率必须同时报告。单独优化准确率可以通过放宽护栏实现，
+    单独优化拦截率可以通过全部拒绝实现 —— 任一单点指标都可被操纵。
+  </div>
+
+  <h3><span class="n">6.3</span>消融实验</h3>
+  <p>固定黄金集、模型、随机种子，仅改变链路配置，逐项累加：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">组</th><th>配置</th><th>验证目标</th></tr></thead>
+    <tbody>
+      <tr><td class="c">A</td><td>裸 Prompt（全量 schema 注入，无护栏，无重试）</td><td>基线</td></tr>
+      <tr><td class="c">B</td><td>A + Schema RAG 召回</td><td>召回对准确率与 token 成本的贡献</td></tr>
+      <tr><td class="c">C</td><td>B + 静态校验与反思重试</td><td>零成本拦截 + 报错回灌的贡献</td></tr>
+      <tr><td class="c">D</td><td>C + 语义层口径</td><td>口径显式化对"口径依赖"类题目的贡献</td></tr>
+      <tr><td class="c">E</td><td>D + 干跑阈值（单步全链路）</td><td>单步完整链路</td></tr>
+      <tr><td class="c"><b>F</b></td><td><b>E + 多步查询规划</b></td><td><b>多跳题准确率提升幅度，以及在非多跳题上的成本与误用代价</b></td></tr>
+    </tbody>
+  </table></div>
+  <div class="note warn">
+    <span class="lbl">F 组必须双向报告</span>
+    多步规划的收益集中在 8 道多跳题上，代价却分摊在全部 58 题（成本、延迟、误用）。
+    只报告"多跳准确率提升了多少"是片面的，须同时给出<b>全集平均成本变化</b>与<b>多步误用率</b>。
+    若 F 组在非多跳题上的成本上升幅度超过多跳收益，则该特性应回退为可配置开关，默认关闭。
+  </div>
+
+  <h3><span class="n">6.4</span>防自证机制</h3>
+  <p>自建评测集存在"出题人即答题人"的固有质疑，须以机制而非声明应对：</p>
+  <ol>
+    <li><b>顺序锁定</b> —— 黄金集在 <code>guard.py</code> 实现开始前完成并 git 打标冻结；实施期间不得因"拦不住"而删改题目</li>
+    <li><b>盲测集隔离</b> —— 15 题在实施全程不可见，仅在 P3 验收时一次性运行。<b>盲测集成绩为最终成绩</b></li>
+    <li><b>对照组同题</b> —— 各消融组运行完全相同的题目，仅改变配置</li>
+    <li><b>失败样本留存</b> —— 全部失败样本连同检查点入库，报告中公开失败分类分布，不做筛选</li>
+  </ol>
+</section>
+
+<section id="s7">
+  <h2><span class="n">7</span>可观测与成本</h2>
+  <p>每次调用产生一条结构化审计记录，字段如下：</p>
+  <pre><code>{
+  "trace_id":     "…",
+  "ts":           "2026-08-11T14:20:31+08:00",
+  "org_id":       65,
+  "question":     "有哪些文档卡在处理中超过一小时",
+  "tables_hit":   ["documents", "knowledge_bases"],
+  "metrics_hit":  ["卡住的文档"],
+  "sql_raw":      "…",
+  "sql_final":    "…",
+  "rules_fired":  ["R-09", "R-10"],
+  "rejected_by":  null,
+  "attempts":     1,
+  "explain_rows": 34120,
+  "rows_returned":6,
+  "steps": [
+    {"step":"retrieve_schema","ms":180,"tok_in":312,"tok_out":0},
+    {"step":"generate_sql",   "ms":1080,"tok_in":794,"tok_out":288},
+    {"step":"guard",          "ms":12, "tok_in":0,  "tok_out":0},
+    {"step":"execute",        "ms":190,"tok_in":0,  "tok_out":0}
+  ],
+  "cost_cny":     0.008
+}</code></pre>
+  <p>成本归因到<b>步骤</b>而非整次调用。这是判断"钱花在哪一步"的前提，也是消融实验中成本对比的数据来源。审计记录同时满足生产环境的查询留痕要求。</p>
+</section>
+
+<section id="s8">
+  <h2><span class="n">8</span>生产使用边界</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>场景</th><th class="c">结论</th><th>依据</th></tr></thead>
+    <tbody>
+      <tr><td>连接生产<b>主库</b></td><td class="c"><span class="tag hard">禁止</span></td><td>自动发起的聚合查询无人值守，存在拖垮主库的现实风险</td></tr>
+      <tr><td>连接<b>只读副本</b>，限内部具备 SQL 读写能力人员使用</td><td class="c"><span class="tag done">有条件允许</span></td><td>满足下方全部准入条件时</td></tr>
+      <tr><td>面向<b>终端用户</b>开放</td><td class="c"><span class="tag hard">禁止</span></td><td>终端用户无法核对 SQL，错误口径将直接进入决策</td></tr>
+    </tbody>
+  </table></div>
+
+  <h4>准入条件（缺一不可）</h4>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">#</th><th>条件</th></tr></thead>
+    <tbody>
+      <tr><td class="c">1</td><td>数据源为只读副本，非主库</td></tr>
+      <tr><td class="c">2</td><td>独立只读账号 + 行级安全策略（RLS）双层隔离</td></tr>
+      <tr><td class="c">3</td><td><code>statement_timeout</code> 与 <code>CONNECTION LIMIT</code> 已在数据库侧生效</td></tr>
+      <tr><td class="c">4</td><td>表白名单已配置，未使用 <code>ALL TABLES</code> 授权</td></tr>
+      <tr><td class="c">5</td><td>每次查询留存完整审计记录</td></tr>
+      <tr><td class="c">6</td><td>已配置每日调用配额，防止循环调用导致成本失控</td></tr>
+      <tr><td class="c">7</td><td>输出界面强制附带 SQL 与数据时间</td></tr>
+      <tr><td class="c">8</td><td>界面显著标注"辅助工具，输出需人工核对，不作为决策唯一依据"</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note crit">
+    <span class="lbl">责任边界</span>
+    只要底层由 LLM 生成 SQL，就不存在"结果一定正确"。本项目所称"可信"指
+    <b>过程可信</b>（危险操作可被拦截、结果可被自验、判定链路可被追溯），
+    而非<b>结果可信</b>。此区别须在界面与文档中明确表述。
+  </div>
+</section>
+
+<section id="s9">
+  <h2><span class="n">9</span>分阶段计划</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">阶段</th><th>交付内容</th><th>验收标准</th><th class="c">目标日期</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><b>P0</b></td><td>样例库生成脚本、LangGraph 骨架、单轮问答跑通</td><td>本机开发库上返回第一条正确结果</td><td class="c">2026-08-14</td></tr>
+      <tr><td class="c"><b>P1</b></td><td>Schema 召回、<code>guard.py</code> 全部 14 条规则、只读执行</td><td>危险语句 100% 拦截；强制改写在界面可见</td><td class="c">2026-08-18</td></tr>
+      <tr><td class="c"><b>P2</b></td><td>反思重试、EXPLAIN 干跑、语义层、Web 界面接入</td><td>口径依赖类题目可正确作答</td><td class="c">2026-08-21</td></tr>
+      <tr><td class="c"><b>P3</b></td><td><b>黄金集 50 题、回放脚本、五组消融实验</b></td><td><b>盲测集成绩产出，报告含失败分类分布</b></td><td class="c">2026-08-25</td></tr>
+      <tr><td class="c"><b>P4</b></td><td>MCP 封装（无状态规范）、README（含全部实测数字）</td><td>可被外部 Agent 作为工具调用</td><td class="c">2026-08-28</td></tr>
+      <tr><td class="c"><b>P5</b></td><td><b>多步查询规划：<code>planner.py</code>、assess 节点与重规划回边、R-15～R-17、多跳题 8 道、消融组 F</b></td><td><b>多跳准确率与全集成本变化双向报告；多步误用率低于 10%</b></td><td class="c">2026-09-02</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note warn">
+    <span class="lbl">关键节点</span>
+    <b>P3 为分水岭。</b>P0–P2 交付的是"可运行"，P3 交付的是"可验证"。
+    若 P3 被跳过或缩水，本项目丧失全部区分度，前序投入的价值同步归零。
+  </div>
+  <div class="note">
+    <span class="lbl">P5 的次序不可提前</span>
+    多步规划必须<b>排在 P3 基线之后</b>。原因是它的价值只能以"相对单步链路的增量"来表达 ——
+    若在拿到单步基线之前引入，将无法区分准确率提升来自多步规划还是来自其它环节，
+    该特性也就失去了被验证的可能。
+  </div>
+</section>
+
+<section id="s10">
+  <h2><span class="n">10</span>风险与未决事项</h2>
+  <h3><span class="n">10.1</span>已识别风险</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">等级</th><th>风险</th><th>缓解措施</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><span class="tag p0">高</span></td><td><b>AST 改写遗漏分支导致越权</b>。子查询、CTE、UNION、视图任一分支未覆盖即构成漏洞</td><td>数据库 RLS 兜底（4.4）；针对每类语法结构编写专项用例</td></tr>
+      <tr><td class="c"><span class="tag p0">高</span></td><td><b>沉默的错误</b>。SQL 可执行但口径错误，输出看似合理</td><td>语义层显式定义口径；输出强制附 SQL；限定使用人群具备核对能力</td></tr>
+      <tr><td class="c"><span class="tag p1">中</span></td><td>字段注释覆盖率不足导致准确率不达预期</td><td>P1 将注释补齐列为交付项而非可选项；覆盖率纳入验收</td></tr>
+      <tr><td class="c"><span class="tag p1">中</span></td><td>黄金集规模偏小（50 题），统计置信区间较宽</td><td>报告中同时给出置信区间；不对小数点后第二位差异下结论</td></tr>
+      <tr><td class="c"><span class="tag p2">低</span></td><td>RLS 在大表上引入性能开销</td><td>确保租户列有索引；干跑阈值可及早发现退化</td></tr>
+      <tr><td class="c"><span class="tag p0">高</span></td><td><b>多步规划被滥用</b>。本可单步完成的问题走多步，导致成本与延迟成倍上升而准确率不变甚至下降</td><td>plan 节点提示词内置判据与反例；黄金集标注"本应单步"；<b>多步误用率纳入验收（&lt;10%）</b>；特性做成可配置开关，必要时默认关闭</td></tr>
+      <tr><td class="c"><span class="tag p1">中</span></td><td><b>多步累积泄露</b>。中间结果进入提示词与审计日志，可能跨请求留存</td><td>仅下传标识列字面量，不下传整行；审计日志中的中间结果做脱敏与体量截断</td></tr>
+      <tr><td class="c"><span class="tag p1">中</span></td><td>多步链路的失败归因困难 —— 第 3 步错了，可能是第 1 步就选错了方向</td><td>每步独立留存检查点与结果摘要；失败报告按步拆解，标注首个偏离步</td></tr>
+      <tr><td class="c"><span class="tag p2">低</span></td><td>模型供应商接口或定价变动</td><td>使用 OpenAI 兼容端点；配置项支持切换与降级</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="n">10.2</span>未决事项</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>事项</th><th>待定内容</th><th>决策时点</th></tr></thead>
+    <tbody>
+      <tr><td>MySQL 适配</td><td>是否在 P4 支持，或延至后续版本</td><td>P2 结束</td></tr>
+      <tr><td>结果缓存</td><td>相同问题是否复用结果，涉及数据新鲜度权衡</td><td>P3 结束</td></tr>
+      <tr><td>口径冲突处理</td><td>同一名称在不同表下定义不一致时的仲裁规则</td><td>P2 期间</td></tr>
+      <tr><td>是否引入本地小模型做粗筛</td><td>用于降低召回阶段成本，需评估收益是否覆盖复杂度</td><td>P3 结束</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s11">
+  <h2><span class="n">11</span>Agent 能力使用说明</h2>
+  <p>本章明确列出本项目实际使用与<b>刻意未使用</b>的 Agent 能力，避免对能力边界产生误读。</p>
+
+  <h3><span class="n">11.1</span>已使用</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>能力</th><th>落点</th><th class="c">强度</th></tr></thead>
+    <tbody>
+      <tr><td><b>状态机编排</b></td><td>LangGraph：9 节点、条件边、重试回边、<b>重规划回边</b>、检查点</td><td class="c">★★★★★</td></tr>
+      <tr><td><b>多步规划</b></td><td>plan / assess 节点构成的受限循环，上限 3 步（§5.3）</td><td class="c">★★★★</td></tr>
+      <tr><td><b>反思自修正</b></td><td>校验失败或执行报错时回灌真实错误重新生成，按步计数（R-14）</td><td class="c">★★★★</td></tr>
+      <tr><td><b>检索增强</b></td><td>Schema 与口径的向量召回，仅注入命中项（§3.2.3）</td><td class="c">★★★★</td></tr>
+      <tr><td><b>受限执行 / 护栏</b></td><td>17 条规则；AST 静态校验 + 强制改写 + 干跑 + 数据库层兜底</td><td class="c">★★★★★</td></tr>
+      <tr><td><b>结构化输出</b></td><td><code>langchain-core</code> 的 <code>with_structured_output()</code>，强制 JSON schema</td><td class="c">★★★</td></tr>
+      <tr><td><b>可观测与成本归因</b></td><td>步骤级 token / 耗时 / 成本追踪，累计封顶（R-17）</td><td class="c">★★★</td></tr>
+      <tr><td><b>MCP 工具化</b></td><td>按 2026-07-28 无状态规范暴露，可被外部 Agent 调用（P4）</td><td class="c">★★★</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="n">11.2</span>刻意未使用</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>能力</th><th>决策依据</th></tr></thead>
+    <tbody>
+      <tr><td>自主工具选择</td><td>执行链路涉及真实数据库操作，流程须确定。工具调用顺序由代码决定而非模型决定，是安全性要求而非能力缺失</td></tr>
+      <tr><td>多 Agent 协作</td><td>校验由代码完成，引入 Critic Agent 会以更高成本重复已有能力，且引入模型判定的不确定性</td></tr>
+      <tr><td>记忆 / 多轮上下文</td><td>单轮问答形态。多轮会引入指代消解错误，且使审计与复现复杂化</td></tr>
+      <tr><td>人在环审批</td><td>只读链路无破坏性操作，无需人工放行。若后续开放写操作则必须补齐</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="n">11.3</span>LangChain 生态使用范围</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>包</th><th>用途</th><th class="c">采用</th></tr></thead>
+    <tbody>
+      <tr><td><code>langgraph</code></td><td>状态机编排主干</td><td class="c"><span class="tag done">是</span></td></tr>
+      <tr><td><code>langchain-core</code></td><td>结构化输出、消息抽象（同时是 langgraph 依赖）</td><td class="c"><span class="tag done">是</span></td></tr>
+      <tr><td><code>langchain-openai</code></td><td>经 OpenAI 兼容端点调用 Qwen / DeepSeek</td><td class="c"><span class="tag done">是</span></td></tr>
+      <tr><td><code>langchain</code>（主包）</td><td><code>Chain</code> / <code>AgentExecutor</code> 等旧抽象</td><td class="c"><span class="tag hard">否</span></td></tr>
+    </tbody>
+  </table></div>
+  <p>不采用主包的原因：<code>AgentExecutor</code> 不支持条件路由与状态持久化，失败无法从中间节点续跑 —— 而这三项正是本设计的必要条件（校验失败回边、重规划回边、检查点复现）。LangGraph 的出现即源于此。</p>
+
+  <div class="note">
+    <span class="lbl">能力定位</span>
+    本项目展示的是<b>如何约束 Agent</b>，而非 Agent 的自主程度。
+    在涉及真实数据执行的场景中，可控性优先于自主性；
+    多步规划是在此前提下审慎引入的唯一一处自主决策，且被 R-15～R-17 三重约束包裹。
+  </div>
+</section>
+
+<section id="a1">
+  <h2><span class="n">附录 A</span>配置文件完整样例</h2>
+  <pre><code><span class="c"># askdb.yaml</span>
+datasource:
+  type: postgresql
+  dsn: <span class="s">"postgresql://askdb_ro@127.0.0.1:5432/ragforge_local"</span>
+  pool:
+    max_size: 3
+    timeout_s: 5
+  session_setup:
+    - <span class="s">"SET LOCAL app.org_id = '${ctx.org_id}'"</span>
+
+tenant:
+  column: org_id
+  mode: rls_and_predicate      <span class="c"># rls | predicate | rls_and_predicate</span>
+  on_unresolved: reject        <span class="c"># 无法确定租户归属时拒绝，不放行</span>
+
+planner:
+  enabled: true                <span class="c"># 可整体关闭，退回单步链路</span>
+  max_steps: 3                 <span class="c"># R-16</span>
+  max_carry_rows: 50           <span class="c"># R-15 中间结果规模上限</span>
+  carry_columns_only: true     <span class="c"># 仅下传标识列，不下传整行</span>
+  cost_cap_tokens: 12000       <span class="c"># R-17 单次问答累计上限</span>
+  on_cap_reached: converge     <span class="c"># converge | fail —— 收敛作答并标注，不静默返回</span>
+
+guard:
+  max_rows: 1000
+  max_scan_rows: 500000
+  statement_timeout_ms: 8000
+  max_retry: 2                 <span class="c"># R-14，按步重置</span>
+  allow_select_star: false
+  deny_functions:
+    - pg_read_file
+    - pg_ls_dir
+    - lo_import
+    - dblink
+    - pg_sleep
+
+schema_rag:
+  top_k: 3
+  max_k: 5
+  token_budget: 1500
+  embedding_model: text-embedding-v4
+
+llm:
+  provider: dashscope
+  base_url: <span class="s">"https://dashscope.aliyuncs.com/compatible-mode/v1"</span>
+  model: qwen3.8-max
+  fallback: deepseek-v4
+  temperature: 0
+  api_key_env: DASHSCOPE_API_KEY   <span class="c"># 仅走环境变量，禁止入库</span>
+
+observability:
+  audit_log: ./data/audit.jsonl
+  checkpoint_db: ./data/checkpoints.sqlite
+  daily_quota: 500
+
+tables_file: ./config/tables.yaml
+metrics_file: ./config/metrics.yaml</code></pre>
+</section>
+
+<section id="a2">
+  <h2><span class="n">附录 B</span>数据库初始化脚本</h2>
+  <pre><code><span class="c">-- ============ 1. 只读角色 ============</span>
+<span class="k">CREATE ROLE</span> askdb_ro <span class="k">LOGIN PASSWORD</span> <span class="s">'***'</span>;
+
+<span class="k">GRANT CONNECT</span> <span class="k">ON DATABASE</span> ragforge <span class="k">TO</span> askdb_ro;
+<span class="k">GRANT USAGE</span>   <span class="k">ON SCHEMA</span> public   <span class="k">TO</span> askdb_ro;
+
+<span class="c">-- 逐表授权，禁止 ALL TABLES</span>
+<span class="k">GRANT SELECT ON</span> documents, knowledge_bases, orgs, model_usage <span class="k">TO</span> askdb_ro;
+
+<span class="c">-- ============ 2. 数据库级硬护栏 ============</span>
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">SET</span> default_transaction_read_only = <span class="k">on</span>;
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">SET</span> statement_timeout = <span class="s">'8s'</span>;
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">SET</span> idle_in_transaction_session_timeout = <span class="s">'10s'</span>;
+<span class="k">ALTER ROLE</span> askdb_ro <span class="k">CONNECTION LIMIT</span> 3;
+
+<span class="c">-- ============ 3. 行级安全（每张含租户列的表都要做）============</span>
+<span class="k">ALTER TABLE</span> documents <span class="k">ENABLE ROW LEVEL SECURITY</span>;
+
+<span class="k">CREATE POLICY</span> org_isolation <span class="k">ON</span> documents
+  <span class="k">FOR SELECT TO</span> askdb_ro
+  <span class="k">USING</span> (org_id = current_setting(<span class="s">'app.org_id'</span>, <span class="k">true</span>)::bigint);
+
+<span class="c">-- 租户列索引，避免 RLS 谓词导致全表扫描</span>
+<span class="k">CREATE INDEX IF NOT EXISTS</span> idx_documents_org_status
+  <span class="k">ON</span> documents (org_id, status, updated_at);
+
+<span class="c">-- ============ 4. 自检：以下语句必须报错 ============</span>
+<span class="c">-- SET ROLE askdb_ro;</span>
+<span class="c">-- INSERT INTO documents(file_name) VALUES ('probe');   → 应被拒绝</span>
+<span class="c">-- SELECT * FROM chunks LIMIT 1;                        → 应报权限不足</span></code></pre>
+</section>
+
+</main>
+</div>
+
+<div class="foot">
+  askdb 技术设计说明书 V1.1 · 拟制日期 2026-08-11 · 状态：设计定版，待实施 ·
+  下次修订触发条件：P1 完成后回填 <code>guard.py</code> 实际规则命中情况；P3 完成后回填单步基线全部实测指标；P5 完成后回填多步规划的增量与代价
+</div>
+
+<script>
+document.getElementById('themeBtn').onclick = () => {
+  const r = document.documentElement;
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = (r.dataset.theme || (dark?'dark':'light')) === 'dark' ? 'light' : 'dark';
+};
+/* TOC scroll-spy */
+const links = [...document.querySelectorAll('#toc a')];
+const targets = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+const io = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if(!e.isIntersecting) return;
+    links.forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id));
+  });
+}, {rootMargin:'-10% 0px -80% 0px', threshold:0});
+targets.forEach(t => io.observe(t));
+</script>
+</body>
+</html>

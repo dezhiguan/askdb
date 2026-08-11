@@ -31,6 +31,18 @@
 
 ---
 
+## 文档
+
+| 文件 | 内容 |
+|---|---|
+| [`docs/tech-design.html`](docs/tech-design.html) | 技术设计说明书 V1.1 —— 11 章 + 2 附录，含 17 条护栏规则、评测方案、生产使用边界 |
+| [`docs/prototype.html`](docs/prototype.html) | 交互原型 —— 数据接入向导、提问链路、多步规划 |
+
+单文件 HTML，下载后浏览器直接打开（GitHub 网页不渲染 HTML）。
+**其中全部指标均为设计阶段占位值**，说明见 [`docs/README.md`](docs/README.md)。
+
+---
+
 ## 执行链路
 
 ```
