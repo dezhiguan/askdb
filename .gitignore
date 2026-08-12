@@ -20,8 +20,13 @@ dist/
 # 运行时产物
 data/*.duckdb
 data/*.duckdb.wal
-data/audit.jsonl
-data/checkpoints.sqlite
+# 审计日志与检查点含真实问题、生成的 SQL 与查询结果行 —— 一律不入库。
+# 只写 audit.jsonl / checkpoints.sqlite 会漏掉 -ragforge / -ragforge-prod
+# 这些按数据源命名的变体，实际已因此泄露过一次。
+data/audit*.jsonl
+data/checkpoints*.sqlite
+data/checkpoints*.sqlite-shm
+data/checkpoints*.sqlite-wal
 .chroma/
 
 # 编辑器与系统
