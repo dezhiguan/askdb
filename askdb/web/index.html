@@ -309,7 +309,7 @@ tbody tr.sel{background:var(--wash)}
   <!-- ============ ① 接入数据 ============ -->
   <section id="setup">
     <div class="stepper">
-      <button class="sstep" data-s="0" aria-current="true"><span class="sdot">1</span><span class="slab">连接数据源</span></button>
+      <button class="sstep" data-s="0" aria-current="true"><span class="sdot">1</span><span class="slab">确认数据源</span></button>
       <span class="sline"></span>
       <button class="sstep" data-s="1"><span class="sdot">2</span><span class="slab">选择开放的表</span></button>
       <span class="sline"></span>
@@ -320,19 +320,40 @@ tbody tr.sel{background:var(--wash)}
     <div id="w0">
       <div class="cols">
         <div class="card">
-          <h2>连接数据源</h2>
-          <p class="sub">建议先连本机开发库；线上只连只读副本，绝不连主库</p>
+          <h2>当前数据源</h2>
+          <p class="sub">连接由部署方在配置文件中指定，页面不可修改</p>
+          <div class="notice info" style="margin:0 0 14px">
+            <div class="t">◇ 为什么这里不给填连接串</div>
+            <div class="why">askdb 不设账号体系，<b>数据库连接本身即权限边界</b>。
+              表白名单、租户隔离、业务口径都是跟着这份连接配的 —— 页面若能改连接，
+              等于任何打开页面的人都能把这套护栏整体换掉。
+              换数据源请换配置文件后重启，见右侧。</div>
+          </div>
           <div class="gtitle">连接参数</div>
           <div class="form" id="dsForm"></div>
           <div class="gtitle" style="margin-top:16px">租户隔离</div>
           <div class="form" id="tenantForm"></div>
           <div id="tenantNote"></div>
           <div class="row">
-            <button class="btn" id="testBtn">测试连接</button>
+            <button class="btn" id="testBtn">运行连接自检</button>
             <button class="btn ghost" id="next0">下一步 · 选择表</button>
           </div>
           <div id="checks" style="margin-top:12px"></div>
         </div>
+        <aside class="card">
+          <h2>换一个数据源</h2>
+          <p class="sub">一个数据源 = 一份配置，用启动参数切换，不改文件</p>
+          <pre class="code">python -m askdb.cli serve \
+  -c config/askdb.yaml         # 本机样例库
+  -c config/ragforge.yaml      # 本机 PG
+  -c config/ragforge-prod.yaml # 云上 PG</pre>
+          <div class="notice info" style="margin-top:10px">
+            <div class="why">每份配置自带配套的 <code>*-tables.yaml</code> 与 <code>*-metrics.yaml</code>
+              —— 白名单和业务口径是跟着库走的，所以换源不可能只换一个连接串。
+              密码只从环境变量读，不进配置文件。</div>
+          </div>
+        </aside>
+
         <aside class="card">
           <h2>还没有只读账号？</h2>
           <p class="sub">把这段跑一遍，护栏做在数据库层</p>
@@ -653,14 +674,34 @@ function buildExamples() {
 
   // 自然语言：优先用已定义的业务口径，那是最能体现价值的一类问题。
   // 谓词型口径（筛出一批行）问"有哪些"，表达式型（算出一个数）问"是多少"。
+  // 聚合型口径要问"按什么分组"。分组维度必须是外键指向的**另一张表**，
+  // 不能拿口径自己所在的表 —— 否则会拼出「各文档的文档数」这种病句。
+  // 租户列跳过：它被 R-10 强制注入成单值，按它分组只会得到一行。
+  const dimOf = t => {
+    for (const c of t.columns) {
+      const mm = /^(.+)_id$/.exec(c.name);
+      if (!mm || c.tenant) continue;
+      const stem = mm[1].toLowerCase();
+      const hit = tables.find(x => x !== t && (x.name.toLowerCase().startsWith(stem)
+        || (x.aliases || []).some(a => a.toLowerCase() === stem)));
+      if (hit) return hit;
+    }
+    return null;
+  };
+
   SCHEMA.metrics.slice(0, 3).forEach(m => {
     const scope = tables.find(t => (m.scope || []).includes(t.name));
-    const where = scope ? alias(scope) : "";
     const isPredicate = !/\bCOUNT\s*\(|\bSUM\s*\(|\bAVG\s*\(/i.test(m.definition || "");
-    EXAMPLES.push({
-      k: "命中业务口径",
-      q: isPredicate ? `有哪些${m.name}` : `各${where}的${m.name}分别是多少`,
-    });
+    let q;
+    if (isPredicate) {
+      q = `有哪些${m.name}`;
+    } else {
+      const dim = scope && dimOf(scope);
+      // 找不到维度表就不硬凑分组，直接问总数
+      q = dim ? `各${alias(dim)}的${m.name}分别是多少`
+              : `${scope ? alias(scope) : ""}的${m.name}是多少`;
+    }
+    EXAMPLES.push({ k: "命中业务口径", q });
   });
   if (tables.length >= 2) {
     const a = tables[0], b = tables[1];
@@ -1243,11 +1284,28 @@ function drawAblation(gs, shipped) {
            style="font-variant-numeric:tabular-nums">${g}%</text>`;
   });
   s += `<line x1="${L}" y1="${T}" x2="${L}" y2="${T + ph}" stroke="var(--axis)" stroke-width="1"/>`;
+  // 标签按**估算宽度**裁，不按字符数：中文字形约是拉丁的两倍宽，
+  // 按 length 截断会让含中文的长标签溢出 viewBox 被卡片裁掉。
+  const FS = 11.5;
+  const textW = str => [...str].reduce((a, ch) =>
+    a + (/[⺀-鿿＀-｠　-〿]/.test(ch) ? FS : FS * 0.55), 0);
+  const fit = (str, max) => {
+    if (textW(str) <= max) return str;
+    let out = "";
+    for (const ch of str) {
+      if (textW(out + "…") > max) break;
+      out += ch;
+    }
+    return out.trimEnd() + "…";
+  };
+
   gs.forEach((g, i) => {
     const y = T + i * band + (band - bh) / 2, w = (g.accuracy) * pw;
-    const label = `${g.key} ${g.label}`.slice(0, 26);
+    // 括号里的补充说明去掉 —— 完整配置在下方表格里，图上只需分得清是哪一组
+    const full = `${g.key} ${g.label}`;
+    const label = fit(full.split("（")[0].trim(), L - 15);
     s += `<text x="${L - 11}" y="${y + bh / 2 + 4}" fill="var(--ink-2)" font-size="11.5"
-           text-anchor="end">${esc(label)}</text>`;
+           text-anchor="end"><title>${esc(full)}</title>${esc(label)}</text>`;
     // 单色：这是"一个测量值 × 6 个配置"，不是有序量级编码
     s += `<path d="${barPath(L, y, w, bh, 4)}" fill="var(--accent)"
            opacity="${g.key === shipped ? 1 : .55}"/>`;
