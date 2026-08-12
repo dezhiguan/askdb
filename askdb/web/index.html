@@ -153,6 +153,11 @@ pre.sql{background:var(--code-bg);border:1px solid var(--border);border-radius:9
   overflow-x:auto;font-size:12.5px;line-height:1.7;white-space:pre}
 pre.sql.dead{opacity:.6}
 pre.sql .inj{background:var(--inj);border-radius:3px;padding:1px 3px;font-weight:700}
+/* 责任边界（§8 准入条件 #8）。常驻、不可关闭 —— 可关闭的免责等于没有免责。 */
+.disclaimer{font-size:12px;color:var(--ink-2);background:var(--surface);
+  border:1px solid var(--border);border-left:3px solid var(--warning);
+  border-radius:0 8px 8px 0;padding:8px 13px;margin:0 0 14px;line-height:1.6}
+.disclaimer b{color:var(--ink)}
 .legend{font-size:11.5px;color:var(--ink-2);margin-top:9px;display:flex;align-items:center;gap:7px}
 .sw{width:11px;height:11px;border-radius:3px;background:var(--inj);border:1px solid var(--accent);flex:none}
 
@@ -292,6 +297,12 @@ tbody tr.sel{background:var(--wash)}
     <button class="tab" role="tab" aria-selected="false" data-p="ask">② 提问</button>
     <button class="tab" role="tab" aria-selected="false" data-p="eval">③ 评测</button>
   </nav>
+
+  <p class="disclaimer">
+    <b>辅助工具，输出需人工核对，不作为决策唯一依据。</b>
+    本工具保证的是<b>过程可信</b> —— 危险操作可被拦截、结果附带 SQL 可自验、判定链路可追溯；
+    而非<b>结果可信</b>：底层由大模型生成 SQL，口径理解出错时结果依然可能"看起来合理"。
+  </p>
 
   <div id="banners"></div>
 
@@ -529,6 +540,15 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   ["setup", "ask", "eval"].forEach(id => $(id).hidden = id !== t.dataset.p);
 });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+/* 数据时间取自数据源时钟，只显示到分钟 —— 这里是判断新鲜度，不是对账 */
+function fmtAsOf(s) {
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} `
+       + `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 function copyBtn(text, label = "复制") {
   return `<button onclick="navigator.clipboard&&navigator.clipboard.writeText(${JSON.stringify(text)});this.textContent='已复制';setTimeout(()=>this.textContent='${label}',1400)">${label}</button>`;
 }
@@ -871,8 +891,10 @@ function renderOutput(d) {
   }
 
   $("outTitle").textContent = "查询结果";
+  // 数据时间必须显示（§8 准入条件 #7）：不标时间的结果，隔天再看会被当成当前状态
   $("outSub").textContent = `${d.row_count.toLocaleString()} 行`
     + (d.truncated ? " · 已按行数上限截断（R-13）" : "")
+    + (d.as_of ? ` · 数据截至 ${fmtAsOf(d.as_of)}` : "")
     + ` · 结果附带上面的 SQL，可自行核对`;
   const head = `<tr>${d.columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr>`;
   const body = d.rows.map(r => `<tr>${r.map(v =>

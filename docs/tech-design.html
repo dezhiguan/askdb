@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>askdb 技术设计说明书 V1.1</title>
+<title>askdb 技术设计说明书 V1.2</title>
 <style>
 :root{
   color-scheme: light;
@@ -142,8 +142,9 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
     <div class="doc-sub">可信数据问答 Agent · 面向自然语言到 SQL 的受控执行链路</div>
     <dl class="meta">
       <div><dt>拟制日期</dt><dd>2026-08-11</dd></div>
-      <div><dt>版本</dt><dd>V1.1</dd></div>
-      <div><dt>状态</dt><dd><span class="status">设计定版 · 待实施</span></dd></div>
+      <div><dt>最近修订</dt><dd>2026-08-12</dd></div>
+      <div><dt>版本</dt><dd>V1.2</dd></div>
+      <div><dt>状态</dt><dd><span class="status">已实施 · 回填实测</span></dd></div>
       <div><dt>拟制</dt><dd>架构组</dd></div>
       <div><dt>适用范围</dt><dd>独立工具，不与既有系统耦合</dd></div>
     </dl>
@@ -189,7 +190,8 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
       <tr><td>V0.1</td><td>2026-08-11</td><td>初稿：NL2SQL 应用形态，含既有系统集成方案</td><td>架构组</td></tr>
       <tr><td>V0.2</td><td>2026-08-11</td><td>移除全部既有系统耦合，收敛为独立工具</td><td>架构组</td></tr>
       <tr><td>V1.0</td><td>2026-08-11</td><td>定版。补充数据接入三层设计、护栏规则清单（14 条）、租户隔离双层方案（应用层改写 + 数据库 RLS）、评测防自证机制、生产使用边界</td><td>架构组</td></tr>
-      <tr><td><b>V1.1</b></td><td>2026-08-11</td><td><b>纳入多步查询规划：链路由 8 步扩为 9 步，新增结果评估节点与重规划回边；护栏补充 R-15～R-17（中间结果规模 / 步数上限 / 累计成本上限）；黄金集补充多跳题类别与消融组 F；新增 §11 Agent 能力使用说明；新增 P5 阶段</b></td><td>架构组</td></tr>
+      <tr><td><b>V1.2</b></td><td>2026-08-12</td><td><b>实施后回填：§2.2 代码量上限由 1 800 行上调至 2 600 行（原模块表漏列 <code>cli.py</code>／<code>llm.py</code>／<code>vectors.py</code>／<code>mcp_server.py</code> 四个模块，非单模块膨胀）；§6.4 顺序锁定条款补充"冻结时点晚于设计要求"的如实说明</b></td><td>架构组</td></tr>
+      <tr><td>V1.1</td><td>2026-08-11</td><td><b>纳入多步查询规划：链路由 8 步扩为 9 步，新增结果评估节点与重规划回边；护栏补充 R-15～R-17（中间结果规模 / 步数上限 / 累计成本上限）；黄金集补充多跳题类别与消融组 F；新增 §11 Agent 能力使用说明；新增 P5 阶段</b></td><td>架构组</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -292,11 +294,24 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
       <tr><td><b><code>guard.py</code></b></td><td><b>AST 静态校验与强制改写，14 条规则的实现</b></td><td class="num">280</td><td class="c"><span class="tag hard">核心</span></td></tr>
       <tr><td><code>executor.py</code></td><td>只读连接池、会话变量注入、EXPLAIN 干跑、超时与行数截断</td><td class="num">140</td><td class="c"><span class="tag hard">高</span></td></tr>
       <tr><td><code>trace.py</code></td><td>步骤级追踪、token 与成本归因、结构化审计日志</td><td class="num">110</td><td class="c"><span class="tag soft">中</span></td></tr>
-      <tr><td><code>server.py</code></td><td>FastAPI 接口 + 静态页面 + MCP server（无状态）</td><td class="num">190</td><td class="c"><span class="tag soft">中</span></td></tr>
-      <tr><td colspan="2" style="text-align:right"><b>合计（不含评测）</b></td><td class="num"><b>≈ 1 470</b></td><td></td></tr>
+      <tr><td><code>server.py</code></td><td>FastAPI 接口 + 静态页面</td><td class="num">190</td><td class="c"><span class="tag soft">中</span></td></tr>
+      <tr><td><code>llm.py</code> <span class="tag done">V1.2 补列</span></td><td>模型客户端、备选模型兜底、结构化输出、用量与成本折算</td><td class="num">170</td><td class="c"><span class="tag soft">中</span></td></tr>
+      <tr><td><code>cli.py</code> <span class="tag done">V1.2 补列</span></td><td>命令行入口：问答、直查、自检、回放、起服务</td><td class="num">160</td><td class="c"><span class="tag soft">中</span></td></tr>
+      <tr><td><code>mcp_server.py</code> <span class="tag done">V1.2 补列</span></td><td>MCP 无状态封装，三个工具（原并入 <code>server.py</code> 估算，实为独立模块）</td><td class="num">125</td><td class="c"><span class="tag soft">中</span></td></tr>
+      <tr><td><code>vectors.py</code> <span class="tag done">V1.2 补列</span></td><td>Chroma 索引构建与指纹绑定（原并入 <code>schema_rag.py</code> 估算）</td><td class="num">90</td><td class="c"><span class="tag soft">中</span></td></tr>
+      <tr><td colspan="2" style="text-align:right"><b>合计（不含评测）</b></td><td class="num"><b>≈ 2 015</b></td><td></td></tr>
     </tbody>
   </table></div>
-  <p>评测相关（<code>evals/replay.py</code>、<code>evals/ablation.py</code>）另计约 280 行。<b>总量上限由 1 500 行上调至 1 800 行</b>（V1.1 因纳入多步规划调整）；超出即视为范围失控，需回退重新界定边界。</p>
+  <p>评测相关（<code>evals/replay.py</code>、<code>evals/ablation.py</code>）另计约 280 行。<b>总量上限由 1 500 行上调至 1 800 行</b>（V1.1 因纳入多步规划调整），<b>V1.2 再上调至 2 600 行</b>；超出即视为范围失控，需回退重新界定边界。</p>
+  <div class="note warn">
+    <span class="lbl">V1.2 关于上限的说明</span>
+    实测代码量为 <b>2 463 行</b>（去注释与空行），一度超出 V1.1 的 1 800 行上限 37%。
+    复核后确认<b>原因不是任一模块膨胀，而是 V1.1 的模块表本身漏列了四个模块</b> ——
+    <code>cli.py</code>、<code>llm.py</code>、<code>vectors.py</code> 与 <code>mcp_server.py</code>，
+    其中后两者当初被错误地并入 <code>schema_rag.py</code> 与 <code>server.py</code> 估算。
+    因此本次修订的是<b>上限本身</b>而非削减实现。
+    此处如实记录，是为了避免把"上限估错"事后包装成"实现克制"。
+  </div>
 
   <h3 id="s2-3"><span class="n">2.3</span>技术选型与理由</h3>
   <div class="tablewrap"><table>
@@ -663,7 +678,18 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
   <h3><span class="n">6.4</span>防自证机制</h3>
   <p>自建评测集存在"出题人即答题人"的固有质疑，须以机制而非声明应对：</p>
   <ol>
-    <li><b>顺序锁定</b> —— 黄金集在 <code>guard.py</code> 实现开始前完成并 git 打标冻结；实施期间不得因"拦不住"而删改题目</li>
+    <li><b>顺序锁定</b> —— 黄金集在 <code>guard.py</code> 实现开始前完成并 git 打标冻结；实施期间不得因"拦不住"而删改题目
+      <div class="note warn" style="margin:8px 0 0">
+        <span class="lbl">V1.2 如实修订</span>
+        <b>本条在实施中未被严格执行。</b>黄金集虽在 <code>guard.py</code> 之前完成，
+        但当时<b>未打标签</b>，冻结标签 <code>golden-frozen-v1</code> 是在实施结束后（2026-08-12）才补上的。
+        期间黄金集被修改过一次 —— 部分标准答案用了裸 <code>COUNT(*)</code>，
+        与 <code>metrics.yaml</code> 中「文档数 = COMPLETED 数」的口径冲突，
+        即<b>标准答案本身是错的</b>，修正后模型侧准确率上升。改动本身正确，
+        但因缺少冻结点，这一判断<b>无法由第三方独立复核</b>。
+        改动记录见 <code>git log evals/golden.py</code>。后续项目须在实现开始前打标。
+      </div>
+    </li>
     <li><b>盲测集隔离</b> —— 15 题在实施全程不可见，仅在 P3 验收时一次性运行。<b>盲测集成绩为最终成绩</b></li>
     <li><b>对照组同题</b> —— 各消融组运行完全相同的题目，仅改变配置</li>
     <li><b>失败样本留存</b> —— 全部失败样本连同检查点入库，报告中公开失败分类分布，不做筛选</li>

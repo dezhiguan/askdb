@@ -37,6 +37,20 @@ class DataSourceError(RuntimeError):
         self.hint = hint
 
 
+def _fmt_ts(v: Any) -> str:
+    """时间戳统一为带时区偏移的 ISO 文本，秒级即可 —— 界面上是给人看新鲜度的。"""
+    try:
+        return v.replace(microsecond=0).isoformat()
+    except AttributeError:
+        return str(v)
+
+
+def _local_now() -> str:
+    from datetime import datetime
+
+    return _fmt_ts(datetime.now().astimezone())
+
+
 @dataclass
 class ExplainResult:
     est_rows: int | None
@@ -52,6 +66,7 @@ class QueryResult:
     row_count: int = 0
     truncated: bool = False
     elapsed_ms: int = 0
+    as_of: str = ""     # 数据时间（§8 准入条件 #7）
 
 
 # ==========================================================================
@@ -65,7 +80,7 @@ class _Backend:
 
     def connect(self) -> Any: ...          # pragma: no cover
     def explain_rows(self, sql: str) -> tuple[int | None, str]: ...   # pragma: no cover
-    def fetch(self, sql: str, cap: int) -> tuple[list[str], list[list[Any]]]: ...  # pragma: no cover
+    def fetch(self, sql: str, cap: int) -> tuple[list[str], list[list[Any]], str]: ...  # pragma: no cover
     def env_checks(self) -> list[tuple[str, bool, str]]: ...          # pragma: no cover
 
     def close(self) -> None:
@@ -133,7 +148,8 @@ class _DuckBackend(_Backend):
             raise
         finally:
             done.set()
-        return columns, [list(r) for r in rows]
+        # 本机文件库，进程时钟即数据源时钟
+        return columns, [list(r) for r in rows], _local_now()
 
     def env_checks(self):
         ms = self.cfg.raw["guard"]["statement_timeout_ms"]
@@ -231,6 +247,11 @@ class _PgBackend(_Backend):
                 cur.execute(sql)
                 columns = [d.name for d in (cur.description or [])]
                 rows = cur.fetchmany(cap + 1)
+                # 数据时间取**库上的**事务时间，不取本机时钟：跨时区、跨主机的
+                # 时钟偏移会让"数据截至"标错，而这个标注是给人判断新鲜度用的。
+                # 与查询同事务，READ COMMITTED 下即本次读事务的起始时刻。
+                cur.execute("SELECT now()")
+                as_of = _fmt_ts(cur.fetchone()[0])
         except Exception as e:
             msg = str(e)
             if "statement timeout" in msg or "canceling statement" in msg:
@@ -240,7 +261,7 @@ class _PgBackend(_Backend):
                     hint="缩小时间范围或增加筛选条件；这是 R-12 语句超时护栏。",
                 ) from e
             raise
-        return columns, [list(r) for r in rows]
+        return columns, [list(r) for r in rows], as_of
 
     def env_checks(self):
         out: list[tuple[str, bool, str]] = []
@@ -407,7 +428,7 @@ class Executor:
     def run(self, sql: str) -> QueryResult:
         cap = self.cfg.max_rows
         t0 = time.perf_counter()
-        columns, rows = self.backend.fetch(sql, cap)
+        columns, rows, as_of = self.backend.fetch(sql, cap)
         elapsed = int((time.perf_counter() - t0) * 1000)
 
         truncated = len(rows) > cap
@@ -419,4 +440,5 @@ class Executor:
             row_count=len(rows),
             truncated=truncated,
             elapsed_ms=elapsed,
+            as_of=as_of,
         )

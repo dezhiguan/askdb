@@ -54,6 +54,7 @@ class AskState(TypedDict, total=False):
     rows: list[list[Any]]
     row_count: int
     truncated: bool
+    as_of: str            # 数据时间，来自数据源时钟（§8 准入条件 #7）
     explain_rows: int | None
 
     error: str | None
@@ -104,6 +105,7 @@ class AskResult:
     rows: list[list[Any]] = field(default_factory=list)
     row_count: int = 0
     truncated: bool = False
+    as_of: str = ""
 
     rejected_by: str | None = None
     error: str = ""
@@ -318,6 +320,7 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         "columns": [str(c) for c in res.columns],
         "rows": [[jsonable(v) for v in row] for row in res.rows],
         "row_count": res.row_count, "truncated": res.truncated,
+        "as_of": res.as_of,
         "error": None, "rejected_by": None,
     }
 
@@ -343,16 +346,26 @@ def _n_assess(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         d.tracer.add("assess", t, "单步链路，直接收敛")
         return {**base, "enough": True}
 
-    # R-16 / R-17：步数与累计成本上限。触及即收敛作答，并明确标注不完整。
+    # R-16 / R-17：步数与累计成本上限。触顶后的动作由 on_cap_reached 决定 ——
+    # converge（默认）＝基于已完成步骤作答并标注不完整；fail ＝直接失败。
+    # 两种都不静默返回部分结果。做成配置是因为这个取舍随场景变：
+    # 探索场景宁可拿到半个答案，对账场景宁可什么都不给。
+    on_cap = str(d.cfg.raw.get("planner", {}).get("on_cap_reached", "converge")).lower()
+
+    def _cap_hit(why: str) -> dict[str, Any]:
+        if on_cap == "fail":
+            d.tracer.add("assess", t, f"{why}，按 on_cap_reached=fail 判定失败", status="failed")
+            return {**base, "enough": True, "error": f"{why}，未能得出完整结论",
+                    "rejected_by": "R-16/R-17", "converged_early": why}
+        d.tracer.add("assess", t, f"{why}，收敛作答", status="failed")
+        return {**base, "enough": True, "converged_early": why}
+
     if step_no >= int(state.get("max_steps", 3)):
-        d.tracer.add("assess", t, f"已达步数上限 {state.get('max_steps')}，收敛作答", status="failed")
-        return {**base, "enough": True,
-                "converged_early": f"已达步数上限（{state.get('max_steps')} 步）"}
+        return _cap_hit(f"已达步数上限（{state.get('max_steps')} 步）")
     cap = int(state.get("cost_cap_tokens", 0))
     used = d.tracer.tok_in + d.tracer.tok_out
     if cap and used >= cap:
-        d.tracer.add("assess", t, f"累计 token {used} 达上限 {cap}，收敛作答", status="failed")
-        return {**base, "enough": True, "converged_early": f"已达累计成本上限（{cap} tokens）"}
+        return _cap_hit(f"已达累计成本上限（{cap} tokens，已用 {used}）")
 
     try:
         a, usage = d.llm.structured(
@@ -582,6 +595,7 @@ def ask(
         rewrites=list(out.get("rewrites") or []),
         columns=out.get("columns", []), rows=out.get("rows", []),
         row_count=out.get("row_count", 0), truncated=out.get("truncated", False),
+        as_of=out.get("as_of", ""),
         rejected_by=out.get("rejected_by"), error=out.get("error") or "",
         hint=out.get("error_hint", ""),
         tables_hit=out.get("tables_hit", []), metrics_hit=out.get("metrics_hit", []),

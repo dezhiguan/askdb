@@ -24,9 +24,13 @@ guard:
     - read_parquet
     - read_json
     - glob
+    # 下面几个在 DuckDB 下不存在，仍然列上：白名单式配置一旦换库就该直接可用，
+    # 不该依赖"换库时记得补齐"（§4.1 R-07 点名要求 pg_sleep / pg_ls_dir）
     - pg_read_file
+    - pg_ls_dir
     - lo_import
     - dblink
+    - pg_sleep
 
 planner:
   # 多步是兜底路径不是默认路径。默认关闭 —— 首轮消融显示成本 +109%
@@ -34,7 +38,9 @@ planner:
   enabled: false
   max_steps: 3                       # R-16 总步数上限
   max_carry_rows: 50                 # R-15 中间结果规模上限，超限即收敛
+  carry_columns_only: true           # 仅下传标识列，不下传整行（§5.3.2 / §10.1）
   cost_cap_tokens: 12000             # R-17 单次问答累计 token 上限，0 表示不限
+  on_cap_reached: converge           # converge | fail —— 触顶后收敛作答并标注，不静默返回
 
 schema_rag:
   mode: keyword                    # keyword（P0）| all | vector（P1）

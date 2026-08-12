@@ -49,6 +49,7 @@ def _result_payload(r: Any) -> dict[str, Any]:
         # 走 jsonable 而不是让 json.dumps 的 default=str 兜底：Decimal 直接 str() 会变成
         # "0E-20" 这类科学计数法，Agent 拿到后同样会读错数。
         "rows": [[jsonable(v) for v in row] for row in r.rows[:200]],
+        "as_of": r.as_of,
         "row_count": r.row_count,
         "truncated": r.truncated or r.row_count > 200,
         "tables_hit": r.tables_hit,
@@ -101,6 +102,7 @@ def build_server(cfg: Config):
             "ok": True, "sql": g.sql, "rewrites": g.rewrites,
             "columns": res.columns,
             "rows": [[jsonable(v) for v in row] for row in res.rows[:200]],
+            "as_of": res.as_of,
             "row_count": res.row_count, "truncated": res.truncated,
         }, ensure_ascii=False, default=str)
 

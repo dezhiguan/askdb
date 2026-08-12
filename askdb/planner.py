@@ -142,15 +142,24 @@ def render_carry(carry: dict[str, list]) -> str:
 
 
 def carry_within_limit(carry: dict[str, list], cfg: Config) -> tuple[bool, str]:
-    """R-15：中间结果规模上限。
+    """R-15：中间结果规模上限，外加 carry_columns_only 的形态校验。
 
     下传的值会作为字面量拼进下一条 SQL。列表过长会让提示词膨胀、
     SQL 长度失控，而且往往说明第一步的筛选本身就有问题。
     """
-    cap = int(cfg.raw.get("planner", {}).get("max_carry_rows", 50))
+    pl = cfg.raw.get("planner", {})
+    cap = int(pl.get("max_carry_rows", 50))
+    cols_only = bool(pl.get("carry_columns_only", True))
+
     for k, v in carry.items():
         if len(v) > cap:
             return False, f"中间结果 {k} 有 {len(v)} 项，超过上限 {cap}"
+        if cols_only:
+            # §5.3.2「仅下传标识列，不下传整行」。模型很容易把整行塞进 carry，
+            # 那既会泄露非必要字段（§10.1 多步累积泄露），也会撑爆下一步的 SQL。
+            bad = next((x for x in v if isinstance(x, (list, dict, tuple))), None)
+            if bad is not None:
+                return False, f"中间结果 {k} 下传了整行而非标识列（carry_columns_only）"
     return True, ""
 
 

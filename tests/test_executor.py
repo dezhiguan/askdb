@@ -101,3 +101,16 @@ def test_close_is_safe_to_call_twice(cfg):
     e.connect()
     e.close()
     e.close()
+
+
+def test_query_result_carries_data_time(cfg):
+    """§8 准入条件 #7：输出必须附带数据时间。
+
+    不标时间的结果，隔天再看会被当成当前状态 —— 对连生产库的工具，
+    这是会直接误导决策的缺失。
+    """
+    with Executor(cfg) as ex:
+        r = ex.run("SELECT 1 AS x")
+    assert r.as_of, "查询结果必须带数据时间"
+    from datetime import datetime
+    datetime.fromisoformat(r.as_of)          # 必须是可解析的 ISO 文本
