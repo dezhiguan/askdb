@@ -1332,11 +1332,20 @@ async function renderEval() {
         题量需要上一个数量级。</div>
     </div>`;
   }
+  // 多跳题数与是否跨轮次都从数据里取 —— 写死的说明会随数据变化悄悄变成假话。
+  // 上一版写着"样例库只有 4 张表""E/F 来自重跑"，换到生产库后两句都不成立了。
+  const mh = (() => {
+    const c = gs.map(g => (g.by_category || {}).multihop).find(Boolean);
+    return c ? c[1] : 0;
+  })();
+  const rerun = gs.some(g => g.rerun);
   html += `<div class="notice bad" style="margin-top:12px">
     <div class="t">◇ 解读这些数字前必须知道</div>
-    <div class="why">样例库只有 4 张表，n 偏小（可作答题 37 道、多跳题仅 6 道）——
-      <b>一两题之差就是 ±2.7pp，低于这个幅度的差异应视为噪声</b>。</div>
-    <div class="fix">E/F 两行来自配额修复后的重跑，与 A–D 不同轮次，增量不可直接相减。</div></div>`;
+    <div class="why">${pv.tables ? `白名单 <b>${pv.tables.length}</b> 张表，` : ""}n 偏小（可作答题
+      <b>${nA}</b> 道${mh ? `、多跳题仅 <b>${mh}</b> 道` : ""}）——
+      <b>一两题之差就是 ±${(100 / nA).toFixed(1)}pp，低于这个幅度的差异应视为噪声</b>。</div>
+    ${rerun ? `<div class="fix">标注「重跑」的组与其余组不是同一轮次，增量不可直接相减。</div>`
+            : `<div class="fix">六组在同一轮次跑完，题目完全相同，增量可直接比较。</div>`}</div>`;
   $("evalBody").innerHTML = html;
 
   if (gs.length) drawAblation(gs, d.shipped);
