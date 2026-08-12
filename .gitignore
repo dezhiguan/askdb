@@ -43,4 +43,8 @@ htmlcov/
 # 向量索引
 .chroma/
 evals/*.json
-evals/results/
+# 评测结果**入库**：§6 把评测列为本项目主要产出之一，README 引用的每个
+# 数字都该能在仓库里查到出处，clone 下来评测页也才有东西可显示。
+# 结果文件只含逐题通过与否、失败原因、trace_id、耗时与成本，**不含任何数据行**。
+evals/results/*
+!evals/results/*.json
