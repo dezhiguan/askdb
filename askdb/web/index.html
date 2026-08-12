@@ -211,6 +211,13 @@ tbody tr:hover{background:var(--plane)}
 
 /* 图表 */
 .chartbox{position:relative}
+/* trace_id 与复现命令 —— 检查点的唯一入口，此前页面完全没给 */
+.traceline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:11px;
+  padding-top:10px;border-top:1px dashed var(--border);font-size:12px;color:var(--muted)}
+.traceline code{font-size:11.5px}
+.cpbtn{font:inherit;font-size:11.5px;padding:2px 8px;border-radius:6px;cursor:pointer;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink-2)}
+.cpbtn:hover{border-color:var(--accent);color:var(--accent)}
 svg{display:block;width:100%;height:auto;overflow:visible}
 .tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-118%);
   background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:7px 11px;
@@ -476,6 +483,7 @@ tbody tr.sel{background:var(--wash)}
             </div>
             <pre class="sql" id="sql"></pre>
             <div class="legend hide" id="injLegend"><i class="sw"></i>系统强制注入，模型改不掉</div>
+          <div class="traceline hide" id="traceLine"></div>
           </div>
         </div>
 
@@ -545,6 +553,8 @@ const RULES = {
   "LLM":  ["模型调用没成功", ""],
   "NO_SQL": ["这个问题用现有的表回答不了", "换个问法，或在 config/tables.yaml 里开放更多表。"],
 };
+let CFG_PATH = "";   // 当前服务用的配置，复现命令要带它
+
 const STEP_NAMES = {
   schema_recall: "Schema 召回", generate_sql: "SQL 生成", guard: "静态校验",
   dry_run: "EXPLAIN 干跑", execute: "只读执行", reflect: "反思重试", finalize: "结果与溯源",
@@ -600,6 +610,7 @@ function renderBanners(h) {
 async function boot() {
   try {
     HEALTH = await (await fetch("/api/health")).json();
+    CFG_PATH = HEALTH.config || "";
   } catch {
     $("banners").innerHTML = `<div class="banner bad"><span class="ico">✕</span><div>
       <b>连不上 askdb 服务</b><p>确认 <code>askdb serve</code> 还在运行，然后刷新页面。</p></div></div>`;
@@ -844,6 +855,7 @@ function render(d) {
     $("mSteps").textContent = (d.step_count ?? 1) + " 步";
     $("mAtt").textContent = (d.attempts || 1) + " 轮";
     renderRounds(d);
+    renderTrace(d);
     $("mTok").textContent = (d.tok_in || 0) + "+" + (d.tok_out || 0);
     $("mCost").textContent = "¥" + (d.cost_cny ?? 0).toFixed(4);
 
@@ -894,6 +906,31 @@ function renderRounds(d) {
     </div>`).join("");
   $("multiCard").classList.remove("hide");
 }
+
+/* 每次调用都留下 trace_id，并给出能直接粘去跑的复现命令。
+   接口一直返回 trace_id，但页面从没渲染过 —— 评测页却写着"每条失败都带
+   trace_id，可从检查点原样复现"。有能力却没入口，等于没有。 */
+function renderTrace(d) {
+  const box = $("traceLine");
+  if (!d || !d.trace_id) { box.classList.add("hide"); return; }
+  // 检查点库跟着配置走，命令里必须带上 -c，否则会报"检查点里没有这个 trace"
+  const cmd = `askdb replay ${d.trace_id}${CFG_PATH ? ` -c ${CFG_PATH}` : ""}`;
+  box.innerHTML = `<span>trace_id</span><code>${esc(d.trace_id)}</code>
+    <button class="cpbtn" data-copy="${esc(d.trace_id)}">复制</button>
+    <span style="margin-left:4px">原样复现整条判定链路：</span><code>${esc(cmd)}</code>
+    <button class="cpbtn" data-copy="${esc(cmd)}">复制命令</button>`;
+  box.classList.remove("hide");
+}
+
+/* 复制按钮统一委托 —— 页面上多处都要用 */
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-copy]");
+  if (!b) return;
+  navigator.clipboard.writeText(b.dataset.copy);
+  const old = b.textContent;
+  b.textContent = "已复制";
+  setTimeout(() => (b.textContent = old), 1200);
+});
 
 /* 高亮强制注入的部分：租户谓词与 LIMIT */
 function highlight(sql) {
@@ -1329,8 +1366,30 @@ async function renderEval() {
   if (Object.keys(fk).length) {
     html += `<div class="notice info" style="margin-top:14px">
       <div class="t">◇ 盲测集失败分类（不做筛选，全量列出）</div>
-      <div class="why">${Object.entries(fk).map(([k, v]) => `${esc(k)} ${v}`).join(" · ")}</div>
-      <div class="fix">每条失败都带 <code>trace_id</code>，可从检查点原样复现。</div></div>`;
+      <div class="why">${Object.entries(fk).map(([k, v]) => `${esc(k)} ${v}`).join(" · ")}</div>`;
+    // 逐条列出 —— 原先只给汇总数，却在这里写着"每条失败都带 trace_id 可原样复现"，
+    // 既不列 trace_id 也没有入口，等于告诉你有这个能力却不给用它的路径。
+    const fails = d.failures || [];
+    if (fails.length) {
+      const cfgArg = d.replay_config ? ` -c ${d.replay_config}` : "";
+      html += `<div class="tablewrap" style="margin-top:10px"><table>
+        <thead><tr><th>题号</th><th>题型</th><th>失败类型</th><th>问题</th>
+        <th>原样复现</th></tr></thead><tbody>`
+        + fails.map(f => {
+            const cmd = `askdb replay ${f.trace_id}${cfgArg}`;
+            return `<tr>
+              <td class="mono">${esc(f.id)}</td>
+              <td style="color:var(--ink-2)">${esc(CATLAB[f.category] || f.category)}</td>
+              <td>${esc(f.reason)}</td>
+              <td style="white-space:normal;color:var(--ink-2)"
+                  title="${esc(f.detail || "")}">${esc(f.question || "—")}</td>
+              <td style="white-space:nowrap"><code style="font-size:11px">${esc(f.trace_id)}</code>
+                <button class="cpbtn" data-copy="${esc(cmd)}">复制命令</button></td></tr>`;
+          }).join("") + `</tbody></table></div>
+        <div class="fix" style="margin-top:8px">检查点库跟着配置走 ——
+          复现命令里的 <code>-c</code> 不能省，否则会报"检查点里没有这个 trace"。</div>`;
+    }
+    html += `</div>`;
   }
   // §10.1 明确要求"报告中同时给出置信区间；不对小数点后第二位差异下结论"。
   // 图上只画柱子而不画区间，等于默认读者会把 2 题的波动当成真实差异。

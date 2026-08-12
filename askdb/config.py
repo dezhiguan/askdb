@@ -67,6 +67,9 @@ class Config:
     raw: dict[str, Any]
     tables: dict[str, Table]
     metrics: list[Metric]
+    # 自己是从哪份配置加载的。检查点库、审计日志都跟着配置走，
+    # 复现一条 trace 必须用同一份配置 —— 少了它，replay 命令给不全。
+    path: str = ""
 
     # --- 常用快捷访问 ---
     @property
@@ -225,7 +228,8 @@ def load(config_path: str | Path = "config/askdb.yaml") -> Config:
 
     metrics = [Metric(**m) for m in (_load_yaml(root / raw["metrics_file"])["metrics"] or [])]
 
-    cfg = Config(root=root, raw=raw, tables=tables, metrics=metrics)
+    cfg = Config(root=root, raw=raw, tables=tables, metrics=metrics,
+                 path=str(cfg_path.relative_to(root) if cfg_path.is_relative_to(root) else cfg_path))
     _validate(cfg)
     return cfg
 

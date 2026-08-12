@@ -349,3 +349,27 @@ def test_introspect_distinguishes_indirect_tenant_isolation(client):
         assert t["tenant_mode"] in ("column", "filter", "exempt")
         if t["tenant_mode"] in ("column", "filter"):
             assert t["tenant_via"], f"{t['name']} 应说明经哪一列隔离"
+
+
+def test_eval_exposes_failure_traces_and_replay_config(client):
+    """评测页写着「每条失败都带 trace_id，可从检查点原样复现」——
+    那就必须真的把 trace_id 和复现所需的配置给出来。
+
+    此前只有汇总数（"链路失败 4 · 结果不一致 3"），既不列 trace_id 也没有入口，
+    等于告诉用户有这个能力却不给用它的路径。
+    """
+    d = client.get("/api/eval").json()
+    if not d.get("available"):
+        pytest.skip("本环境没有评测结果")
+    assert "failures" in d
+    for f in d["failures"]:
+        assert f["trace_id"], f"{f['id']} 缺 trace_id，复现无从谈起"
+        assert f["question"], f"{f['id']} 缺题面，光有编号看不出失败在哪"
+    if d["failures"]:
+        # 检查点库跟着配置走，命令里少了 -c 就会报"检查点里没有这个 trace"
+        assert d["replay_config"], "必须给出复现该用哪份配置"
+
+
+def test_health_reports_config_path(client):
+    """提问页的复现命令要带 -c，配置路径得从 health 拿。"""
+    assert "config" in client.get("/api/health").json()

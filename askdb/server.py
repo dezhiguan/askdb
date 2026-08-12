@@ -140,6 +140,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             db_ok, db_msg, db_hint = False, str(e), e.hint
         return {
             "ok": db_ok and bool(cfg.api_key()),
+            # 复现命令要带 -c：检查点库跟着配置走，配置不对就找不到 trace
+            "config": cfg.path,
             "datasource": {"ok": db_ok, "type": cfg.db_type, "detail": db_msg, "hint": db_hint},
             "llm": {
                 "ok": bool(cfg.api_key()),
@@ -306,6 +308,29 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "by_category": _by_category(outs),
             })
         out["groups"] = groups
+
+        # 失败样本明细。此前页面只给了"链路失败 4 · 结果不一致 3"这样的汇总数，
+        # 却在旁边写着"每条失败都带 trace_id，可从检查点原样复现"——
+        # 既不列 trace_id 也没有入口，等于告诉你有这个能力却不给用它的路径。
+        bd = _read(blind_p) or {}
+        qmap: dict[str, str] = {}
+        gpath = (bd.get("provenance") or {}).get("golden") or ""
+        if gpath:
+            gp = cfg.root / gpath
+            if gp.exists():
+                for line in gp.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        c = _json.loads(line)
+                        qmap[c["id"]] = c.get("question", "")
+        out["failures"] = [
+            {"id": o["id"], "category": o.get("category", ""),
+             "reason": o.get("reason", ""), "detail": (o.get("detail") or "")[:160],
+             "trace_id": o.get("trace_id", ""),
+             "question": qmap.get(o["id"], "")}
+            for o in (bd.get("outcomes") or []) if not o.get("passed")
+        ]
+        # 复现必须用同一份配置：检查点库跟着配置走
+        out["replay_config"] = (bd.get("provenance") or {}).get("config", "")
         out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）
         return out
 

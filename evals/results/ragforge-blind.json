@@ -2,7 +2,7 @@
   "group": "盲测集（最终成绩）",
   "n": 17,
   "provenance": {
-    "config": "",
+    "config": "config/ragforge-eval.yaml",
     "datasource": "postgresql:ragforge@8.163.30.216:5432",
     "synthetic": false,
     "org_id": 316,

@@ -3,7 +3,7 @@
     "group": "A 裸 Prompt（全量 schema，无护栏改写/重试/口径）",
     "n": 41,
     "provenance": {
-      "config": "",
+      "config": "config/ragforge-eval.yaml",
       "datasource": "postgresql:ragforge@8.163.30.216:5432",
       "synthetic": false,
       "org_id": 316,
@@ -653,7 +653,7 @@
     "group": "B + Schema 召回",
     "n": 41,
     "provenance": {
-      "config": "",
+      "config": "config/ragforge-eval.yaml",
       "datasource": "postgresql:ragforge@8.163.30.216:5432",
       "synthetic": false,
       "org_id": 316,
@@ -1304,7 +1304,7 @@
     "group": "C + 静态校验重试",
     "n": 41,
     "provenance": {
-      "config": "",
+      "config": "config/ragforge-eval.yaml",
       "datasource": "postgresql:ragforge@8.163.30.216:5432",
       "synthetic": false,
       "org_id": 316,
@@ -1955,7 +1955,7 @@
     "group": "D + 语义层口径",
     "n": 41,
     "provenance": {
-      "config": "",
+      "config": "config/ragforge-eval.yaml",
       "datasource": "postgresql:ragforge@8.163.30.216:5432",
       "synthetic": false,
       "org_id": 316,
@@ -2617,7 +2617,7 @@
     "group": "E + 干跑阈值（单步全链路）",
     "n": 41,
     "provenance": {
-      "config": "",
+      "config": "config/ragforge-eval.yaml",
       "datasource": "postgresql:ragforge@8.163.30.216:5432",
       "synthetic": false,
       "org_id": 316,
@@ -3279,7 +3279,7 @@
     "group": "F + 多步规划",
     "n": 41,
     "provenance": {
-      "config": "",
+      "config": "config/ragforge-eval.yaml",
       "datasource": "postgresql:ragforge@8.163.30.216:5432",
       "synthetic": false,
       "org_id": 316,
