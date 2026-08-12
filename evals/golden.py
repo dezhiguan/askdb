@@ -75,7 +75,7 @@ def build() -> list[Case]:
 
     # ---------------- 单表聚合 15 ----------------
     single = [
-        ("s01", "一共有多少个文档", "SELECT COUNT(*) AS 文档数 FROM documents"),
+        ("s01", "documents 表一共有多少行", "SELECT COUNT(*) AS 行数 FROM documents"),
         ("s02", "各处理状态各有多少个文档",
          "SELECT status AS 状态, COUNT(*) AS 数量 FROM documents GROUP BY status ORDER BY 数量 DESC"),
         ("s03", "文档按文件类型分布",
@@ -96,7 +96,7 @@ def build() -> list[Case]:
         ("s12", "输入 token 总量", "SELECT SUM(input_tokens) AS 输入token FROM model_usage"),
         ("s13", "平均每次调用的输入 token",
          "SELECT ROUND(AVG(input_tokens), 1) AS 平均输入 FROM model_usage"),
-        ("s14", "文档数最多的前 5 个知识库",
+        ("s14", "按行数统计，文档最多的前 5 个知识库 ID",
          "SELECT kb_id AS 知识库, COUNT(*) AS 文档数 FROM documents "
          "GROUP BY kb_id ORDER BY 文档数 DESC LIMIT 5"),
         ("s15", "有多少种不同的文件类型",
@@ -107,9 +107,10 @@ def build() -> list[Case]:
 
     # ---------------- 多表关联 15 ----------------
     join = [
-        ("j01", "各知识库的名称和文档数",
-         "SELECT k.name AS 知识库, COUNT(d.id) AS 文档数 FROM knowledge_bases k "
-         "LEFT JOIN documents d ON d.kb_id = k.id GROUP BY k.id, k.name ORDER BY 文档数 DESC"),
+        ("j01", "各知识库的名称，以及各自的文档数（按口径）",
+         "SELECT k.name AS 知识库, COUNT(*) FILTER (WHERE d.status='COMPLETED') AS 文档数 "
+         "FROM knowledge_bases k LEFT JOIN documents d ON d.kb_id = k.id "
+         "GROUP BY k.id, k.name ORDER BY 文档数 DESC"),
         ("j02", "每个知识库有多少个失败文档",
          "SELECT k.name AS 知识库, COUNT(d.id) AS 失败数 FROM knowledge_bases k "
          "LEFT JOIN documents d ON d.kb_id = k.id AND d.status = 'FAILED' "
@@ -128,7 +129,7 @@ def build() -> list[Case]:
         ("j06", "组织和它们的模型总花费",
          "SELECT o.name AS 组织, ROUND(SUM(m.cost_cny), 2) AS 成本 FROM orgs o "
          "LEFT JOIN model_usage m ON m.org_id = o.id GROUP BY o.id, o.name"),
-        ("j07", "文档最多的知识库属于哪个组织",
+        ("j07", "按行数统计，文档最多的那个知识库属于哪个组织",
          "SELECT o.name AS 组织, k.name AS 知识库, COUNT(d.id) AS 文档数 "
          "FROM knowledge_bases k JOIN orgs o ON o.id = k.org_id "
          "JOIN documents d ON d.kb_id = k.id GROUP BY o.name, k.name "
@@ -140,7 +141,7 @@ def build() -> list[Case]:
          "SELECT k.name AS 知识库, ROUND(COUNT(*) FILTER (WHERE d.status='FAILED')*100.0/COUNT(*), 1) AS 失败率 "
          "FROM knowledge_bases k JOIN documents d ON d.kb_id = k.id GROUP BY k.id, k.name "
          "ORDER BY 失败率 DESC"),
-        ("j10", "各组织的文档总数",
+        ("j10", "各组织名下的文档行数总计",
          "SELECT o.name AS 组织, COUNT(d.id) AS 文档数 FROM orgs o "
          "LEFT JOIN knowledge_bases k ON k.org_id = o.id "
          "LEFT JOIN documents d ON d.kb_id = k.id GROUP BY o.id, o.name"),
@@ -175,19 +176,19 @@ def build() -> list[Case]:
          "WHERE status='PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR"),
         ("m03", "文档数是多少",
          "SELECT COUNT(*) FILTER (WHERE status='COMPLETED') AS 文档数 FROM documents"),
-        ("m04", "各知识库的文档数",
+        ("m04", "各知识库 ID 对应的文档数（按口径）",
          "SELECT kb_id AS 知识库, COUNT(*) FILTER (WHERE status='COMPLETED') AS 文档数 "
          "FROM documents GROUP BY kb_id ORDER BY 文档数 DESC"),
         ("m05", "整体失败率是多少",
          "SELECT ROUND(COUNT(*) FILTER (WHERE status='FAILED')*1.0/NULLIF(COUNT(*),0), 4) AS 失败率 "
          "FROM documents"),
-        ("m06", "哪个知识库堆积的文档最多",
+        ("m06", "哪个知识库 ID 堆积的文档最多",
          "SELECT kb_id AS 知识库, COUNT(*) AS 数量 FROM documents "
          "WHERE status='PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR "
          "GROUP BY kb_id ORDER BY 数量 DESC LIMIT 1"),
         ("m07", "已入库文档一共多少",
          "SELECT COUNT(*) FILTER (WHERE status='COMPLETED') AS 数量 FROM documents"),
-        ("m08", "处理中不动的文档都在哪些知识库",
+        ("m08", "处理中不动的文档都在哪些知识库 ID",
          "SELECT DISTINCT kb_id AS 知识库 FROM documents "
          "WHERE status='PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR"),
         ("m09", "各知识库的失败率排名",
