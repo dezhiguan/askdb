@@ -169,8 +169,17 @@ pre.sql .inj{background:var(--inj);border-radius:3px;padding:1px 3px;font-weight
 .rulecode{font-family:ui-monospace,Menlo,monospace;font-size:11px;padding:1.5px 7px;border-radius:5px;
   background:rgba(208,59,59,.16);color:var(--crit-ink);font-weight:700}
 .tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:9px;max-height:460px}
+/* macOS 的覆盖式滚动条平时不可见，表格横向溢出时看上去就像右侧的列凭空消失了。
+   这里强制留出滚动条轨道，让「还能往右看」这件事有可见的提示。 */
+.tablewrap::-webkit-scrollbar{height:9px;-webkit-appearance:none}
+.tablewrap::-webkit-scrollbar-thumb{background:var(--axis);border-radius:5px}
+.tablewrap{scrollbar-width:thin}
 table{border-collapse:collapse;width:100%;font-size:12.5px}
-th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--grid);white-space:nowrap}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--grid)}
+/* 表头不折行，数据单元格允许折行并限宽：否则一个超长文本列（如中文文件名）会把
+   后面的列整个挤出可视区，窄窗口下用户会以为那一列不存在。 */
+th{white-space:nowrap}
+td{white-space:normal;overflow-wrap:anywhere;max-width:44ch}
 th{font-weight:600;color:var(--ink-2);background:var(--plane);font-size:11.5px;position:sticky;top:0;z-index:1}
 tr:last-child td{border-bottom:0}
 tbody tr:hover{background:var(--plane)}

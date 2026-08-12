@@ -16,6 +16,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, TypedDict
 
@@ -123,14 +124,29 @@ class AskResult:
 
     def to_dict(self) -> dict[str, Any]:
         d = dict(self.__dict__)
-        d["rows"] = [[_jsonable(v) for v in r] for r in self.rows]
+        d["rows"] = [[jsonable(v) for v in r] for r in self.rows]
         return d
 
 
-def _jsonable(v: Any) -> Any:
+def jsonable(v: Any) -> Any:
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
+    if isinstance(v, Decimal):
+        return _decimal_str(v)
     return str(v)
+
+
+def _decimal_str(v: Decimal) -> str:
+    """Decimal 转可读文本。
+
+    PostgreSQL 的除法会返回高标度 numeric，而 ``str(Decimal)`` 对这类值走科学计数法：
+    比率为 0 时显示成 ``0E-20``，看的人根本认不出这是 0。统一改成定点写法，并去掉
+    标度带来的无意义末尾零。
+    """
+    if not v.is_finite():          # NaN / Infinity 保持原样
+        return str(v)
+    # normalize: 0E-20 → 0、1.500 → 1.5；但整数会变成 1E+3，再用定点格式化修回来
+    return format(v.normalize(), "f")
 
 
 # --------------------------------------------------------------------------
@@ -300,7 +316,7 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     d.tracer.add("execute", t, note)
     return {
         "columns": [str(c) for c in res.columns],
-        "rows": [[_jsonable(v) for v in row] for row in res.rows],
+        "rows": [[jsonable(v) for v in row] for row in res.rows],
         "row_count": res.row_count, "truncated": res.truncated,
         "error": None, "rejected_by": None,
     }

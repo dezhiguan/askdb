@@ -24,7 +24,7 @@ from typing import Any
 from . import guard
 from .config import Config, load
 from .executor import DataSourceError, Executor
-from .graph import ask as run_ask
+from .graph import ask as run_ask, jsonable
 
 TOOLS_DESC = {
     "ask": (
@@ -46,7 +46,9 @@ def _result_payload(r: Any) -> dict[str, Any]:
         "sql": r.sql_final or r.sql_raw,
         "rewrites": r.rewrites,          # 系统强制注入了什么，调用方有权知道
         "columns": r.columns,
-        "rows": r.rows[:200],
+        # 走 jsonable 而不是让 json.dumps 的 default=str 兜底：Decimal 直接 str() 会变成
+        # "0E-20" 这类科学计数法，Agent 拿到后同样会读错数。
+        "rows": [[jsonable(v) for v in row] for row in r.rows[:200]],
         "row_count": r.row_count,
         "truncated": r.truncated or r.row_count > 200,
         "tables_hit": r.tables_hit,
