@@ -18,7 +18,7 @@ from rich.table import Table as RichTable
 from . import guard
 from .config import load
 from .executor import DataSourceError, Executor
-from .graph import AskResult, ask as run_ask
+from .graph import AskResult, ask as run_ask, jsonable
 
 app = typer.Typer(add_completion=False, help="askdb —— 可信数据问答 Agent")
 con = Console()
@@ -46,7 +46,7 @@ def _print_rows(columns: list[str], rows: list[list], truncated: bool) -> None:
     for c in columns:
         t.add_column(str(c))
     for r in rows[:50]:
-        t.add_row(*["" if v is None else str(v) for v in r])
+        t.add_row(*["" if v is None else str(jsonable(v)) for v in r])
     con.print(t)
     if len(rows) > 50:
         con.print(f"[dim]（仅显示前 50 行，共 {len(rows)} 行）[/]")

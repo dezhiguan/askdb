@@ -100,7 +100,7 @@ def build_server(cfg: Config):
         return json.dumps({
             "ok": True, "sql": g.sql, "rewrites": g.rewrites,
             "columns": res.columns,
-            "rows": [[None if v is None else str(v) for v in row] for row in res.rows[:200]],
+            "rows": [[jsonable(v) for v in row] for row in res.rows[:200]],
             "row_count": res.row_count, "truncated": res.truncated,
         }, ensure_ascii=False, default=str)
 

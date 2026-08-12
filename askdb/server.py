@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from . import guard
 from .config import Config, load
 from .executor import DataSourceError, Executor
-from .graph import ask as run_ask
+from .graph import ask as run_ask, jsonable
 
 WEB = Path(__file__).resolve().parent / "web"
 
@@ -242,7 +242,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "ok": True, "question": "（直查模式）", "sql_raw": req.sql, "sql_final": g.sql,
             "rules_fired": g.rules_fired, "rewrites": g.rewrites,
             "columns": [str(c) for c in res.columns],
-            "rows": [[None if v is None else str(v) for v in r] for r in res.rows],
+            # 与 /api/ask 走同一套值渲染：str(Decimal) 对高标度 numeric 会变成
+            # 0E-20 这种科学计数法，看的人认不出那是 0
+            "rows": [[jsonable(v) for v in r] for r in res.rows],
             "row_count": res.row_count, "truncated": res.truncated,
             "elapsed_ms": res.elapsed_ms, "attempts": 1, "org_id": org,
             "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,

@@ -250,3 +250,21 @@ def test_eval_exposes_real_results(cfg, tmp_path, monkeypatch):
     assert by["E"]["accuracy"] == 0.73 and by["E"]["rerun"] is True
     assert by["A"]["rerun"] is False
     assert d["shipped"] == "E"
+
+
+def test_sql_endpoint_renders_decimal_readably(client):
+    """PostgreSQL 的高标度 numeric 用 str() 会变成 0E-20，人认不出那是 0。
+
+    /api/ask 与 /api/sql 必须走同一套值渲染，否则同一个值两条路径显示不一致。
+    """
+    from askdb.graph import jsonable
+    from decimal import Decimal
+
+    assert jsonable(Decimal("0E-20")) == "0"
+    assert jsonable(Decimal("1.500")) == "1.5"
+    assert jsonable(Decimal("1000")) == "1000"
+
+    d = client.post("/api/sql", json={
+        "sql": "SELECT COUNT(*) FILTER (WHERE status='NOPE') * 1.0 "
+               "/ NULLIF(COUNT(*), 0) AS 比率 FROM documents"}).json()
+    assert d["ok"] and "E-" not in str(d["rows"][0][0])
