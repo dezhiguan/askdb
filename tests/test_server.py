@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from askdb import server
+from askdb.server import WEB
 from askdb.llm import LlmUsage, SqlDraft
 
 
@@ -268,3 +269,19 @@ def test_sql_endpoint_renders_decimal_readably(client):
         "sql": "SELECT COUNT(*) FILTER (WHERE status='NOPE') * 1.0 "
                "/ NULLIF(COUNT(*), 0) AS 比率 FROM documents"}).json()
     assert d["ok"] and "E-" not in str(d["rows"][0][0])
+
+
+def test_step_count_is_a_scalar_not_the_trace_array(client):
+    """「执行步数」曾渲染成 [object Object],[object Object] —— 页面取错了字段。
+
+    d.steps 是步骤追踪数组（对象列表），非空即为真；写成 `d.steps || d.step_count`
+    会短路成整个数组。这里同时钉住两侧：接口给的 step_count 必须是标量，
+    页面必须从 step_count 取值而不是 steps。
+    """
+    d = client.post("/api/ask", json={"question": "有多少文档"}).json()
+    assert isinstance(d["step_count"], int)
+    assert isinstance(d["steps"], list)          # 追踪数组，不是步数
+
+    page = (WEB / "index.html").read_text(encoding="utf-8")
+    assert 'd.steps || d.step_count' not in page
+    assert '$("mSteps").textContent = (d.step_count' in page

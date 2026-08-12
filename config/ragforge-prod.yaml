@@ -22,7 +22,7 @@ datasource:
 tenant:
   enabled: true
   column: org_id
-  default_ctx: 323                   # CareerMate求职智能体组织
+  default_ctx: 316                   # 职场数据分享组织
   mode: rls_and_predicate            # 应用层 AST 改写 + 数据库 RLS，双层
   on_unresolved: reject
 

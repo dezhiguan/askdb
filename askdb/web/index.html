@@ -798,7 +798,9 @@ function render(d) {
   setTimeout(() => {
     $("mLat").textContent = d.elapsed_ms != null ? d.elapsed_ms + " ms" : "—";
     $("mRows").textContent = d.ok ? (d.row_count ?? 0).toLocaleString() : "—";
-    $("mSteps").textContent = (d.steps || d.step_count || 1) + " 步";
+    // step_count 才是步数；d.steps 是步骤追踪数组（对象列表），
+    // 它非空即为真，写成 d.steps || … 会短路成整个数组
+    $("mSteps").textContent = (d.step_count ?? 1) + " 步";
     $("mAtt").textContent = (d.attempts || 1) + " 轮";
     renderRounds(d);
     $("mTok").textContent = (d.tok_in || 0) + "+" + (d.tok_out || 0);
