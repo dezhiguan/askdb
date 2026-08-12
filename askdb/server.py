@@ -204,16 +204,36 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         except DataSourceError as e:
             return {"ok": False, "error": str(e), "hint": e.hint, "tables": []}
 
+        import re as _re
+
         tcol = cfg.tenant_column
         out = []
         for t in found:
             spec = cfg.tables.get(t["name"])
             described = sum(1 for c in spec.columns.values() if c.desc) if spec else 0
             total = len(spec.columns) if spec else t["cols"]
+
+            # 隔离方式必须分清直接列与间接归属。documents 没有 org_id，靠
+            # tenant_filter 经 kb_id 关联 —— 若只报 tenant_column，它显示为空，
+            # 读起来就是"这张表没有租户隔离"，而这是整页最要害的一列。
+            mode, via = "none", ""
+            if spec is None:
+                mode = "none"
+            elif spec.tenant_exempt:
+                mode = "exempt"
+            elif spec.tenant_column:
+                mode, via = "column", spec.tenant_column
+            elif spec.tenant_filter:
+                mode = "filter"
+                m = _re.search(r"\{ref\}\.(\w+)", spec.tenant_filter)
+                via = m.group(1) if m else ""
+
             out.append({
                 **t,
                 "allowed": spec is not None,
                 "tenant_column": (spec.tenant_column if spec else (tcol if t["tenant"] else None)),
+                "tenant_mode": mode,
+                "tenant_via": via,
                 "coverage": round(described / total * 100) if total else 0,
                 "desc": spec.desc if spec else "",
             })

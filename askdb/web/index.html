@@ -1110,16 +1110,15 @@ async function loadIntrospect() {
 function renderTables() {
   const ts = INTRO.tables;
   $("tblTable").innerHTML =
-    `<thead><tr><th style="width:34px"></th><th>表名</th><th>说明</th><th style="text-align:right">行数</th>
-     <th style="text-align:right">列</th><th>租户列</th><th>注释覆盖</th></tr></thead><tbody>` +
+    `<thead><tr><th style="width:34px"></th><th>表名</th><th>说明</th><th style="text-align:right" title="pg_class 统计估算值，且是全表跨租户的行数，不是当前租户能查到的行数">全表行数<br><small style="font-weight:400;color:var(--muted)">估算 · 跨租户</small></th>
+     <th style="text-align:right">列</th><th>租户隔离</th><th>注释覆盖</th></tr></thead><tbody>` +
     ts.map((t, i) => `<tr class="${PICK.has(t.name) ? "sel" : ""}">
       <td><input type="checkbox" data-i="${i}" ${PICK.has(t.name) ? "checked" : ""}></td>
       <td class="mono">${esc(t.name)}</td>
       <td style="color:var(--ink-2);white-space:normal">${esc(t.desc || "—")}</td>
       <td style="text-align:right;font-variant-numeric:tabular-nums">${t.rows.toLocaleString()}</td>
       <td style="text-align:right">${t.cols}</td>
-      <td>${t.tenant_column ? `<span class="tag2 ten">${esc(t.tenant_column)}</span>`
-        : '<span style="color:var(--muted)">—</span>'}</td>
+      <td>${tenantCell(t)}</td>
       <td>${t.allowed ? `<span class="tag2 ${t.coverage >= 60 ? "hi" : "low"}">${t.coverage}%</span>`
         : '<span style="color:var(--muted)">未开放</span>'}</td>
     </tr>`).join("") + "</tbody>";
@@ -1131,6 +1130,21 @@ function renderTables() {
   });
   updateSummary();
 }
+/* 隔离方式必须分清"直接有租户列"与"经关联间接归属"。
+   documents 没有 org_id，靠 tenant_filter 经 kb_id 关联到 knowledge_bases.org_id
+   —— 此前这里显示"—"，读起来是"这张表没有租户隔离"，而这是整页最要害的一列。 */
+function tenantCell(t) {
+  if (!t.allowed) return '<span style="color:var(--muted)">—</span>';
+  if (t.tenant_mode === "column")
+    return `<span class="tag2 ten">${esc(t.tenant_via)}</span>`;
+  if (t.tenant_mode === "filter")
+    return `<span class="tag2 ten" title="本表无租户列，经关联表间接归属（R-10 会注入子查询）">
+      经 ${esc(t.tenant_via || "关联")} 间接</span>`;
+  if (t.tenant_mode === "exempt")
+    return `<span class="tag2" title="已显式声明豁免租户隔离">豁免</span>`;
+  return '<span style="color:var(--muted)">—</span>';
+}
+
 function updateSummary() {
   const ts = INTRO.tables, sel = ts.filter(t => PICK.has(t.name));
   const tok = sel.reduce((a, t) => a + t.cols * 9 + 40, 0);
@@ -1139,7 +1153,8 @@ function updateSummary() {
   $("tblSummary").innerHTML =
     `<span>已选 <b>${sel.length}</b> / <b>${ts.length}</b> 张</span>
      <span style="color:var(--muted)">预计注入 <b>${tok.toLocaleString()}</b> tokens/次</span>
-     <span style="color:var(--muted)">含租户列 <b>${sel.filter(t => t.tenant_column).length}</b> 张</span>
+     <span style="color:var(--muted)">已隔离 <b>${sel.filter(t =>
+        t.tenant_mode === "column" || t.tenant_mode === "filter").length}</b> / ${sel.length} 张</span>
      ${changed ? '<span style="color:var(--warn-ink)">与当前配置不一致，第 3 步可生成新配置</span>' : ""}`;
 }
 

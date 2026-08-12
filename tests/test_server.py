@@ -332,3 +332,20 @@ def test_eval_reports_paired_deltas_not_just_absolutes(client):
 
     cats = _by_category(with_reject)
     assert cats["single"] == [5, 10] and "reject" not in cats
+
+
+def test_introspect_distinguishes_indirect_tenant_isolation(client):
+    """接入页必须分清「直接有租户列」与「经关联间接归属」。
+
+    documents 没有 org_id，靠 tenant_filter 经 kb_id 关联到
+    knowledge_bases.org_id。此前该列只读 tenant_column，于是显示为空 ——
+    读起来是"这张表没有租户隔离"，而这是整页最要害的一列。
+    """
+    d = client.get("/api/introspect").json()
+    by = {t["name"]: t for t in d["tables"] if t.get("allowed")}
+    assert by, "白名单应至少有一张表"
+    for t in by.values():
+        # 白名单内的表一律不得报成"无隔离"——配置层本就 fail-closed
+        assert t["tenant_mode"] in ("column", "filter", "exempt")
+        if t["tenant_mode"] in ("column", "filter"):
+            assert t["tenant_via"], f"{t['name']} 应说明经哪一列隔离"
