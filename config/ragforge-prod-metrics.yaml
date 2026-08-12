@@ -1,29 +1,37 @@
-# 云上 ragforge 库的业务口径。
+# 云上 ragforge 库的业务口径（org 316 视角）。
 #
 # 这些定义在数据库 schema 里一个字都没有，模型只能猜 —— 而猜错时
 # 输出仍然"看起来合理"。所以必须显式写下来。
+#
+# ---------------------------------------------------------------------------
+# 关于"区分度"：一个口径只有在「按定义算」与「凭直觉算」结果不同时，
+# 才谈得上检验模型是否真的用了它。下面每条都标注了在当前数据上的实测
+# 区分度；标 ⚠ 的几条目前退化（两种算法结果相同），它们仍是正确的业务
+# 定义、数据变化后即恢复效力，但**不应被用来出「口径依赖」类评测题** ——
+# 模型完全无视口径也能答对，那种题测不出任何东西。
+# 实测日期 2026-08-12。
+# ---------------------------------------------------------------------------
 
 metrics:
+  # ======================= 文档域 =======================
   - name: 文档数
     aliases: [文档数量, 已入库文档, 入库量, 完成数]
     scope: [documents]
     expr: "COUNT(*) FILTER (WHERE parse_status = 'COMPLETED')"
-    note: 口径为 COMPLETED 的数量，不是全部行数；缓存字段 knowledge_bases.doc_count 可能漂移，不可作为依据
+    note: >-
+      口径为 COMPLETED 的数量，不是全部行数。
+      **绝不可用 knowledge_bases.doc_count 代替** —— 那是缓存字段，实测已漂移：
+      kb 599 缓存记 12274，实际 12280，差 6 条。
     owner: 平台组
+    # 区分度：13953 / 13959，差 6 条（0.04%）。弱，但方向真实。
 
-  - name: 卡住的文档
-    aliases: [卡住, 卡在解析中, 待解析堆积, 堆积的文档]
+  - name: JD 文档数
+    aliases: [岗位文档数, JD 数量, 招聘文档数]
     scope: [documents]
-    predicate: "parse_status = 'PENDING' AND updated_at < now() - INTERVAL '1 hour'"
-    note: 待解析且超过 1 小时状态未变更
-    owner: 平台组
-
-  - name: 顶层文档数
-    aliases: [顶层文档, 不含压缩包子文档]
-    scope: [documents]
-    expr: "COUNT(*) FILTER (WHERE parent_document_id IS NULL)"
-    note: 压缩包展开出的子文档不计入；界面上的文档数通常指这个
-    owner: 平台组
+    expr: "COUNT(*) FILTER (WHERE chunk_type = 'JD')"
+    note: 仅统计岗位描述类文档；公司情报、薪资、技能、面试题不计入
+    owner: 数据组
+    # 区分度：12280 / 13959（88.0%）。强 —— 凭直觉写 COUNT(*) 必错。
 
   - name: 解析失败率
     aliases: [失败率, 失败比例, 解析失败]
@@ -31,6 +39,59 @@ metrics:
     expr: "COUNT(*) FILTER (WHERE parse_status = 'FAILED') * 1.0 / NULLIF(COUNT(*), 0)"
     note: 分母为该范围内全部文档，不排除 PENDING
     owner: 平台组
+    # 区分度：6 / 13959 = 0.043%。可用。
+
+  - name: 卡住的文档
+    aliases: [卡住, 卡在解析中, 待解析堆积, 堆积的文档]
+    scope: [documents]
+    predicate: "parse_status = 'PENDING' AND updated_at < now() - INTERVAL '1 hour'"
+    note: 待解析且超过 1 小时状态未变更
+    owner: 平台组
+    # ⚠ 当前退化：库中无 PENDING 文档，结果恒为空集。不用于出题。
+
+  - name: 顶层文档数
+    aliases: [顶层文档, 不含压缩包子文档]
+    scope: [documents]
+    expr: "COUNT(*) FILTER (WHERE parent_document_id IS NULL)"
+    note: 压缩包展开出的子文档不计入；界面上的文档数通常指这个
+    owner: 平台组
+    # ⚠ 当前退化：全部 13959 条 parent_document_id 均为 NULL，等价于 COUNT(*)。不用于出题。
+
+  # ======================= 知识库域 =======================
+  - name: 有效知识库数
+    aliases: [知识库数, 库数量, 有几个知识库, 在用的知识库]
+    scope: [knowledge_bases]
+    expr: "COUNT(*) FILTER (WHERE status = 'active')"
+    note: >-
+      已删除（status = 'deleted'）的库仍留在表中做软删除，不计入。
+      schema 里没有任何线索表明这一点，凭直觉写 COUNT(*) 会多算。
+    owner: 平台组
+    # 区分度：5 / 6。强 —— 只差 1 条，但方向明确且模型无从推断。
+
+  # ======================= 检索域 =======================
+  - name: 慢检索
+    aliases: [慢查询, 检索慢, 耗时长的检索]
+    scope: [retrieval_logs]
+    predicate: "latency_ms > 3000"
+    note: 端到端超过 3 秒的检索请求
+    owner: 平台组
+    # 区分度：5 / 1407。可用。
+
+  - name: 空结果检索
+    aliases: [没搜到, 无结果检索, 空召回]
+    scope: [retrieval_logs]
+    predicate: "result_count = 0"
+    note: 检索链路正常返回但一条都没召回；与失败（status != 'SUCCESS'）是两回事
+    owner: 平台组
+    # 区分度：3 / 1407。可用，且与"检索失败"语义正交 —— 容易被模型混淆。
+
+  - name: 混合检索占比
+    aliases: [hybrid 占比, 混合策略比例]
+    scope: [retrieval_logs]
+    expr: "COUNT(*) FILTER (WHERE strategy = 'hybrid') * 1.0 / NULLIF(COUNT(*), 0)"
+    note: hybrid 策略请求数占全部检索请求的比例
+    owner: 平台组
+    # 区分度：1101 / 1407 = 78.3%。可用。
 
   - name: 检索成功率
     aliases: [检索成功, 检索失败率]
@@ -38,10 +99,26 @@ metrics:
     expr: "COUNT(*) FILTER (WHERE status = 'SUCCESS') * 1.0 / NULLIF(COUNT(*), 0)"
     note: 以 retrieval_logs.status 判定
     owner: 平台组
+    # ⚠ 当前退化：1407 条全部为 SUCCESS，结果恒为 1.0。不用于出题。
 
-  - name: 慢检索
-    aliases: [慢查询, 检索慢, 耗时长的检索]
-    scope: [retrieval_logs]
-    predicate: "latency_ms > 3000"
-    note: 端到端超过 3 秒的检索请求
+  # ======================= 成本域 =======================
+  - name: 模型调用失败率
+    aliases: [调用失败率, 模型失败比例, 接口失败率]
+    scope: [model_usage_daily]
+    expr: "SUM(fail_count) * 1.0 / NULLIF(SUM(call_count), 0)"
+    note: >-
+      分子分母都要先 SUM 再相除。
+      **不可写成 AVG(fail_count / call_count)** —— 那是按天等权平均，
+      会让调用量极小的日期获得与高峰日相同的权重，结果失真。
     owner: 平台组
+    # 区分度：66 / 16454 = 0.401%。两种算法结果不同，能测出模型是否理解加权。
+
+  - name: 日均成本
+    aliases: [每天花多少钱, 平均日成本, 日均花费]
+    scope: [model_usage_daily]
+    expr: "SUM(cost) / NULLIF(COUNT(DISTINCT stat_date), 0)"
+    note: >-
+      分母是**有记录的天数**，不是行数 —— 一天里每个模型每种用途各占一行，
+      直接用 COUNT(*) 做分母会把日均成本算小到三分之一以下。
+    owner: 平台组
+    # 区分度：分母 40（天）vs 90（行）。强 —— 是最典型的"看似合理但口径错"。

@@ -53,7 +53,11 @@ tables:
       id:           { type: BIGINT,    desc: 文档 ID }
       kb_id:        { type: BIGINT,    desc: 所属知识库 ID，关联 knowledge_bases.id }
       filename:     { type: VARCHAR,   desc: 原始文件名 }
-      file_type:    { type: VARCHAR,   desc: 文件类型（扩展名） }
+      file_type:    { type: VARCHAR,   desc: "MIME 类型（不是扩展名）。本库当前全部为 text/markdown，
+                                              据此分组没有区分度" }
+      chunk_type:   { type: VARCHAR,   desc: "内容类型 —— 这条语料属于哪类业务数据，与 file_type 无关。
+                                              「JD 文档数」口径按此列判定",
+                      enum: [JD, COMPANY, SALARY, SKILL, INTERVIEW] }
       file_size:    { type: BIGINT,    desc: 文件字节数 }
       parse_status: { type: VARCHAR,   desc: "解析状态。「文档数」口径为 COMPLETED 的数量，不是全部行数",
                       enum: [PENDING, COMPLETED, FAILED] }

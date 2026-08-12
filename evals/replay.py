@@ -263,6 +263,8 @@ def summarize(rep: Report) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description="黄金集回放")
     ap.add_argument("-c", "--config", default="config/askdb.yaml")
+    ap.add_argument("--golden", default="",
+                    help="题库路径，默认 evals/golden.jsonl（样例库那份）")
     ap.add_argument("--blind", action="store_true", help="仅盲测集（验收用）")
     ap.add_argument("--all", action="store_true", help="全部题目")
     ap.add_argument("--limit", type=int, default=0, help="只跑前 N 题，便于冒烟")
@@ -270,7 +272,7 @@ def main() -> None:
     a = ap.parse_args()
 
     cfg = load_cfg(a.config)
-    cases = load_cases()
+    cases = load_cases(Path(a.golden) if a.golden else None)
     if a.blind:
         cases, group = [c for c in cases if c.blind], "盲测集（最终成绩）"
     elif a.all:
