@@ -22,6 +22,54 @@ from .graph import ask as run_ask, jsonable
 WEB = Path(__file__).resolve().parent / "web"
 
 
+def _paired_delta(base: list[dict], other: list[dict]) -> dict[str, Any] | None:
+    """两组在**同一批题**上的差异，以及它的置信区间与显著性。
+
+    为什么不能直接看两条独立置信区间：各组跑的是完全相同的题目（§6.4
+    第 3 条），是配对设计。配对检验只关心"谁翻了盘"——A 错 B 对多少题、
+    A 对 B 错多少题 —— 比各算各的区间灵敏得多，也才是这份数据该用的方法。
+
+    返回的 CI 是**差值的**区间。它是否跨过 0，直接回答"这个差异说明得了
+    问题吗"，而柱状图的长短回答不了。
+    """
+    import math
+
+    ba = {o["id"]: o["passed"] for o in base if o.get("category") != "reject"}
+    bo = {o["id"]: o["passed"] for o in other if o.get("category") != "reject"}
+    ids = [i for i in ba if i in bo]
+    n = len(ids)
+    if not n:
+        return None
+    b01 = sum(1 for i in ids if not ba[i] and bo[i])      # 变好
+    b10 = sum(1 for i in ids if ba[i] and not bo[i])      # 变坏
+    d = (b01 - b10) / n
+    # 配对比例差的 Wald 标准误（McNemar 型）
+    var = (b01 + b10 - (b01 - b10) ** 2 / n) / (n * n)
+    se = math.sqrt(max(var, 0.0))
+    lo, hi = d - 1.96 * se, d + 1.96 * se
+
+    m = b01 + b10
+    if m == 0:
+        pv = 1.0
+    else:                                                  # 精确二项（双侧）
+        k = min(b01, b10)
+        pv = min(1.0, 2 * sum(math.comb(m, i) for i in range(k + 1)) / 2 ** m)
+    return {"delta": d, "lo": lo, "hi": hi, "improved": b01,
+            "regressed": b10, "p": pv, "n": n}
+
+
+def _by_category(outcomes: list[dict]) -> dict[str, list[int]]:
+    """按题型的 [答对, 总数] —— 信息量最大的一张表，比总分有用得多。"""
+    agg: dict[str, list[int]] = {}
+    for o in outcomes:
+        if o.get("category") == "reject":
+            continue
+        a = agg.setdefault(o.get("category", "?"), [0, 0])
+        a[0] += bool(o.get("passed"))
+        a[1] += 1
+    return agg
+
+
 def _dsn_brief_id(cfg: Config) -> str:
     """数据源身份标识 —— 必须与评测出处里记的格式逐字一致，否则永远判不一致。"""
     kv = dict(x.split("=", 1) for x in cfg.dsn.split()
@@ -225,12 +273,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             src = fix.get(k) or abl.get(k)
             if not src:
                 continue
+            base_out = ((fix.get("A") or abl.get("A") or {}).get("outcomes")) or []
+            outs = src.get("outcomes") or []
             groups.append({
                 "key": k, "label": src["group"].split(" ", 1)[-1],
                 "n": src["n"], "accuracy": src["accuracy"],
                 "false_reject": src["false_reject"], "cost_cny": src["cost_cny"],
                 "p95_ms": src["p95_ms"],
                 "rerun": bool(fix.get(k)),
+                # 相对基线 A 的配对增量 —— 图上画的是这个，不是绝对准确率
+                "vs_base": _paired_delta(base_out, outs) if base_out and outs else None,
+                "by_category": _by_category(outs),
             })
         out["groups"] = groups
         out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）

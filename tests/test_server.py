@@ -305,3 +305,30 @@ def test_datasource_label_shows_real_host_not_tunnel(cfg):
 
     # 密码永远不出现
     assert "secret" not in server._dsn_label(dsn + " password=secret", "8.163.30.216:5432")
+
+
+def test_eval_reports_paired_deltas_not_just_absolutes(client):
+    """消融图画的是相对基线的**配对增量**，不是绝对准确率。
+
+    各组跑的是完全相同的题目（§6.4 第 3 条），是配对设计 ——
+    配对区间比两条独立区间灵敏得多，且"跨没跨过 0"直接回答
+    "这个差异说明得了问题吗"，而柱长回答不了。
+    """
+    from askdb.server import _paired_delta, _by_category
+
+    base = [{"id": f"q{i}", "category": "single", "passed": i < 5} for i in range(10)]
+    # 与 base 同题：前 5 题保持对，后 5 题全部翻成对
+    better = [{"id": f"q{i}", "category": "single", "passed": True} for i in range(10)]
+    v = _paired_delta(base, better)
+    assert v["improved"] == 5 and v["regressed"] == 0
+    assert v["delta"] == 0.5 and v["lo"] > 0        # 全翻好，区间应完全在 0 右侧
+
+    same = _paired_delta(base, base)
+    assert same["delta"] == 0 and same["p"] == 1.0
+
+    # 应拒题不计入准确率，也不该进配对统计
+    with_reject = base + [{"id": "r1", "category": "reject", "passed": False}]
+    assert _paired_delta(with_reject, with_reject)["n"] == 10
+
+    cats = _by_category(with_reject)
+    assert cats["single"] == [5, 10] and "reject" not in cats

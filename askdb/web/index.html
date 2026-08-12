@@ -1252,8 +1252,41 @@ async function renderEval() {
     </div>`;
   }
   const gs = d.groups || [];
+  // 按题型的分布 —— 这才是这份数据里信息量最大的一张表。
+  // 总分只差一两题时读不出东西，但"口径题 0/7 → 3/7"是从零到非零，
+  // 不需要统计检验也站得住。故置于图之前。
+  const CATLAB = {single:"单表聚合", join:"多表关联", metric:"口径依赖",
+                  window:"时间窗口", multihop:"多跳"};
+  const catKeys = Object.keys(CATLAB).filter(c => gs.some(g => (g.by_category||{})[c]));
+  if (catKeys.length) {
+    html += `<div class="tablewrap"><table>
+      <thead><tr><th>组</th>${catKeys.map(c =>
+        `<th style="text-align:right">${CATLAB[c]}</th>`).join("")}</tr></thead><tbody>`
+      + gs.map(g => {
+          const bc = g.by_category || {};
+          return `<tr><td class="mono">${g.key}${g.key === d.shipped
+              ? ' <span class="tag2 hi">当前默认</span>' : ""}</td>`
+            + catKeys.map(c => {
+                const v = bc[c];
+                if (!v) return `<td style="text-align:right;color:var(--muted)">—</td>`;
+                // 0 分单独标出来：那是"这一层完全没起作用"，不是低分
+                const zero = v[0] === 0 && v[1] > 0;
+                return `<td style="text-align:right;font-variant-numeric:tabular-nums
+                        ${zero ? ";color:var(--crit-ink);font-weight:600" : ""}">${v[0]}/${v[1]}</td>`;
+              }).join("") + `</tr>`;
+        }).join("") + `</tbody></table></div>`;
+    html += `<div class="notice info" style="margin:10px 0 16px">
+      <div class="t">◇ 先看这张表，再看下面的图</div>
+      <div class="why">总分只差一两题时读不出东西，但<b>口径依赖那一列从 0/7 变成 3/7</b>
+        —— 从零到非零，不需要统计检验也站得住：<b>没有口径定义，模型在口径题上一道都答不对</b>。
+        多表关联各组都只有 1–2/10，说明护栏、召回、口径都救不了它，那是真正的短板
+        （其中一部分是题面没界定清楚，说明见 README）。</div></div>`;
+  }
+
   if (gs.length) {
-    html += `<div class="chartbox"><svg id="ablChart" viewBox="0 0 700 ${34 + gs.length * 34}"
+    html += `<h3 style="margin:18px 0 2px;font-size:14px">各层相对基线 A 的增量</h3>
+      <p class="sub">画增量而不是绝对准确率：绝对值的柱长会让人读出并不存在的排序</p>
+      <div class="chartbox"><svg id="ablChart" viewBox="0 0 700 ${34 + gs.length * 34}"
       role="img" aria-label="消融实验各组执行准确率"></svg><div class="tip" id="ablTip"></div></div>`;
   }
   html += `<div class="tablewrap" style="margin-top:14px"><table>
@@ -1289,10 +1322,14 @@ async function renderEval() {
   if (b && b.n) {
     const nA = Math.max(1, (gs[0] && gs[0].n) || b.n);
     html += `<div class="notice info" style="margin-top:12px">
-      <div class="t">◇ 一道题值多少</div>
-      <div class="why">可作答题约 <b>${nA}</b> 道，<b>答对 1 题 ≈ ${(100 / nA).toFixed(1)}pp</b>。
-        图上的误差线是 95% 置信区间（Wilson）——
-        <b>区间重叠的两组，差异说明不了问题</b>。</div>
+      <div class="t">◇ 怎么读这张图</div>
+      <div class="why">横线是<b>差值的</b> 95% 置信区间（配对，各组跑的是同一批题）。
+        <b>线跨过 0 就说明不了问题</b>，这类组已压成灰色。
+        可作答题 <b>${nA}</b> 道，<b>答对 1 题 ≈ ${(100 / nA).toFixed(1)}pp</b>
+        —— 图上 2.7pp 的差距，字面意思就是多答对了一道题。<br>
+        <b>目前没有任何一组达到显著</b>（最好的一组 p=0.18）。这份评测当前的规模
+        只够用来<b>证伪</b>，不够用来证实；要让"某一层确有增益"站得住，
+        题量需要上一个数量级。</div>
     </div>`;
   }
   html += `<div class="notice bad" style="margin-top:12px">
@@ -1306,75 +1343,86 @@ async function renderEval() {
 }
 
 function drawAblation(gs, shipped) {
-  /* Wilson 得分区间 —— 小样本比正态近似稳，比例接近 0/1 时也不会越界 */
-  function wilson(p, n, z = 1.96) {
-    if (!n || n < 1) return null;
-    const d = 1 + z * z / n;
-    const c = (p + z * z / (2 * n)) / d;
-    const h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d;
-    return [Math.max(0, c - h), Math.min(1, c + h)];
-  }
-
+  /* 画的是**相对基线 A 的增量**，不是绝对准确率。
+     换掉柱状图的原因：六组的绝对准确率在统计上分不出高下，但柱长的视觉
+     权重远大于误差棒，读者照样会从长短里读出并不存在的排序 —— 画上区间
+     也救不回来。增量图把问题摆正：每条线跨没跨过 0，直接回答"这个差异
+     说明得了问题吗"，而这正是消融实验唯一想问的事。 */
   const svg = $("ablChart"), tip = $("ablTip");
-  const W = 700, L = 210, R = 60, T = 8, band = 34, bh = 18;
+  const W = 700, L = 210, R = 78, T = 20, band = 34;
   const pw = W - L - R, ph = gs.length * band;
-  let s = "";
-  [0, 25, 50, 75, 100].forEach(g => {
-    const x = L + (g / 100) * pw;
-    s += `<line x1="${x}" y1="${T}" x2="${x}" y2="${T + ph}" stroke="var(--grid)" stroke-width="1"/>`;
-    s += `<text x="${x}" y="${T + ph + 16}" fill="var(--muted)" font-size="11" text-anchor="middle"
-           style="font-variant-numeric:tabular-nums">${g}%</text>`;
-  });
-  s += `<line x1="${L}" y1="${T}" x2="${L}" y2="${T + ph}" stroke="var(--axis)" stroke-width="1"/>`;
-  // 标签按**估算宽度**裁，不按字符数：中文字形约是拉丁的两倍宽，
-  // 按 length 截断会让含中文的长标签溢出 viewBox 被卡片裁掉。
+
+  const vs = gs.map(g => g.vs_base).filter(Boolean);
+  if (!vs.length) { svg.innerHTML = ""; return; }
+  // 轴范围包住全部区间，并强制含 0 —— 0 是这张图的参照物，不能被裁掉
+  let lo = Math.min(0, ...vs.map(v => v.lo)), hi = Math.max(0, ...vs.map(v => v.hi));
+  const pad = Math.max((hi - lo) * 0.12, 0.02);
+  lo -= pad; hi += pad;
+  const X = v => L + ((v - lo) / (hi - lo)) * pw;
+
   const FS = 11.5;
   const textW = str => [...str].reduce((a, ch) =>
     a + (/[⺀-鿿＀-｠　-〿]/.test(ch) ? FS : FS * 0.55), 0);
   const fit = (str, max) => {
     if (textW(str) <= max) return str;
     let out = "";
-    for (const ch of str) {
-      if (textW(out + "…") > max) break;
-      out += ch;
-    }
+    for (const ch of str) { if (textW(out + "…") > max) break; out += ch; }
     return out.trimEnd() + "…";
   };
 
+  let s = "";
+  // 刻度：取整到 5pp
+  const step = (hi - lo) > 0.5 ? 0.1 : 0.05;
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+    const x = X(v);
+    s += `<line x1="${x}" y1="${T}" x2="${x}" y2="${T + ph}" stroke="var(--grid)" stroke-width="1"/>`;
+    s += `<text x="${x}" y="${T + ph + 16}" fill="var(--muted)" font-size="11" text-anchor="middle"
+           style="font-variant-numeric:tabular-nums">${v > 0 ? "+" : ""}${(v * 100).toFixed(0)}pp</text>`;
+  }
+  // 0 线 —— 全图的参照物，画得比刻度重
+  const x0 = X(0);
+  s += `<line x1="${x0}" y1="${T - 8}" x2="${x0}" y2="${T + ph}" stroke="var(--axis)" stroke-width="1.5"/>`;
+  s += `<text x="${x0}" y="${T - 12}" fill="var(--muted)" font-size="10.5" text-anchor="middle">与基线无差异</text>`;
+
   gs.forEach((g, i) => {
-    const y = T + i * band + (band - bh) / 2, w = (g.accuracy) * pw;
-    // 括号里的补充说明去掉 —— 完整配置在下方表格里，图上只需分得清是哪一组
+    const cy = T + i * band + band / 2;
     const full = `${g.key} ${g.label}`;
-    const label = fit(full.split("（")[0].trim(), L - 15);
-    s += `<text x="${L - 11}" y="${y + bh / 2 + 4}" fill="var(--ink-2)" font-size="11.5"
-           text-anchor="end"><title>${esc(full)}</title>${esc(label)}</text>`;
-    // 单色：这是"一个测量值 × 6 个配置"，不是有序量级编码
-    s += `<path d="${barPath(L, y, w, bh, 4)}" fill="var(--accent)"
-           opacity="${g.key === shipped ? 1 : .55}"/>`;
-    // 95% 置信区间（Wilson）。n 小时区间极宽，画出来才看得见
-    // "这几组其实分不出高下"——只画柱子会让人读出不存在的差异。
-    const ci = wilson(g.accuracy, g.n || 1);
-    if (ci) {
-      const x1 = L + ci[0] * pw, x2 = L + ci[1] * pw, cy = y + bh / 2;
-      s += `<line x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}"
-             stroke="var(--ink-2)" stroke-width="1" opacity=".55"/>`;
+    s += `<text x="${L - 11}" y="${cy + 4}" fill="var(--ink-2)" font-size="11.5"
+           text-anchor="end"><title>${esc(full)}</title>${esc(fit(full.split("（")[0].trim(), L - 15))}</text>`;
+    const v = g.vs_base;
+    if (!v) return;
+    if (g.key === "A") {
+      s += `<circle cx="${x0}" cy="${cy}" r="4" fill="var(--muted)"/>`;
+      s += `<text x="${x0 + 10}" y="${cy + 4}" fill="var(--muted)" font-size="11">基线</text>`;
+    } else {
+      // 区间跨过 0 就压成灰色：这一组"说明不了问题"，不该和确有差异的组同色
+      const solid = v.lo > 0 || v.hi < 0;
+      const col = solid ? "var(--accent)" : "var(--muted)";
+      const x1 = X(v.lo), x2 = X(v.hi), xd = X(v.delta);
+      s += `<line x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" stroke="${col}"
+             stroke-width="1.5" opacity="${solid ? .9 : .5}"/>`;
       for (const xx of [x1, x2]) {
-        s += `<line x1="${xx}" y1="${cy - 4}" x2="${xx}" y2="${cy + 4}"
-               stroke="var(--ink-2)" stroke-width="1" opacity=".55"/>`;
+        s += `<line x1="${xx}" y1="${cy - 5}" x2="${xx}" y2="${cy + 5}" stroke="${col}"
+               stroke-width="1.5" opacity="${solid ? .9 : .5}"/>`;
       }
+      s += `<circle cx="${xd}" cy="${cy}" r="4.5" fill="${col}"/>`;
+      s += `<text x="${W - R + 6}" y="${cy + 4}" fill="var(--ink)" font-size="12" font-weight="600"
+             style="font-variant-numeric:tabular-nums">${v.delta >= 0 ? "+" : ""}${(v.delta * 100).toFixed(1)}pp</text>`;
     }
-    s += `<text x="${L + w + 8}" y="${y + bh / 2 + 4}" fill="var(--ink)" font-size="12"
-           font-weight="600" style="font-variant-numeric:tabular-nums">${(g.accuracy*100).toFixed(1)}%</text>`;
     s += `<rect x="${L}" y="${T + i * band}" width="${pw}" height="${band}" fill="transparent" data-i="${i}"/>`;
   });
   svg.innerHTML = s;
+
   svg.onmousemove = e => {
     const h = e.target.closest("[data-i]");
     if (!h) { tip.style.opacity = 0; return; }
-    const g = gs[+h.dataset.i], box = svg.getBoundingClientRect();
+    const g = gs[+h.dataset.i], v = g.vs_base, box = svg.getBoundingClientRect();
     tip.innerHTML = `<b>${esc(g.key)} ${esc(g.label)}</b><br>
-      <span style="color:var(--muted)">准确率 ${(g.accuracy*100).toFixed(1)}% ·
-      误拒 ${(g.false_reject*100).toFixed(1)}% · ¥${g.cost_cny} · P95 ${(g.p95_ms/1000).toFixed(1)}s</span>`;
+      <span style="color:var(--muted)">绝对准确率 ${(g.accuracy * 100).toFixed(1)}% ·
+      误拒 ${(g.false_reject * 100).toFixed(1)}% · ¥${g.cost_cny} · P95 ${(g.p95_ms / 1000).toFixed(1)}s</span>`
+      + (v && g.key !== "A" ? `<br><span style="color:var(--muted)">相对 A：变好 ${v.improved} 题 /
+         变坏 ${v.regressed} 题 · p=${v.p.toFixed(3)}
+         ${v.lo > 0 || v.hi < 0 ? "" : "· 区间跨 0，说明不了问题"}</span>` : "");
     tip.style.left = (e.clientX - box.left) + "px";
     tip.style.top = (e.clientY - box.top) + "px";
     tip.style.opacity = 1;
