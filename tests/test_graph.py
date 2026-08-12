@@ -98,11 +98,25 @@ def test_guard_block_triggers_retry_then_succeeds(cfg, ex):
 
 
 def test_retry_exhausts_and_terminates(cfg, ex):
-    bad = "DELETE FROM documents"
+    """R-14 重试上限。
+
+    用「字段不存在」而不是 DELETE 来触发：语句类型错（R-02）属于
+    「问题超出范围」，按设计当场收敛、不进反思，验不到重试耗尽。
+    字段写错才是"SQL 写错了"这一类 —— 那才是反思该管的。
+    """
+    bad = "SELECT no_such_col AS x FROM documents"
     r = run(cfg, ex, bad, bad, bad, bad)
-    assert not r.ok and r.rejected_by == "R-02"
+    assert not r.ok and r.rejected_by == "R-04"
     assert r.attempts == cfg.max_retry + 1
     assert sum(1 for s in r.steps if s["step"] == "reflect") == cfg.max_retry
+
+
+def test_out_of_scope_reject_terminates_at_once(cfg, ex):
+    """语句类型、危险函数这类超范围拒绝，一轮都不该多跑。"""
+    fake = FakeLlm("DELETE FROM documents", "SELECT id AS x FROM documents")
+    r = graph.ask("把文档删掉", cfg, executor=ex, llm=fake)
+    assert not r.ok and r.rejected_by == "R-02"
+    assert r.attempts == 1 and len(fake.calls) == 1
 
 
 def test_no_retry_when_max_retry_zero(cfg, ex):
@@ -386,3 +400,50 @@ def test_replan_saying_single_step_also_converges(cfg, ex):
                    assess=[(False, {"kb_ids": [1]}), (True, {})])
     r = graph.ask("q", cfg, executor=ex, llm=fake)
     assert r.ok and len([c for c in fake.calls if "step" in c]) == 1
+
+
+def test_retry_must_not_answer_with_a_different_table(cfg, ex):
+    """反思重试不得"换个东西答"。
+
+    实测事故（trace 8fd3676f7e65）：用户问「chunks 表里有多少行」，
+    模型写 SELECT COUNT(*) FROM chunks → R-03 正确拦下 → 错误回灌 →
+    模型改成 SELECT COUNT(*) FROM documents → **通过并执行**，
+    返回一个看起来完全合理的数字。用户问 A，系统答 B。
+    评测里表现为应拒拦截率从 100% 掉到 75%。
+
+    根因是路由对所有护栏拒绝一视同仁地重试，而「表不在白名单」这类拒绝
+    属于"问题超出范围"—— 表不会因为再问一次就开放。
+    """
+    fake = FakeLlm("SELECT COUNT(*) AS n FROM chunks",
+                   "SELECT COUNT(*) AS n FROM documents")   # 这条绝不能被用上
+    r = graph.ask("chunks 表里有多少行", cfg, executor=ex, llm=fake)
+
+    assert not r.ok, "问的对象不可用，就该失败"
+    assert r.rejected_by == "R-03"
+    assert r.row_count == 0, "绝不能执行并返回一个看似合理的数字"
+    assert len(fake.calls) == 1, "根本不该有第二轮 —— 没有重试就没有换表的机会"
+    assert "documents" not in (r.sql_final or "")
+
+
+def test_out_of_scope_reject_costs_no_extra_model_call(cfg, ex):
+    """超范围拒绝必须当场收敛，一轮都不许多跑。
+
+    这里也如实记录被放弃的能力：模型把表名拼错（document → documents）
+    同样触发 R-03，现在**不再**自动纠正，而是直接失败。
+    接受这个代价的依据：报错里写明了真实原因，且 schema 是全量注入的，
+    拼错表名远比"换个东西答"罕见 —— 实测 338 次调用里前者 0 次、后者 1 次。
+    """
+    fake = FakeLlm("SELECT COUNT(*) AS n FROM document",       # 少个 s
+                   "SELECT COUNT(*) AS n FROM documents")      # 这条不该被用到
+    r = graph.ask("一共有多少文档", cfg, executor=ex, llm=fake)
+    assert not r.ok and r.rejected_by == "R-03"
+    assert r.attempts == 1, "超范围不该重试"
+    assert len(fake.calls) == 1, "多余的模型调用 = 白烧 token"
+    assert "白名单" in (r.hint or ""), "得告诉用户真实原因"
+
+
+def test_field_error_is_still_retried(cfg, ex):
+    """字段写错属于"SQL 写错了"，仍应重试 —— 别把可修复的也拦死。"""
+    fake = FakeLlm("SELECT no_such_col AS x FROM documents", OK_SQL)
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.ok and r.attempts == 2

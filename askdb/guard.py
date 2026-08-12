@@ -37,6 +37,26 @@ class GuardResult:
     reason: str = ""
     rules_fired: list[str] = field(default_factory=list)   # 触发的改写
     rewrites: list[str] = field(default_factory=list)      # 人类可读的改写说明
+    tables: set[str] = field(default_factory=set)          # 这条 SQL 引用到的表（含被拒的）
+
+    @property
+    def out_of_scope(self) -> bool:
+        """这次拒绝是"问题超出范围"，而不是"SQL 写错了"。
+
+        两类拒绝的重试价值完全不同：
+          · 写错了（R-04 字段不存在、执行报错）—— 模型据错误信息能改对
+          · 超范围（R-02/R-03/R-06/R-07）—— 表不会因为再问一次就开放
+
+        对第二类无脑重试，实测出现过一次危险后果：问"chunks 表有多少行"
+        被 R-03 拦下后，模型改成了 SELECT COUNT(*) FROM documents 并成功执行
+        —— 用户问 A、系统答 B，还返回一个看起来完全合理的数字。
+        评测里表现为应拒拦截率从 100% 掉到 75%（trace 8fd3676f7e65）。
+        """
+        return self.rejected_by in OUT_OF_SCOPE
+
+
+# 「问题超出范围」类拒绝。这几条不是 SQL 写法问题，改写法救不回来。
+OUT_OF_SCOPE = frozenset({"R-02", "R-03", "R-06", "R-07"})
 
 
 def _normalize(name: str) -> str:
@@ -94,8 +114,35 @@ def _direct_tables(select: exp.Select) -> list[tuple[exp.Table, exp.Join | None]
     return out
 
 
+def referenced_tables(sql: str, dialect: str = "duckdb") -> set[str]:
+    """这条 SQL 引用到的真实表（不含 CTE 别名）。
+
+    独立于 check 之外，因为被拒的 SQL 也要能取到表集合 —— 反思重试要拿
+    重试前后的表集合做比对，判断模型是"改写法"还是"换了个东西答"。
+    """
+    try:
+        stmts = [s for s in sqlglot.parse(sql, dialect=dialect) if s is not None]
+    except Exception:
+        return set()
+    out: set[str] = set()
+    for root in stmts:
+        ctes = _cte_names(root)
+        for tb in root.find_all(exp.Table):
+            n = (tb.name or "").lower()
+            if n and n not in ctes:
+                out.add(n)
+    return out
+
+
 def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardResult:
     """校验并改写。返回的 sql 才是允许执行的那条。"""
+    r = _check(sql, cfg, org_id, dialect)
+    if not r.tables:
+        r.tables = referenced_tables(sql, dialect)
+    return r
+
+
+def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardResult:
     fired: list[str] = []
     rewrites: list[str] = []
 

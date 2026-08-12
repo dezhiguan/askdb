@@ -61,6 +61,8 @@ class AskState(TypedDict, total=False):
     error_hint: str
     rejected_by: str | None
     attempt: int
+    # 本次拒绝是否属「问题超出范围」。路由据此决定要不要进反思。
+    out_of_scope: bool
 
     # ---- 多步规划（§5.3）。同样必须可序列化，检查点要存下来 ----
     multi_step: bool
@@ -269,12 +271,17 @@ def _n_guard(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     r = guard.check(state["sql_raw"], d.cfg, org_id=state["org_id"], dialect=d.cfg.dialect)
     if not r.ok:
         d.tracer.add("guard", t, f"{r.rejected_by} {r.reason}", status="blocked")
-        return {"error": r.reason, "rejected_by": r.rejected_by}
+        return {"error": r.reason, "rejected_by": r.rejected_by,
+                # 超范围的拒绝不进反思。路由只读状态，判定在这里定死。
+                "out_of_scope": r.out_of_scope,
+                "error_hint": ("该对象不在开放范围内。可在接入页查看已开放的表，"
+                               "或联系管理员调整白名单。") if r.out_of_scope else ""}
+
     note = "；".join(r.rewrites) or "无需改写"
     d.tracer.add("guard", t, note)
     return {
         "sql_final": r.sql, "rules_fired": r.rules_fired, "rewrites": r.rewrites,
-        "error": None, "rejected_by": None,
+        "error": None, "rejected_by": None, "out_of_scope": False,
     }
 
 
@@ -430,6 +437,18 @@ def _can_retry(state: AskState) -> bool:
 def _route_after_guard(state: AskState) -> Literal["dry_run", "reflect", "finalize"]:
     if not state.get("rejected_by"):
         return "dry_run"
+    # 「问题超出范围」的拒绝不进反思：表不会因为再问一次就开放，
+    # 重试只有两种结局 —— 白烧两轮 token，或者模型换个能过校验的东西来答。
+    # 后者实测发生过：问「chunks 表有多少行」被 R-03 拦下后，重试改成
+    # SELECT COUNT(*) FROM documents 并成功执行，返回一个看似合理的数字
+    # （trace 8fd3676f7e65，评测里应拒拦截率因此从 100% 掉到 75%）。
+    # 那正是 §10.1 列为高危的"沉默的错误"。
+    #
+    # 代价：模型把表名拼错（document → documents）也不再自动纠正。
+    # 接受这个代价 —— 报错里写明了真实原因，而 schema 是全量注入的，
+    # 拼错表名远比换个东西答罕见；实测 338 次调用里前者 0 次、后者 1 次。
+    if state.get("out_of_scope"):
+        return "finalize"
     return "reflect" if _can_retry(state) else "finalize"
 
 
@@ -569,7 +588,7 @@ def ask(
     pl = cfg.raw.get("planner", {}) or {}
     init: AskState = {
         "question": question, "org_id": org, "trace_id": trace_id,
-        "attempt": 0, "max_retry": cfg.max_retry,
+        "attempt": 0, "max_retry": cfg.max_retry, "out_of_scope": False,
         # 多步相关的上限进状态而非从 cfg 现取 —— 路由只读状态，
         # 检查点回放时也就能还原出当时真实的约束
         "step_no": 0, "steps_done": [], "carry": {}, "multi_step": False,
