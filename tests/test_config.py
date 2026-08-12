@@ -207,3 +207,25 @@ def test_rejects_tenant_filter_without_ctx_placeholder(tmp_path):
         '        aliases: [文档]\n        tenant_filter: "{ref}.id > 0"')
     with pytest.raises(ValueError, match="缺少"):
         load(_write(tmp_path, BASE_MAIN, tables, "metrics: []"))
+
+
+def test_tight_config_differs_from_prod_only_in_scan_threshold():
+    """护栏回归验证配置：除扫描阈值与落盘路径外，必须与生产配置逐字相同。
+
+    它存在的意义是把 R-11 → reflect → R-14 这条回边逼出来 ——
+    若顺带放松了别的护栏，观察到的就不是生产链路的行为。
+    """
+    from askdb.config import load
+
+    prod, tight = load("config/ragforge-prod.yaml"), load("config/ragforge-tight.yaml")
+    assert set(prod.tables) == set(tight.tables)
+    assert [m.name for m in prod.metrics] == [m.name for m in tight.metrics]
+    assert prod.dsn == tight.dsn and prod.default_org == tight.default_org
+
+    pg, tg = dict(prod.raw["guard"]), dict(tight.raw["guard"])
+    assert tg.pop("max_scan_rows") < pg.pop("max_scan_rows"), "阈值必须更严，不能更松"
+    assert pg == tg, "除扫描阈值外的护栏不得有任何差异"
+
+    # 审计与检查点必须分开落盘，别污染生产
+    assert prod.audit_log != tight.audit_log
+    assert prod.checkpoint_db != tight.checkpoint_db
