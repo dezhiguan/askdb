@@ -18,6 +18,9 @@ datasource:
   type: postgresql
   dsn: "host=127.0.0.1 port=15432 dbname=ragforge user=askdb_ro"
   password_env: ASKDB_PROD_PG_PASSWORD
+  # dsn 指向的是隧道本地端口；真实库在这里。界面与评测出处按此显示，
+  # 否则出处栏会写成 127.0.0.1，等于把最关键的一条信息说错。
+  upstream: "8.163.30.216:5432"           # 云上主库，经本地 SSH 隧道 15432 转发
 
 tenant:
   enabled: true

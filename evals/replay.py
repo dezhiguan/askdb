@@ -286,7 +286,7 @@ def provenance_of(cfg: Config, cases: list[Case], golden: str = "") -> dict[str,
     摆在连着生产库的界面旁边，正是因为缺了这层记录。
     """
     src = (cfg.db_path.name if cfg.db_type == "duckdb"
-           else _dsn_brief(cfg.dsn))
+           else _dsn_brief(cfg.dsn, cfg.upstream))
     return {
         "config": str(getattr(cfg, "path", "") or ""),
         "datasource": f"{cfg.db_type}:{src}",
@@ -300,9 +300,15 @@ def provenance_of(cfg: Config, cases: list[Case], golden: str = "") -> dict[str,
     }
 
 
-def _dsn_brief(dsn: str) -> str:
+def _dsn_brief(dsn: str, upstream: str = "") -> str:
+    """数据源身份标识。
+
+    经隧道时必须记 upstream 而不是本地转发端口 —— 出处这一栏存在的意义
+    就是说清"这组数字出自哪个库"，记成 127.0.0.1 等于什么都没说。
+    """
     kv = dict(x.split("=", 1) for x in dsn.split() if "=" in x and not x.startswith("password="))
-    return f"{kv.get('dbname', '?')}@{kv.get('host', '?')}:{kv.get('port', '')}"
+    host = upstream or f"{kv.get('host', '?')}:{kv.get('port', '')}"
+    return f"{kv.get('dbname', '?')}@{host}"
 
 
 def run(cfg: Config, cases: list[Case], group: str = "current",

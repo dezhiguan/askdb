@@ -78,6 +78,18 @@ class Config:
         return self.raw["datasource"]["type"]
 
     @property
+    def upstream(self) -> str:
+        """连接串背后真正的库地址。
+
+        经 SSH 隧道连接时，dsn 里写的是本地转发端口（127.0.0.1:15432），
+        那是**运维细节，不是数据源身份**。界面与评测出处若照搬它，
+        读的人会以为数据来自本机 —— 而出处这一栏存在的全部意义，
+        就是说清"这组数字到底出自哪个库"。
+        配置里显式声明，不做猜测。
+        """
+        return str(self.raw["datasource"].get("upstream", "") or "").strip()
+
+    @property
     def dsn(self) -> str:
         """PostgreSQL 连接串。密码只走环境变量，不落配置文件。"""
         import os

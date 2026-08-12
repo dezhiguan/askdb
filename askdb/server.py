@@ -22,6 +22,14 @@ from .graph import ask as run_ask, jsonable
 WEB = Path(__file__).resolve().parent / "web"
 
 
+def _dsn_brief_id(cfg: Config) -> str:
+    """数据源身份标识 —— 必须与评测出处里记的格式逐字一致，否则永远判不一致。"""
+    kv = dict(x.split("=", 1) for x in cfg.dsn.split()
+              if "=" in x and not x.startswith("password="))
+    host = cfg.upstream or f"{kv.get('host', '?')}:{kv.get('port', '')}"
+    return f"{kv.get('dbname', '?')}@{host}"
+
+
 def _same_source(a: str, b: str) -> bool:
     """两个数据源标识是否指同一个库。
 
@@ -32,13 +40,21 @@ def _same_source(a: str, b: str) -> bool:
     return bool(a) and norm(a) == norm(b)
 
 
-def _dsn_label(dsn: str) -> str:
-    """连接串的可展示摘要 —— 绝不带出密码。"""
+def _dsn_label(dsn: str, upstream: str = "") -> str:
+    """连接串的可展示摘要 —— 绝不带出密码。
+
+    声明了 upstream 就显示 upstream：经隧道连接时 dsn 里是本地转发端口，
+    照搬会让人以为数据来自本机。隧道端点作为补充信息附在后面，
+    排查连接问题时还用得上。
+    """
     parts = dict(
         kv.split("=", 1) for kv in dsn.split() if "=" in kv and not kv.startswith("password=")
     )
-    host = parts.get("host", "?")
-    return f"{parts.get('dbname', '?')} @ {host}:{parts.get('port', '5432')}"
+    db = parts.get("dbname", "?")
+    local = f"{parts.get('host', '?')}:{parts.get('port', '5432')}"
+    if upstream:
+        return f"{db} @ {upstream}（经隧道 {local}）"
+    return f"{db} @ {local}"
 
 
 class AskRequest(BaseModel):
@@ -71,7 +87,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             with Executor(cfg) as ex:
                 ex.connect()
             db_msg = (cfg.db_path.name if cfg.db_type == "duckdb"
-                      else _dsn_label(cfg.dsn))
+                      else _dsn_label(cfg.dsn, cfg.upstream))
         except DataSourceError as e:
             db_ok, db_msg, db_hint = False, str(e), e.hint
         return {
@@ -190,7 +206,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 or (next(iter((_read(abl_p) or {}).values()), {}) or {}).get("provenance")
                 or {})
         here = (f"{cfg.db_type}:"
-                + (cfg.db_path.name if cfg.db_type == "duckdb" else _dsn_label(cfg.dsn)))
+                + (cfg.db_path.name if cfg.db_type == "duckdb"
+                   else _dsn_brief_id(cfg)))
         out["provenance"] = {
             **prov,
             "current_datasource": here,

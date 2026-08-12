@@ -285,3 +285,23 @@ def test_step_count_is_a_scalar_not_the_trace_array(client):
     page = (WEB / "index.html").read_text(encoding="utf-8")
     assert 'd.steps || d.step_count' not in page
     assert '$("mSteps").textContent = (d.step_count' in page
+
+
+def test_datasource_label_shows_real_host_not_tunnel(cfg):
+    """经 SSH 隧道时，界面与评测出处必须显示隧道背后的真实库地址。
+
+    dsn 里写的是本地转发端口（127.0.0.1:15432）—— 那是运维细节，
+    不是数据源身份。出处栏照搬它，读的人会以为数据来自本机，
+    而这一栏存在的全部意义就是说清"这组数字出自哪个库"。
+    """
+    dsn = "host=127.0.0.1 port=15432 dbname=ragforge user=askdb_ro"
+
+    lbl = server._dsn_label(dsn, "8.163.30.216:5432")
+    assert "8.163.30.216:5432" in lbl
+    assert "经隧道" in lbl and "127.0.0.1:15432" in lbl   # 隧道端点仍要留着，排查时用得上
+
+    # 未声明 upstream（直连）时保持原样，不臆造
+    assert server._dsn_label(dsn) == "ragforge @ 127.0.0.1:15432"
+
+    # 密码永远不出现
+    assert "secret" not in server._dsn_label(dsn + " password=secret", "8.163.30.216:5432")

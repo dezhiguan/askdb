@@ -3,7 +3,7 @@
   "n": 17,
   "provenance": {
     "config": "",
-    "datasource": "postgresql:ragforge@127.0.0.1:15432",
+    "datasource": "postgresql:ragforge@8.163.30.216:5432",
     "synthetic": false,
     "org_id": 316,
     "golden": "evals/golden-ragforge.jsonl",
@@ -29,7 +29,8 @@
       "检索成功率",
       "模型调用失败率",
       "日均成本"
-    ]
+    ],
+    "datasource_backfilled": "运行时记的是隧道本地端口 127.0.0.1:15432，同一个库"
   },
   "accuracy": 0.625,
   "false_reject": 0.0625,
