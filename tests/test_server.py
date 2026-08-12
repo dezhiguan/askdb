@@ -206,3 +206,47 @@ def test_mcp_ask_payload_carries_sql_and_caveat(cfg, monkeypatch):
     assert p["ok"] and p["sql"] and p["rewrites"]      # 强制改写要让调用方看见
     assert "人工核对" in p["caveat"]
     assert p["trace_id"]
+
+
+# ---------------------------------------------------------------- /api/eval
+
+def test_eval_reports_unavailable_without_results(cfg, tmp_path, monkeypatch):
+    """没有结果文件时如实说"尚未运行"，不编数字。"""
+    import copy
+
+    broken = copy.copy(cfg)
+    broken.root = tmp_path                      # 指向没有 evals/results 的目录
+    monkeypatch.setattr(server, "load", lambda _p: broken)
+    d = TestClient(server.create_app("x")).get("/api/eval").json()
+    assert d["available"] is False
+
+
+def test_eval_exposes_real_results(cfg, tmp_path, monkeypatch):
+    import copy
+    import json
+
+    res = tmp_path / "evals" / "results"
+    res.mkdir(parents=True)
+    (res / "blind.json").write_text(json.dumps({
+        "n": 18, "accuracy": 0.5, "false_reject": 0.062, "block_rate": 0.5,
+        "multi_misuse": 0.0, "p95_ms": 22894, "cost_cny": 0.0599,
+        "failure_kinds": {"链路失败": 4}}), encoding="utf-8")
+    (res / "ablation2.json").write_text(json.dumps({
+        "A": {"group": "A 裸 Prompt", "n": 40, "accuracy": 0.595, "false_reject": 0.027,
+              "cost_cny": 0.118, "p95_ms": 6754},
+        "E": {"group": "E 旧值", "n": 40, "accuracy": 0.1, "false_reject": 0.0,
+              "cost_cny": 0.1, "p95_ms": 1}}), encoding="utf-8")
+    (res / "ablation_F.json").write_text(json.dumps({
+        "E": {"group": "E 干跑阈值", "n": 40, "accuracy": 0.73, "false_reject": 0.0,
+              "cost_cny": 0.1093, "p95_ms": 7104}}), encoding="utf-8")
+
+    c = copy.copy(cfg)
+    c.root = tmp_path
+    monkeypatch.setattr(server, "load", lambda _p: c)
+    d = TestClient(server.create_app("x")).get("/api/eval").json()
+    assert d["available"] and d["blind"]["accuracy"] == 0.5
+    by = {g["key"]: g for g in d["groups"]}
+    # E 必须取配额修复后的重跑值，而不是被污染的那一轮
+    assert by["E"]["accuracy"] == 0.73 and by["E"]["rerun"] is True
+    assert by["A"]["rerun"] is False
+    assert d["shipped"] == "E"

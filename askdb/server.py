@@ -146,6 +146,50 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return {"ok": True, "tables": out,
                 "allowed_count": sum(1 for t in out if t["allowed"]), "total": len(out)}
 
+    @app.get("/api/eval")
+    def evaluation() -> dict[str, Any]:
+        """已跑完的评测结果。
+
+        没有结果文件时如实返回 available:false —— 页面据此显示"尚未运行"，
+        而不是编一组数字出来。
+        """
+        root = cfg.root / "evals" / "results"
+        blind_p, abl_p, fix_p = (root / "blind.json", root / "ablation2.json",
+                                 root / "ablation_F.json")
+        if not blind_p.exists() and not abl_p.exists():
+            return {"available": False}
+
+        import json as _json
+
+        def _read(p):
+            try:
+                return _json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+
+        out: dict[str, Any] = {"available": True}
+        if (b := _read(blind_p)):
+            out["blind"] = {k: b.get(k) for k in
+                            ("n", "accuracy", "false_reject", "block_rate",
+                             "multi_misuse", "p95_ms", "cost_cny", "failure_kinds")}
+        groups: list[dict[str, Any]] = []
+        abl, fix = _read(abl_p) or {}, _read(fix_p) or {}
+        for k in ("A", "B", "C", "D", "E", "F"):
+            # E/F 取配额修复后的重跑，A–D 取原轮次
+            src = fix.get(k) or abl.get(k)
+            if not src:
+                continue
+            groups.append({
+                "key": k, "label": src["group"].split(" ", 1)[-1],
+                "n": src["n"], "accuracy": src["accuracy"],
+                "false_reject": src["false_reject"], "cost_cny": src["cost_cny"],
+                "p95_ms": src["p95_ms"],
+                "rerun": bool(fix.get(k)),
+            })
+        out["groups"] = groups
+        out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）
+        return out
+
     @app.post("/api/ask")
     def ask(req: AskRequest) -> JSONResponse:
         r = run_ask(req.question.strip(), cfg, org_id=req.org_id)

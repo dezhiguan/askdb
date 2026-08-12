@@ -182,6 +182,26 @@ tbody tr:hover{background:var(--plane)}
 .tag{font-size:10.5px;padding:1.5px 7px;border-radius:5px;background:var(--wash);color:var(--accent);
   font-family:ui-monospace,Menlo,monospace;margin:0 4px 4px 0;display:inline-block}
 
+/* 分步执行 */
+.rcard{border:1px solid var(--border);border-radius:10px;padding:13px 15px;margin-top:11px;background:var(--plane)}
+.rcard:first-child{margin-top:0}
+.rhead{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.rnum{width:21px;height:21px;border-radius:6px;display:grid;place-items:center;font-size:11px;
+  font-weight:700;background:var(--wash);color:var(--accent);flex:none}
+.rgoal{font-size:12.5px;color:var(--ink-2);margin:4px 0 9px}
+.rsql{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;
+  overflow-x:auto;font-size:11.5px;line-height:1.7;white-space:pre}
+.rmeta{font-size:11.5px;color:var(--muted);margin-top:7px}
+.carry{display:inline-block;margin-top:6px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+  background:var(--inj);border-radius:5px;padding:2.5px 8px;font-weight:600}
+
+/* 图表 */
+.chartbox{position:relative}
+svg{display:block;width:100%;height:auto;overflow:visible}
+.tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-118%);
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:7px 11px;
+  font-size:12px;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.14);transition:opacity .1s;z-index:5}
+
 /* 向导 */
 .stepper{display:flex;align-items:center;margin-bottom:16px}
 .sstep{display:flex;align-items:center;gap:9px;cursor:pointer;background:none;border:0;font:inherit;padding:0}
@@ -323,6 +343,19 @@ tbody tr.sel{background:var(--wash)}
       </div>
     </div>
 
+    <!-- 就绪状态 -->
+    <div id="ready" class="hide">
+      <div class="tiles" id="readyTiles"></div>
+      <div class="card">
+        <h2>接入完成</h2>
+        <p class="sub">现在可以去「② 提问」了</p>
+        <div class="row" style="margin-top:0">
+          <button class="btn" id="gotoAsk2">开始提问</button>
+          <button class="btn ghost" id="redo">重新配置</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 第 3 步 -->
     <div id="w2" class="hide">
       <div class="cols">
@@ -352,6 +385,11 @@ tbody tr.sel{background:var(--wash)}
 
   <!-- ============ ② 提问 ============ -->
   <section id="ask" hidden>
+    <div class="card hide" id="noDs">
+      <h2>数据源还没就绪</h2>
+      <p class="sub" style="margin-bottom:0">先到「① 接入数据」把连接自检跑通，再回来提问。</p>
+    </div>
+    <div id="askMain">
     <div class="card">
       <div class="modes">
         <button class="mode" data-m="nl" aria-pressed="true">自然语言</button>
@@ -373,6 +411,11 @@ tbody tr.sel{background:var(--wash)}
 
     <div class="cols" style="margin-top:14px">
       <div>
+        <div class="card hide" id="multiCard">
+          <h2>分步执行过程 <span class="tag2 ten" id="stepCount"></span></h2>
+          <p class="sub">每一步独立生成、独立过完整护栏；中间结果只下传标识列字面量</p>
+          <div id="rounds"></div>
+        </div>
         <div class="card" id="pipeCard">
           <h2>执行链路</h2>
           <p class="sub" id="pipeSub">每步的状态、耗时与 token 都可归因</p>
@@ -406,6 +449,7 @@ tbody tr.sel{background:var(--wash)}
         <div class="card">
           <h2>本次调用</h2>
           <dl>
+            <div class="kv"><dt>执行步数</dt><dd id="mSteps">—</dd></div>
             <div class="kv"><dt>耗时</dt><dd id="mLat">—</dd></div>
             <div class="kv"><dt>行数</dt><dd id="mRows">—</dd></div>
             <div class="kv"><dt>轮次</dt><dd id="mAtt">—</dd></div>
@@ -420,6 +464,7 @@ tbody tr.sel{background:var(--wash)}
           <dl id="guardBox"><div class="kv"><dt>加载中</dt><dd>—</dd></div></dl>
         </div>
       </aside>
+    </div>
     </div>
   </section>
 
@@ -511,6 +556,7 @@ async function boot() {
     return;
   }
   renderEval();
+  gateAsk();
   const d = HEALTH.datasource, l = HEALTH.llm;
   $("pillDs").className = "pill " + (d.ok ? "ok" : "bad");
   $("pillDs").textContent = d.ok ? `${d.type} · ${d.detail}` : "数据源不可用";
@@ -666,7 +712,8 @@ async function submit() {
   $("sqlBox").classList.add("hide");
   $("outCard").classList.add("hide");
   $("hitBox").innerHTML = "";
-  ["mLat", "mRows", "mAtt", "mTok", "mCost"].forEach(k => $(k).textContent = "—");
+  ["mSteps", "mLat", "mRows", "mAtt", "mTok", "mCost"].forEach(k => $(k).textContent = "—");
+  $("multiCard").classList.add("hide"); $("rounds").innerHTML = "";
   $("steps").classList.remove("hide");
   $("steps").innerHTML = `<li class="step run"><span class="dot">·</span>
     <div><div class="sname">${MODE === "sql" ? "静态校验" : "Schema 召回"}</div>
@@ -722,7 +769,9 @@ function render(d) {
   setTimeout(() => {
     $("mLat").textContent = d.elapsed_ms != null ? d.elapsed_ms + " ms" : "—";
     $("mRows").textContent = d.ok ? (d.row_count ?? 0).toLocaleString() : "—";
+    $("mSteps").textContent = (d.steps || d.step_count || 1) + " 步";
     $("mAtt").textContent = (d.attempts || 1) + " 轮";
+    renderRounds(d);
     $("mTok").textContent = (d.tok_in || 0) + "+" + (d.tok_out || 0);
     $("mCost").textContent = "¥" + (d.cost_cny ?? 0).toFixed(4);
 
@@ -756,6 +805,22 @@ function render(d) {
 
     renderOutput(d);
   }, delay);
+}
+
+/* 多步时展开每一步：目标 / SQL / 结果规模 / 下传的标识列 */
+function renderRounds(d) {
+  const subs = d.sub_steps || [];
+  if (!d.multi_step || subs.length < 2) return;
+  $("stepCount").textContent = `${subs.length} 步` +
+    (d.converged_early ? ` · ${d.converged_early}` : "");
+  $("rounds").innerHTML = subs.map((s, i) => `
+    <div class="rcard">
+      <div class="rhead"><span class="rnum">${i + 1}</span><b>第 ${i + 1} 步 · ${esc(s.goal || "（单步）")}</b></div>
+      <pre class="rsql">${highlight(s.sql || "")}</pre>
+      <div class="rmeta">返回 ${s.row_count} 行${s.columns && s.columns.length
+        ? "（" + s.columns.map(esc).join("、") + "）" : ""}</div>
+    </div>`).join("");
+  $("multiCard").classList.remove("hide");
 }
 
 /* 高亮强制注入的部分：租户谓词与 LIMIT */
@@ -825,7 +890,40 @@ $("next0").onclick = () => showStep(1);
 $("back1").onclick = () => showStep(0);
 $("next1").onclick = () => showStep(2);
 $("back2").onclick = () => showStep(1);
-$("gotoAsk").onclick = () => document.querySelector('.tab[data-p="ask"]').click();
+$("gotoAsk").onclick = () => showReady();
+$("gotoAsk2").onclick = () => document.querySelector('.tab[data-p="ask"]').click();
+$("redo").onclick = () => { $("ready").classList.add("hide");
+  document.querySelector(".stepper").classList.remove("hide"); showStep(0); };
+
+/* 走完三步后的就绪汇总。数字全部取自真实配置与自检，不写死。 */
+function showReady() {
+  const ts = (SCHEMA && SCHEMA.tables) || [];
+  const all = ts.flatMap(t => t.columns);
+  const cov = all.length ? Math.round(all.filter(c => c.desc).length / all.length * 100) : 0;
+  const total = INTRO && INTRO.ok ? INTRO.total : ts.length;
+  const tenant = HEALTH.tenant;
+  $("readyTiles").innerHTML = [
+    ["数据源", HEALTH.datasource.detail, "", HEALTH.datasource.type],
+    ["开放表", ts.length, " 张", `库内共 ${total} 张，其余不可见`],
+    ["注释覆盖率", cov, "%", cov >= 60 ? "已达可用水平" : "偏低，会直接拖累准确率"],
+    ["业务口径", (SCHEMA && SCHEMA.metrics || []).length, " 条",
+     (SCHEMA && SCHEMA.metrics || []).slice(0, 2).map(m => m.name).join(" · ") || "未定义"],
+    ["租户隔离", tenant.enabled ? tenant.column : "未启用", "",
+     tenant.enabled ? "已绑定，强制注入" : "单租户库"],
+  ].map(([lab, v, u, foot]) => `<div class="tile"><div class="lab">${lab}</div>
+      <div class="val" style="${String(v).length > 8 ? "font-size:16px" : ""}">${esc(v)}<small>${u}</small></div>
+      <div class="foot${foot.includes("偏低") ? "" : " g"}">${esc(foot)}</div></div>`).join("");
+  ["w0", "w1", "w2"].forEach(i => $(i).classList.add("hide"));
+  document.querySelector(".stepper").classList.add("hide");
+  $("ready").classList.remove("hide");
+}
+
+/* 数据源没就绪就锁住提问 —— 让人先去接入，而不是查了才报错 */
+function gateAsk() {
+  const ok = HEALTH && HEALTH.datasource.ok;
+  $("noDs").classList.toggle("hide", ok);
+  $("askMain").classList.toggle("hide", !ok);
+}
 
 /* 第 1 步 —— 连接信息与自检 */
 const MODE_LABEL = {
@@ -1029,22 +1127,121 @@ $("genYaml").onclick = () => {
 };
 
 /* ---------- ③ 评测 ---------- */
-function renderEval() {
-  $("evalTiles").innerHTML = [
-    ["黄金集", "—", "P3 阶段产出"],
-    ["执行准确率", "—", "尚未测量"],
-    ["静态校验拦截", "—", "尚未测量"],
-    ["单次平均成本", "—", "尚未测量"],
-  ].map(([lab, val, foot]) => `<div class="tile"><div class="lab">${lab}</div>
-      <div class="val">${val}</div><div class="foot">${foot}</div></div>`).join("");
+async function renderEval() {
+  let d;
+  try { d = await (await fetch("/api/eval")).json(); } catch { d = { available: false }; }
 
-  $("evalBody").innerHTML = `<div class="notice info">
-    <div class="t">◇ 评测尚未运行</div>
-    <div class="why">黄金集 58 题、回放脚本与五组消融实验属于 <b>P3 阶段</b>，尚未开始。</div>
-    <div class="fix"><b>为什么这里是空的：</b>本项目不展示未经实测的指标。
-      准确率、拦截率、成本这些数字会在 P3 跑完后回填，并同时公开
-      <b>盲测集成绩</b>与<b>失败样本的分类分布</b>（不做筛选）。
-      在那之前放任何数字都是编的。</div></div>`;
+  if (!d.available) {
+    $("evalTiles").innerHTML = ["黄金集", "执行准确率", "误拒率", "单次平均成本"]
+      .map(l => `<div class="tile"><div class="lab">${l}</div>
+        <div class="val">—</div><div class="foot">尚未运行</div></div>`).join("");
+    $("evalBody").innerHTML = `<div class="notice info">
+      <div class="t">◇ 评测尚未运行</div>
+      <div class="why">本项目不展示未经实测的指标。</div>
+      <div class="fix"><b>跑一次：</b><code>python -m evals.replay --blind</code>（盲测集，最终成绩）
+        与 <code>python -m evals.ablation --groups A,B,C,D,E,F</code>（六组消融）。</div></div>`;
+    return;
+  }
+
+  const b = d.blind;
+  if (b) {
+    $("evalTiles").innerHTML = [
+      ["盲测集", b.n, " 题", "全程不参与调参，只跑一次"],
+      ["执行准确率", (b.accuracy * 100).toFixed(1), "%", "这是最终成绩"],
+      ["误拒率", (b.false_reject * 100).toFixed(1), "%", "越低越好，须与准确率同看"],
+      ["总成本", "¥" + b.cost_cny, "", `P95 ${(b.p95_ms / 1000).toFixed(1)} s`],
+    ].map(([lab, v, u, foot]) => `<div class="tile"><div class="lab">${lab}</div>
+      <div class="val">${v}<small>${u}</small></div><div class="foot">${foot}</div></div>`).join("");
+  }
+
+  const gs = d.groups || [];
+  let html = "";
+  if (gs.length) {
+    html += `<div class="chartbox"><svg id="ablChart" viewBox="0 0 700 ${34 + gs.length * 34}"
+      role="img" aria-label="消融实验各组执行准确率"></svg><div class="tip" id="ablTip"></div></div>`;
+  }
+  html += `<div class="tablewrap" style="margin-top:14px"><table>
+    <thead><tr><th>组</th><th>配置</th><th style="text-align:right">准确率</th>
+    <th style="text-align:right">增量</th><th style="text-align:right">误拒率</th>
+    <th style="text-align:right">成本</th><th style="text-align:right">P95</th></tr></thead><tbody>` +
+    gs.map((g, i) => {
+      const prev = i > 0 ? gs[i - 1] : null;
+      // E/F 来自配额修复后的重跑，与前一组不同轮次，增量不可比
+      const cmp = prev && prev.rerun === g.rerun;
+      const dlt = cmp ? ((g.accuracy - prev.accuracy) * 100) : null;
+      const dtxt = dlt === null ? "—" : (dlt >= 0 ? "+" : "") + dlt.toFixed(1) + "pp";
+      const col = dlt === null ? "var(--muted)" : dlt > 0 ? "var(--good-ink)"
+                : dlt < 0 ? "var(--crit-ink)" : "var(--muted)";
+      const ship = g.key === d.shipped ? ' <span class="tag2 hi">当前默认</span>' : "";
+      return `<tr><td class="mono">${g.key}${ship}</td><td style="white-space:normal">${esc(g.label)}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums">${(g.accuracy*100).toFixed(1)}%</td>
+        <td style="text-align:right;color:${col};font-weight:600">${dtxt}</td>
+        <td style="text-align:right">${(g.false_reject*100).toFixed(1)}%</td>
+        <td style="text-align:right">¥${g.cost_cny}</td>
+        <td style="text-align:right">${(g.p95_ms/1000).toFixed(1)}s</td></tr>`;
+    }).join("") + "</tbody></table></div>";
+
+  const fk = b && b.failure_kinds || {};
+  if (Object.keys(fk).length) {
+    html += `<div class="notice info" style="margin-top:14px">
+      <div class="t">◇ 盲测集失败分类（不做筛选，全量列出）</div>
+      <div class="why">${Object.entries(fk).map(([k, v]) => `${esc(k)} ${v}`).join(" · ")}</div>
+      <div class="fix">每条失败都带 <code>trace_id</code>，可从检查点原样复现。</div></div>`;
+  }
+  html += `<div class="notice bad" style="margin-top:12px">
+    <div class="t">◇ 解读这些数字前必须知道</div>
+    <div class="why">样例库只有 4 张表，n 偏小（可作答题 37 道、多跳题仅 6 道）——
+      <b>一两题之差就是 ±2.7pp，低于这个幅度的差异应视为噪声</b>。</div>
+    <div class="fix">E/F 两行来自配额修复后的重跑，与 A–D 不同轮次，增量不可直接相减。</div></div>`;
+  $("evalBody").innerHTML = html;
+
+  if (gs.length) drawAblation(gs, d.shipped);
+}
+
+function drawAblation(gs, shipped) {
+  const svg = $("ablChart"), tip = $("ablTip");
+  const W = 700, L = 210, R = 60, T = 8, band = 34, bh = 18;
+  const pw = W - L - R, ph = gs.length * band;
+  let s = "";
+  [0, 25, 50, 75, 100].forEach(g => {
+    const x = L + (g / 100) * pw;
+    s += `<line x1="${x}" y1="${T}" x2="${x}" y2="${T + ph}" stroke="var(--grid)" stroke-width="1"/>`;
+    s += `<text x="${x}" y="${T + ph + 16}" fill="var(--muted)" font-size="11" text-anchor="middle"
+           style="font-variant-numeric:tabular-nums">${g}%</text>`;
+  });
+  s += `<line x1="${L}" y1="${T}" x2="${L}" y2="${T + ph}" stroke="var(--axis)" stroke-width="1"/>`;
+  gs.forEach((g, i) => {
+    const y = T + i * band + (band - bh) / 2, w = (g.accuracy) * pw;
+    const label = `${g.key} ${g.label}`.slice(0, 26);
+    s += `<text x="${L - 11}" y="${y + bh / 2 + 4}" fill="var(--ink-2)" font-size="11.5"
+           text-anchor="end">${esc(label)}</text>`;
+    // 单色：这是"一个测量值 × 6 个配置"，不是有序量级编码
+    s += `<path d="${barPath(L, y, w, bh, 4)}" fill="var(--accent)"
+           opacity="${g.key === shipped ? 1 : .55}"/>`;
+    s += `<text x="${L + w + 8}" y="${y + bh / 2 + 4}" fill="var(--ink)" font-size="12"
+           font-weight="600" style="font-variant-numeric:tabular-nums">${(g.accuracy*100).toFixed(1)}%</text>`;
+    s += `<rect x="${L}" y="${T + i * band}" width="${pw}" height="${band}" fill="transparent" data-i="${i}"/>`;
+  });
+  svg.innerHTML = s;
+  svg.onmousemove = e => {
+    const h = e.target.closest("[data-i]");
+    if (!h) { tip.style.opacity = 0; return; }
+    const g = gs[+h.dataset.i], box = svg.getBoundingClientRect();
+    tip.innerHTML = `<b>${esc(g.key)} ${esc(g.label)}</b><br>
+      <span style="color:var(--muted)">准确率 ${(g.accuracy*100).toFixed(1)}% ·
+      误拒 ${(g.false_reject*100).toFixed(1)}% · ¥${g.cost_cny} · P95 ${(g.p95_ms/1000).toFixed(1)}s</span>`;
+    tip.style.left = (e.clientX - box.left) + "px";
+    tip.style.top = (e.clientY - box.top) + "px";
+    tip.style.opacity = 1;
+  };
+  svg.onmouseleave = () => tip.style.opacity = 0;
+}
+
+function barPath(x, y, w, h, r) {
+  r = Math.min(r, Math.max(w, 0));
+  if (w <= 0.5) return `M${x},${y} h0.5 v${h} h-0.5 Z`;
+  return `M${x},${y} H${x + w - r} A${r},${r} 0 0 1 ${x + w},${y + r} V${y + h - r}
+          A${r},${r} 0 0 1 ${x + w - r},${y + h} H${x} Z`;
 }
 
 boot();
