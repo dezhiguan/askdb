@@ -123,3 +123,20 @@ def test_ask_command_exits_nonzero_on_block(tmp_path, cfg, monkeypatch):
                         lambda q, c, org_id=None: graph.ask(q, c, org_id=org_id, llm=Fake()))
     r = runner.invoke(cli.app, ["ask", "删掉文档", "-c", _cfg_file(tmp_path, cfg)])
     assert r.exit_code == 1 and "R-02" in r.stdout
+
+
+def test_replay_command_exists_and_reports_missing_trace(tmp_path, monkeypatch):
+    """评测报告与界面都在提示 `askdb replay <trace_id>`，此前该命令并不存在。
+
+    §5 的检查点、§10.1 的"失败报告按步拆解、标注首个偏离步"都靠它落地。
+    """
+    from typer.testing import CliRunner
+    from askdb.cli import app
+
+    r = CliRunner().invoke(app, ["replay", "--help"])
+    assert r.exit_code == 0
+
+    r = CliRunner().invoke(app, ["replay", "no-such-trace", "-c", "config/askdb.yaml"])
+    assert r.exit_code != 0
+    # 报错必须指出检查点库路径 —— 最常见的原因就是配置和跑评测时对不上
+    assert "检查点" in r.output

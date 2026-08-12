@@ -1228,8 +1228,30 @@ async function renderEval() {
       <div class="val">${v}<small>${u}</small></div><div class="foot">${foot}</div></div>`).join("");
   }
 
-  const gs = d.groups || [];
+  // 出处横幅。一组成绩跑在哪个库上，直接决定它算不算数 ——
+  // 跑在合成样例库上的准确率，和当前连着的生产库没有关系。
+  const pv = d.provenance || {};
   let html = "";
+  if (pv.current_datasource) {
+    const same = pv.matches_current;
+    html += `<div class="notice ${same ? "info" : "bad"}" style="margin-bottom:14px">
+      <div class="t">◇ 这组成绩跑在哪里</div>
+      <div class="why">
+        数据源 <b>${esc(pv.datasource || "未记录")}</b>${pv.synthetic
+          ? '（<b>合成数据</b> —— 由 seed.py 用固定随机种子生成，表名规范、字段有注释，'
+            + '正是设计文档 §1.2 判定"与学术基准不具可比性"的那种理想环境）' : ""}
+        ${pv.org_id != null ? ` · 租户 org_id=${pv.org_id}` : ""}
+        ${pv.model ? ` · 模型 ${esc(pv.model)}` : ""}
+        ${pv.golden ? ` · 题库 <code>${esc(pv.golden)}</code>` : ""}
+        ${pv.n_cases ? ` · ${pv.n_cases} 题` : ""}
+      </div>
+      ${same ? `<div class="fix">与当前连接的数据源一致。</div>`
+             : `<div class="fix"><b>与当前连接的数据源不是同一个</b>
+                 —— 当前连的是 <code>${esc(pv.current_datasource)}</code>。
+                 下面的数字<b>不代表</b>本系统在当前库上的表现。</div>`}
+    </div>`;
+  }
+  const gs = d.groups || [];
   if (gs.length) {
     html += `<div class="chartbox"><svg id="ablChart" viewBox="0 0 700 ${34 + gs.length * 34}"
       role="img" aria-label="消融实验各组执行准确率"></svg><div class="tip" id="ablTip"></div></div>`;
@@ -1262,6 +1284,17 @@ async function renderEval() {
       <div class="why">${Object.entries(fk).map(([k, v]) => `${esc(k)} ${v}`).join(" · ")}</div>
       <div class="fix">每条失败都带 <code>trace_id</code>，可从检查点原样复现。</div></div>`;
   }
+  // §10.1 明确要求"报告中同时给出置信区间；不对小数点后第二位差异下结论"。
+  // 图上只画柱子而不画区间，等于默认读者会把 2 题的波动当成真实差异。
+  if (b && b.n) {
+    const nA = Math.max(1, (gs[0] && gs[0].n) || b.n);
+    html += `<div class="notice info" style="margin-top:12px">
+      <div class="t">◇ 一道题值多少</div>
+      <div class="why">可作答题约 <b>${nA}</b> 道，<b>答对 1 题 ≈ ${(100 / nA).toFixed(1)}pp</b>。
+        图上的误差线是 95% 置信区间（Wilson）——
+        <b>区间重叠的两组，差异说明不了问题</b>。</div>
+    </div>`;
+  }
   html += `<div class="notice bad" style="margin-top:12px">
     <div class="t">◇ 解读这些数字前必须知道</div>
     <div class="why">样例库只有 4 张表，n 偏小（可作答题 37 道、多跳题仅 6 道）——
@@ -1273,6 +1306,15 @@ async function renderEval() {
 }
 
 function drawAblation(gs, shipped) {
+  /* Wilson 得分区间 —— 小样本比正态近似稳，比例接近 0/1 时也不会越界 */
+  function wilson(p, n, z = 1.96) {
+    if (!n || n < 1) return null;
+    const d = 1 + z * z / n;
+    const c = (p + z * z / (2 * n)) / d;
+    const h = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d;
+    return [Math.max(0, c - h), Math.min(1, c + h)];
+  }
+
   const svg = $("ablChart"), tip = $("ablTip");
   const W = 700, L = 210, R = 60, T = 8, band = 34, bh = 18;
   const pw = W - L - R, ph = gs.length * band;
@@ -1309,6 +1351,18 @@ function drawAblation(gs, shipped) {
     // 单色：这是"一个测量值 × 6 个配置"，不是有序量级编码
     s += `<path d="${barPath(L, y, w, bh, 4)}" fill="var(--accent)"
            opacity="${g.key === shipped ? 1 : .55}"/>`;
+    // 95% 置信区间（Wilson）。n 小时区间极宽，画出来才看得见
+    // "这几组其实分不出高下"——只画柱子会让人读出不存在的差异。
+    const ci = wilson(g.accuracy, g.n || 1);
+    if (ci) {
+      const x1 = L + ci[0] * pw, x2 = L + ci[1] * pw, cy = y + bh / 2;
+      s += `<line x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}"
+             stroke="var(--ink-2)" stroke-width="1" opacity=".55"/>`;
+      for (const xx of [x1, x2]) {
+        s += `<line x1="${xx}" y1="${cy - 4}" x2="${xx}" y2="${cy + 4}"
+               stroke="var(--ink-2)" stroke-width="1" opacity=".55"/>`;
+      }
+    }
     s += `<text x="${L + w + 8}" y="${y + bh / 2 + 4}" fill="var(--ink)" font-size="12"
            font-weight="600" style="font-variant-numeric:tabular-nums">${(g.accuracy*100).toFixed(1)}%</text>`;
     s += `<rect x="${L}" y="${T + i * band}" width="${pw}" height="${band}" fill="transparent" data-i="${i}"/>`;

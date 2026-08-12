@@ -25,6 +25,7 @@ import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from decimal import Decimal
 from typing import Any
 
 from askdb import graph, guard
@@ -105,6 +106,8 @@ class Report:
         xs = sorted(o.elapsed_ms for o in self.outcomes)
         return xs[min(int(len(xs) * 0.95), len(xs) - 1)] if xs else 0
 
+    provenance: dict[str, Any] = field(default_factory=dict)
+
     @property
     def failure_kinds(self) -> dict[str, int]:
         """失败分类分布 —— 不做筛选，全量公开。"""
@@ -113,6 +116,10 @@ class Report:
     def to_dict(self) -> dict[str, Any]:
         return {
             "group": self.group, "n": self.n,
+            # 成绩必须带出处。没有这几项，一份结果文件事后无从分辨
+            # 它跑在哪个库、哪个题库、哪个模型上 —— 而这恰恰决定了
+            # 这个数字能不能拿来说事。
+            "provenance": self.provenance,
             "accuracy": self.accuracy, "false_reject": self.false_reject,
             "block_rate": self.block_rate, "multi_misuse": self.multi_misuse,
             "avg_steps": self.avg_steps, "cost_cny": self.cost, "p95_ms": self.p95_ms,
@@ -125,23 +132,79 @@ class Report:
 # 判定
 # --------------------------------------------------------------------------
 
-def _norm(rows: list[list[Any]]) -> set[tuple]:
-    """结果集规范化：按集合比对，抹平行序与数值表示差异。"""
-    out = set()
-    for r in rows:
-        cells = []
-        for v in r:
-            if isinstance(v, float):
-                cells.append(round(v, 4))
-            elif v is None:
-                cells.append(None)
-            else:
-                cells.append(str(v))
-        out.add(tuple(cells))
-    return out
+# 数值相对容差。选 1e-4 的依据：
+#   · 需要抹平的是**舍入差**——标准 SQL 写 ROUND(AVG(x),1) 而模型写 AVG(x)，
+#     实测 233.4954 vs 233.5，相对差 2e-5；口径题 0.372710 vs 0.3727 差 3e-5。
+#     这类差异对"平均耗时是多少"这个问题而言，两个答案是同一个答案。
+#   · 需要**保留**的是口径错——把日均成本的分母写成行数而非天数，
+#     结果 0.1656 vs 0.3727，相对差 55%。
+# 1e-4 落在两者之间，离两边各有三个数量级以上的余量，不是照着某几道题调出来的。
+NUM_RTOL = 1e-4
 
 
-def _expected(case: Case, cfg: Config, ex: Executor) -> set[tuple] | None:
+def _num(v: Any) -> float | None:
+    """能当数值比的就当数值比。
+
+    三件事必须一起处理，少一件这层容差就形同虚设：
+
+    1. Decimal —— PostgreSQL 的聚合结果几乎全是 Decimal。
+    2. **数值字符串** —— 这是最隐蔽的一处：被判定的答案来自 graph.ask，
+       已被 jsonable() 转成字符串（'233.4875…'），而标准答案是直连
+       Executor 取的原始 Decimal（233.5）。两边类型不同，数值分支根本
+       进不去，容差写了也不生效。
+    3. bool 排除在外 —— True 与 1 不该被视作同一个答案。
+    """
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, (int, float, Decimal)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v)
+        except ValueError:
+            return None       # 日期、名称等一律回落到字符串比对
+    return None
+
+
+def _cell_eq(a: Any, b: Any) -> bool:
+    x, y = _num(a), _num(b)
+    if x is not None and y is not None:
+        return x == y or abs(x - y) <= NUM_RTOL * max(abs(x), abs(y), 1e-12)
+    if (a is None) != (b is None):
+        return False
+    return str(a) == str(b)
+
+
+def _row_eq(a: tuple, b: tuple) -> bool:
+    return len(a) == len(b) and all(_cell_eq(x, y) for x, y in zip(a, b))
+
+
+def _norm(rows: list[list[Any]]) -> list[tuple]:
+    """结果集规范化 —— 只做行内定形，数值比对交给 _rows_match。
+
+    返回列表而非集合：带容差的比对无法用哈希表达（容差不满足传递性，
+    做不出稳定的哈希键），只能逐行配对。结果集有 R-13 的行数上限兜底，
+    O(n²) 配对不会失控。
+    """
+    return [tuple(r) for r in rows]
+
+
+def _rows_match(got: list[tuple], exp: list[tuple]) -> bool:
+    """按集合比对：行序无关，但要求一一对应（不是子集，也不去重）。"""
+    if len(got) != len(exp):
+        return False
+    pool = list(exp)
+    for g in got:
+        for i, e in enumerate(pool):
+            if _row_eq(g, e):
+                pool.pop(i)
+                break
+        else:
+            return False
+    return True
+
+
+def _expected(case: Case, cfg: Config, ex: Executor) -> list[tuple] | None:
     """标准结果集。
 
     **标准 SQL 必须走同一套护栏再执行。** 否则它拿到的是全租户、无 LIMIT
@@ -203,7 +266,7 @@ def judge(case: Case, r: graph.AskResult, cfg: Config, ex: Executor) -> Outcome:
         o.passed = True
         return o
     got = _norm(r.rows)
-    if got == exp:
+    if _rows_match(got, exp):
         o.passed = True
     else:
         o.reason = "结果不一致"
@@ -215,9 +278,37 @@ def judge(case: Case, r: graph.AskResult, cfg: Config, ex: Executor) -> Outcome:
 # 回放
 # --------------------------------------------------------------------------
 
+def provenance_of(cfg: Config, cases: list[Case], golden: str = "") -> dict[str, Any]:
+    """一份成绩的出处。
+
+    没有这几项，结果文件事后无从分辨它跑在哪个库、哪套题上 —— 而这恰恰
+    决定了这个数字能不能拿来说事。此前评测页把跑在合成样例库上的成绩
+    摆在连着生产库的界面旁边，正是因为缺了这层记录。
+    """
+    src = (cfg.db_path.name if cfg.db_type == "duckdb"
+           else _dsn_brief(cfg.dsn))
+    return {
+        "config": str(getattr(cfg, "path", "") or ""),
+        "datasource": f"{cfg.db_type}:{src}",
+        "synthetic": cfg.db_type == "duckdb",   # 样例库是 seed.py 生成的合成数据
+        "org_id": cfg.default_org,
+        "golden": golden or "evals/golden.jsonl",
+        "n_cases": len(cases),
+        "model": cfg.llm.get("model", ""),
+        "tables": sorted(cfg.tables),
+        "metrics": [m.name for m in cfg.metrics],
+    }
+
+
+def _dsn_brief(dsn: str) -> str:
+    kv = dict(x.split("=", 1) for x in dsn.split() if "=" in x and not x.startswith("password="))
+    return f"{kv.get('dbname', '?')}@{kv.get('host', '?')}:{kv.get('port', '')}"
+
+
 def run(cfg: Config, cases: list[Case], group: str = "current",
-        verbose: bool = True) -> Report:
-    rep = Report(group=group, n=len(cases))
+        verbose: bool = True, golden: str = "") -> Report:
+    rep = Report(group=group, n=len(cases),
+                 provenance=provenance_of(cfg, cases, golden))
     with Executor(cfg) as ex:
         for i, c in enumerate(cases, 1):
             t0 = time.perf_counter()
@@ -283,7 +374,7 @@ def main() -> None:
         cases = cases[: a.limit]
 
     print(f"回放 {group}：{len(cases)} 题  配置 {a.config}")
-    rep = run(cfg, cases, group=group)
+    rep = run(cfg, cases, group=group, golden=a.golden)
     print(summarize(rep))
 
     if a.out:

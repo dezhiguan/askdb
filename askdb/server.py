@@ -22,6 +22,16 @@ from .graph import ask as run_ask, jsonable
 WEB = Path(__file__).resolve().parent / "web"
 
 
+def _same_source(a: str, b: str) -> bool:
+    """两个数据源标识是否指同一个库。
+
+    记录的是 `postgresql:ragforge@127.0.0.1:15432`，界面上是
+    `postgresql:ragforge @ 127.0.0.1:15432` —— 只差空格，不能因此判为不同。
+    """
+    norm = lambda s: s.replace(" ", "").lower()
+    return bool(a) and norm(a) == norm(b)
+
+
 def _dsn_label(dsn: str) -> str:
     """连接串的可展示摘要 —— 绝不带出密码。"""
     parts = dict(
@@ -154,20 +164,39 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         而不是编一组数字出来。
         """
         root = cfg.root / "evals" / "results"
-        blind_p, abl_p, fix_p = (root / "blind.json", root / "ablation2.json",
-                                 root / "ablation_F.json")
+        # 优先用跑在**当前数据源**上的那套结果。此前这里只读样例库那套，
+        # 于是把一组跑在合成库上的成绩摆在了连着生产库的界面旁边。
+        prod = (root / "ragforge-blind.json", root / "ragforge-ablation.json", None)
+        sample = (root / "blind.json", root / "ablation2.json", root / "ablation_F.json")
+        blind_p, abl_p, fix_p = prod if prod[0].exists() or prod[1].exists() else sample
         if not blind_p.exists() and not abl_p.exists():
             return {"available": False}
 
         import json as _json
 
         def _read(p):
+            if p is None:
+                return None
             try:
                 return _json.loads(p.read_text(encoding="utf-8"))
             except Exception:
                 return None
 
         out: dict[str, Any] = {"available": True}
+
+        # 成绩的出处，以及它是否就是当前连着的这个数据源。
+        # 「这组数字算不算数」全看这两项，必须带到前端去。
+        prov = ((_read(blind_p) or {}).get("provenance")
+                or (next(iter((_read(abl_p) or {}).values()), {}) or {}).get("provenance")
+                or {})
+        here = (f"{cfg.db_type}:"
+                + (cfg.db_path.name if cfg.db_type == "duckdb" else _dsn_label(cfg.dsn)))
+        out["provenance"] = {
+            **prov,
+            "current_datasource": here,
+            # 出处缺失时不敢断言"一致"——按不一致处理，宁可多提示一次
+            "matches_current": bool(prov) and _same_source(prov.get("datasource", ""), here),
+        }
         if (b := _read(blind_p)):
             out["blind"] = {k: b.get(k) for k in
                             ("n", "accuracy", "false_reject", "block_rate",

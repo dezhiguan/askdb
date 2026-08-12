@@ -183,6 +183,54 @@ def cmd_serve(
     uvicorn.run(create_app(config), host=host, port=port, log_level="warning")
 
 
+@app.command("replay")
+def cmd_replay(
+    trace_id: str = typer.Argument(..., help="失败样本的 trace_id"),
+    config: str = CONFIG,
+) -> None:
+    """从检查点原样复现某次调用，按节点拆解判定链路。
+
+    设计文档 §5「检查点持久化至本地 SQLite，作用是失败样本可原样复现」
+    与 §10.1「失败报告按步拆解，标注首个偏离步」落地于此。
+    评测报告和界面上都在提示用这个命令，但它此前并不存在。
+
+    检查点库跟着配置走 —— 用哪份配置跑出来的失败，就用哪份配置复现。
+    """
+    from .graph import replay as do_replay
+
+    cfg = _load(config)
+    snaps = do_replay(trace_id, cfg)
+    if not snaps:
+        _fail(f"检查点里没有 {trace_id}",
+              f"确认配置是否对得上：这份用的检查点库是 {cfg.checkpoint_db}。"
+              "不同数据源的检查点分开存放。")
+
+    con.print(f"[bold]复现[/] {trace_id}   共 {len(snaps)} 个检查点\n")
+    first_bad = None
+    for i, s in enumerate(snaps):
+        nxt = "、".join(s["next"]) or "END"
+        bad = bool(s["error"] or s["rejected_by"])
+        if bad and first_bad is None:
+            first_bad = i
+        mark = "[red]✗[/]" if bad else "[green]✓[/]"
+        att = f"  重试 {s['attempt']}" if s.get("attempt") else ""
+        con.print(f"{mark} [{i}] 下一步 [cyan]{nxt}[/]{att}")
+        if s["sql_raw"] and s["sql_raw"] != s["sql_final"]:
+            con.print(f"      模型产出 [dim]{' '.join(s['sql_raw'].split())[:110]}[/]")
+        if s["sql_final"]:
+            con.print(f"      改写之后 {' '.join(s['sql_final'].split())[:110]}")
+        if s["rejected_by"]:
+            con.print(f"      [red]拦截[/] {s['rejected_by']}")
+        if s["error"]:
+            con.print(f"      [red]报错[/] {str(s['error'])[:150]}")
+
+    if first_bad is None:
+        con.print("\n[dim]全链路无拦截、无报错 —— 若这题仍判失败，"
+                  "问题在结果与标准答案不一致，不在链路。[/]")
+    else:
+        con.print(f"\n[bold]首个偏离步[/] 第 {first_bad} 个检查点")
+
+
 def _load(path: str):
     try:
         return load(path)

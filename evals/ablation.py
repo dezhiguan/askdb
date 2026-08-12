@@ -164,7 +164,8 @@ def main() -> None:
     for k in keys:
         label = GROUPS[k][0]
         print(f"── {k} {label}")
-        rep = run(make_cfg(base, k), cases, group=f"{k} {label}", verbose=False)
+        rep = run(make_cfg(base, k), cases, group=f"{k} {label}", verbose=False,
+                  golden=a.golden)
         print(summarize(rep))
         reports.append((k, label, rep))
 
