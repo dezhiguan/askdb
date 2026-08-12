@@ -1334,8 +1334,10 @@ async function renderEval() {
   }
   // §10.1 明确要求"报告中同时给出置信区间；不对小数点后第二位差异下结论"。
   // 图上只画柱子而不画区间，等于默认读者会把 2 题的波动当成真实差异。
+  // nA 在下面的「解读」段也要用 —— 声明在 if 块内会让那里 ReferenceError，
+  // 整个 renderEval 抛出，evalBody 永远不被赋值（表现为消融卡是空的）。
+  const nA = Math.max(1, (gs[0] && gs[0].n) || (b && b.n) || 1);
   if (b && b.n) {
-    const nA = Math.max(1, (gs[0] && gs[0].n) || b.n);
     html += `<div class="notice info" style="margin-top:12px">
       <div class="t">◇ 怎么读这张图</div>
       <div class="why">横线是<b>差值的</b> 95% 置信区间（配对，各组跑的是同一批题）。
