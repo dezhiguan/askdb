@@ -29,8 +29,9 @@ guard:
     - dblink
 
 planner:
-  # 多步是兜底路径不是默认路径：能用一条 SQL（含 CTE）表达的一律单步。
-  enabled: true
+  # 多步是兜底路径不是默认路径。默认关闭 —— 首轮消融显示成本 +109%
+  # 而多跳准确率未提升，按 §6.3 的规则回退为开关。
+  enabled: false
   max_steps: 3                       # R-16 总步数上限
   max_carry_rows: 50                 # R-15 中间结果规模上限，超限即收敛
   cost_cap_tokens: 12000             # R-17 单次问答累计 token 上限，0 表示不限
@@ -76,7 +77,11 @@ llm:
 observability:
   audit_log: ./data/audit.jsonl
   checkpoint_db: ./data/checkpoints.sqlite   # 失败样本原样复现，供 P3 评测归因
-  daily_quota: 500                           # 每日调用上限，防循环调用导致成本失控
+  # 每日调用上限，防循环调用导致成本失控。
+  # 内置样例库这份配置同时用于跑评测：一轮六组消融就是 240 次调用，
+  # 再加盲测集，500 会在中途触顶把剩余题目判为 QUOTA 失败、污染成绩。
+  # 生产配置（ragforge*.yaml）仍按 100～200 从严。
+  daily_quota: 3000
 
 tables_file: ./config/tables.yaml
 metrics_file: ./config/metrics.yaml

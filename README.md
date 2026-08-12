@@ -140,7 +140,9 @@ so you can verify the entire guardrail chain before configuring anything.
 
 ```bash
 uv pip install -e ".[dev]"
-pytest              # 146 tests · coverage gate at 81%
+pytest              # 230 tests · coverage gate at 81%
+python -m evals.replay --blind        # held-out set (the final score)
+python -m evals.ablation --groups A,B,C,D,E,F
 ```
 
 ---
@@ -176,9 +178,62 @@ org_id:
 
 ---
 
+## Measured results
+
+**Bundled sample database (104k rows) · deepseek-v4-flash · 2026-08-12 · every number below was actually run**
+
+### Held-out set — the final score
+
+18 questions, excluded from all tuning and iteration, **run exactly once**.
+
+| Metric | Value |
+|---|---|
+| **Execution accuracy** | **50.0%** |
+| False-reject rate | 6.2% |
+| Block rate on must-reject | 50.0% (1 of 2) |
+| P95 latency | 22.9 s |
+| Total cost | ¥0.0599 |
+
+Failure breakdown (unfiltered): pipeline failure 4 · wrong result 3 · not blocked 1 · guard-blocked 1.
+Every failure carries a `trace_id` and can be replayed from its checkpoint.
+
+### Ablation (40 non-held-out questions)
+
+| Group | Configuration | Accuracy | Delta | False-reject | Cost | P95 |
+|---|---|---|---|---|---|---|
+| A | Bare prompt (full schema, no rewriting/retry/metrics) | 59.5% | — | 2.7% | ¥0.118 | 6.8 s |
+| B | + Schema retrieval | **70.3%** | **+10.8pp** | 2.7% | ¥0.099 | 6.3 s |
+| C | + Static validation & retry | 70.3% | +0.0pp | 2.7% | ¥0.110 | 16.1 s |
+| D | + Semantic layer (metrics) | 64.9% | −5.4pp | 8.1% | ¥0.137 | 30.5 s |
+| E | + Dry-run threshold (full single-step chain) | 73.0% | — | 0.0% | ¥0.109 | 7.1 s |
+| F | + Multi-step planning | 70.3% | −2.7pp | 5.4% | ¥0.261 | 21.2 s |
+
+> Rows E/F come from a re-run after a quota fix (in the first run, 23 of 37 group-F
+> questions were rejected by the daily quota and the data was void). A–D come from
+> one run and are not directly subtractable against E.
+
+**Multi-step planning ships disabled**, per the rule written into the ablation script
+beforehand: *if cost rises without a multi-hop gain, the feature reverts to a
+default-off switch.* Measured: cost **+139%**, multi-hop accuracy **100% → 66.7%**.
+`planner.enabled` defaults to `false`; turn it on explicitly when needed.
+
+### Three caveats that matter
+
+1. **The sample database has only 4 tables.** +10.8pp for schema retrieval is
+   substantial at that size, but its real value only shows at dozens of tables;
+   likewise group D's negative delta is small-sample sensitive.
+2. **n is small.** 37 answerable questions, only 6 multi-hop — a one-or-two question
+   swing is ±2.7pp. Treat smaller differences as noise.
+3. **The first run scored the golden set's own errors against the model.** Several
+   reference SQLs used a bare `COUNT(*)` while `metrics.yaml` defines "document
+   count" as COMPLETED rows only. The correction is in the commit history; the
+   held-out set was never run before or during it, so its score is unaffected.
+
+---
+
 ## Status and roadmap
 
-**Runnable end to end. All 17 guardrail rules enforced. Evaluation harness in place; measured numbers land after a full golden-set run.**
+**Runnable end to end. All 17 guardrail rules enforced, evaluation complete — measured numbers are in the section above.**
 
 | Phase | Contents | Target | Status |
 |---|---|---|---|
@@ -190,7 +245,7 @@ org_id:
 | P4 | MCP packaging (stateless spec) | 2026-08-28 | ✅ |
 | P5 | Multi-step query planning (R-15…R-17), ablation group F | 2026-09-02 | ✅ |
 
-> **No unmeasured metric will appear in this README.** Accuracy, block rate, and cost figures land after P3,
+> **No unmeasured metric appears in this README.** Every figure above was actually run,
 > published alongside the held-out set score and the unfiltered distribution of failure categories.
 
 ---
