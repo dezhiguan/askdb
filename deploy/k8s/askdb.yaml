@@ -8,21 +8,6 @@ kind: Namespace
 metadata:
   name: askdb
 ---
-# 审计日志的持久卷。
-# 每日配额靠"数当天审计日志里的条数"实现 —— 日志不持久化的话，
-# Pod 一重启计数归零，配额就形同虚设：脚本只要能让 Pod 重启（或等一次
-# 滚动更新），额度立刻回满。k3s 自带 local-path 供应器，1Gi 足够。
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: askdb-var
-  namespace: askdb
-spec:
-  accessModes: [ReadWriteOnce]
-  resources:
-    requests:
-      storage: 1Gi
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -46,9 +31,31 @@ spec:
       imagePullSecrets:
         - name: acr-cred
       volumes:
+        # 用 hostPath 而不是 PVC：本集群的 local-path 供应器要起一个 helper pod
+        # 去宿主机建目录，而 Server 3 没有公网出口，helper 镜像拉不下来 ——
+        # PVC 会一直卡在 Pending（实测 create process timeout after 120 seconds）。
+        # 单节点场景本来也不需要动态供应，宿主机目录就够。
         - name: var
-          persistentVolumeClaim:
-            claimName: askdb-var
+          hostPath:
+            path: /opt/askdb/var
+            type: DirectoryOrCreate
+      # hostPath 由 kubelet 以 root 创建（0755），而容器以 uid 10001 运行，
+      # 不改属主就写不进审计日志 —— 而每日配额正是靠数审计条数实现的。
+      # 放在 initContainer 里做，换台机器重建也能自愈，不依赖手工准备。
+      initContainers:
+        - name: fix-perm
+          # 复用同一个镜像，不引入 busybox —— Server 3 没有公网出口，
+          # 拉不了任何外部镜像（PVC 就是栽在这上面）。
+          image: PLACEHOLDER_IMAGE
+          command: ["sh", "-c", "chown -R 10001:10001 /app/var && chmod 700 /app/var"]
+          volumeMounts:
+            - name: var
+              mountPath: /app/var
+          securityContext:
+            runAsUser: 0
+          resources:
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits:   { cpu: "100m", memory: "64Mi" }
       containers:
         - name: askdb
           image: PLACEHOLDER_IMAGE      # 由 CI 按 commit 替换
