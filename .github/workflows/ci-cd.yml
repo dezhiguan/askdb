@@ -29,8 +29,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      # 不用 --system：runner 上的 /usr 是 Debian externally-managed，
+      # uv 会直接拒绝。setup-uv 已经建好 .venv，装进去并把它放进 PATH 即可。
       - name: Install
-        run: uv pip install --system -e ".[postgres]" pytest pytest-cov
+        run: |
+          uv venv
+          uv pip install -e ".[postgres]" pytest pytest-cov
+          echo "${GITHUB_WORKSPACE}/.venv/bin" >> "${GITHUB_PATH}"
 
       - name: Seed sample database
         run: python -m data.seed
