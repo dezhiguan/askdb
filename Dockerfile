@@ -15,7 +15,11 @@ WORKDIR /app
 # 依赖单独一层：源码改动不必重装依赖
 COPY pyproject.toml README.md ./
 COPY askdb/__init__.py ./askdb/
-RUN pip install --no-cache-dir .
+# 必须带 [web]：镜像跑的就是 Web 服务，而 fastapi/uvicorn 在 web extra 里。
+# 只装主依赖会构建成功、推送成功、拉取成功，直到容器启动才炸在
+# `import uvicorn` —— 前面每一关都是绿的，最难查的那种。
+# 不装 postgres：该实例连的是本地样例库，用不到 PG 驱动。
+RUN pip install --no-cache-dir ".[web]"
 
 COPY askdb ./askdb
 COPY config ./config
