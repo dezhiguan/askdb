@@ -31,30 +31,25 @@ askdb **不设账号体系** —— 设计文档 §1.1 写明"数据库连接本
 
 ## 一次性准备
 
-### 1. 证书 —— 唯一的硬前提
+### 1. 证书 ✅ 已完成（2026-08-13）
 
-现有证书是 `/etc/nginx/ssl/ragforge/www.ragforge.net.pem`，**大概率只签了
-`ragforge.net` 与 `www.ragforge.net`**，不含子域名。上线前必须先确认：
+单独签发的 DV 证书已上传，SAN 覆盖 `askdb.ragforge.net` 与
+`www.askdb.ragforge.net`，有效期至 **2026-11-10**。
 
-```bash
-openssl x509 -in /etc/nginx/ssl/ragforge/www.ragforge.net.pem -noout -text \
-  | grep -A1 "Subject Alternative Name"
+```
+宿主机 /data/ssl/ragforge/askdb.ragforge.net.{pem,key}
+  → 容器 /etc/nginx/ssl/ragforge/
 ```
 
-- 若已包含 `*.ragforge.net` → 直接用现有证书，无需改动
-- 若不包含 → **先申请通配符证书**，或单独为 `askdb.ragforge.net` 签一张，
-  再把 `deploy/nginx-askdb.conf` 里的证书路径改过去
+nginx 跑在 `ragforge-nginx` 容器里（`docker-compose-ingress.yml`），
+证书目录是挂进去的，所以要放在**宿主机** `/data/ssl/ragforge/`，
+不是容器内路径。私钥权限 600。
 
-这一步没有捷径。证书不匹配时浏览器会直接拦下，不是"能用但有警告"。
+> **90 天到期，须记得续签。**主域名那张 2026-09-05 到期，比这张还早。
 
-**若暂时拿不到证书**，可改走子路径 `https://ragforge.net/askdb/`，
-复用现有证书、不动 DNS。代价：前端有 6 处绝对路径 `fetch("/api/...")`
-需要改成相对路径，否则子路径下会打到根域名去。
+### 2. DNS ✅ 已完成（2026-08-13）
 
-### 2. DNS
-
-`askdb.ragforge.net` A 记录指向 **Server 2**（nginx 入口所在机器），
-与 `ragforge.net` 同一个地址。
+`askdb.ragforge.net` A 记录 → `8.163.63.222`（Server 2，与 `ragforge.net` 同址）。
 
 ### 3. GitHub Secrets
 
