@@ -45,6 +45,10 @@ spec:
             periodSeconds: 30
           securityContext:
             runAsNonRoot: true
+            # 与 Dockerfile 的 USER 10001 对齐。显式写出来，
+            # 免得镜像里改了用户而这里不知道
+            runAsUser: 10001
+            runAsGroup: 10001
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
             # 样例库与依赖都在镜像里，运行期只有 /app/data 需要写（审计日志）

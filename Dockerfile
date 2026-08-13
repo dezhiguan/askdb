@@ -29,8 +29,11 @@ RUN python -m data.seed && test -s data/sample.duckdb
 # 非 root 运行。审计日志与检查点仍要可写 —— 直查链路不写检查点，
 # 但审计要留痕（§8 准入条件第 5 条），所以单独给 data 目录写权限。
 RUN useradd --system --uid 10001 askdb \
-    && chown -R askdb:askdb /app/data
-USER askdb
+    && chown -R 10001:10001 /app/data
+# 必须用**数字 UID**，不能用用户名：k8s 的 runAsNonRoot 只能校验数字，
+# 遇到名字会直接拒绝启动容器
+#   container has runAsNonRoot and image has non-numeric user (askdb)
+USER 10001
 
 EXPOSE 8000
 
