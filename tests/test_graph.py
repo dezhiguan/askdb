@@ -264,10 +264,14 @@ class PlanLlm(FakeLlm):
     assess:  每次 assess 节点返回的 (enough, carry)
     """
 
-    def __init__(self, *sqls, plans=(), assess=()):
+    def __init__(self, *sqls, plans=(), assess=(), next_goals=(), reasons=()):
         super().__init__(*sqls)
         self.plans = list(plans)
         self.assess = list(assess)
+        self.next_goals = list(next_goals)
+        # reason 也要可控：兜底会用 next_goal or reason，
+        # 恒非空的 reason 会让"谁都说不清缺什么"这条分支永远走不到
+        self.reasons = list(reasons)
 
     def structured(self, schema, system, human):
         from askdb.planner import Assessment, Plan
@@ -277,8 +281,11 @@ class PlanLlm(FakeLlm):
             self.calls.append({"plan": goal, "human": human})
             return Plan(multi_step=multi, reason="替身", goal=goal), LlmUsage(20, 10)
         enough, carry = self.assess.pop(0) if self.assess else (True, {})
+        ng = self.next_goals.pop(0) if self.next_goals else ""
+        rs = self.reasons.pop(0) if self.reasons else "替身"
         self.calls.append({"assess": enough, "human": human})
-        return Assessment(enough=enough, reason="替身", carry=carry), LlmUsage(20, 10)
+        return (Assessment(enough=enough, reason=rs, carry=carry, next_goal=ng),
+                LlmUsage(20, 10))
 
 
 def _enable_planner(cfg, **kw):
@@ -381,25 +388,49 @@ def test_assess_failure_is_treated_as_enough(cfg, ex):
     assert r.ok and r.step_count == 1
 
 
-def test_replan_without_goal_converges_without_extra_sql(cfg, ex):
-    """重规划给不出下一步就该收敛 —— 再走 generate 只是空转一条 SQL。"""
+def test_replan_honors_assess_verdict(cfg, ex):
+    """结果评估判"不足"后，重规划不得反悔。
+
+    设计 §2.1 的链路图里，[8] 判不足必然回到 [2] 再进 [3]，这个环的**唯一
+    出口**是 enough=true 或触及 R-16 / R-17 —— 没有"重规划放弃"这条边。
+    让 plan 推翻 assess，会出现两次模型调用互相矛盾：assess 说不够、
+    plan 说够了，白花一轮 token，且用户拿到一个 assess 自己都认为不完整的答案。
+
+    此处模型在第二次 plan 给不出目标，须用 assess 提供的 next_goal 兜底继续。
+    """
     _enable_planner(cfg)
     fake = PlanLlm(OK_SQL, OK_SQL,
-                   plans=[(True, "一"), (True, "")],      # 第二次目标为空
-                   assess=[(False, {"kb_ids": [1]}), (True, {})])
+                   plans=[(True, "一"), (True, "")],          # 第二次目标为空
+                   assess=[(False, {"kb_ids": [1]}), (True, {})],
+                   next_goals=["按知识库统计失败文档"])
     r = graph.ask("q", cfg, executor=ex, llm=fake)
-    assert r.ok and r.step_count == 1
-    gen = [c for c in fake.calls if "step" in c]
-    assert len(gen) == 1                                  # 只生成过一条 SQL
+    assert r.ok and r.step_count == 2, "必须按 assess 的判定走出第二步"
+    assert len([c for c in fake.calls if "step" in c]) == 2
 
 
-def test_replan_saying_single_step_also_converges(cfg, ex):
+def test_replan_converges_only_when_no_one_can_say_what_is_missing(cfg, ex):
+    """assess 说不足、却也说不出缺什么 —— 继续下去是空转，此时才收敛并标注。"""
+    _enable_planner(cfg)
+    fake = PlanLlm(OK_SQL, OK_SQL,
+                   plans=[(True, "一"), (True, "")],
+                   assess=[(False, {}), (True, {})],
+                   next_goals=[""], reasons=[""])            # 连 assess 也没说清
+    r = graph.ask("q", cfg, executor=ex, llm=fake)
+    assert r.step_count == 1
+    assert r.converged_early, "此路收敛必须显式标注原因，不能静默"
+
+
+def test_replan_multi_step_flag_is_irrelevant_once_in_the_loop(cfg, ex):
+    """已经在多步环里了，重规划返回的 multi_step 标记不再有意义 ——
+    只要给了目标就继续。设计图上 [2] 的职责是"多步时给出本步目标"，
+    退不退出由 [8] 和 R-16/R-17 决定，不由 [2] 自己说了算。"""
     _enable_planner(cfg)
     fake = PlanLlm(OK_SQL, OK_SQL,
                    plans=[(True, "一"), (False, "还想再查")],
                    assess=[(False, {"kb_ids": [1]}), (True, {})])
     r = graph.ask("q", cfg, executor=ex, llm=fake)
-    assert r.ok and len([c for c in fake.calls if "step" in c]) == 1
+    assert r.ok and r.step_count == 2
+    assert len([c for c in fake.calls if "step" in c]) == 2
 
 
 def test_retry_must_not_answer_with_a_different_table(cfg, ex):

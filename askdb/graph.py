@@ -65,6 +65,9 @@ class AskState(TypedDict, total=False):
     out_of_scope: bool
     # 执行报错是否可由重试救回（超时可以，连接不可达不行）
     exec_retryable: bool
+    # assess 判"不足"时给出的下一步目标。设计图上 [8] 判不足必然回到 [2]，
+    # 没有"重规划反悔"这条边 —— 模型若在 [2] 给不出目标，就用这个兜底。
+    next_goal: str
 
     # ---- 多步规划（§5.3）。同样必须可序列化，检查点要存下来 ----
     multi_step: bool
@@ -210,12 +213,30 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
                 "error_hint": "检查网络与密钥；也可关闭 planner.enabled 退回单步。",
                 "rejected_by": "LLM"}
 
-    # 重规划时若模型给不出下一步目标，说明它认为已经该收敛了。
-    # 此时再走一遍 generate 只会空转一条 SQL —— 直接结束。
-    if not first and (not plan.multi_step or not plan.goal.strip()):
-        d.tracer.add("plan", t, "重规划未给出下一步，收敛作答",
+    # 重规划时模型给不出目标 —— 按设计不得就此收敛。
+    #
+    # 设计图 §2.1 里，[8] 结果评估判"不足"后必然回到 [2] 重规划再进 [3] 生成；
+    # 这个环的**唯一出口**是 enough=true 或触及 R-16 / R-17 上限，
+    # 没有"重规划反悔"这条边。让 plan 推翻 assess 的判定，会出现
+    # 两次模型调用互相矛盾：assess 说不够、plan 说够了，白花一轮 token
+    # 且用户拿到的是一个 assess 自己都认为不完整的答案。
+    #
+    # 所以改为：以 assess 的判定为准，用它给出的 next_goal 兜底继续。
+    # 不怕转不停 —— R-16 步数上限与 R-17 成本上限就是为此存在的。
+    if not first and not plan.goal.strip():
+        fallback = (state.get("next_goal") or "").strip()
+        if fallback:
+            d.tracer.add("plan", t, f"重规划未给出目标，沿用结果评估的判定：{fallback}",
+                         tok_in=usage.input_tokens, tok_out=usage.output_tokens)
+            # 不要动 step_no —— 它由 assess 递增，这里再加一次就成了双重递增
+            return {"goal": fallback, "multi_step": True,
+                    "attempt": 0, "sql_raw": "", "error": None, "enough": False}
+        # 连 assess 都没说清缺什么 —— 此时继续下去也是空转，如实收敛并标注
+        d.tracer.add("plan", t, "重规划与结果评估均未给出下一步，收敛作答",
+                     status="failed",
                      tok_in=usage.input_tokens, tok_out=usage.output_tokens)
-        return {"enough": True, "goal": ""}
+        return {"enough": True, "goal": "",
+                "converged_early": "结果评估判定不足，但未能给出下一步目标"}
 
     if first:
         note = ("判定需多步：" + plan.reason) if plan.multi_step else ("判定单步可答：" + plan.reason)
@@ -408,6 +429,9 @@ def _n_assess(state: AskState, config: RunnableConfig) -> dict[str, Any]:
                               f"；下传 {carried}",
                  status="failed", tok_in=usage.input_tokens, tok_out=usage.output_tokens)
     return {**base, "enough": False, "carry": a.carry,
+            # 判"还不够"的人最清楚缺什么 —— 目标由 assess 给出，
+            # plan 在模型说不出话时据此兜底，而不是推翻 assess 的判定
+            "next_goal": (a.next_goal or a.reason or "").strip(),
             "sql_raw": "", "error": None, "attempt": 0}
 
 
@@ -595,7 +619,7 @@ def ask(
     init: AskState = {
         "question": question, "org_id": org, "trace_id": trace_id,
         "attempt": 0, "max_retry": cfg.max_retry, "out_of_scope": False,
-        "exec_retryable": False,
+        "exec_retryable": False, "next_goal": "",
         # 多步相关的上限进状态而非从 cfg 现取 —— 路由只读状态，
         # 检查点回放时也就能还原出当时真实的约束
         "step_no": 0, "steps_done": [], "carry": {}, "multi_step": False,

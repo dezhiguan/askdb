@@ -77,6 +77,14 @@ class Assessment(BaseModel):
 
     enough: bool = Field(description="已有结果是否足以回答用户的问题。")
     reason: str = Field(default="", description="一句话说明。")
+    next_goal: str = Field(
+        default="",
+        description=(
+            "enough=false 时必填：下一步要查什么，一句话。"
+            "判定「还不够」的人最清楚缺的是什么，这个目标由你给出，"
+            "重规划节点据此展开为具体查询。enough=true 时留空。"
+        ),
+    )
     carry: dict[str, list] = Field(
         default_factory=dict,
         description=(
