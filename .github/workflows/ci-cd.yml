@@ -34,7 +34,9 @@ jobs:
       # 再建一次会报 "already exists"。直接装进去，再把它加进 PATH。
       - name: Install
         run: |
-          uv pip install -e ".[postgres]" pytest pytest-cov
+          # dev extra 里已包含 fastapi/uvicorn/httpx/pytest —— 之前只装
+          # postgres，fastapi 落在 web extra 里没被装上，测试直接 collect 失败
+          uv pip install -e ".[postgres,dev]"
           echo "${VIRTUAL_ENV}/bin" >> "${GITHUB_PATH}"
 
       - name: Seed sample database
