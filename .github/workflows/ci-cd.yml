@@ -29,13 +29,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      # 不用 --system：runner 上的 /usr 是 Debian externally-managed，
-      # uv 会直接拒绝。setup-uv 已经建好 .venv，装进去并把它放进 PATH 即可。
+      # 不用 --system：runner 上的 /usr 是 Debian externally-managed，uv 会直接拒绝。
+      # 也不要自己 uv venv —— setup-uv 已经建好 .venv 并设了 VIRTUAL_ENV，
+      # 再建一次会报 "already exists"。直接装进去，再把它加进 PATH。
       - name: Install
         run: |
-          uv venv
           uv pip install -e ".[postgres]" pytest pytest-cov
-          echo "${GITHUB_WORKSPACE}/.venv/bin" >> "${GITHUB_PATH}"
+          echo "${VIRTUAL_ENV}/bin" >> "${GITHUB_PATH}"
 
       - name: Seed sample database
         run: python -m data.seed
