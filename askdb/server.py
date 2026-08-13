@@ -147,6 +147,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "ok": bool(cfg.api_key()),
                 "model": cfg.llm["model"],
                 "env": cfg.llm["api_key_env"],
+                # 有意不接模型（对外开放实例）与忘了配密钥，是两件事。
+                # 不区分的话，页面会对访问者显示"去 .env 里配密钥"——
+                # 那是给部署方看的话，访问者既看不懂也做不到。
+                "disabled": bool(cfg.llm.get("disabled", False)),
             },
             "tenant": {
                 "enabled": cfg.tenant_enabled,

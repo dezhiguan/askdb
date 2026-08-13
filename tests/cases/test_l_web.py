@@ -64,3 +64,22 @@ def test_l11_page_shows_which_config_is_loaded():
     page = PAGE.read_text(encoding="utf-8")
     assert "HEALTH.config" in page, "页面必须把当前配置文件显示出来"
     assert "配置文件" in page
+
+
+def test_public_instance_config_is_safe():
+    """对外开放实例的两条安全边界，任何一条被改掉都不该悄悄上线。
+
+    askdb 不设账号体系（§1.1：数据库连接本身即权限边界），
+    所以开放实例只能靠"连的库里没有真实数据"和"不接模型"这两条自保。
+    """
+    from askdb.config import load
+
+    c = load(ROOT / "config" / "public.yaml")
+    assert c.db_type == "duckdb", "对外实例只能连合成样例库"
+    assert c.db_path.name == "sample.duckdb"
+    assert c.llm.get("disabled") is True, "对外实例必须显式声明不接模型"
+    assert c.api_key() is None, "api_key_env 必须指向一个永不设置的变量名"
+    # 阈值须比本机开发更紧
+    dev = load(ROOT / "config" / "askdb.yaml")
+    assert c.max_rows <= dev.max_rows
+    assert c.raw["guard"]["statement_timeout_ms"] <= dev.raw["guard"]["statement_timeout_ms"]

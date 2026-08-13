@@ -622,7 +622,7 @@ async function boot() {
   $("pillDs").className = "pill " + (d.ok ? "ok" : "bad");
   $("pillDs").textContent = d.ok ? `${d.type} · ${d.detail}` : "数据源不可用";
   $("pillLlm").className = "pill " + (l.ok ? "ok" : "warn");
-  $("pillLlm").textContent = l.ok ? l.model : "未配置密钥";
+  $("pillLlm").textContent = l.ok ? l.model : (l.disabled ? "仅直查 SQL" : "未配置密钥");
   if (HEALTH.tenant.enabled) {
     $("pillOrg").textContent = `${HEALTH.tenant.column} = ${HEALTH.tenant.org_id}`;
     $("orgLabel").textContent = "租户 " + HEALTH.tenant.column;

@@ -1,0 +1,99 @@
+# 对外开放的只读实例配置。
+#
+# 与其余配置的根本差别：**它连的是合成样例库，不是任何真实数据源。**
+# data/sample.duckdb 由 data/seed.py 用固定随机种子生成，10.4 万行，
+# 没有一条真实数据；任何人 clone 仓库跑一次 `python -m data.seed`
+# 都能得到完全一样的库。因此这个实例即使完全开放，也没有数据可泄露。
+#
+# ---------------------------------------------------------------------------
+# 为什么不接模型
+#
+# askdb 不设账号体系（§1.1：数据库连接本身即权限边界），对外开放的实例
+# 无法区分调用方。接了模型就等于**任何人都能花部署方的钱** —— daily_quota
+# 是全局的，一个人刷几十次就能把当天额度用光，其余访问者只看得到
+# 「已达当日调用上限」。
+#
+# 而「直查 SQL」这条链路（护栏 → 强制改写 → EXPLAIN 干跑 → 只读执行）
+# **本来就不调模型**，一个 token 都不花，而且恰好是这个项目里最要紧的部分：
+# 模型会写 SQL 不稀奇，写错了能不能拦住才是。
+#
+# 所以这里显式声明 llm.disabled，页面据此告诉访问者"本实例只提供直查"，
+# 而不是显示"去 .env 里配密钥"——那是给部署方看的话。
+# ---------------------------------------------------------------------------
+#
+# 用法：
+#   python -m data.seed                                   # 先生成样例库
+#   python -m askdb.cli serve -c config/public.yaml       # 默认只听 127.0.0.1
+#
+# **不要用 --host 0.0.0.0 直接暴露公网。**前面必须有反向代理承担 HTTPS
+# 与限流，见 deploy/README.md。
+
+datasource:
+  type: duckdb
+  path: ./data/sample.duckdb
+  read_only: true
+
+tenant:
+  column: org_id
+  default_ctx: 65                    # 样例库里 org 65 与 66 各有数据，可切换对比
+  mode: predicate                    # DuckDB 无 RLS，只有应用层改写这一层
+  on_unresolved: reject
+
+guard:
+  # 阈值比本机开发配置更紧：开放实例要防的是无意的重查询，
+  # 不是恶意攻击（那由前置限流负责）。
+  max_rows: 200                      # R-13，够看清结果形状即可
+  max_scan_rows: 200000              # R-11
+  statement_timeout_ms: 3000         # R-12，样例库上正常查询远低于此
+  max_retry: 2                       # R-14（直查模式下用不上）
+  allow_select_star: false           # R-05：改写为显式列，这一条最能看出改写效果
+  deny_functions:                    # R-07
+    - read_csv
+    - read_parquet
+    - read_json
+    - glob
+    - pg_read_file
+    - pg_ls_dir
+    - lo_import
+    - dblink
+    - pg_sleep
+
+planner:
+  enabled: false                     # 无模型，多步规划无从谈起
+  max_steps: 3
+  max_carry_rows: 50
+  carry_columns_only: true
+  cost_cap_tokens: 12000
+  on_cap_reached: converge
+
+schema_rag:
+  mode: keyword                      # 不接模型，召回只用于页面展示 schema
+  top_k: 3
+  max_k: 5
+  token_budget: 1500
+  embedding_model: text-embedding-v4
+  min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求
+                         # 「召回 Top-K（默认 3）表」，所以过线的表不足 top_k 张时，
+                         # 会按相似度补齐到 top_k —— 宁可多给一张，也不让模型无表可用。
+                         # 想让它成为硬阈值，得先改设计文档里的 Top-K 约定。
+  max_metrics: 2
+
+llm:
+  # 有意不接模型。api_key_env 指向一个**永不设置**的变量名，
+  # 这样即使部署机上恰好有 DASHSCOPE_API_KEY，本实例也不会误开自然语言问答。
+  disabled: true
+  provider: dashscope
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: qwen-max
+  temperature: 0
+  api_key_env: ASKDB_PUBLIC_LLM_DISABLED_NEVER_SET
+  price_input_per_1k: 0.0024
+  price_output_per_1k: 0.0096
+
+observability:
+  audit_log: ./data/audit-public.jsonl
+  checkpoint_db: ./data/checkpoints-public.sqlite
+  daily_quota: 0                     # 无模型调用可计；直查链路不受此限制
+
+tables_file: ./config/tables.yaml
+metrics_file: ./config/metrics.yaml

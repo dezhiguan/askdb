@@ -1,0 +1,189 @@
+name: askdb CI/CD
+
+# 与 CareerMate 同机部署（Server 3 的 k3s），经跳板机上机，
+# 复用它那套 SSH 脚手架 —— 不新增登机凭据。
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: askdb-ci-cd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: uv pip install --system -e ".[postgres]" pytest pytest-cov
+
+      - name: Seed sample database
+        run: python -m data.seed
+
+      # Node 用于前端脚本冒烟测试 —— 那层专抓浏览器端才暴露的
+      # ReferenceError / TypeError，Python 测试碰不到。没有 Node 会自动跳过，
+      # 所以这里必须装上，否则会静默少跑一批用例。
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+
+      - name: Run tests
+        run: pytest -q
+
+  build-and-push:
+    name: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [test]
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve image tag
+        id: image
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+        run: |
+          if [[ -z "${ACR_REGISTRY}" ]]; then
+            echo "ACR_REGISTRY must be set"; exit 1
+          fi
+          # tag 用 commit sha 而不是 latest：出问题时能确切知道线上跑的是
+          # 哪次提交，回滚也只是把 tag 改回去
+          echo "image=${ACR_REGISTRY}/askdb:${GITHUB_SHA::12}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push
+        env:
+          ACR_SERVER: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          printf '%s' "${ACR_PASSWORD}" | docker login "${ACR_SERVER%%/*}" -u "${ACR_USERNAME}" --password-stdin
+          docker build -t "${IMAGE}" .
+          docker push "${IMAGE}"
+
+  deploy:
+    name: deploy-k3s-server3
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [build-and-push]
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH (Server 3, via jump host)
+        env:
+          SSH_KEY: ${{ secrets.CAREERMATE_APP_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.CAREERMATE_APP_HOST }}
+          JUMP_HOST: ${{ secrets.CAREERMATE_INGRESS_HOST }}
+        run: |
+          if [[ -z "${SSH_KEY}" || -z "${DEPLOY_HOST}" ]]; then
+            echo "CAREERMATE_APP_SSH_KEY and CAREERMATE_APP_HOST must be set"; exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          JUMP_HOST="${JUMP_HOST:-8.163.63.222}"
+          ssh-keyscan "${JUMP_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          {
+            printf '%s\n' 'Host askdb-jump'
+            printf '%s\n' "  HostName ${JUMP_HOST}"
+            printf '%s\n' '  User root'
+            printf '%s\n' '  IdentityFile ~/.ssh/deploy_key'
+            printf '%s\n' '  IdentitiesOnly yes'
+            printf '%s\n' '  StrictHostKeyChecking accept-new'
+            printf '%s\n' '  BatchMode yes'
+            printf '%s\n' 'Host askdb-app'
+            printf '%s\n' "  HostName ${DEPLOY_HOST}"
+            printf '%s\n' '  User root'
+            printf '%s\n' '  IdentityFile ~/.ssh/deploy_key'
+            printf '%s\n' '  IdentitiesOnly yes'
+            printf '%s\n' '  StrictHostKeyChecking accept-new'
+            printf '%s\n' '  BatchMode yes'
+            printf '%s\n' '  ProxyJump askdb-jump'
+          } > ~/.ssh/config
+          chmod 600 ~/.ssh/config
+
+      - name: Apply manifest on Server 3
+        env:
+          IMAGE: ${{ needs.build-and-push.outputs.image }}
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          SSH_OPTS=(-T -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30)
+          # 占位符在 CI 侧替换，服务器上不做字符串拼接 —— 少一处出错的地方
+          sed "s|PLACEHOLDER_IMAGE|${IMAGE}|" deploy/k8s/askdb.yaml > /tmp/askdb.rendered.yaml
+          scp -F ~/.ssh/config /tmp/askdb.rendered.yaml askdb-app:/tmp/askdb.yaml
+          ACR_PASSWORD_B64="$(printf '%s' "${ACR_PASSWORD}" | base64 -w0)"
+          timeout 15m ssh "${SSH_OPTS[@]}" askdb-app \
+            "ACR_REGISTRY='${ACR_REGISTRY}' ACR_USERNAME='${ACR_USERNAME}' ACR_PASSWORD_B64='${ACR_PASSWORD_B64}' bash -s" <<'EOF'
+          set -euo pipefail
+          ACR_PASSWORD="$(printf '%s' "${ACR_PASSWORD_B64}" | base64 -d)"
+          kubectl create namespace askdb --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n askdb create secret docker-registry acr-cred \
+            --docker-server="${ACR_REGISTRY%%/*}" \
+            --docker-username="${ACR_USERNAME}" \
+            --docker-password="${ACR_PASSWORD}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -f /tmp/askdb.yaml
+          kubectl -n askdb rollout status deployment/askdb --timeout=180s
+          rm -f /tmp/askdb.yaml
+          EOF
+
+  smoke-test:
+    name: smoke-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [deploy]
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    steps:
+      - name: Health
+        run: |
+          BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
+          BODY="$(curl --fail --silent --show-error --max-time 10 --retry 6 --retry-delay 5 "${BASE}/api/health")"
+          python3 - <<'PY' "${BODY}"
+          import json, sys
+          d = json.loads(sys.argv[1])
+          assert d["datasource"]["ok"], d
+          # 对外实例必须连样例库、必须不接模型 —— 这两条是安全边界，
+          # 配置一旦被改错，冒烟就该红
+          assert d["datasource"]["type"] == "duckdb", f"对外实例只能连样例库：{d['datasource']}"
+          assert d["llm"]["disabled"] is True, f"对外实例不得接模型：{d['llm']}"
+          PY
+
+      - name: Guardrail still blocks writes
+        run: |
+          BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
+          BODY="$(curl --fail --silent --show-error --max-time 15 -X POST "${BASE}/api/sql" \
+            -H 'Content-Type: application/json' -d '{"sql":"DELETE FROM documents"}')"
+          python3 - <<'PY' "${BODY}"
+          import json, sys
+          d = json.loads(sys.argv[1])
+          # 护栏拒绝是 200 + ok:false，不是 5xx —— 这是接口的既定约定
+          assert d["ok"] is False and d["rejected_by"] == "R-02", d
+          PY
+
+      - name: Introspection endpoints are not exposed
+        run: |
+          BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
+          for p in /api/introspect /api/selfcheck; do
+            CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE}${p}")"
+            [[ "${CODE}" == "404" ]] || { echo "${p} 期望 404，实得 ${CODE}"; exit 1; }
+          done
