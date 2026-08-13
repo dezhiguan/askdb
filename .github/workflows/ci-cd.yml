@@ -60,7 +60,9 @@ jobs:
     needs: [test]
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     outputs:
-      image: ${{ steps.image.outputs.image }}
+      push_image: ${{ steps.image.outputs.push_image }}
+      pull_image: ${{ steps.image.outputs.pull_image }}
+      server: ${{ steps.image.outputs.server }}
     steps:
       - uses: actions/checkout@v4
 
@@ -72,18 +74,27 @@ jobs:
           if [[ -z "${ACR_REGISTRY}" ]]; then
             echo "ACR_REGISTRY must be set"; exit 1
           fi
+          # 阿里云 ACR 有两个端点，用途相反，不能混：
+          #   -vpc.  内网，只在阿里云 VPC 内可达 —— **k8s 拉取**走这个（快且不计流量费）
+          #   无 -vpc 公网 —— **CI 推送**只能走这个，GitHub runner 在公网
+          # secret 里存的是 VPC 地址（与 careermate 一致），推送时换掉 -vpc.
+          PULL_REGISTRY="${ACR_REGISTRY%/}"
+          PUSH_REGISTRY="${ACR_PUBLIC_REGISTRY:-${PULL_REGISTRY/-vpc./.}}"
+          TAG="${GITHUB_SHA::12}"
           # tag 用 commit sha 而不是 latest：出问题时能确切知道线上跑的是
           # 哪次提交，回滚也只是把 tag 改回去
-          echo "image=${ACR_REGISTRY}/askdb:${GITHUB_SHA::12}" >> "${GITHUB_OUTPUT}"
+          echo "server=${PUSH_REGISTRY%%/*}" >> "${GITHUB_OUTPUT}"
+          echo "push_image=${PUSH_REGISTRY}/askdb:${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "pull_image=${PULL_REGISTRY}/askdb:${TAG}" >> "${GITHUB_OUTPUT}"
 
       - name: Build and push
         env:
-          ACR_SERVER: ${{ secrets.ACR_REGISTRY }}
+          ACR_SERVER: ${{ steps.image.outputs.server }}
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-          IMAGE: ${{ steps.image.outputs.image }}
+          IMAGE: ${{ steps.image.outputs.push_image }}
         run: |
-          printf '%s' "${ACR_PASSWORD}" | docker login "${ACR_SERVER%%/*}" -u "${ACR_USERNAME}" --password-stdin
+          printf '%s' "${ACR_PASSWORD}" | docker login "${ACR_SERVER}" -u "${ACR_USERNAME}" --password-stdin
           docker build -t "${IMAGE}" .
           docker push "${IMAGE}"
 
@@ -131,7 +142,8 @@ jobs:
 
       - name: Apply manifest on Server 3
         env:
-          IMAGE: ${{ needs.build-and-push.outputs.image }}
+          # k8s 从 VPC 端点拉取；CI 推的是公网端点，同一个镜像两个入口
+          IMAGE: ${{ needs.build-and-push.outputs.pull_image }}
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
