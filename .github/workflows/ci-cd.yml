@@ -59,10 +59,10 @@ jobs:
     timeout-minutes: 20
     needs: [test]
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
-    outputs:
-      push_image: ${{ steps.image.outputs.push_image }}
-      pull_image: ${{ steps.image.outputs.pull_image }}
-      server: ${{ steps.image.outputs.server }}
+    # 不设 job outputs：GitHub **不会把含 secret 的 output 传给下游 job**
+    # （直接变空，不是打码成 ***）。镜像名由 ACR_REGISTRY 拼出，必然含 secret，
+    # 所以 deploy 那边自己从同一个 secret + 同一个 GITHUB_SHA 重算，
+    # 两边算法一致即可，无需跨 job 传值。
     steps:
       - uses: actions/checkout@v4
 
@@ -142,15 +142,20 @@ jobs:
 
       - name: Apply manifest on Server 3
         env:
-          # k8s 从 VPC 端点拉取；CI 推的是公网端点，同一个镜像两个入口
-          IMAGE: ${{ needs.build-and-push.outputs.pull_image }}
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
           ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
           ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: |
           SSH_OPTS=(-T -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=30)
+          # k8s 从 **VPC 端点**拉取（内网、不计流量费）；CI 推的是公网端点。
+          # 与 build-and-push 用同一个 secret 和同一个 GITHUB_SHA，算法一致。
+          IMAGE="${ACR_REGISTRY%/}/askdb:${GITHUB_SHA::12}"
+          if [[ -z "${ACR_REGISTRY}" ]]; then echo "ACR_REGISTRY must be set"; exit 1; fi
+          echo "将部署镜像 tag: ${GITHUB_SHA::12}"
           # 占位符在 CI 侧替换，服务器上不做字符串拼接 —— 少一处出错的地方
           sed "s|PLACEHOLDER_IMAGE|${IMAGE}|" deploy/k8s/askdb.yaml > /tmp/askdb.rendered.yaml
+          grep -q "PLACEHOLDER_IMAGE" /tmp/askdb.rendered.yaml && { echo "镜像占位符未被替换"; exit 1; }
+          grep -q "image: .\+askdb:" /tmp/askdb.rendered.yaml || { echo "渲染后的 manifest 没有镜像名"; exit 1; }
           scp -F ~/.ssh/config /tmp/askdb.rendered.yaml askdb-app:/tmp/askdb.yaml
           ACR_PASSWORD_B64="$(printf '%s' "${ACR_PASSWORD}" | base64 -w0)"
           timeout 15m ssh "${SSH_OPTS[@]}" askdb-app \
