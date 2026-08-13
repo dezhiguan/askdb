@@ -191,7 +191,10 @@ jobs:
           # 对外实例必须连样例库、必须不接模型 —— 这两条是安全边界，
           # 配置一旦被改错，冒烟就该红
           assert d["datasource"]["type"] == "duckdb", f"对外实例只能连样例库：{d['datasource']}"
-          assert d["llm"]["disabled"] is True, f"对外实例不得接模型：{d['llm']}"
+          # 接了模型，所以不再断言 disabled；改为钉住**成本护栏**：
+          # 每日配额必须设置且不得放得太宽，否则被脚本刷爆
+          q = d["guard"].get("daily_quota")
+          assert isinstance(q, int) and 0 < q <= 500, f"对外实例的每日配额异常：{q}"
           PY
 
       - name: Guardrail still blocks writes

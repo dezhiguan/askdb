@@ -246,6 +246,12 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> Guard
     for s in (root.find_all(exp.Select) if cfg.tenant_enabled else []):
         for t, join in _direct_tables(s):
             name = (t.name or "").lower()
+            # CTE 别名遮蔽同名真实表时，这里引用的是 CTE，不是那张表 ——
+            # 往它身上注入租户谓词会拼出一条引用不存在列的 SQL，
+            # 干跑阶段直接 Binder Error。R-03 与 R-04 已经这么判了，
+            # R-10 也必须一致：三条规则对"这个名字指谁"的认定不能各说各话。
+            if name in ctes:
+                continue
             spec = cfg.tables.get(name)
             if spec is None or spec.tenant_exempt:
                 continue

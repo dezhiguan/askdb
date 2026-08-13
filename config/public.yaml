@@ -6,19 +6,22 @@
 # 都能得到完全一样的库。因此这个实例即使完全开放，也没有数据可泄露。
 #
 # ---------------------------------------------------------------------------
-# 为什么不接模型
+# 关于成本控制
 #
-# askdb 不设账号体系（§1.1：数据库连接本身即权限边界），对外开放的实例
-# 无法区分调用方。接了模型就等于**任何人都能花部署方的钱** —— daily_quota
-# 是全局的，一个人刷几十次就能把当天额度用光，其余访问者只看得到
-# 「已达当日调用上限」。
+# askdb 不设账号体系（§1.1：数据库连接本身即权限边界），对外开放实例
+# 无法区分调用方 —— 接了模型就等于任何人都能花部署方的钱。
+# 因此这里用**四层**限制，任何单独一层都不够：
 #
-# 而「直查 SQL」这条链路（护栏 → 强制改写 → EXPLAIN 干跑 → 只读执行）
-# **本来就不调模型**，一个 token 都不花，而且恰好是这个项目里最要紧的部分：
-# 模型会写 SQL 不稀奇，写错了能不能拦住才是。
+#   1. 便宜的模型      deepseek-v4-flash，入 ¥0.001 / 出 ¥0.002 每千 token，
+#                      比 qwen-max（0.0024 / 0.0096）便宜约四倍
+#   2. 每日总配额      daily_quota，在**任何模型调用之前**拦，超限一个 token 不花
+#   3. 审计日志持久化  配额靠数当天的审计条数实现。日志写在 ./var（挂了卷），
+#                      否则 Pod 一重启计数归零，配额形同虚设
+#   4. 入口限流        nginx 对 /api/ask 单独限到 6r/min per IP（见 deploy/nginx-askdb.conf）——
+#                      配额挡总量，限流挡"一个脚本几分钟刷光全天额度"
 #
-# 所以这里显式声明 llm.disabled，页面据此告诉访问者"本实例只提供直查"，
-# 而不是显示"去 .env 里配密钥"——那是给部署方看的话。
+# 「直查 SQL」链路（护栏 → 改写 → 干跑 → 只读执行）不调模型、不受配额限制，
+# 额度用光后它仍然可用 —— 而它恰好是这个项目最要紧的部分。
 # ---------------------------------------------------------------------------
 #
 # 用法：
@@ -79,21 +82,36 @@ schema_rag:
   max_metrics: 2
 
 llm:
-  # 有意不接模型。api_key_env 指向一个**永不设置**的变量名，
-  # 这样即使部署机上恰好有 DASHSCOPE_API_KEY，本实例也不会误开自然语言问答。
-  disabled: true
-  provider: dashscope
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  model: qwen-max
+  # 主模型选便宜的那个：对外实例的成本要按"被刷满"来估，不是按正常使用估。
+  # 实测样例库上单次问答约 833+28 token ≈ ¥0.0009，
+  # 200 次/天 ≈ ¥0.18/天 ≈ ¥5.4/月。
+  provider: deepseek
+  base_url: "https://api.deepseek.com"
+  model: deepseek-v4-flash
   temperature: 0
-  api_key_env: ASKDB_PUBLIC_LLM_DISABLED_NEVER_SET
-  price_input_per_1k: 0.0024
-  price_output_per_1k: 0.0096
+  api_key_env: DEEPSEEK_API_KEY
+  price_input_per_1k: 0.001
+  price_output_per_1k: 0.002
+  thinking: false
+
+  # 备选只在主模型**调用失败**时兜底（限流 / 超时 / 厂商故障）。
+  # 生成的 SQL 不对不切备选 —— 那是反思重试的职责。
+  fallback:
+    provider: dashscope
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    model: qwen-plus
+    api_key_env: DASHSCOPE_API_KEY
 
 observability:
-  audit_log: ./data/audit-public.jsonl
-  checkpoint_db: ./data/checkpoints-public.sqlite
-  daily_quota: 0                     # 无模型调用可计；直查链路不受此限制
+  # 写在 ./var 而不是 ./data —— data 目录里是随镜像固化的样例库，
+  # 往它上面挂卷会把样例库遮掉。var 单独挂卷，用于持久化审计日志。
+  audit_log: ./var/audit-public.jsonl
+  checkpoint_db: ./var/checkpoints-public.sqlite
+  # 每日调用上限。在任何模型调用之前拦，超限一个 token 都不花。
+  # 按 ¥0.0009/次算，200 次 ≈ ¥0.18/天。
+  # ⚠️ 计数靠数当天审计日志的条数，所以日志**必须持久化**（见 k8s 的 PVC），
+  # 否则 Pod 一重启计数归零，这条限制就形同虚设。
+  daily_quota: 200
 
 tables_file: ./config/tables.yaml
 metrics_file: ./config/metrics.yaml

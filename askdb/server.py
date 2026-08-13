@@ -78,6 +78,23 @@ def _dsn_brief_id(cfg: Config) -> str:
     return f"{kv.get('dbname', '?')}@{host}"
 
 
+def _first_provenance(d: Any) -> dict[str, Any] | None:
+    """从一份结果文件里取出处，兼容两种顶层形状。
+
+    blind 顶层直接是报告字段；ablation 顶层是 {组名: 报告}。
+    不判类型就会对着 int 调 .get。
+    """
+    if not isinstance(d, dict):
+        return None
+    pv = d.get("provenance")
+    if isinstance(pv, dict):
+        return pv
+    for v in d.values():
+        if isinstance(v, dict) and isinstance(v.get("provenance"), dict):
+            return v["provenance"]
+    return None
+
+
 def _same_source(a: str, b: str) -> bool:
     """两个数据源标识是否指同一个库。
 
@@ -167,6 +184,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "max_retry": cfg.max_retry,
                 "timeout_ms": cfg.raw["guard"]["statement_timeout_ms"],
                 "max_scan_rows": cfg.raw["guard"]["max_scan_rows"],
+                # 对外实例的成本护栏，冒烟测试据此断言
+                "daily_quota": cfg.daily_quota,
             },
         }
 
@@ -256,13 +275,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         而不是编一组数字出来。
         """
         root = cfg.root / "evals" / "results"
-        # 优先用跑在**当前数据源**上的那套结果。此前这里只读样例库那套，
-        # 于是把一组跑在合成库上的成绩摆在了连着生产库的界面旁边。
-        prod = (root / "ragforge-blind.json", root / "ragforge-ablation.json", None)
-        sample = (root / "blind.json", root / "ablation2.json", root / "ablation_F.json")
-        blind_p, abl_p, fix_p = prod if prod[0].exists() or prod[1].exists() else sample
-        if not blind_p.exists() and not abl_p.exists():
-            return {"available": False}
 
         import json as _json
 
@@ -274,13 +286,50 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             except Exception:
                 return None
 
+        here = (f"{cfg.db_type}:"
+                + (cfg.db_path.name if cfg.db_type == "duckdb" else _dsn_brief_id(cfg)))
+
+        # 候选结果集。**按出处挑与当前数据源匹配的那一套** —— 同一份代码会
+        # 部署成多个实例（对外实例连合成样例库、内部实例连生产库），
+        # 写死优先某一套，总有一边看到的是别人的成绩。
+        candidates = [
+            (root / "ragforge-blind.json", root / "ragforge-ablation.json", None),
+            (root / "blind.json", root / "ablation2.json", root / "ablation_F.json"),
+        ]
+
+        def _src_of(paths):
+            """从一组结果文件里取出处。
+
+            两种文件形状不同：blind 顶层直接是报告字段（n 是 int），
+            ablation 顶层是 {组名: 报告}。不做类型判断就会对着 int 调 .get，
+            这条路径本地测不到（结果文件齐全时先命中 blind 的 provenance），
+            改动后立刻炸在有 ablation 无 blind 的组合上。
+            """
+            for pp in paths:
+                d = _read(pp)
+                if not isinstance(d, dict):
+                    continue
+                pv = d.get("provenance")
+                if not isinstance(pv, dict):
+                    for v in d.values():
+                        if isinstance(v, dict) and isinstance(v.get("provenance"), dict):
+                            pv = v["provenance"]
+                            break
+                if isinstance(pv, dict) and pv.get("datasource"):
+                    return pv["datasource"]
+            return ""
+
+        avail = [c for c in candidates if c[0].exists() or c[1].exists()]
+        if not avail:
+            return {"available": False}
+        matched = [c for c in avail if _same_source(_src_of(c), here)]
+        blind_p, abl_p, fix_p = (matched or avail)[0]
+
         out: dict[str, Any] = {"available": True}
 
         # 成绩的出处，以及它是否就是当前连着的这个数据源。
         # 「这组数字算不算数」全看这两项，必须带到前端去。
-        prov = ((_read(blind_p) or {}).get("provenance")
-                or (next(iter((_read(abl_p) or {}).values()), {}) or {}).get("provenance")
-                or {})
+        prov = _first_provenance(_read(blind_p)) or _first_provenance(_read(abl_p)) or {}
         here = (f"{cfg.db_type}:"
                 + (cfg.db_path.name if cfg.db_type == "duckdb"
                    else _dsn_brief_id(cfg)))

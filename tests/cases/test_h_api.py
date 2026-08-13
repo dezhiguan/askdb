@@ -131,3 +131,38 @@ def test_h19_health_ok_true_when_llm_intentionally_disabled(cfg, monkeypatch):
     assert d["datasource"]["ok"] is True
     assert d["llm"]["ok"] is False and d["llm"]["disabled"] is True
     assert d["ok"] is True, "有意禁用模型不是故障状态"
+
+
+def test_h20_eval_picks_result_set_matching_current_datasource(cfg, tmp_path, monkeypatch):
+    """同一份代码会部署成多个实例（对外连样例库、内部连生产库），
+    评测页必须自动挑**与当前数据源匹配**的那套结果，而不是写死优先某一套。
+
+    另钉住一处形状差异：blind 结果顶层直接是报告字段（n 是 int），
+    ablation 顶层是 {组名: 报告}。取出处时不判类型就会对着 int 调 .get。
+    """
+    import json
+
+    res = tmp_path / "evals" / "results"
+    res.mkdir(parents=True)
+    cfg.root = tmp_path
+    # 一套跑在别的库上，一套跑在当前库上
+    (res / "ragforge-blind.json").write_text(json.dumps({
+        "group": "x", "n": 1, "accuracy": 0.9, "outcomes": [],
+        "provenance": {"datasource": "postgresql:other@1.2.3.4:5432"}}), encoding="utf-8")
+    (res / "blind.json").write_text(json.dumps({
+        "group": "y", "n": 2, "accuracy": 0.5, "outcomes": [],
+        "provenance": {"datasource": f"duckdb:{cfg.db_path.name}"}}), encoding="utf-8")
+
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+    d = TestClient(server.create_app("ignored.yaml")).get("/api/eval").json()
+    assert d["available"] and d["provenance"]["matches_current"] is True
+    assert d["blind"]["n"] == 2, "应选中与当前数据源匹配的那套"
+
+    # 只有 ablation（顶层是 {组名: 报告}）时也不能崩
+    (res / "blind.json").unlink()
+    (res / "ablation2.json").write_text(json.dumps({
+        "A": {"group": "A 基线", "n": 3, "accuracy": 0.4, "false_reject": 0.0,
+              "cost_cny": 0.1, "p95_ms": 100, "outcomes": [],
+              "provenance": {"datasource": f"duckdb:{cfg.db_path.name}"}}}), encoding="utf-8")
+    d2 = TestClient(server.create_app("ignored.yaml")).get("/api/eval").json()
+    assert d2["available"] and d2["groups"][0]["key"] == "A"

@@ -67,19 +67,33 @@ def test_l11_page_shows_which_config_is_loaded():
 
 
 def test_public_instance_config_is_safe():
-    """对外开放实例的两条安全边界，任何一条被改掉都不该悄悄上线。
+    """对外开放实例的安全与成本边界，任何一条被改掉都不该悄悄上线。
 
-    askdb 不设账号体系（§1.1：数据库连接本身即权限边界），
-    所以开放实例只能靠"连的库里没有真实数据"和"不接模型"这两条自保。
+    askdb 不设账号体系（§1.1：数据库连接本身即权限边界），开放实例
+    无法区分调用方 —— 所以只能靠配置本身自保：
+
+      · 数据边界：连的是合成样例库，泄露不了真实数据
+      · 成本边界：每日配额 + 便宜模型（接了模型 = 任何人都能花部署方的钱）
     """
     from askdb.config import load
 
     c = load(ROOT / "config" / "public.yaml")
+    dev = load(ROOT / "config" / "askdb.yaml")
+
+    # ---- 数据边界 ----
     assert c.db_type == "duckdb", "对外实例只能连合成样例库"
     assert c.db_path.name == "sample.duckdb"
-    assert c.llm.get("disabled") is True, "对外实例必须显式声明不接模型"
-    assert c.api_key() is None, "api_key_env 必须指向一个永不设置的变量名"
-    # 阈值须比本机开发更紧
-    dev = load(ROOT / "config" / "askdb.yaml")
+
+    # ---- 成本边界 ----
+    assert 0 < c.daily_quota <= 500, f"每日配额必须设置且不得过宽：{c.daily_quota}"
+    # 单价须不高于开发配置用的模型 —— 对外成本要按"被刷满"估，不是按正常使用估
+    assert c.llm["price_input_per_1k"] <= dev.llm["price_input_per_1k"]
+    assert c.llm["price_output_per_1k"] <= dev.llm["price_output_per_1k"]
+    # 配额靠数当天审计条数实现，日志必须落在挂了持久卷的目录，
+    # 否则 Pod 一重启计数归零，配额形同虚设
+    assert "/var/" in str(c.audit_log).replace("\\", "/"), \
+        f"审计日志必须写在 var/（k8s 在此挂持久卷）：{c.audit_log}"
+
+    # ---- 护栏阈值须比本机开发更紧 ----
     assert c.max_rows <= dev.max_rows
     assert c.raw["guard"]["statement_timeout_ms"] <= dev.raw["guard"]["statement_timeout_ms"]

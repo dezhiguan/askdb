@@ -217,3 +217,22 @@ def test_c24_union_gets_single_outer_limit(cfg):
     assert r.ok
     sqlglot.parse_one(r.sql, dialect=cfg.dialect)      # 语法必须仍然正确
     assert len(re.findall(r"\bLIMIT\b", r.sql, re.I)) == 1, "只应有一个最外层 LIMIT"
+
+
+def test_c25_cte_shadowing_is_not_injected(cfg):
+    """CTE 别名遮蔽同名真实表时，R-10 不得往它身上注入租户谓词。
+
+    线上验收抓到的：`WITH documents AS (SELECT 1 AS x) SELECT x FROM documents`
+    被改写成 `... FROM documents WHERE documents.org_id = 65`，
+    而 CTE 里根本没有 org_id 列 —— 干跑阶段 Binder Error。
+
+    R-03、R-04 都已认得 CTE 遮蔽（后者是上一轮 BUG-2 修的），R-10 漏了。
+    三条规则对"这个名字指谁"的认定必须一致，否则总会在某个组合上炸。
+    """
+    r = _check("WITH documents AS (SELECT 1 AS x) SELECT x AS y FROM documents", cfg)
+    assert r.ok, f"被拒：{r.rejected_by} {r.reason}"
+    assert not _tenant_preds(r.sql), f"不该注入：{r.sql}"
+
+    # 但 CTE **内部**引用的真实表仍要注入 —— 不能因为身处 CTE 就放过
+    r2 = _check("WITH t AS (SELECT id FROM documents) SELECT id AS x FROM t", cfg)
+    assert r2.ok and _tenant_preds(r2.sql) == [str(ORG)], r2.sql

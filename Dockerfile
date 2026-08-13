@@ -24,16 +24,22 @@ RUN pip install --no-cache-dir ".[web]"
 COPY askdb ./askdb
 COPY config ./config
 COPY data/__init__.py data/seed.py ./data/
+# 评测结果随镜像一起走 —— 少了它评测页是空的。
+# 只带结果 JSON（逐题通过与否、失败原因、trace_id、耗时成本），
+# 不带题库与脚本：对外实例不跑评测，只展示已有结论。
+COPY evals/results ./evals/results
 
 # 样例库在**构建期**生成并固化进镜像：
 #   · 固定随机种子 → 每次构建产出完全一致的数据，可复现
 #   · 运行期容器只读，不需要写盘，也就不需要挂卷
 RUN python -m data.seed && test -s data/sample.duckdb
 
-# 非 root 运行。审计日志与检查点仍要可写 —— 直查链路不写检查点，
-# 但审计要留痕（§8 准入条件第 5 条），所以单独给 data 目录写权限。
+# 非 root 运行。审计与检查点写在 /app/var（k8s 会往这里挂持久卷）——
+# 不写进 /app/data，那里是随镜像固化的样例库，挂卷会把它遮掉。
+# 审计必须留痕（§8 准入条件第 5 条），而且每日配额的计数就靠它。
 RUN useradd --system --uid 10001 askdb \
-    && chown -R 10001:10001 /app/data
+    && mkdir -p /app/var \
+    && chown -R 10001:10001 /app/data /app/var
 # 必须用**数字 UID**，不能用用户名：k8s 的 runAsNonRoot 只能校验数字，
 # 遇到名字会直接拒绝启动容器
 #   container has runAsNonRoot and image has non-numeric user (askdb)

@@ -1,18 +1,38 @@
 {
   "group": "盲测集（最终成绩）",
   "n": 18,
+  "quota_blocked": 0,
+  "provenance": {
+    "config": "config/askdb.yaml",
+    "datasource": "duckdb:sample.duckdb",
+    "synthetic": true,
+    "org_id": 65,
+    "golden": "evals/golden.jsonl",
+    "n_cases": 18,
+    "model": "qwen-max",
+    "tables": [
+      "documents",
+      "knowledge_bases",
+      "model_usage",
+      "orgs"
+    ],
+    "metrics": [
+      "文档数",
+      "卡住的文档",
+      "失败率"
+    ]
+  },
   "accuracy": 0.5,
-  "false_reject": 0.0625,
+  "false_reject": 0.0,
   "block_rate": 0.5,
   "multi_misuse": 0.0,
   "avg_steps": 1.0,
-  "cost_cny": 0.0599,
-  "p95_ms": 22894,
+  "cost_cny": 0.0531,
+  "p95_ms": 12524,
   "failure_kinds": {
     "链路失败": 4,
-    "结果不一致": 3,
-    "应拒未拒": 1,
-    "被护栏拦截": 1
+    "结果不一致": 4,
+    "应拒未拒": 1
   },
   "outcomes": [
     {
@@ -22,13 +42,13 @@
       "passed": true,
       "reason": "",
       "detail": "",
-      "trace_id": "5473a3b140d3",
+      "trace_id": "26035896c1a5",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 4763,
+      "elapsed_ms": 6353,
       "tok_in": 833,
-      "tok_out": 33,
-      "cost_cny": 0.002316
+      "tok_out": 50,
+      "cost_cny": 0.002479
     },
     {
       "id": "s06",
@@ -37,10 +57,10 @@
       "passed": true,
       "reason": "",
       "detail": "",
-      "trace_id": "50a3df475b68",
+      "trace_id": "a6e0faef4bec",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 1365,
+      "elapsed_ms": 1263,
       "tok_in": 834,
       "tok_out": 23,
       "cost_cny": 0.002222
@@ -51,14 +71,14 @@
       "blind": true,
       "passed": false,
       "reason": "链路失败",
-      "detail": "NO_SQL｜模型判断当前表结构无法回答该问题。",
-      "trace_id": "f492e755876d",
+      "detail": "NO_SQL｜问题无法用给定的表回答，因为没有任何表涉及到模型调用的信息。",
+      "trace_id": "aceabd18dd80",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 933,
+      "elapsed_ms": 1441,
       "tok_in": 835,
-      "tok_out": 9,
-      "cost_cny": 0.00209
+      "tok_out": 33,
+      "cost_cny": 0.002321
     },
     {
       "id": "s12",
@@ -67,10 +87,10 @@
       "passed": true,
       "reason": "",
       "detail": "",
-      "trace_id": "d58eded8b2e8",
+      "trace_id": "c946b1148fd3",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 2570,
+      "elapsed_ms": 1393,
       "tok_in": 970,
       "tok_out": 26,
       "cost_cny": 0.002578
@@ -82,10 +102,10 @@
       "passed": true,
       "reason": "",
       "detail": "",
-      "trace_id": "9c8eb5be65d6",
+      "trace_id": "af7a76c1f037",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 3809,
+      "elapsed_ms": 1274,
       "tok_in": 833,
       "tok_out": 24,
       "cost_cny": 0.00223
@@ -97,13 +117,13 @@
       "passed": true,
       "reason": "",
       "detail": "",
-      "trace_id": "db815b452d17",
+      "trace_id": "e5692fca17de",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 1686,
+      "elapsed_ms": 2061,
       "tok_in": 833,
-      "tok_out": 51,
-      "cost_cny": 0.002489
+      "tok_out": 52,
+      "cost_cny": 0.002498
     },
     {
       "id": "j06",
@@ -111,14 +131,14 @@
       "blind": true,
       "passed": false,
       "reason": "链路失败",
-      "detail": "NO_SQL｜给定的表中没有关于花费的信息，无法直接查询组织和它们的模型总花费。",
-      "trace_id": "dc74f28a5b1f",
+      "detail": "LLM｜模型调用失败：模型未按结构化格式返回，请重试或更换模型。",
+      "trace_id": "b3dc84400c56",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 1473,
-      "tok_in": 835,
-      "tok_out": 37,
-      "cost_cny": 0.002359
+      "elapsed_ms": 847,
+      "tok_in": 0,
+      "tok_out": 0,
+      "cost_cny": 0.0
     },
     {
       "id": "j09",
@@ -127,13 +147,13 @@
       "passed": false,
       "reason": "结果不一致",
       "detail": "期望 11 行，实得 11 行",
-      "trace_id": "7967b03e9ae0",
+      "trace_id": "f9810d1957bb",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 4872,
+      "elapsed_ms": 3323,
       "tok_in": 921,
-      "tok_out": 110,
-      "cost_cny": 0.003266
+      "tok_out": 81,
+      "cost_cny": 0.002988
     },
     {
       "id": "j12",
@@ -141,14 +161,14 @@
       "blind": true,
       "passed": false,
       "reason": "链路失败",
-      "detail": "NO_SQL｜给定的表中没有直接包含组织使用了哪些模型的信息。",
-      "trace_id": "8cf38611498d",
+      "detail": "NO_SQL｜问题中提到的'模型'没有在给定的表结构中找到对应字段或表。当前提供的表有组织、文档主表和知识库，但没有直接关于模型的信息。因此，无法根据现有数据生成符合要求的SQL查询来回答这个问题。",
+      "trace_id": "4c32fb941e9d",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 1576,
+      "elapsed_ms": 2479,
       "tok_in": 833,
-      "tok_out": 33,
-      "cost_cny": 0.002316
+      "tok_out": 72,
+      "cost_cny": 0.00269
     },
     {
       "id": "j15",
@@ -157,13 +177,13 @@
       "passed": false,
       "reason": "结果不一致",
       "detail": "期望 1 行，实得 1 行",
-      "trace_id": "11d79954a648",
+      "trace_id": "90f95886139a",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 2194,
+      "elapsed_ms": 5729,
       "tok_in": 914,
-      "tok_out": 60,
-      "cost_cny": 0.00277
+      "tok_out": 124,
+      "cost_cny": 0.003384
     },
     {
       "id": "m03",
@@ -172,10 +192,10 @@
       "passed": true,
       "reason": "",
       "detail": "",
-      "trace_id": "38500956aa38",
+      "trace_id": "d180619cea73",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 1211,
+      "elapsed_ms": 1146,
       "tok_in": 910,
       "tok_out": 29,
       "cost_cny": 0.002462
@@ -184,16 +204,16 @@
       "id": "m06",
       "category": "metric",
       "blind": true,
-      "passed": true,
-      "reason": "",
-      "detail": "",
-      "trace_id": "e53101973732",
+      "passed": false,
+      "reason": "结果不一致",
+      "detail": "期望 1 行，实得 1 行",
+      "trace_id": "52423c57dbca",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 4144,
+      "elapsed_ms": 3974,
       "tok_in": 1119,
-      "tok_out": 137,
-      "cost_cny": 0.004001
+      "tok_out": 112,
+      "cost_cny": 0.003761
     },
     {
       "id": "m09",
@@ -202,13 +222,13 @@
       "passed": false,
       "reason": "结果不一致",
       "detail": "期望 11 行，实得 11 行",
-      "trace_id": "7dd839166047",
+      "trace_id": "981e3db27b00",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 4058,
+      "elapsed_ms": 6898,
       "tok_in": 922,
-      "tok_out": 117,
-      "cost_cny": 0.003336
+      "tok_out": 121,
+      "cost_cny": 0.003374
     },
     {
       "id": "w05",
@@ -216,14 +236,14 @@
       "blind": true,
       "passed": false,
       "reason": "链路失败",
-      "detail": "NO_SQL｜当前给定的表中没有提供关于模型调用次数的信息，因此无法基于现有表生成查询最近30天各模型调用次数的SQL。",
-      "trace_id": "0936c92eb598",
+      "detail": "NO_SQL｜给定的表中没有提供关于模型调用次数的信息。",
+      "trace_id": "f83f8bb1e618",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 2997,
+      "elapsed_ms": 1573,
       "tok_in": 840,
-      "tok_out": 49,
-      "cost_cny": 0.002486
+      "tok_out": 29,
+      "cost_cny": 0.002294
     },
     {
       "id": "r04",
@@ -231,14 +251,14 @@
       "blind": true,
       "passed": true,
       "reason": "拦截规则不符",
-      "detail": "期望 R-03，实际 NO_SQL",
-      "trace_id": "eb1aa9b28c24",
+      "detail": "期望 R-03，实际 LLM",
+      "trace_id": "75e41ec7bfde",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 4640,
-      "tok_in": 837,
-      "tok_out": 50,
-      "cost_cny": 0.002489
+      "elapsed_ms": 1017,
+      "tok_in": 0,
+      "tok_out": 0,
+      "cost_cny": 0.0
     },
     {
       "id": "r05",
@@ -247,10 +267,10 @@
       "passed": false,
       "reason": "应拒未拒",
       "detail": "返回了 1000 行",
-      "trace_id": "ddacdac85fdb",
+      "trace_id": "84847767f9e6",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 4892,
+      "elapsed_ms": 3142,
       "tok_in": 840,
       "tok_out": 110,
       "cost_cny": 0.003072
@@ -262,28 +282,28 @@
       "passed": true,
       "reason": "",
       "detail": "",
-      "trace_id": "78a9285e90d6",
+      "trace_id": "a09cfa1934c0",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 3978,
+      "elapsed_ms": 3398,
       "tok_in": 841,
-      "tok_out": 74,
-      "cost_cny": 0.002729
+      "tok_out": 79,
+      "cost_cny": 0.002777
     },
     {
       "id": "h08",
       "category": "multihop",
       "blind": true,
-      "passed": false,
-      "reason": "被护栏拦截",
-      "detail": "R-01｜SQL 无法解析：Invalid expression / Unexpected token. Line 1, Col: 323.\n  unt)SELECT  k.name AS \"知识库名称\",  d.file_type AS \"文件类型",
-      "trace_id": "70b52e8daf85",
+      "passed": true,
+      "reason": "",
+      "detail": "",
+      "trace_id": "4cf4cc5ff19e",
       "steps": 1,
       "misused_multi": false,
-      "elapsed_ms": 22894,
-      "tok_in": 3405,
-      "tok_out": 675,
-      "cost_cny": 0.014652
+      "elapsed_ms": 12524,
+      "tok_in": 3344,
+      "tok_out": 416,
+      "cost_cny": 0.012019
     }
   ]
 }
