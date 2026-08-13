@@ -130,8 +130,11 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
             ranked = [(h.score, cfg.tables[h.key.split(":", 1)[1]])
                       for h in hits
                       if h.key.startswith("table:") and h.key.split(":", 1)[1] in cfg.tables]
-            # 过线的才要，但至少保底 top_k 张 —— 宁可多给一张，
-            # 也不要让模型无表可用；相关度太低的表纯属干扰。
+            # 过线的才要，但至少保底 top_k 张。
+            # 保底不是妥协，是设计 §3.2.3 的明文要求：「召回 Top-K（默认 3，
+            # 上限 5）表」。因此 min_score **不是硬阈值** —— 过线表不足 top_k
+            # 时，低于阈值的表会被补齐进来。配置注释已同步说明这一点；
+            # 若要让它成为硬阈值，须先改设计文档里的 Top-K 约定。
             picked = [t for s, t in ranked if s >= min_score][:max_k]
             if len(picked) < top_k:
                 picked = [t for _, t in ranked[:top_k]]

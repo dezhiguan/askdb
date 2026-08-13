@@ -34,14 +34,27 @@ def test_f04_embedding_unavailable_falls_back(cfg):
     assert r.tables, "嵌入不可用时必须回落 keyword，不得中断"
 
 
-def test_f05_min_score_filters_noise(cfg):
+def test_f05_min_score_is_not_a_hard_threshold(cfg):
+    """min_score 不是硬阈值 —— 设计 §3.2.3 要求「召回 Top-K（默认 3）表」，
+    过线表不足 top_k 时会按相似度补齐，低分表因此会被带回来。
+
+    用例第一版按"硬阈值"写，与设计冲突。保底才是设计的明文要求，
+    改的是配置注释而不是这段逻辑。
+    """
     cfg.raw["schema_rag"]["mode"] = "vector"
     cfg.raw["schema_rag"]["min_score"] = 0.95
+    cfg.raw["schema_rag"]["top_k"] = 1        # 保底只要 1 张，阈值才看得出效果
+
     class Idx:
         def search(self, q, k):
             return [Hit("table:documents", 0.99), Hit("table:orgs", 0.10)]
     r = schema_rag.recall("文档", cfg, index=Idx())
-    assert all(t.name != "orgs" for t in r.tables)
+    assert all(t.name != "orgs" for t in r.tables), "过线表够 top_k 时，低分表不得注入"
+
+    # 反向：过线表不足 top_k 时，保底必须生效（这是设计要求，不是缺陷）
+    cfg.raw["schema_rag"]["top_k"] = 2
+    r2 = schema_rag.recall("文档", cfg, index=Idx())
+    assert len(r2.tables) == 2, "过线不足时须补齐到 top_k"
 
 
 def test_f06_metric_injected_with_schema(cfg):

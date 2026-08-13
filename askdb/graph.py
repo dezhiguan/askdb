@@ -63,6 +63,8 @@ class AskState(TypedDict, total=False):
     attempt: int
     # 本次拒绝是否属「问题超出范围」。路由据此决定要不要进反思。
     out_of_scope: bool
+    # 执行报错是否可由重试救回（超时可以，连接不可达不行）
+    exec_retryable: bool
 
     # ---- 多步规划（§5.3）。同样必须可序列化，检查点要存下来 ----
     multi_step: bool
@@ -314,7 +316,9 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         res = d.executor.run(state["sql_final"])
     except DataSourceError as e:
         d.tracer.add("execute", t, str(e), status="failed")
-        return {"error": str(e), "error_hint": e.hint, "rejected_by": "EXEC"}
+        return {"error": str(e), "error_hint": e.hint, "rejected_by": "EXEC",
+                # 超时可重试（模型能缩小查询），连接不可达不可重试
+                "exec_retryable": bool(getattr(e, "retryable", False))}
     except Exception as e:
         d.tracer.add("execute", t, f"执行失败：{e}", status="failed")
         return {"error": f"执行失败：{e}", "rejected_by": None}
@@ -465,8 +469,10 @@ def _route_after_dry_run(state: AskState) -> Literal["execute", "reflect", "fina
 def _route_after_execute(state: AskState) -> Literal["assess", "reflect", "finalize"]:
     if not state.get("error"):
         return "assess"
-    # 数据源不可用不是模型的错，重试没有意义
-    if state.get("rejected_by") == "EXEC":
+    # 数据源不可用不是模型的错，重试没有意义；但语句超时是 —— 模型缩小
+    # 时间范围或加筛选条件就可能过，与 R-11 干跑超限同理，那条是会重试的。
+    # 设计 §5 只写「execute 报错 → reflect」，未区分二者，此处按错误类别细分。
+    if state.get("rejected_by") == "EXEC" and not state.get("exec_retryable"):
         return "finalize"
     return "reflect" if _can_retry(state) else "finalize"
 
@@ -589,6 +595,7 @@ def ask(
     init: AskState = {
         "question": question, "org_id": org, "trace_id": trace_id,
         "attempt": 0, "max_retry": cfg.max_retry, "out_of_scope": False,
+        "exec_retryable": False,
         # 多步相关的上限进状态而非从 cfg 现取 —— 路由只读状态，
         # 检查点回放时也就能还原出当时真实的约束
         "step_no": 0, "steps_done": [], "carry": {}, "multi_step": False,

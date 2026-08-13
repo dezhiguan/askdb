@@ -30,11 +30,23 @@ _EST_PATTERNS = (
 
 
 class DataSourceError(RuntimeError):
-    """数据源不可用 —— 带可执行的修复建议，直接透传给用户。"""
+    """数据源不可用 —— 带可执行的修复建议，直接透传给用户。
 
-    def __init__(self, message: str, hint: str = ""):
+    retryable 区分两类错，它们的重试价值相反：
+
+      · 连接断了、库不可达、认证失败 —— 重试纯属浪费，还会白烧模型 token
+      · 语句超时 —— **可重试**：模型缩小时间范围或加筛选条件就可能过，
+        与 R-11 干跑超限完全同理，而干跑超限是会进反思的。
+        两者都不重试才是不一致。
+
+    设计文档 §5 的节点表只写「execute 报错且 attempt < 2 → reflect」，
+    未区分这两类；未提及的部分按上述判断处理。
+    """
+
+    def __init__(self, message: str, hint: str = "", retryable: bool = False):
         super().__init__(message)
         self.hint = hint
+        self.retryable = retryable
 
 
 def _fmt_ts(v: Any) -> str:
@@ -144,6 +156,7 @@ class _DuckBackend(_Backend):
                 raise DataSourceError(
                     f"查询超时（超过 {timeout_ms} ms 已中断）",
                     hint="缩小时间范围或增加筛选条件；这是 R-12 语句超时护栏。",
+                    retryable=True,
                 ) from e
             raise
         finally:
@@ -259,6 +272,7 @@ class _PgBackend(_Backend):
                 raise DataSourceError(
                     f"查询超时（超过 {ms} ms，已由 statement_timeout 取消）",
                     hint="缩小时间范围或增加筛选条件；这是 R-12 语句超时护栏。",
+                    retryable=True,
                 ) from e
             raise
         return columns, [list(r) for r in rows], as_of

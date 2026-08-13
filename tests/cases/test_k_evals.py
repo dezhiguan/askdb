@@ -46,10 +46,25 @@ def test_k07_results_record_provenance():
 
 
 def test_k08_quota_failures_excluded_from_accuracy():
-    """配额触顶不得污染准确率分母 —— 历史上出现过 23 题被判 QUOTA 失败。"""
-    import inspect, evals.replay as rp
-    src = inspect.getsource(rp)
-    assert "QUOTA" in src and "answerable" in src, "须能把配额失败与模型失败区分开"
+    """配额触顶不得污染准确率分母。
+
+    历史上出现过一轮消融里 23 题被配额拒绝、全部计入分母，直接把该组成绩
+    压低一大截且偏差不可估。设计 §6.2 把执行准确率定义为"生成 SQL 执行结果集
+    与标准答案一致的题目占比"—— 没生成过 SQL 的题不该进分母。
+    """
+    from evals.replay import Outcome, Report
+
+    rep = Report(group="t", n=3)
+    rep.outcomes = [
+        Outcome(id="a", category="single", blind=False, passed=True),
+        Outcome(id="b", category="single", blind=False, passed=False, reason="结果不一致"),
+        Outcome(id="c", category="single", blind=False, passed=False, reason="配额拒绝"),
+    ]
+    assert len(rep.quota_blocked) == 1
+    assert len(rep.answerable) == 2, "配额拒绝的题必须移出分母"
+    assert rep.accuracy == 0.5, f"应为 1/2 而不是 1/3，实际 {rep.accuracy}"
+    # 但不能悄悄消失 —— 必须在结果里显式带出来
+    assert rep.to_dict()["quota_blocked"] == 1
 
 
 def test_k09_ablation_groups_share_questions():

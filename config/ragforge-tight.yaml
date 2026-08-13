@@ -84,7 +84,10 @@ schema_rag:
   token_budget: 1500
   # 以下仅 mode: vector 生效
   embedding_model: text-embedding-v4
-  min_score: 0.35        # 相似度低于此值的表/口径视为干扰，不注入
+  min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求
+                         # 「召回 Top-K（默认 3）表」，所以过线的表不足 top_k 张时，
+                         # 会按相似度补齐到 top_k —— 宁可多给一张，也不让模型无表可用。
+                         # 想让它成为硬阈值，得先改设计文档里的 Top-K 约定。
   max_metrics: 2         # 口径是强约束（"必须用此定义"），塞多了会误导模型
 
 llm:

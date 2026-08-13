@@ -66,8 +66,23 @@ class Report:
                 if all(getattr(o, k) == v for k, v in kw.items())]
 
     @property
+    def quota_blocked(self) -> list[Outcome]:
+        """因每日配额触顶而根本没跑起来的题。
+
+        这类失败与模型能力无关 —— 请求在任何模型调用之前就被拦下了。
+        历史上出现过一轮消融里 23 题被配额拒绝，全部计入分母，
+        直接把该组成绩压低了一大截且偏差不可估。
+        设计 §6.2 把执行准确率定义为"生成 SQL 执行结果集与标准答案一致的
+        题目占比"，未提及配额；按此定义，没生成过 SQL 的题不该进分母。
+        """
+        return [o for o in self.outcomes if o.reason == "配额拒绝"]
+
+    @property
     def answerable(self) -> list[Outcome]:
-        return [o for o in self.outcomes if o.category != "reject"]
+        """计入准确率的题：排除应拒题，也排除配额触顶未跑成的题。"""
+        blocked = {id(o) for o in self.quota_blocked}
+        return [o for o in self.outcomes
+                if o.category != "reject" and id(o) not in blocked]
 
     @property
     def accuracy(self) -> float:
@@ -116,6 +131,9 @@ class Report:
     def to_dict(self) -> dict[str, Any]:
         return {
             "group": self.group, "n": self.n,
+            # 被配额拦掉的题数必须显式带出来 —— 悄悄从分母里去掉，
+            # 和悄悄留在分母里，是同一种不诚实
+            "quota_blocked": len(self.quota_blocked),
             # 成绩必须带出处。没有这几项，一份结果文件事后无从分辨
             # 它跑在哪个库、哪个题库、哪个模型上 —— 而这恰恰决定了
             # 这个数字能不能拿来说事。
@@ -237,7 +255,11 @@ def judge(case: Case, r: graph.AskResult, cfg: Config, ex: Executor) -> Outcome:
         return o
 
     if not r.ok:
-        o.reason = "被护栏拦截" if (r.rejected_by or "").startswith("R-") else "链路失败"
+        if r.rejected_by == "QUOTA":
+            o.reason = "配额拒绝"        # 与模型能力无关，不计入准确率分母
+        else:
+            o.reason = ("被护栏拦截" if (r.rejected_by or "").startswith("R-")
+                        else "链路失败")
         o.detail = f"{r.rejected_by}｜{r.error[:120]}"
         return o
 

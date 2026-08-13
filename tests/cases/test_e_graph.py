@@ -77,18 +77,51 @@ def test_e08_fixable_reject_still_retried(cfg, ex):
 
 
 def test_e09_execution_error_triggers_reflection(cfg, ex, monkeypatch):
-    from askdb.executor import DataSourceError
+    """设计 §4.5：执行报错须回灌真实错误重新生成。
+
+    用例第一版注入了 DataSourceError，那是**基础设施异常类**，不是 SQL 错 ——
+    真实的 SQL 语义错（类型不匹配、函数用法错）在引擎侧抛的是
+    ConversionException / BinderException，走通用异常分支，本来就会重试。
+    这里改为注入真实形态的引擎异常。
+    """
     calls = {"n": 0}
     orig = ex.run
 
     def boom(sql):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise DataSourceError("引擎报错", hint="h")
+            raise RuntimeError("Binder Error: 函数用法错")
         return orig(sql)
     monkeypatch.setattr(ex, "run", boom)
     r = graph.ask("q", cfg, executor=ex, llm=FakeLlm(OK_SQL, OK_SQL))
-    assert r.attempts == 2
+    assert r.attempts == 2, "SQL 语义错必须回灌重试（§4.5）"
+
+
+def test_e09b_timeout_is_retryable(cfg, ex, monkeypatch):
+    """语句超时可重试 —— 模型缩小查询就可能过，与 R-11 干跑超限同理。"""
+    from askdb.executor import DataSourceError
+    calls = {"n": 0}
+    orig = ex.run
+
+    def slow(sql):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise DataSourceError("查询超时（超过 8000 ms 已中断）",
+                                  hint="缩小范围", retryable=True)
+        return orig(sql)
+    monkeypatch.setattr(ex, "run", slow)
+    r = graph.ask("q", cfg, executor=ex, llm=FakeLlm(OK_SQL, OK_SQL))
+    assert r.attempts == 2 and r.ok
+
+
+def test_e09c_datasource_down_is_not_retried(cfg, ex, monkeypatch):
+    """连接不可达重试纯属浪费，还会白烧模型 token。"""
+    from askdb.executor import DataSourceError
+    f = FakeLlm(OK_SQL, OK_SQL)
+    monkeypatch.setattr(ex, "run", lambda sql: (_ for _ in ()).throw(
+        DataSourceError("无法连接数据库", hint="检查连接串")))
+    r = graph.ask("q", cfg, executor=ex, llm=f)
+    assert not r.ok and r.attempts == 1 and len(f.calls) == 1
 
 
 def test_e10_dry_run_block_triggers_reflection(cfg, ex):
