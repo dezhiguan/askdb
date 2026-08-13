@@ -114,3 +114,20 @@ def test_h18_eval_provenance(client):
     d = client.get("/api/eval").json()
     if d.get("available"):
         assert "provenance" in d and "failures" in d
+
+
+def test_h19_health_ok_true_when_llm_intentionally_disabled(cfg, monkeypatch):
+    """有意不接模型的实例，health 顶层 ok 必须为 true。
+
+    对外开放实例故意不配密钥（config/public.yaml），此前顶层
+    ok = db_ok and api_key()，于是线上 health 恒报 ok:false ——
+    数据源明明是好的，看的人（包括我自己排查时）都以为部署失败了。
+    """
+    cfg.raw["llm"]["disabled"] = True
+    monkeypatch.delenv(cfg.llm["api_key_env"], raising=False)
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+    c = TestClient(server.create_app("ignored.yaml"))
+    d = c.get("/api/health").json()
+    assert d["datasource"]["ok"] is True
+    assert d["llm"]["ok"] is False and d["llm"]["disabled"] is True
+    assert d["ok"] is True, "有意禁用模型不是故障状态"

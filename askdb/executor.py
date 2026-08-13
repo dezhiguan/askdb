@@ -284,6 +284,7 @@ class _PgBackend(_Backend):
             ro = cur.fetchone()[0]
             out.append(("账号为只读", ro == "on", f"default_transaction_read_only = {ro}"))
 
+
             cur.execute("SHOW statement_timeout")
             st = cur.fetchone()[0]
             out.append(("语句超时已设置", st not in ("0", "0ms"), f"statement_timeout = {st}"))

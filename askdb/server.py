@@ -139,7 +139,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         except DataSourceError as e:
             db_ok, db_msg, db_hint = False, str(e), e.hint
         return {
-            "ok": db_ok and bool(cfg.api_key()),
+            # 有意不接模型的实例（对外开放配置），没配密钥是**预期状态**，
+            # 不能算不健康 —— 否则 health 顶层恒报 false，看的人以为服务坏了。
+            "ok": db_ok and (bool(cfg.api_key()) or bool(cfg.llm.get("disabled"))),
             # 复现命令要带 -c：检查点库跟着配置走，配置不对就找不到 trace
             "config": cfg.path,
             "datasource": {"ok": db_ok, "type": cfg.db_type, "detail": db_msg, "hint": db_hint},
