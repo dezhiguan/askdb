@@ -47,7 +47,9 @@ jobs:
         with: { node-version: "20" }
 
       - name: Run tests
-        run: pytest -q
+        # 用 python -m 与本地跑法保持一致（本地一直是 python -m pytest）。
+        # pyproject 里也配了 pythonpath，两层都兜住。
+        run: python -m pytest -q
 
   build-and-push:
     name: build-and-push

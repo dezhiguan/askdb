@@ -35,6 +35,11 @@ include = ["askdb*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 项目根必须在 sys.path 上：conftest 要 import data.seed 生成样例库，
+# 而 data/ 不是被安装的包。用 `python -m pytest` 时当前目录会自动进
+# sys.path，直接用 `pytest` 则不会 —— CI 上就是这么炸的。
+# 写在这里，两种调用方式都稳。
+pythonpath = ["."]
 addopts = "-q --cov=askdb --cov=data --cov-report=term-missing --cov-fail-under=81"
 filterwarnings = ["ignore::DeprecationWarning"]
 
