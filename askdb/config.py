@@ -259,6 +259,15 @@ def _validate(cfg: Config) -> None:
                 )
             if t.tenant_filter and "{ctx}" not in t.tenant_filter:
                 errs.append(f"表 {t.name} 的 tenant_filter 缺少 {{ctx}} 占位符，租户不会被代入")
+            # {ref} 同样必需：谓词要绑到**具体的表实例**上。
+            # 缺了它，单表查询恰好还对，但自连接
+            # （FROM documents a JOIN documents b）下两个别名会共用一条无限定
+            # 谓词，行为不可预期 —— 配置看着是对的，只在特定语法下才出错，
+            # 属于最难发现的一类越权路径。
+            if t.tenant_filter and "{ref}" not in t.tenant_filter:
+                errs.append(
+                    f"表 {t.name} 的 tenant_filter 缺少 {{ref}} 占位符，"
+                    f"谓词无法绑定到具体表实例（自连接场景会失效）")
     else:
         # 单租户模式下仍然禁止半吊子配置：既然说了整库同属一个主体，
         # 就不该再有表声明自己的租户归属，否则两套语义并存。

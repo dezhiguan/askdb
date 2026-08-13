@@ -11,8 +11,9 @@ OK_SQL = "SELECT file_name AS 文件名 FROM documents WHERE status = 'PROCESSIN
 
 
 class FakeLlm:
-    def __init__(self, *sqls, raises=None):
+    def __init__(self, *sqls, raises=None, multi_step=False):
         self.sqls, self.raises, self.calls = list(sqls), raises, []
+        self.multi_step = multi_step
 
     def generate_sql(self, question, schema_prompt, dialect="duckdb",
                      last_sql="", error="", step=""):
@@ -23,6 +24,15 @@ class FakeLlm:
         return SqlDraft(sql=sql, reasoning="t"), LlmUsage(100, 50)
 
     def structured(self, model, system, user):
+        """按传入的 model 类型返回对应形状。
+
+        第一版对 Plan 和 Assessment 返回同一形状，导致多步规划路径
+        根本没被正确驱动 —— 断言其实跑在一个无效状态上。
+        """
+        name = getattr(model, "__name__", "")
+        if name == "Plan":
+            return model(multi_step=self.multi_step, goal="本步目标",
+                         reason="t"), LlmUsage(10, 5)
         return model(enough=True, reason="t", carry={}), LlmUsage(10, 5)
 
 
@@ -180,17 +190,36 @@ def test_e18_step_cap_converges(cfg, ex):
 
 
 def test_e19_cost_cap_converges(cfg, ex):
-    cfg.raw["planner"] = {**cfg.raw.get("planner", {}),
-                          "enabled": True, "cost_cap_tokens": 1}
-    r = graph.ask("q", cfg, executor=ex, llm=FakeLlm(OK_SQL, OK_SQL))
-    assert r.ok or r.converged_early
-
-
-def test_e20_on_cap_reached_fail(cfg, ex):
+    """R-17 累计成本上限：触顶即收敛作答，并明确标注不完整。"""
     cfg.raw["planner"] = {**cfg.raw.get("planner", {}), "enabled": True,
-                          "max_steps": 1, "on_cap_reached": "fail"}
-    r = graph.ask("q", cfg, executor=ex, llm=FakeLlm(OK_SQL, OK_SQL))
-    assert r.ok or not r.ok      # 行为存在即可，具体语义见 E-20 记录
+                          "max_steps": 3, "cost_cap_tokens": 1}
+    f = FakeLlm(OK_SQL, OK_SQL, OK_SQL, multi_step=True)
+    r = graph.ask("q", cfg, executor=ex, llm=f)
+    assert r.converged_early, "触及成本上限必须显式标注，不能静默收敛"
+    assert "成本" in r.converged_early or "token" in r.converged_early.lower()
+
+
+@pytest.mark.parametrize("cid,mode,should_fail", [
+    ("E-20a", "converge", False),
+    ("E-20b", "fail", True),
+])
+def test_e20_on_cap_reached(cid, mode, should_fail, cfg, ex):
+    """on_cap_reached 的两种取值必须produce 不同结果。
+
+    这条第一版写成了 `assert r.ok or not r.ok` —— 恒真，等于没测，
+    却一直显示"通过"，掩盖了一个零验证的功能点。比失败危险得多。
+    """
+    cfg.raw["planner"] = {**cfg.raw.get("planner", {}), "enabled": True,
+                          "max_steps": 1, "cost_cap_tokens": 1,
+                          "on_cap_reached": mode}
+    f = FakeLlm(OK_SQL, OK_SQL, OK_SQL, multi_step=True)
+    r = graph.ask("q", cfg, executor=ex, llm=f)
+    assert r.converged_early, f"{cid}: 无论哪种模式都必须标注触顶原因"
+    if should_fail:
+        assert not r.ok, f"{cid}: fail 模式下必须判失败，而不是收敛作答"
+        assert r.rejected_by, f"{cid}: 失败须给出拒绝码"
+    else:
+        assert r.ok, f"{cid}: converge 模式下应基于已完成步骤作答"
 
 
 def test_e21_every_step_passes_full_guard(cfg, ex):

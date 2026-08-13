@@ -264,6 +264,15 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> Guard
                     ok=False, rejected_by="R-10",
                     reason=f"表 {name} 的租户谓词无法解析：{text}",
                 )
+            # 幂等：完全相同的谓词已经在了就不再叠加。
+            # 当前生产路径不会二次改写（每轮都对 sql_raw 重新校验），
+            # 但只要有一处对改写结果再跑一次，SQL 就会持续膨胀成
+            # `org_id = 65 AND org_id = 65 AND ...`。
+            target = join.args.get("on") if (join is not None and _is_outer(join)) \
+                else s.args.get("where")
+            if target is not None and _has_condition(target, cond):
+                continue
+
             # 外连接的谓词必须进 ON，不能进 WHERE ——
             # 放进 WHERE 会把 LEFT/RIGHT/FULL JOIN 悄悄降级成 INNER JOIN，
             # 结果少行且不报错，属于最难发现的一类改写事故。
@@ -309,6 +318,28 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> Guard
         rules_fired=fired,
         rewrites=rewrites,
     )
+
+
+def _has_condition(where_or_on: exp.Expression, cond: exp.Expression) -> bool:
+    """已有条件里是否已包含语义相同的一条。
+
+    按规范化后的 SQL 文本比对 AST 节点 —— 比字符串匹配可靠（大小写、
+    空白、括号都已被解析器抹平），也比逐字段比较简单。
+    """
+    want = cond.sql()
+    # WHERE 是 exp.Where 包一层；JOIN 的 on 在 sqlglot 30 里是**裸表达式**，
+    # 没有 exp.On 这个节点类型（第一版按 exp.On 写，直接 AttributeError）。
+    node = where_or_on.this if isinstance(where_or_on, exp.Where) else where_or_on
+    if node is None:
+        return False
+    stack = [node]
+    while stack:
+        cur = stack.pop()
+        if cur.sql() == want:
+            return True
+        if isinstance(cur, exp.And):
+            stack.extend([cur.left, cur.right])
+    return False
 
 
 def _is_tautology(cond: exp.Expression) -> bool:
@@ -420,6 +451,12 @@ def _check_columns(root: exp.Expression, cfg: Config, ctes: set[str]) -> str | N
         scope: dict[str, str] = {}
         for t, _join in _direct_tables(s):
             n = (t.name or "").lower()
+            # CTE 别名遮蔽同名真实表时，这里引用的是 CTE 不是表 ——
+            # R-03 已经这么判了（所以不报表白名单错），R-04 也必须一致，
+            # 否则 WITH documents AS (SELECT 1 AS x) SELECT x FROM documents
+            # 会被判「字段 x 不存在」，合法 SQL 被误杀且报错还在误导。
+            if n in ctes:
+                continue
             if n in cfg.tables:
                 scope[t.alias_or_name.lower()] = n
                 scope[n] = n
