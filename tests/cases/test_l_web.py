@@ -54,3 +54,13 @@ def test_l10_result_values_are_escaped(tmp_path):
         assert '"' not in safe, f"双引号未转义（属性注入面）：{raw} → {safe}"
         # 原文内容仍应可读，转义不等于丢信息
         assert "alert" in safe or "DROP" in safe
+
+
+def test_l11_page_shows_which_config_is_loaded():
+    """同一台机器上会同时跑多个实例（样例库 :8000 / 生产库 :8765），
+    界面长得一模一样。不显示配置文件路径，就只能靠猜眼前这个连的是哪儿 ——
+    实际已经因此误判过一次。
+    """
+    page = PAGE.read_text(encoding="utf-8")
+    assert "HEALTH.config" in page, "页面必须把当前配置文件显示出来"
+    assert "配置文件" in page
