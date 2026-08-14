@@ -79,23 +79,3 @@ def write_audit(path: Path, record: dict[str, Any]) -> None:
             f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except OSError:
         pass
-
-
-def today_calls(path: Path) -> int:
-    """当日已发生的调用次数，用于 daily_quota。
-
-    直接数审计记录，不另开计数存储 —— 少一处状态就少一处不一致。
-    审计文件不可读时返回 0（放行），配额不该成为可用性的单点。
-    """
-    if not path.exists():
-        return 0
-    today = datetime.now().astimezone().date().isoformat()
-    n = 0
-    try:
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                if f'"ts": "{today}' in line or f'"ts":"{today}' in line:
-                    n += 1
-    except OSError:
-        return 0
-    return n

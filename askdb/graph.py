@@ -28,7 +28,8 @@ from . import guard, planner, schema_rag
 from .config import Config
 from .executor import DataSourceError, Executor
 from .llm import LlmClient, LlmNotConfigured
-from .trace import Tracer, cost_cny, now_iso, today_calls, write_audit
+from .quota import QuotaExceeded, build_quota
+from .trace import Tracer, cost_cny, now_iso, write_audit
 
 
 class AskState(TypedDict, total=False):
@@ -207,6 +208,10 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
                     schema=state["schema_prompt"], question=state["question"],
                     history=planner.render_history(state.get("steps_done") or []),
                     carry=planner.render_carry(state.get("carry") or {})))
+    except QuotaExceeded as e:
+        d.tracer.add("plan", t, str(e), status="blocked")
+        return {"error": str(e), "error_hint": "明日自动恢复。直查 SQL 不受配额限制。",
+                "rejected_by": "QUOTA"}
     except Exception as e:
         d.tracer.add("plan", t, f"规划失败：{e}", status="failed")
         return {"error": f"规划失败：{e}",
@@ -268,6 +273,10 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     except LlmNotConfigured as e:
         d.tracer.add("generate_sql", t, "未配置模型密钥", status="failed")
         return {"error": str(e), "error_hint": "配置密钥后重试", "rejected_by": "LLM"}
+    except QuotaExceeded as e:
+        d.tracer.add("generate_sql", t, str(e), status="blocked")
+        return {"error": str(e), "error_hint": "明日自动恢复。直查 SQL 不受配额限制。",
+                "rejected_by": "QUOTA"}
     except Exception as e:
         d.tracer.add("generate_sql", t, f"模型调用失败：{e}", status="failed")
         return {
@@ -408,6 +417,11 @@ def _n_assess(state: AskState, config: RunnableConfig) -> dict[str, Any]:
                 n=state.get("row_count", 0),
                 rows=planner.render_carry(
                     {"预览": planner.preview_rows(state.get("rows") or [])})))
+    except QuotaExceeded as e:
+        # 额度在多步途中用尽：已经跑出来的步骤是有效的，基于它们收敛作答，
+        # 并如实标注为什么停在这里 —— 比丢掉已花掉的钱重来一次好。
+        d.tracer.add("assess", t, str(e), status="blocked")
+        return {**base, "enough": True, "converged_early": str(e)}
     except Exception as e:
         d.tracer.add("assess", t, f"评估失败，按足够处理：{e}", status="failed")
         return {**base, "enough": True}
@@ -596,20 +610,25 @@ def ask(
     trace_id = uuid.uuid4().hex[:12]
     tracer = Tracer()
 
-    # 每日配额（技术设计说明书 §8 准入条件第 6 条）——
-    # 在任何模型调用之前拦，超限的请求一个 token 都不该花。
-    quota = cfg.daily_quota
-    if quota > 0:
-        used = today_calls(cfg.audit_log)
-        if used >= quota:
-            tracer.add("quota", tracer.start(), f"当日已用 {used}/{quota}", status="blocked")
-            return AskResult(
-                ok=False, question=question, trace_id=trace_id, org_id=org,
-                rejected_by="QUOTA",
-                error=f"已达当日调用上限（{used}/{quota}）",
-                hint="明日自动恢复；也可调高 config/askdb.yaml 的 observability.daily_quota。",
-                steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
-            )
+    # 每日配额（技术设计说明书 §8 准入条件第 6 条）。
+    #
+    # 这里只是**快速失败**：额度早已用尽时不必把整条链路跑到模型那一步，
+    # 直接给出明确结论。真正的扣减在 LlmClient 里，一次调用扣一次 ——
+    # 一次提问会调好几次模型，在入口按请求扣会低估花费好几倍。
+    #
+    # 只读探测拿到的用量是瞬时值，读完到真正调用之间还会有并发变化，
+    # 所以这一层不能算把关；把关靠 LlmClient 的原子预扣。
+    dq = build_quota(cfg)
+    over, used = dq.exhausted()
+    if over:
+        tracer.add("quota", tracer.start(), f"当日已用 {used}/{dq.limit}", status="blocked")
+        return AskResult(
+            ok=False, question=question, trace_id=trace_id, org_id=org,
+            rejected_by="QUOTA",
+            error=f"已达当日模型调用上限（{used}/{dq.limit}）",
+            hint="明日自动恢复；也可调高配置中的 observability.daily_quota。",
+            steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
+        )
 
     own_exec = executor is None
     ex = executor or Executor(cfg)

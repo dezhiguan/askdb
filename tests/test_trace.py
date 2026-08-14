@@ -64,16 +64,4 @@ def test_now_iso_has_timezone():
     assert s[:2] == "20" and ("+" in s[10:] or s.endswith("Z"))
 
 
-def test_today_calls_counts_only_today(tmp_path):
-    from askdb.trace import now_iso, today_calls, write_audit
 
-    p = tmp_path / "audit.jsonl"
-    write_audit(p, {"ts": now_iso(), "a": 1})
-    write_audit(p, {"ts": now_iso(), "a": 2})
-    write_audit(p, {"ts": "2020-01-01T00:00:00+08:00", "a": 3})
-    assert today_calls(p) == 2
-
-
-def test_today_calls_missing_file_is_zero(tmp_path):
-    from askdb.trace import today_calls
-    assert today_calls(tmp_path / "nope.jsonl") == 0

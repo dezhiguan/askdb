@@ -18,8 +18,10 @@ COPY askdb/__init__.py ./askdb/
 # 必须带 [web]：镜像跑的就是 Web 服务，而 fastapi/uvicorn 在 web extra 里。
 # 只装主依赖会构建成功、推送成功、拉取成功，直到容器启动才炸在
 # `import uvicorn` —— 前面每一关都是绿的，最难查的那种。
+# 带 [redis]：每日配额的共享计数走 Redis。没装的话不会构建失败，
+# 而是运行期第一次调模型时才抛"未安装 redis 包"——同样是最难查的那种。
 # 不装 postgres：该实例连的是本地样例库，用不到 PG 驱动。
-RUN pip install --no-cache-dir ".[web]"
+RUN pip install --no-cache-dir ".[web,redis]"
 
 COPY askdb ./askdb
 COPY config ./config

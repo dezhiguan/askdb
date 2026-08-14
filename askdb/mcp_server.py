@@ -25,6 +25,7 @@ from . import guard
 from .config import Config, load
 from .executor import DataSourceError, Executor
 from .graph import ask as run_ask, jsonable
+from .quota import build_quota
 
 TOOLS_DESC = {
     "ask": (
@@ -119,7 +120,10 @@ def build_server(cfg: Config):
             "limits": {
                 "max_rows": cfg.max_rows,
                 "max_scan_rows": cfg.raw["guard"]["max_scan_rows"],
-                "daily_quota": cfg.daily_quota,
+                # 配额按**模型调用**计，不是按提问计：一次提问可能触发多次调用。
+                # 调用方据此判断还能问几轮，口径写清楚才不会误判。
+                "daily_quota_model_calls": cfg.daily_quota,
+                "daily_quota_used": build_quota(cfg).peek(),
             },
             "tables": [
                 {"name": t.name, "desc": t.desc, "aliases": t.aliases,

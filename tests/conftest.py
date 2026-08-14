@@ -57,3 +57,13 @@ def cfg(sample_db: Path, tmp_path: Path):
 def ex(cfg):
     with Executor(cfg) as e:
         yield e
+
+
+@pytest.fixture(autouse=True)
+def _reset_quota_cache():
+    """配额器按配置缓存复用，用例之间会改上限 —— 不清就会串。"""
+    from askdb import quota
+
+    quota.reset_cache()
+    yield
+    quota.reset_cache()

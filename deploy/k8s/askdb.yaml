@@ -14,13 +14,17 @@ metadata:
   name: askdb
   namespace: askdb
 spec:
-  # 必须是 1：每日配额靠单副本的本地审计日志计数，多副本会各算各的，
-  # 实际额度变成 N 倍。真要扩容得先把计数改成共享存储。
+  # 每日配额已改为 Redis 共享计数（见 askdb/quota.py），不再是扩容的拦路虎。
+  # 但仍保持 1 —— 还剩两处单副本假设：
+  #   1. 检查点是 SQLite 单文件。多个 Pod 同时写同一个库会争锁，
+  #      "database is locked" 会打在正常查询上。要多副本得先换成 PG 后端。
+  #   2. 审计日志是同一个 JSONL 文件的追加写，多进程交错写有撕行风险。
+  # 这两条都不是配额问题，别因为配额通了就顺手把这里调大。
   replicas: 1
   strategy:
     type: RollingUpdate
-    # PVC 是 ReadWriteOnce，新旧 Pod 不能同时挂 —— maxSurge 必须为 0，
-    # 否则新 Pod 会卡在 ContainerCreating 等卷释放
+    # maxSurge 必须为 0：新旧 Pod 会挂同一个 hostPath，同时在跑就等于
+    # 两个进程写同一个 SQLite 检查点库与同一个审计文件
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }
   selector:
     matchLabels: { app: askdb }
@@ -40,7 +44,7 @@ spec:
             path: /opt/askdb/var
             type: DirectoryOrCreate
       # hostPath 由 kubelet 以 root 创建（0755），而容器以 uid 10001 运行，
-      # 不改属主就写不进审计日志 —— 而每日配额正是靠数审计条数实现的。
+      # 不改属主就写不进审计日志与检查点库 —— 失败复现、回放归因全落空。
       # 放在 initContainer 里做，换台机器重建也能自愈，不依赖手工准备。
       initContainers:
         - name: fix-perm
@@ -72,6 +76,14 @@ spec:
             - secretRef:
                 name: askdb-llm
                 optional: false
+            # 配额计数用的共享 Redis（复用数据机上那套，带口令）。
+            # optional: true 是有意的 —— 没建这个 Secret 时退回本地文件计数，
+            # 单副本下依然正确，不至于因为少建一个 Secret 就起不来。
+            # 多副本部署前务必确认它存在，且 /api/health 的
+            # quota.multi_replica_safe 为 true。
+            - secretRef:
+                name: askdb-redis
+                optional: true
           resources:
             requests: { cpu: "50m",  memory: "192Mi" }
             limits:   { cpu: "500m", memory: "512Mi" }
