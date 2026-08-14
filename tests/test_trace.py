@@ -65,3 +65,32 @@ def test_now_iso_has_timezone():
 
 
 
+
+
+def _spam_audit(path_str: str, tag: str) -> None:
+    """必须是模块级函数：spawn 启动的子进程要能 pickle 到它。"""
+    from pathlib import Path
+
+    from askdb.trace import write_audit
+
+    for i in range(200):
+        # 记录做长一些：短记录即使有缓冲也很难看出交错
+        write_audit(Path(path_str), {"tag": tag, "i": i, "sql": "SELECT " + "x" * 900})
+
+
+def test_audit_lines_survive_concurrent_writers(tmp_path):
+    """多副本共享同一个审计文件时不得撕行 —— 审计是出事后唯一的凭据。"""
+    import json
+    from multiprocessing import Process
+
+    p = tmp_path / "audit.jsonl"
+    procs = [Process(target=_spam_audit, args=(str(p), t)) for t in ("a", "b", "c")]
+    for x in procs:
+        x.start()
+    for x in procs:
+        x.join()
+
+    lines = p.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 600, f"记录条数对不上：{len(lines)}"
+    for ln in lines:
+        json.loads(ln)          # 任何一行坏掉都会在这里炸

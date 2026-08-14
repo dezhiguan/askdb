@@ -14,17 +14,22 @@ metadata:
   name: askdb
   namespace: askdb
 spec:
-  # 每日配额已改为 Redis 共享计数（见 askdb/quota.py），不再是扩容的拦路虎。
-  # 但仍保持 1 —— 还剩两处单副本假设：
-  #   1. 检查点是 SQLite 单文件。多个 Pod 同时写同一个库会争锁，
-  #      "database is locked" 会打在正常查询上。要多副本得先换成 PG 后端。
-  #   2. 审计日志是同一个 JSONL 文件的追加写，多进程交错写有撕行风险。
-  # 这两条都不是配额问题，别因为配额通了就顺手把这里调大。
-  replicas: 1
+  # 多副本的三处前提都已落地，缺一不可：
+  #   1. 每日配额走 Redis 共享计数（askdb/quota.py）—— 否则每个副本各数各的，
+  #      上限直接变成 N 倍。
+  #   2. 检查点库开 WAL + busy_timeout（graph.build_graph）—— 否则两个 Pod
+  #      同时写会把 database is locked 打到正常查询上。
+  #   3. 审计日志改成 O_APPEND 单次 write（trace.write_audit）—— 否则两个进程
+  #      的片段交错落盘，整行 JSON 作废。
+  #
+  # 这三条都依赖**同一台机器的同一个 hostPath**：单节点 k3s 才成立。
+  # 真要跨节点，检查点得换 PG 后端、审计得换集中式收集，别只把这里调大。
+  replicas: 2
   strategy:
     type: RollingUpdate
-    # maxSurge 必须为 0：新旧 Pod 会挂同一个 hostPath，同时在跑就等于
-    # 两个进程写同一个 SQLite 检查点库与同一个审计文件
+    # 两副本下 maxUnavailable: 1 已经能做到滚动期间始终有一个在服务。
+    # maxSurge 保持 0 不是因为不能共存（WAL 之后可以了），而是没必要 ——
+    # 节点内存实际已用 75%，不额外撑起第三个 Pod。
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }
   selector:
     matchLabels: { app: askdb }

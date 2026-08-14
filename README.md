@@ -43,6 +43,7 @@ In one line: **a general-purpose agent is a probe; askdb is a production line.**
 | [`docs/prototype.html`](docs/prototype.html) | Interactive prototype — data onboarding wizard, query pipeline, multi-step planning |
 | [`docs/design-resume.html`](docs/design-resume.html) | Task resume design V1.1 — continue from checkpoint instead of restarting, with UI prototype; blocked on fixing R-17 counter reset |
 | [`docs/design-replay-api.html`](docs/design-replay-api.html) | Decision-chain replay API design V1.1 — turns checkpoints from CLI-only into page-visible; field allowlist and dual kill-switch |
+| [`docs/design-quota-multi-replica.html`](docs/design-quota-multi-replica.html) | Daily-quota multi-replica design V1.1 — counting moved to the model-call site with Redis storage; as-built, including the two premises the first draft got wrong |
 
 Single-file HTML, no external dependencies — download and open in a browser (GitHub does not render HTML).
 **Every metric in those two documents is a design-stage placeholder** — the measured

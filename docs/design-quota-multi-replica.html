@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdb 每日配额多副本化 · 设计说明 V1.1</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+  --accent:#2a78d6;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --good-ink:#0a7a0a; --crit-ink:#c22f2f; --warn-ink:#8a6300;
+  --wash:rgba(42,120,214,0.08);
+  --code-bg:#f4f4f1;
+  --inj:rgba(42,120,214,0.16);
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --accent:#3987e5;
+    --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+    --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19;
+  --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+  --accent:#3987e5;
+  --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+  --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+html,body{max-width:100%;overflow-x:hidden}
+body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--plane);color:var(--ink);font-size:14.5px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.mono,code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* header */
+.doc-head{border-bottom:1px solid var(--border);background:var(--surface)}
+.doc-head-in{max-width:1180px;margin:0 auto;padding:26px 24px 20px}
+.doc-title{font-size:26px;font-weight:650;letter-spacing:-.02em;line-height:1.3}
+.doc-sub{font-size:14px;color:var(--muted);margin-top:4px}
+.meta{display:flex;gap:10px 26px;flex-wrap:wrap;margin-top:16px;font-size:12.5px}
+.meta div{display:flex;gap:7px}
+.meta dt{color:var(--muted)}
+.meta dd{font-weight:600}
+.status{font-size:11.5px;padding:2px 9px;border-radius:999px;background:var(--wash);color:var(--accent);font-weight:600}
+.themebtn{position:absolute;right:24px;top:24px;font:inherit;font-size:12.5px;padding:5px 10px;border-radius:7px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink-2);cursor:pointer}
+
+/* layout */
+.shell{max-width:1180px;margin:0 auto;padding:0 24px 100px;display:grid;grid-template-columns:214px minmax(0,1fr);gap:40px}
+@media (max-width:940px){.shell{grid-template-columns:minmax(0,1fr);gap:0}.toc{display:none}}
+.toc{position:sticky;top:0;align-self:start;padding-top:28px;max-height:100vh;overflow-y:auto}
+.toc h4{font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:9px}
+.toc a{display:block;font-size:12.5px;color:var(--ink-2);text-decoration:none;padding:3.5px 0 3.5px 10px;
+  border-left:2px solid transparent;line-height:1.45}
+.toc a:hover{color:var(--accent)}
+.toc a.on{color:var(--accent);border-left-color:var(--accent);font-weight:600}
+.toc a.sub{padding-left:22px;font-size:12px;color:var(--muted)}
+.toc a.sub:hover,.toc a.sub.on{color:var(--accent)}
+
+main{padding-top:28px;min-width:0}
+section{margin-bottom:44px;scroll-margin-top:20px}
+h2{font-size:20px;font-weight:650;letter-spacing:-.01em;margin-bottom:6px;padding-bottom:9px;border-bottom:1px solid var(--border)}
+h2 .n{color:var(--muted);font-weight:500;margin-right:9px}
+h3{font-size:15.5px;font-weight:650;margin:26px 0 8px}
+h3 .n{color:var(--muted);font-weight:500;margin-right:7px}
+h4{font-size:13.5px;font-weight:650;margin:18px 0 6px;color:var(--ink-2)}
+p{margin:9px 0}
+ul,ol{margin:9px 0 9px 22px}
+li{margin:4px 0}
+b,strong{font-weight:650}
+code{background:var(--code-bg);border:1px solid var(--border);padding:1px 5px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:14px 16px;
+  overflow-x:auto;font-size:12.5px;line-height:1.72;margin:12px 0}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+pre .k{color:var(--accent);font-weight:600}
+pre .s{color:var(--good-ink)}
+pre .c{color:var(--muted)}
+pre .inj{background:var(--inj);border-radius:3px;padding:1px 3px;font-weight:600}
+
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:9px;margin:12px 0}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--grid);vertical-align:top}
+th{font-weight:650;color:var(--ink-2);background:var(--plane);font-size:12px;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.c,th.c{text-align:center;white-space:nowrap}
+td .mono{font-size:12.5px}
+
+.note{border-left:3px solid var(--accent);background:var(--surface);padding:11px 15px;border-radius:0 9px 9px 0;
+  font-size:13.5px;color:var(--ink-2);margin:14px 0}
+.note.warn{border-left-color:var(--serious)}
+.note.crit{border-left-color:var(--critical)}
+.note.good{border-left-color:var(--good)}
+.note b{color:var(--ink)}
+.note .lbl{display:block;font-size:11.5px;font-weight:700;letter-spacing:.04em;margin-bottom:3px}
+.note .lbl{color:var(--accent)}
+.note.warn .lbl{color:var(--warn-ink)}
+.note.crit .lbl{color:var(--crit-ink)}
+.note.good .lbl{color:var(--good-ink)}
+
+.pipe{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin:14px 0;
+  font-size:12.5px;line-height:1.95;overflow-x:auto;white-space:pre}
+.pipe .b{color:var(--accent);font-weight:700}
+.pipe .g{color:var(--muted)}
+.pipe .r{color:var(--crit-ink);font-weight:600}
+
+.tag{font-size:11px;padding:1.5px 7px;border-radius:5px;font-weight:650;white-space:nowrap}
+.tag.p0{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.tag.p1{background:rgba(236,131,90,.16);color:var(--warn-ink)}
+.tag.p2{background:var(--wash);color:var(--accent)}
+.tag.done{background:rgba(12,163,12,.14);color:var(--good-ink)}
+.tag.hard{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.tag.soft{background:var(--wash);color:var(--accent)}
+
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:760px){.two{grid-template-columns:1fr}}
+.box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.box h4{margin-top:0}
+hr{border:0;border-top:1px solid var(--border);margin:32px 0}
+.foot{max-width:1180px;margin:0 auto;padding:0 24px 60px;font-size:12.5px;color:var(--muted)}
+</style>
+
+</head>
+<body>
+
+<header class="doc-head">
+  <button class="themebtn" id="themeBtn">切换主题</button>
+  <div class="doc-head-in">
+    <div class="doc-title">每日配额多副本化 · 设计说明</div>
+    <div class="doc-sub">计数从「单副本审计日志」移到「模型调用端 + Redis」，解除 replicas=1 的约束</div>
+    <dl class="meta">
+      <div><dt>拟制日期</dt><dd>2026-08-14</dd></div>
+      <div><dt>版本</dt><dd>V1.1</dd></div>
+      <div><dt>状态</dt><dd><span class="status">已实施 · 2026-08-14 上线</span></dd></div>
+      <div><dt>拟制</dt><dd>架构组</dd></div>
+      <div><dt>关联</dt><dd>技术设计说明书 §8 准入条件第 6 条 · R-17</dd></div>
+    </dl>
+  </div>
+</header>
+
+<div class="shell">
+<nav class="toc" id="toc">
+  <h4>目录</h4>
+  <a href="#rev">修订记录</a>
+  <a href="#s1">1 现状与动机</a>
+  <a href="#s2">2 语义变更</a>
+  <a href="#s3">3 计数设计</a>
+  <a href="#s3-2" class="sub">3.2 原子性</a>
+  <a href="#s3-3" class="sub">3.3 Redis 不可用</a>
+  <a href="#s4">4 基础设施现状</a>
+  <a href="#s5">5 多副本还差什么</a>
+  <a href="#s6">6 分阶段计划</a>
+  <a href="#s7">7 风险与未决</a>
+</nav>
+
+<main>
+
+<section id="rev">
+  <h2><span class="n">§</span>修订记录</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>版本</th><th>日期</th><th>修订内容</th><th>拟制</th></tr></thead>
+    <tbody>
+      <tr><td>V1.0</td><td>2026-08-14</td><td>初稿。含语义变更说明、Redis 不可用时的取舍，以及「多副本还差什么」的完整盘点</td><td>架构组</td></tr>
+      <tr><td><b>V1.1</b></td><td>2026-08-14</td><td><b>按实施结果回填。</b>三处与初稿不同：① 扣减改为 Lua 原子预扣，不再是「先 INCR 后判断」；② §5 对 hostPath 的判断有误（单节点下各 Pod 共享同一份文件，不是各自一份），据实改写并给出实际解法；③ 共享 Redis 已加 <code>requirepass</code>，<code>replicas</code> 已放到 2</td><td>架构组</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s1">
+  <h2><span class="n">1</span>现状与动机</h2>
+
+  <h3><span class="n">1.1</span>现在怎么算的</h3>
+  <pre><code><span class="c"># graph.ask() —— 在任何模型调用之前</span>
+used = today_calls(cfg.audit_log)      <span class="c"># 数当天审计日志的行数</span>
+<span class="k">if</span> used &gt;= cfg.daily_quota:
+    <span class="k">return</span> AskResult(ok=<span class="k">False</span>, rejected_by=<span class="s">"QUOTA"</span>, …)</code></pre>
+  <p>这套设计带来两条硬约束，都写在了编排里：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>约束</th><th>原因</th><th>代价</th></tr></thead>
+    <tbody>
+      <tr><td><code>replicas: 1</code></td><td>计数是<b>单副本的本地文件</b>，多副本各算各的</td><td><b>实际额度变成 N 倍</b>，且无法横向扩容</td></tr>
+      <tr><td>审计日志必须挂持久卷</td><td>Pod 重启计数归零</td><td>已用 hostPath 解决，但把 Pod 钉在了单节点上</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="n">1.2</span>改成什么</h3>
+  <div class="pipe"><span class="g">现在</span>  入口处数审计文件行数        <span class="r">→ 单副本、单节点</span>
+<span class="b">改后</span>  模型调用端 INCR Redis 计数器  <span class="g">→ 多副本、可横向扩容</span></div>
+</section>
+
+<section id="s2">
+  <h2><span class="n">2</span>语义变更 —— 本设计影响最大的一处</h2>
+  <div class="note crit">
+    <span class="lbl">「一次配额」的含义变了，不只是换了个存储</span>
+    现在在<b>入口</b>计数：一次提问 = 1 个额度，无论它内部调了几次模型。<br>
+    改到<b>模型调用端</b>后：一次提问消耗的额度 = 它实际发生的模型调用次数。
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>问答形态</th><th class="num">实际模型调用</th><th class="num">现在扣</th><th class="num">改后扣</th></tr></thead>
+    <tbody>
+      <tr><td>单步、一次过</td><td class="num">1</td><td class="num">1</td><td class="num">1</td></tr>
+      <tr><td>单步 + 2 次反思重试</td><td class="num">3</td><td class="num">1</td><td class="num"><b>3</b></td></tr>
+      <tr><td>多步（3 步，含规划与评估）</td><td class="num">最多 9</td><td class="num">1</td><td class="num"><b>最多 9</b></td></tr>
+    </tbody>
+  </table></div>
+  <p><b>这个变化是好的，而且是本设计的主要收益之一。</b>配额的目的是控成本，
+     而成本由<b>模型调用次数</b>驱动，不由提问次数驱动。
+     现在一个多步问答花的钱是简单问答的 9 倍，却只扣 1 个额度 ——
+     配额与成本脱钩，等于给了一条"用复杂问题绕过配额"的路径。</p>
+  <div class="note warn">
+    <span class="lbl">但配额数值必须跟着调</span>
+    实测样例库上多数问答是单步一次过，但按最坏情况（多步 9 次）估，
+    <code>daily_quota: 200</code> 在语义变更后可能只够 20 多次提问。
+    <b>上线时须同时把数值调高</b>（建议 500），否则用户会感到额度"莫名其妙少了"。
+    这一条不是可选项 —— 语义变了而数值不变，等于悄悄收紧了服务。
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="n">3</span>计数设计</h2>
+
+  <h3><span class="n">3.1</span>落点</h3>
+  <p>计数放在 <code>LlmClient</code> 真正发起请求之前 —— 那是唯一会花钱的地方。
+     反思重试、多步规划、评估节点，全都经过它，无需在每个调用点各写一遍。</p>
+  <pre><code><span class="c"># 实现：askdb/quota.py，扣减点在 LlmClient.structured() / generate_sql() 入口</span>
+key = <span class="s">f"{key_prefix}:{今天日期}"</span>     <span class="c"># 对外实例为 askdb:quota:public:2026-08-14</span></code></pre>
+  <p><code>key_prefix</code> 由配置给出，让对外实例与内部实例各算各的额度，互不影响。
+     选哪个后端只看一条规则 —— <b>配了 <code>quota.redis_url_env</code> 指向的环境变量就用 Redis，
+     没配就退回本地文件</b>（本机开发只有一个进程，文件计数是对的）。</p>
+  <div class="note">
+    <span class="lbl">不做「Redis 连不上就自动退回文件」的降级</span>
+    那会让多副本部署在 Redis 抖动时<b>静默</b>变成每个副本各算各的 ——
+    正是本设计要消灭的那个问题，而且没有任何外部迹象。
+    要么用共享计数，要么明确知道自己在用本地计数，不要中间态。
+  </div>
+  <p>备选模型也照扣：主模型失败后切备选是<b>又一次</b>真实的厂商调用，不扣等于失败重试不要钱。</p>
+
+  <h3 id="s3-2"><span class="n">3.2</span>原子性：Lua 预扣</h3>
+  <div class="note good">
+    <span class="lbl">不要「先读后写」</span>
+    <code>GET</code> 判断再 <code>INCR</code> 是典型竞态：多副本并发时会同时读到
+    199 然后各自加一，双双放行。判断与自增必须是一步。
+  </div>
+  <p>初稿打算用「无条件 <code>INCR</code>，拿返回值判断，超限不回滚」。
+     它确实没有竞态，但有个副作用：<b>被拒的请求也让计数继续涨</b> ——
+     一个脚本在额度用尽后持续打，计数会一路涨到几万，
+     「今日剩余」和运维看到的用量就都不再是真实调用次数。
+     实现改成用一小段 Lua 把「读-判-增」合成一步，<b>超限时不增</b>：</p>
+  <pre><code><span class="k">local</span> used = tonumber(redis.call(<span class="s">'GET'</span>, KEYS[1]) <span class="k">or</span> <span class="s">'0'</span>)
+<span class="k">if</span> limit &gt; 0 <span class="k">and</span> used &gt;= limit <span class="k">then return</span> -1 <span class="k">end</span>   <span class="c">-- 拒绝，且不计数</span>
+<span class="k">local</span> n = redis.call(<span class="s">'INCR'</span>, KEYS[1])
+<span class="k">if</span> n == 1 <span class="k">then</span> redis.call(<span class="s">'EXPIRE'</span>, KEYS[1], ttl) <span class="k">end</span>
+<span class="k">return</span> n</code></pre>
+  <p>Lua 在 Redis 里单线程执行，整段不可分割，所以既没有竞态，
+     计数也永远不会超过上限。<b>实测</b>：上限 3 连扣 5 次得
+     <code>1, 2, 3, -1, -1</code>，且 TTL 只在首次 <code>INCR</code> 时设置。</p>
+  <p>TTL 取 <b>48 小时</b>而不是「到今日 24:00」：跨天由键名里的日期决定，
+     TTL 只负责回收旧键 —— 给足冗余比算得精确重要。</p>
+
+  <h3 id="s3-3"><span class="n">3.3</span>Redis 不可用时怎么办</h3>
+  <p>这是本设计最关键的一个取舍：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>策略</th><th>后果</th><th class="c">采用</th></tr></thead>
+    <tbody>
+      <tr><td><b>fail-open</b>（放行）</td><td>计数失效，模型调用不再受限 —— 对外实例可能被刷爆，<b>而这正是配额存在的唯一目的</b></td><td class="c"><span class="tag hard">否</span></td></tr>
+      <tr><td><b>fail-closed</b>（拒绝）</td><td>自然语言问答不可用；<b>直查 SQL 不受影响</b>，护栏、改写、干跑、执行全部照常</td><td class="c"><span class="tag done">是</span></td></tr>
+    </tbody>
+  </table></div>
+  <p>与既有原则一致：<code>tenant.on_unresolved: reject</code>、
+     配置校验 fail-closed、§4.5「不做静默降级」——
+     <b>本项目一贯的选择是「宁可不可用，不可不设防」</b>。</p>
+  <div class="note">
+    <span class="lbl">降级后的用户提示必须说清楚</span>
+    不能只显示「服务不可用」。应明确：<b>「用量计数服务暂时不可用，
+    自然语言问答已暂停；直查 SQL 仍可使用」</b> ——
+    让人知道发生了什么、还能做什么，而不是以为整个站挂了。
+  </div>
+  <p>实现上做成配置项 <code>quota.on_backend_error</code>（<code>block</code>／<code>allow</code>），
+     <b>默认 <code>block</code>，配错值也回落到 <code>block</code></b> ——
+     「配错就悄悄变成放行」是这里最危险的默认。</p>
+  <div class="note good">
+    <span class="lbl">读与写的取舍不同，别用同一套</span>
+    只读探测（页面展示「今日剩余」、入口快速失败）后端异常时返回 0，不打挂请求；
+    <b>真正的把关只在预扣那一步</b>，它不会因为读失败就放行。
+    读的失败方向可以宽松，写的不行。
+  </div>
+</section>
+
+<section id="s4">
+  <h2><span class="n">4</span>基础设施现状（已实测）</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>项</th><th>实测结果</th><th>结论</th></tr></thead>
+    <tbody>
+      <tr><td>集群内是否有 Redis</td><td>无</td><td>需复用外部实例</td></tr>
+      <tr><td>数据机 8.163.30.216</td><td>有 <code>ragforge-redis</code> 容器</td><td>可复用</td></tr>
+      <tr><td>Server 3 → <code>172.25.90.183:6379</code></td><td><b>内网可达</b></td><td>走内网，不经公网</td></tr>
+      <tr><td>Server 3 → <code>8.163.30.216:6379</code></td><td>不可达</td><td>正常，内网即可</td></tr>
+      <tr><td>公网 → <code>8.163.30.216:6379</code></td><td><b>不可达</b>（安全组已挡）</td><td>✓</td></tr>
+      <tr><td>Redis 鉴权</td><td><b>已设 <code>requirepass</code></b>（2026-08-14）</td><td>✓ 见下</td></tr>
+      <tr><td>淘汰策略</td><td><code>allkeys-lru</code>，<code>maxmemory 384mb</code></td><td>见 §7 风险</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note good">
+    <span class="lbl">口令已补上（本设计的连带产物）</span>
+    改造前该 Redis <code>requirepass</code> 为空、<code>default</code> 用户
+    <code>nopass ~* +@all</code>，安全边界<b>完全落在云安全组一条规则上</b>。
+    里面存的是登录限流、短信发送限流、API Key 限流、ShedLock 与认证撤销名单 ——
+    内网任一台机器都能读改。<br>
+    已于 2026-08-14 设置 <code>requirepass</code>：口令写在数据机
+    <code>/opt/rag-forge/.env</code>（0600）与三个服务的 k8s Secret 里，<b>不入 git</b>；
+    compose 用 <code>${REDIS_PASSWORD:?}</code> 语法，<code>.env</code> 缺失时容器直接起不来，
+    避免静默退回免密。
+    <br><br>
+    <b>顺带纠正一条当时给出的错误建议：</b>「先把各服务配置改好、验证能连，再设密码」
+    行不通 —— 实测对<b>免密</b> Redis 执行 <code>AUTH</code> 会直接报错，
+    所以只能先设密码、后重启服务，中间必然有一段不可用。
+  </div>
+  <div class="note crit">
+    <span class="lbl">另一个前提：这是共享实例</span>
+    <code>ragforge-redis</code> 是 RAGForge 在用的。askdb 写入必须<b>严格限定在
+    <code>askdb:</code> 前缀下</b>，且不得使用 <code>FLUSHDB</code>／<code>KEYS</code>
+    等影响全局或阻塞的命令。若担心互相影响，可改用独立 <code>db</code> 编号隔离。
+  </div>
+</section>
+
+<section id="s5">
+  <h2><span class="n">5</span>多副本还差什么 —— 配额只是其中一条</h2>
+  <div class="note warn">
+    <span class="lbl">初稿这一节判断错了，据实更正</span>
+    V1.0 写「检查点／审计日志<b>每个 Pod 一份本地文件</b>」—— 这是错的。
+    卷是 <code>hostPath: /opt/askdb/var</code>，单节点 k3s 下<b>所有 Pod 挂的是宿主机上
+    同一个目录、同一份文件</b>。<br>
+    所以真正的问题不是「各存各的、续跑时灵时不灵」（那反而不会发生），
+    而是<b>多个进程并发读写同一份文件</b>：SQLite 争锁、JSONL 撕行。
+    这两个是有确定解法的，不需要等检查点换 PG 后端。
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>组件</th><th>现状</th><th class="c">多副本后</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td><b>每日配额</b></td><td>数当天审计日志行数，本地文件</td><td class="c"><span class="tag hard">失效</span></td><td>改 Redis 共享计数。<b>本设计</b></td></tr>
+      <tr><td><b>检查点</b><br>（SqliteSaver + hostPath）</td><td>各 Pod 共享同一个 SQLite 文件；默认 <code>DELETE</code> 日志模式下<b>写阻塞读</b>，抢不到锁立刻报 <code>database is locked</code></td><td class="c"><span class="tag hard">会争锁</span></td><td>开 <code>journal_mode=WAL</code>（多读+单写并行）+ <code>busy_timeout=5000</code>（抢不到锁等 5 秒而不是当场失败）。<b>前提是本地盘</b> —— 网络盘上 WAL 不可用</td></tr>
+      <tr><td><b>审计日志</b></td><td>各 Pod 追加同一个 JSONL；带缓冲的写可能把一条记录拆成多次系统调用，两个进程的片段交错落盘</td><td class="c"><span class="tag hard">会撕行</span></td><td>绕开 Python 缓冲层，<code>O_APPEND</code> 下用单次 <code>os.write()</code> 把整行交给内核（该场景下定位与写入是原子的）</td></tr>
+      <tr><td>样例库</td><td>随镜像固化，只读</td><td class="c"><span class="tag done">无影响</span></td><td>各副本一份完全相同的只读副本</td></tr>
+    </tbody>
+  </table></div>
+  <p><b>结论：三条都已落地，<code>replicas</code> 于 2026-08-14 放到 2。</b></p>
+  <div class="note crit">
+    <span class="lbl">但这三条都依赖「单节点、同一个 hostPath」</span>
+    WAL 要求同机本地盘，<code>O_APPEND</code> 原子性要求同一个 inode。
+    <b>一旦跨节点，三条全部失效</b> —— 那时检查点得换 Postgres 后端、
+    审计得换集中式收集，不能只把 <code>replicas</code> 调大。
+    编排文件里已把这个前提写在注释里。
+  </div>
+</section>
+
+<section id="s6">
+  <h2><span class="n">6</span>分阶段计划</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">阶段</th><th>交付</th><th>验收</th><th class="c">目标日期</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><b>Q1</b></td><td>Redis 计数器 + 模型调用端拦截；后端按 <code>quota.redis_url_env</code> 是否配置来选</td>
+          <td>Lua 上限 3 连扣 5 次得 <code>1,2,3,-1,-1</code>；未配 Redis 时退回文件计数，行为与单副本一致</td><td class="c"><span class="tag done">2026-08-14 已上线</span></td></tr>
+      <tr><td class="c"><b>Q2</b></td><td>Redis 不可用时 fail-closed，取舍做成 <code>on_backend_error</code></td>
+          <td>后端异常时预扣抛错、只读探测返回 0；配错值回落到 <code>block</code></td><td class="c"><span class="tag done">2026-08-14 已上线</span></td></tr>
+      <tr><td class="c"><b>Q3</b></td><td>配额数值按新口径折算；<code>/api/health</code> 暴露用量与后端类型</td>
+          <td>对外实例 200→500；其余配置按旧口径乘 3；<code>multi_replica_safe</code> 可一眼判断</td><td class="c"><span class="tag done">2026-08-14 已上线</span></td></tr>
+      <tr><td class="c"><b>Q4</b></td><td>检查点开 WAL + <code>busy_timeout</code>；审计改单次 <code>O_APPEND</code> 写；<code>replicas</code> 放到 2</td>
+          <td>3 进程各写 200 条长记录，600 行逐行 <code>json.loads</code> 全部可解析；两副本共享同一份配额计数</td><td class="c"><span class="tag done">2026-08-14 已上线</span></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s7">
+  <h2><span class="n">7</span>风险与未决</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">等级</th><th>事项</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><span class="tag p0">高</span></td><td><b>新增一个硬依赖。</b>fail-closed 意味着 Redis 挂了自然语言问答就不可用</td><td>这是刻意选择（§3.3）。直查链路不受影响，降级面可控</td></tr>
+      <tr><td class="c"><span class="tag p1">中</span></td><td><b>共享 Redis 的淘汰策略是 <code>allkeys-lru</code></b>（<code>maxmemory 384mb</code>）。内存打满时配额键会被淘汰，计数<b>静默</b>归零</td><td><b>未处理。</b>当前全库仅十余个键，实际风险为零。要根除得把策略改成 <code>volatile-lru</code>，但那会影响另外三个服务，不宜为 askdb 单方面改动</td></tr>
+      <tr><td class="c"><span class="tag p1">中</span></td><td><b>多副本依赖「单节点 + 同一个 hostPath」</b>（§5）</td><td>跨节点时 WAL 与 <code>O_APPEND</code> 原子性同时失效。编排注释已写明，扩到多节点前必须先换检查点后端</td></tr>
+      <tr><td class="c"><span class="tag p2">低</span></td><td><b>共享 Redis 无密码</b></td><td><span class="tag done">已解决</span> 2026-08-14 设 <code>requirepass</code>，见 §4</td></tr>
+      <tr><td class="c"><span class="tag p2">低</span></td><td>跨时区：日期键按服务器本地时区切</td><td>各副本同时区，口径一致；与改造前行为相同，不引入新问题</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="n">7.1</span>评审结论（已确认）</h3>
+  <ol>
+    <li><b>配额新数值：500。</b>按 deepseek-v4-flash 单次约 ¥0.0009 计，
+        满额约 ¥0.45/天 ≈ ¥13.5/月。其余配置按旧口径乘 3 折算，保持实际可用量不变。</li>
+    <li><b>给共享 Redis 加密码：做。</b>已于 2026-08-14 完成，见 §4。</li>
+    <li><b><code>replicas</code> 放到 2。</b>三处单副本假设（配额／检查点／审计）已一并解决，
+        节点实测内存已用 75%、单 Pod 实测 131 Mi，加一个副本余量充足。</li>
+  </ol>
+</section>
+
+</main>
+</div>
+
+<div class="foot">
+  每日配额多副本化设计说明 V1.1 · 拟制日期 2026-08-14 · 状态：已实施 ·
+  前置提醒：真正扩容前须先解决检查点共享化（§5）
+</div>
+
+<script>
+document.getElementById('themeBtn').onclick = () => {
+  const r = document.documentElement;
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = (r.dataset.theme || (dark?'dark':'light')) === 'dark' ? 'light' : 'dark';
+};
+const links = [...document.querySelectorAll('#toc a')];
+const targets = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+const io = new IntersectionObserver(es => es.forEach(e => {
+  if(e.isIntersecting) links.forEach(a =>
+    a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id));
+}), {rootMargin:'-10% 0px -80% 0px'});
+targets.forEach(t => io.observe(t));
+</script>
+
+</body>
+</html>
