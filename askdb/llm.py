@@ -12,6 +12,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from .config import Config
+from .quota import QuotaExceeded, build_quota
+
+__all__ = ["LlmClient", "LlmNotConfigured", "LlmUsage", "SqlDraft", "QuotaExceeded"]
 
 
 class LlmNotConfigured(RuntimeError):
@@ -88,6 +91,17 @@ class LlmClient:
         self.is_fallback = is_fallback
         self._model = None
         self._fallback: LlmClient | None = None
+        # 配额扣在这里，而不是请求入口：一次提问会触发多次模型调用
+        # （多步规划每步生成 + 每步评估 + 反思重试），按请求计数会大幅低估花费。
+        self.quota = build_quota(cfg)
+
+    def _reserve(self) -> None:
+        """发起调用前先占一个名额。超限直接抛，一个 token 都不花。
+
+        备选模型也照扣 —— 主模型失败后切备选是**又一次**真实的厂商调用，
+        不扣就等于失败重试不要钱。
+        """
+        self.quota.reserve()
 
     # ---- 备选模型 ----
 
@@ -150,6 +164,7 @@ class LlmClient:
 
     def structured(self, schema, system: str, human: str) -> tuple[Any, LlmUsage]:
         """通用的结构化调用 —— 规划与评估节点共用，不重复一套调用逻辑。"""
+        self._reserve()
         model = self._build().with_structured_output(
             schema, method="function_calling", include_raw=True
         )
@@ -184,6 +199,7 @@ class LlmClient:
         #   默认可能落到 JSON mode（response_format=json_object），而百炼要求
         #   该模式下消息里必须出现 "json" 字样，否则直接 400。
         #   Tool Calls 在 DashScope 与 DeepSeek 两边都支持，且比 JSON mode 更稳。
+        self._reserve()
         model = self._build().with_structured_output(
             SqlDraft, method="function_calling", include_raw=True
         )

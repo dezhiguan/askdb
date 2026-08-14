@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 from askdb import graph
 from askdb.llm import LlmUsage, SqlDraft
-from askdb.trace import today_calls
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 OK_SQL = "SELECT file_name AS 文件名 FROM documents WHERE status = 'PROCESSING'"
@@ -39,16 +38,30 @@ def test_m03_cost_attributed_per_step(cfg, ex):
 
 
 def test_m04_daily_quota_blocks(cfg, ex):
+    from askdb.quota import build_quota
+
     cfg.raw["observability"]["daily_quota"] = 1
-    graph.ask("q1", cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    build_quota(cfg).reserve()
     r = graph.ask("q2", cfg, executor=ex, llm=FakeLlm(OK_SQL))
-    assert not r.ok and ("配额" in (r.error or "") or r.rejected_by == "QUOTA")
+    assert not r.ok and ("上限" in (r.error or "") or r.rejected_by == "QUOTA")
 
 
 def test_m05_quota_counts_today_only(cfg, tmp_path):
-    p = tmp_path / "a.jsonl"
-    p.write_text('{"ts": "2020-01-01T00:00:00+08:00"}\n', encoding="utf-8")
-    assert today_calls(p) == 0, "跨日应归零"
+    """计数按日归零。改日期即换键，昨天用满不影响今天。"""
+    import json
+
+    from askdb import quota
+    from askdb.quota import build_quota
+
+    cfg.raw["observability"]["daily_quota"] = 5
+    dq = build_quota(cfg)
+    dq.reserve()
+    assert dq.peek() == 1
+    # 把计数文件改成昨天的记录 —— 等价于跨了一天
+    dq.backend.path.write_text(json.dumps({"date": "2020-01-01", "used": 5}),
+                               encoding="utf-8")
+    assert dq.peek() == 0, "跨日应归零"
+    assert quota.build_quota(cfg).reserve() == 1
 
 
 def test_m06_audit_and_checkpoints_not_tracked():

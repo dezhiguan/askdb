@@ -229,13 +229,14 @@ def test_replay_unknown_trace_is_empty(cfg):
 
 def test_daily_quota_blocks_before_any_model_call(cfg, ex):
     """超限的请求一个 token 都不该花 —— 必须拦在模型调用之前。"""
+    from askdb.quota import build_quota
+
     cfg.raw["observability"]["daily_quota"] = 1
-    fake = FakeLlm(OK_SQL, OK_SQL)
-    graph.ask("第一次", cfg, executor=ex, llm=fake)
+    build_quota(cfg).reserve()                  # 当日额度已被前一次模型调用占满
+    fake = FakeLlm(OK_SQL)
     r = graph.ask("第二次", cfg, executor=ex, llm=fake)
     assert not r.ok and r.rejected_by == "QUOTA"
-    gen = [c for c in fake.calls if "error" in c]
-    assert len(gen) == 1                        # 第二次一次模型都没调
+    assert not fake.calls                       # 一次模型都没调
     assert "daily_quota" in r.hint
 
 

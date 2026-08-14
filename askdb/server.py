@@ -18,6 +18,21 @@ from . import guard
 from .config import Config, load
 from .executor import DataSourceError, Executor
 from .graph import ask as run_ask, jsonable
+from .quota import build_quota
+
+
+def _quota_view(cfg: Config) -> dict[str, Any]:
+    """配额现状。计数后端是 file 还是 redis 必须暴露出来 —— 多副本部署下
+    file 后端等于每个副本各算各的，上限被悄悄乘以副本数。"""
+    dq = build_quota(cfg)
+    used = dq.peek()
+    return {
+        "limit": dq.limit,
+        "used": used,
+        "remaining": max(dq.limit - used, 0) if dq.enabled else None,
+        "backend": dq.kind,
+        "multi_replica_safe": dq.kind in ("redis", "none"),
+    }
 
 WEB = Path(__file__).resolve().parent / "web"
 
@@ -187,6 +202,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 # 对外实例的成本护栏，冒烟测试据此断言
                 "daily_quota": cfg.daily_quota,
             },
+            # 配额用量与计数后端。后端是 file 还是 redis 直接决定了多副本下
+            # 上限还成不成立，属于运维要一眼看到的信息，不能只写在配置里。
+            "quota": _quota_view(cfg),
         }
 
     @app.get("/api/schema")

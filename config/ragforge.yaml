@@ -77,7 +77,10 @@ llm:
 observability:
   audit_log: ./data/audit-ragforge.jsonl
   checkpoint_db: ./data/checkpoints-ragforge.sqlite
-  daily_quota: 200
+  # 口径是**模型调用次数**，不是提问数：一次提问会调好几次模型
+  # （多步规划每步一次生成 + 一次评估，反思重试再各来一次）。
+  # 数字按旧口径乘 3 折算，保持实际可用量不变。
+  daily_quota: 600
 
 tables_file: ./config/ragforge-tables.yaml
 metrics_file: ./config/ragforge-metrics.yaml

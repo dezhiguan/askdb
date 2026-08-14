@@ -17,10 +17,20 @@ askdb **不设账号体系** —— 设计文档 §1.1 写明"数据库连接本
 1. **连的是合成样例库，不是任何真实数据源。**
    `data/sample.duckdb` 由 `data/seed.py` 用固定随机种子在**构建期**生成，
    10.4 万行，没有一条真实数据。镜像里不含任何生产连接串。
-2. **不接模型。**
-   `config/public.yaml` 显式声明 `llm.disabled: true`，`api_key_env` 指向一个
-   永不设置的变量名 —— 即使部署机上恰好有 `DASHSCOPE_API_KEY`，也不会误开。
-   理由：开放实例无法区分调用方，接了模型等于任何人都能花部署方的钱。
+2. **接了模型，但用四层限制兜住成本。**
+   开放实例无法区分调用方 —— 接了模型就等于任何人都能花部署方的钱。
+   任何单独一层都不够，四层叠起来才成立：
+
+   | 层 | 做法 | 挡什么 |
+   |---|---|---|
+   | 便宜的模型 | `deepseek-v4-flash`，约 ¥0.0009 / 次 | 单价 |
+   | 每日配额 | `daily_quota: 500`，**按模型调用次数计** | 总量 |
+   | 共享计数 | 计数存 Redis（`ASKDB_REDIS_URL`） | 多副本各算各的 |
+   | 入口限流 | nginx 对 `/api/ask` 限 6r/min per IP | 短时间刷光当天额度 |
+
+   配额扣在 `LlmClient` 里，一次调用扣一次 —— **不是一次提问扣一次**。
+   一次提问会调好几次模型（多步规划每步一次生成 + 一次评估，反思重试再各来
+   一次），按提问计会低估花费好几倍。超限时拦在调用之前，一个 token 都不花。
 
 **直查 SQL 这条链路（护栏 → 强制改写 → 干跑 → 只读执行）本来就不调模型**，
 一个 token 都不花，而它恰好是这个项目最要紧的部分。
@@ -62,7 +72,24 @@ nginx 跑在 `ragforge-nginx` 容器里（`docker-compose-ingress.yml`），
 | `CAREERMATE_INGRESS_HOST` | 跳板机，默认 `8.163.63.222`（已有） |
 | `ACR_REGISTRY` / `ACR_USERNAME` / `ACR_PASSWORD` | 镜像仓库（已有） |
 
-**askdb 不需要任何新 secret** —— 它不连数据库、不接模型。
+**askdb 不需要任何新的 GitHub secret** —— 它不连数据库，登机与推镜像都复用上表。
+
+模型密钥与 Redis 地址走 **k8s Secret**，由运维一次性创建，不经过 GitHub：
+
+```bash
+# 模型密钥（必需，缺了 Pod 起不来）
+kubectl -n askdb create secret generic askdb-llm \
+  --from-literal=DEEPSEEK_API_KEY=... \
+  --from-literal=DASHSCOPE_API_KEY=...
+
+# 配额共享计数（可选；不建则退回本地文件计数，单副本下依然正确）
+kubectl -n askdb create secret generic askdb-redis \
+  --from-literal=ASKDB_REDIS_URL='redis://:口令@172.25.90.183:6379/2'
+```
+
+建完用 `curl -s https://askdb.ragforge.net/api/health | jq .quota` 确认
+`backend` 是 `redis`、`multi_replica_safe` 是 `true`。若显示 `file`，说明
+Secret 没生效 —— 此时**不要**把 replicas 调大于 1，配额会变成 N 倍。
 
 ---
 

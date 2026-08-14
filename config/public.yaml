@@ -107,11 +107,22 @@ observability:
   # 往它上面挂卷会把样例库遮掉。var 单独挂卷，用于持久化审计日志。
   audit_log: ./var/audit-public.jsonl
   checkpoint_db: ./var/checkpoints-public.sqlite
-  # 每日调用上限。在任何模型调用之前拦，超限一个 token 都不花。
-  # 按 ¥0.0009/次算，200 次 ≈ ¥0.18/天。
-  # ⚠️ 计数靠数当天审计日志的条数，所以日志**必须持久化**（见 k8s 的 PVC），
-  # 否则 Pod 一重启计数归零，这条限制就形同虚设。
-  daily_quota: 200
+  # 每日**模型调用**上限（不是提问数）。一次提问会调好几次模型：
+  # 多步规划每步一次生成 + 一次评估，反思重试再各来一次。按提问计会低估几倍。
+  # 按 ¥0.0009/次算，500 次 ≈ ¥0.45/天 ≈ ¥13.5/月。
+  daily_quota: 500
+
+  quota:
+    # 配了这个环境变量就用 Redis 计数，没配就退回本地文件。
+    # **多副本部署必须配**：本地文件是每个副本各数各的，
+    # 起 3 个副本实际上限就是 3 倍，配额直接失效。
+    redis_url_env: ASKDB_REDIS_URL
+    # 计数键前缀。带上实例名，避免公开实例与其他实例互相扣额度。
+    key_prefix: askdb:quota:public
+    # Redis 不可用时的取舍。block＝拒绝模型调用（默认）：
+    # 配额是拿来兜成本的，后端一挂就无限放行等于最需要它时它不在。
+    # 直查 SQL 链路不调模型、不过配额，Redis 挂了它照常可用。
+    on_backend_error: block
 
 tables_file: ./config/tables.yaml
 metrics_file: ./config/metrics.yaml

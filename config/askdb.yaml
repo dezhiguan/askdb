@@ -86,7 +86,7 @@ llm:
 observability:
   audit_log: ./data/audit.jsonl
   checkpoint_db: ./data/checkpoints.sqlite   # 失败样本原样复现，供 P3 评测归因
-  # 每日调用上限，防循环调用导致成本失控。
+  # 每日**模型调用**上限（不是提问数），防循环调用导致成本失控。
   # 内置样例库这份配置同时用于跑评测：一轮六组消融就是 240 次调用，
   # 再加盲测集，500 会在中途触顶把剩余题目判为 QUOTA 失败、污染成绩。
   # 生产配置（ragforge*.yaml）仍按 100～200 从严。

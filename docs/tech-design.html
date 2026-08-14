@@ -919,7 +919,11 @@ llm:
 observability:
   audit_log: ./data/audit.jsonl
   checkpoint_db: ./data/checkpoints.sqlite
-  daily_quota: 500
+  daily_quota: 500                 <span class="c"># 口径＝模型调用次数，非提问数</span>
+  quota:
+    redis_url_env: ASKDB_REDIS_URL <span class="c"># 配了就走 Redis 共享计数（多副本必需）</span>
+    key_prefix: askdb:quota:public
+    on_backend_error: block        <span class="c"># 计数后端不可用时拒绝调模型，不无限放行</span>
 
 tables_file: ./config/tables.yaml
 metrics_file: ./config/metrics.yaml</code></pre>
