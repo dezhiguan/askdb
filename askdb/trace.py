@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -72,10 +73,21 @@ def now_iso() -> str:
 
 
 def write_audit(path: Path, record: dict[str, Any]) -> None:
-    """审计记录追加落盘。写失败不能影响主链路 —— 查询已经完成了。"""
+    """审计记录追加落盘。写失败不能影响主链路 —— 查询已经完成了。
+
+    多副本共享同一个审计文件时，"一条记录一次 write" 是撕不撕行的关键：
+    带缓冲的写可能把一条记录拆成多次系统调用，两个进程的片段交错落盘，
+    整行 JSON 就废了 —— 而审计恰恰是出事后唯一的凭据，不能有半行。
+    O_APPEND 下单次 write 的定位与写入是原子的，所以这里绕开 Python 的
+    缓冲层，把整行一次性交给内核。
+    """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+        line = (json.dumps(record, ensure_ascii=False, default=str) + "\n").encode("utf-8")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line)
+        finally:
+            os.close(fd)
     except OSError:
         pass

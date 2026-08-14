@@ -565,6 +565,19 @@ def build_graph(checkpoint_db: Path | None = None):
         return g.compile()
     checkpoint_db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(checkpoint_db), check_same_thread=False)
+    # 多副本共享同一个检查点库时，这两条是能不能跑的分界线：
+    #
+    #   WAL          默认的 DELETE 模式下写会阻塞读，两个 Pod 同时跑必然互相踩。
+    #                WAL 允许"多读 + 单写"并行，读方完全不受写方影响。
+    #                前提是同一台机器的本地盘（这里是 hostPath），网络盘上 WAL 不可用。
+    #   busy_timeout 抢不到锁时默认**立刻**报 database is locked。给 5 秒等待窗口，
+    #                把"直接失败"变成"稍等一下"—— 检查点写入是毫秒级的，
+    #                5 秒足够排队，真等满了那是别的地方出了问题。
+    #
+    # 单副本下这两条也没有坏处，所以不做条件判断，一律打开。
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA synchronous=NORMAL")   # WAL 下的推荐档位，掉电最多丢最后几次写
     saver = SqliteSaver(conn)
     saver.setup()
     compiled = g.compile(checkpointer=saver)

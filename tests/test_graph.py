@@ -479,3 +479,23 @@ def test_field_error_is_still_retried(cfg, ex):
     fake = FakeLlm("SELECT no_such_col AS x FROM documents", OK_SQL)
     r = graph.ask("q", cfg, executor=ex, llm=fake)
     assert r.ok and r.attempts == 2
+
+
+def test_checkpoint_db_opens_in_wal_mode(cfg):
+    """多副本共享同一个检查点库的前提。默认 DELETE 模式下写会阻塞读，
+    两个 Pod 同时跑必然互相踩。"""
+    import sqlite3
+
+    g = graph.build_graph(cfg.checkpoint_db)
+    conn = g._askdb_conn
+    assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert conn.execute("PRAGMA busy_timeout").fetchone()[0] >= 5000
+
+    # 另开一个连接模拟第二个 Pod：WAL 下读方不该被写方挡住
+    other = sqlite3.connect(str(cfg.checkpoint_db))
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        other.execute("SELECT count(*) FROM checkpoints").fetchone()
+    finally:
+        conn.execute("ROLLBACK")
+        other.close()
