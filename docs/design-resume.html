@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdb 任务中断恢复 · 设计说明与界面原型 V1.1</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+  --accent:#2a78d6;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --good-ink:#0a7a0a; --crit-ink:#c22f2f; --warn-ink:#8a6300;
+  --wash:rgba(42,120,214,0.08);
+  --code-bg:#f4f4f1;
+  --inj:rgba(42,120,214,0.16);
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --accent:#3987e5;
+    --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+    --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19;
+  --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+  --accent:#3987e5;
+  --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+  --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+html,body{max-width:100%;overflow-x:hidden}
+body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--plane);color:var(--ink);font-size:14.5px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.mono,code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* header */
+.doc-head{border-bottom:1px solid var(--border);background:var(--surface)}
+.doc-head-in{max-width:1180px;margin:0 auto;padding:26px 24px 20px}
+.doc-title{font-size:26px;font-weight:650;letter-spacing:-.02em;line-height:1.3}
+.doc-sub{font-size:14px;color:var(--muted);margin-top:4px}
+.meta{display:flex;gap:10px 26px;flex-wrap:wrap;margin-top:16px;font-size:12.5px}
+.meta div{display:flex;gap:7px}
+.meta dt{color:var(--muted)}
+.meta dd{font-weight:600}
+.status{font-size:11.5px;padding:2px 9px;border-radius:999px;background:var(--wash);color:var(--accent);font-weight:600}
+.themebtn{position:absolute;right:24px;top:24px;font:inherit;font-size:12.5px;padding:5px 10px;border-radius:7px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink-2);cursor:pointer}
+
+/* layout */
+.shell{max-width:1180px;margin:0 auto;padding:0 24px 100px;display:grid;grid-template-columns:214px minmax(0,1fr);gap:40px}
+@media (max-width:940px){.shell{grid-template-columns:minmax(0,1fr);gap:0}.toc{display:none}}
+.toc{position:sticky;top:0;align-self:start;padding-top:28px;max-height:100vh;overflow-y:auto}
+.toc h4{font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:9px}
+.toc a{display:block;font-size:12.5px;color:var(--ink-2);text-decoration:none;padding:3.5px 0 3.5px 10px;
+  border-left:2px solid transparent;line-height:1.45}
+.toc a:hover{color:var(--accent)}
+.toc a.on{color:var(--accent);border-left-color:var(--accent);font-weight:600}
+.toc a.sub{padding-left:22px;font-size:12px;color:var(--muted)}
+.toc a.sub:hover,.toc a.sub.on{color:var(--accent)}
+
+main{padding-top:28px;min-width:0}
+section{margin-bottom:44px;scroll-margin-top:20px}
+h2{font-size:20px;font-weight:650;letter-spacing:-.01em;margin-bottom:6px;padding-bottom:9px;border-bottom:1px solid var(--border)}
+h2 .n{color:var(--muted);font-weight:500;margin-right:9px}
+h3{font-size:15.5px;font-weight:650;margin:26px 0 8px}
+h3 .n{color:var(--muted);font-weight:500;margin-right:7px}
+h4{font-size:13.5px;font-weight:650;margin:18px 0 6px;color:var(--ink-2)}
+p{margin:9px 0}
+ul,ol{margin:9px 0 9px 22px}
+li{margin:4px 0}
+b,strong{font-weight:650}
+code{background:var(--code-bg);border:1px solid var(--border);padding:1px 5px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:14px 16px;
+  overflow-x:auto;font-size:12.5px;line-height:1.72;margin:12px 0}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+pre .k{color:var(--accent);font-weight:600}
+pre .s{color:var(--good-ink)}
+pre .c{color:var(--muted)}
+pre .inj{background:var(--inj);border-radius:3px;padding:1px 3px;font-weight:600}
+
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:9px;margin:12px 0}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--grid);vertical-align:top}
+th{font-weight:650;color:var(--ink-2);background:var(--plane);font-size:12px;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.c,th.c{text-align:center;white-space:nowrap}
+td .mono{font-size:12.5px}
+
+.note{border-left:3px solid var(--accent);background:var(--surface);padding:11px 15px;border-radius:0 9px 9px 0;
+  font-size:13.5px;color:var(--ink-2);margin:14px 0}
+.note.warn{border-left-color:var(--serious)}
+.note.crit{border-left-color:var(--critical)}
+.note.good{border-left-color:var(--good)}
+.note b{color:var(--ink)}
+.note .lbl{display:block;font-size:11.5px;font-weight:700;letter-spacing:.04em;margin-bottom:3px}
+.note .lbl{color:var(--accent)}
+.note.warn .lbl{color:var(--warn-ink)}
+.note.crit .lbl{color:var(--crit-ink)}
+.note.good .lbl{color:var(--good-ink)}
+
+.pipe{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin:14px 0;
+  font-size:12.5px;line-height:1.95;overflow-x:auto;white-space:pre}
+.pipe .b{color:var(--accent);font-weight:700}
+.pipe .g{color:var(--muted)}
+.pipe .r{color:var(--crit-ink);font-weight:600}
+
+.tag{font-size:11px;padding:1.5px 7px;border-radius:5px;font-weight:650;white-space:nowrap}
+.tag.p0{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.tag.p1{background:rgba(236,131,90,.16);color:var(--warn-ink)}
+.tag.p2{background:var(--wash);color:var(--accent)}
+.tag.done{background:rgba(12,163,12,.14);color:var(--good-ink)}
+.tag.hard{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.tag.soft{background:var(--wash);color:var(--accent)}
+
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:760px){.two{grid-template-columns:1fr}}
+.box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.box h4{margin-top:0}
+hr{border:0;border-top:1px solid var(--border);margin:32px 0}
+.foot{max-width:1180px;margin:0 auto;padding:0 24px 60px;font-size:12.5px;color:var(--muted)}
+</style>
+
+<style>
+/* 原型区 —— 与正文区分开：这是可点的界面，不是插图 */
+.proto{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:0;overflow:hidden;margin:16px 0}
+.proto-bar{display:flex;gap:8px;align-items:center;padding:10px 14px;
+  border-bottom:1px solid var(--border);background:var(--plane);flex-wrap:wrap}
+.proto-bar b{font-size:12.5px;color:var(--ink-2);margin-right:4px}
+.sbtn{font:inherit;font-size:12px;padding:4px 11px;border-radius:7px;cursor:pointer;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink-2)}
+.sbtn.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.screen{padding:16px 18px;min-height:300px}
+.appbar{display:flex;align-items:center;gap:10px;padding-bottom:12px;
+  border-bottom:1px solid var(--border);margin-bottom:14px}
+.applogo{font-weight:700;letter-spacing:-.02em}
+.applogo span{font-weight:400;color:var(--muted);font-size:12.5px;margin-left:7px}
+.pill2{font-size:11.5px;padding:2px 9px;border-radius:999px;background:var(--wash);
+  color:var(--accent);font-weight:600}
+.rbanner{border-left:3px solid var(--warning);background:var(--plane);
+  border:1px solid var(--border);border-left-width:3px;border-radius:0 9px 9px 0;
+  padding:12px 15px;margin-bottom:14px}
+.rbanner .t{font-weight:650;font-size:13.5px;margin-bottom:5px}
+.rbanner .d{font-size:12.5px;color:var(--ink-2);line-height:1.7}
+.rbtn{font:inherit;font-size:12.5px;font-weight:600;padding:6px 15px;border-radius:8px;
+  border:0;background:var(--accent);color:#fff;cursor:pointer;margin-top:9px}
+.rbtn.ghost{background:transparent;color:var(--ink-2);border:1px solid var(--border);
+  font-weight:400;margin-left:7px}
+ul.steps{list-style:none;margin:0;padding:0}
+ul.steps li{display:flex;gap:11px;align-items:flex-start;padding:7px 0;
+  border-bottom:1px solid var(--grid);font-size:12.5px}
+ul.steps li:last-child{border-bottom:0}
+.dot2{width:19px;height:19px;border-radius:50%;display:grid;place-items:center;
+  font-size:11px;font-weight:700;flex:0 0 19px;margin-top:1px}
+.d-ok{background:rgba(12,163,12,.14);color:var(--good-ink)}
+.d-run{background:var(--wash);color:var(--accent)}
+.d-skip{background:var(--grid);color:var(--muted)}
+.d-cut{background:rgba(250,178,25,.18);color:var(--warn-ink)}
+.d-wait{background:transparent;color:var(--muted);border:1px dashed var(--axis)}
+.sname{font-weight:600}
+.snote{color:var(--muted);font-size:12px;margin-top:1px}
+.sright{margin-left:auto;color:var(--muted);font-size:11.5px;text-align:right;
+  white-space:nowrap;font-variant-numeric:tabular-nums}
+.skipped .sname,.skipped .snote{color:var(--muted);font-weight:400}
+.mrow{display:flex;gap:22px;flex-wrap:wrap;margin-top:14px;padding-top:12px;
+  border-top:1px solid var(--border);font-size:12px}
+.mrow div span{color:var(--muted);margin-right:6px}
+.mrow div b{font-variant-numeric:tabular-nums}
+.cut{display:flex;align-items:center;gap:10px;margin:9px 0;color:var(--warn-ink);
+  font-size:11.5px;font-weight:600}
+.cut::before,.cut::after{content:"";height:1px;background:var(--warning);opacity:.45;flex:1}
+</style>
+
+</head>
+<body>
+
+<header class="doc-head">
+  <button class="themebtn" id="themeBtn">切换主题</button>
+  <div class="doc-head-in">
+    <div class="doc-title">任务中断恢复 · 设计说明与界面原型</div>
+    <div class="doc-sub">让失败的任务从检查点续跑，而不是从头再来</div>
+    <dl class="meta">
+      <div><dt>拟制日期</dt><dd>2026-08-14</dd></div>
+      <div><dt>版本</dt><dd>V1.1</dd></div>
+      <div><dt>状态</dt><dd><span class="status">已定版 · 待实施</span></dd></div>
+      <div><dt>拟制</dt><dd>架构组</dd></div>
+      <div><dt>关联</dt><dd>技术设计说明书 §5 · R-14／R-16／R-17</dd></div>
+    </dl>
+  </div>
+</header>
+
+<div class="shell">
+<nav class="toc" id="toc">
+  <h4>目录</h4>
+  <a href="#rev">修订记录</a>
+  <a href="#s1">1 现状与场景</a>
+  <a href="#s2">2 界面原型</a>
+  <a href="#s3">3 机制设计</a>
+  <a href="#s4">4 安全约束</a>
+  <a href="#s4-1" class="sub">4.1 成本护栏被重置</a>
+  <a href="#s4-2" class="sub">4.2 任务不可枚举</a>
+  <a href="#s5">5 幂等边界</a>
+  <a href="#s6">6 分阶段计划</a>
+  <a href="#s7">7 风险与未决</a>
+</nav>
+
+<main>
+
+<section id="rev">
+  <h2><span class="n">§</span>修订记录</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>版本</th><th>日期</th><th>修订内容</th><th>拟制</th></tr></thead>
+    <tbody>
+      <tr><td><b>V1.1</b></td><td>2026-08-14</td><td><b>定版。§7.1 两项已定夺：续跑计入每日配额；不做自动恢复</b></td><td>架构组</td></tr>
+      <tr><td>V1.0</td><td>2026-08-14</td><td>初稿。含界面原型与安全约束；立项前已实测确认「恢复会重置 R-17 成本上限」这一后门</td><td>架构组</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s1">
+  <h2><span class="n">1</span>现状与场景</h2>
+
+  <h3><span class="n">1.1</span>机制全在，但一次都没用上</h3>
+  <p>askdb 已经挂了 <code>SqliteSaver</code>，每次调用写 9.3 个快照、97 KB。
+     但代码里只有 <code>get_state_history()</code> 一处读取 ——
+     <b>没有任何一处 <code>invoke(None, cfg)</code></b>，也就是从不恢复。</p>
+  <div class="note warn">
+    <span class="lbl">而且 thread_id 每次换新</span>
+    当前每次问答都用一个全新的 <code>trace_id</code> 作 <code>thread_id</code>，
+    等于每次都是一次性 thread。<b>"未完成的任务"这个概念根本不存在</b>，
+    自然也无从恢复。设计文档 §5 明确写了「而非在线断点续跑」——
+    是有意识的取舍，不是遗漏。
+  </div>
+
+  <h3><span class="n">1.2</span>什么情况下值得续跑</h3>
+  <p>单步问答约 5 秒，重问比恢复省事，续跑没有价值。真正值钱的是下面两类：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>场景</th><th class="num">典型耗时</th><th>失败重来的代价</th><th class="c">优先级</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>多步问答</b>（planner 开启）</td>
+        <td class="num">P95 18.6 s</td>
+        <td>最多 3 步 × 3 次生成 = 9 次模型调用全部作废</td>
+        <td class="c"><span class="tag p1">中</span></td>
+      </tr>
+      <tr>
+        <td><b>评测批跑</b></td>
+        <td class="num">20–30 min</td>
+        <td>58 题 × 6 组 = 348 次调用。<b>本项目已真实发生两次</b>：一次配额中途触顶致 23 题作废，一次因判定器缺陷被中途终止</td>
+        <td class="c"><span class="tag p0">高</span></td>
+      </tr>
+    </tbody>
+  </table></div>
+  <p>本设计<b>先做多步问答</b>（形态简单、界面可见），评测批跑的续跑作为 R3 阶段。</p>
+</section>
+
+<section id="s2">
+  <h2><span class="n">2</span>界面原型</h2>
+  <p>点上方按钮切换四个状态。这是提问页在续跑场景下的形态。</p>
+
+  <div class="proto">
+    <div class="proto-bar">
+      <b>状态</b>
+      <button class="sbtn on" data-s="0">① 执行中</button>
+      <button class="sbtn" data-s="1">② 中断后重新打开</button>
+      <button class="sbtn" data-s="2">③ 点击继续</button>
+      <button class="sbtn" data-s="3">④ 完成</button>
+    </div>
+    <div class="screen">
+      <div class="appbar">
+        <div class="applogo">askdb<span>可信数据问答</span></div>
+        <span class="pill2" id="pOrg">org_id = 65</span>
+        <span class="pill2" id="pState">执行中</span>
+      </div>
+      <div id="body"></div>
+    </div>
+  </div>
+
+  <div class="note">
+    <span class="lbl">界面上的三个关键决定</span>
+    <b>① 恢复入口不是列表，是横幅。</b>askdb 无账号体系，列出"所有未完成任务"
+    等于给任何人一个枚举接口（见 §4.2）。所以只在<b>本浏览器留有该 trace_id</b> 时
+    才提示。<br>
+    <b>② 已完成的步骤要显示成"跳过"而不是隐藏。</b>让人看清恢复省掉了什么、
+    从哪一步接上 —— 这本身就是续跑价值的证据。<br>
+    <b>③ 成本要分两段显示。</b>中断前已花的钱不会退，必须让人看到
+    "本次续跑新增"与"累计合计"，而不是只显示后者。
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="n">3</span>机制设计</h2>
+
+  <h3><span class="n">3.1</span>三处改动</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">#</th><th>改动</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td class="c">1</td><td><b>thread_id 与 trace_id 解耦</b></td>
+        <td>现在两者相同。改为：<code>thread_id</code> 标识<b>一个任务</b>，可跨多次
+            <code>invoke</code>；<code>trace_id</code> 仍标识<b>一次执行</b>，用于审计。
+            恢复时 thread 不变、trace 新开一条，审计里因此能看出"这是第 2 次执行同一任务"</td></tr>
+      <tr><td class="c">2</td><td><b>任务完成标记</b></td>
+        <td>状态里加 <code>finished: bool</code>。<code>get_state(cfg).next</code> 非空
+            即为未完成 —— 但显式标记比推断可靠，也便于区分"未完成"与"已完成但还有边"</td></tr>
+      <tr><td class="c">3</td><td><b>恢复入口</b></td>
+        <td><code>POST /api/resume</code>，体内带 <code>thread_id</code>。
+            服务端执行 <code>app.invoke(None, cfg)</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="n">3.2</span>恢复的核心只有一行</h3>
+  <pre><code><span class="c"># 不给新输入，从最后一个检查点的 next 节点继续</span>
+out = app.invoke(<span class="k">None</span>, {<span class="s">"configurable"</span>: {<span class="s">"thread_id"</span>: tid, <span class="s">"deps"</span>: deps}})</code></pre>
+  <p>已实测验证：三步任务在第 2 步被杀进程，重启后读到
+     <code>已完成 ['step1']，下一步 ('step2',)</code>，续跑后 step1 未重跑。</p>
+</section>
+
+<section id="s4">
+  <h2><span class="n">4</span>安全约束</h2>
+
+  <h3 id="s4-1"><span class="n">4.1</span>恢复会重置成本护栏 —— 这是个后门</h3>
+  <div class="note crit">
+    <span class="lbl">立项前实测确认</span>
+    R-17 累计成本上限的判定是 <code>used = d.tracer.tok_in + d.tracer.tok_out</code>，
+    而 <b><code>Tracer</code> 是进程内对象，经 <code>configurable</code> 传入，
+    <u>不在检查点状态里</u></b>。
+    恢复时会新建一个 Tracer —— <b><code>used</code> 归零，R-17 形同虚设</b>。
+  </div>
+  <p>后果很具体：反复"中断 → 恢复"即可绕过单次问答的 token 上限，无限花钱。
+     这与"每日配额靠审计条数、日志不持久化就归零"是同一类错误 ——
+     <b>护栏的计数器必须和护栏本身一样持久</b>。</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>护栏</th><th>计数位置</th><th class="c">恢复后</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td>R-14 重试上限</td><td><code>attempt</code>（状态内）</td><td class="c"><span class="tag done">正确继承</span></td><td>无需改动</td></tr>
+      <tr><td>R-16 步数上限</td><td><code>step_no</code>（状态内）</td><td class="c"><span class="tag done">正确继承</span></td><td>无需改动</td></tr>
+      <tr><td><b>R-17 成本上限</b></td><td><b>Tracer（进程内）</b></td><td class="c"><span class="tag hard">被重置</span></td><td><b>把累计 token 移入状态</b>，Tracer 恢复时从状态回种</td></tr>
+      <tr><td>每日配额</td><td>审计日志条数</td><td class="c"><span class="tag soft">正确</span></td><td>已挂持久卷；但恢复应<b>另计一次</b>调用，不能白嫖</td></tr>
+    </tbody>
+  </table></div>
+  <p><b>这条是本设计的前置条件</b>：R-17 不改成状态内计数，续跑功能不得上线。</p>
+
+  <h3 id="s4-2"><span class="n">4.2</span>任务不可枚举</h3>
+  <p>askdb 无账号体系（§1.1：数据库连接本身即权限边界）。因此：</p>
+  <ul>
+    <li><b>不提供"未完成任务列表"接口</b> —— 那等于给任何人一个枚举入口，
+        与上一份《回放接口设计》拒绝做列表页是同一条理由</li>
+    <li>恢复入口只接受调用方<b>自己持有</b>的 <code>thread_id</code>，
+        由浏览器本地保存（<code>localStorage</code>）</li>
+    <li><code>thread_id</code> 命中与未命中<b>同返回 404</b>，不区分"不存在"与"存在但非你的"</li>
+    <li><code>/api/resume</code> 与 <code>/api/ask</code> 共用同一档限流 ——
+        它同样会花钱，没有理由更宽松</li>
+  </ul>
+</section>
+
+<section id="s5">
+  <h2><span class="n">5</span>幂等边界</h2>
+  <p><b>恢复的粒度是节点，不是节点内部。</b>断点所在的那个节点会<b>整个重跑</b>。
+     因此必须逐节点确认重跑是否安全：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>节点</th><th class="c">重跑安全</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">retrieve / guard / dry_run</td><td class="c"><span class="tag done">安全</span></td><td>纯计算或只读，无副作用</td></tr>
+      <tr><td class="mono">execute</td><td class="c"><span class="tag done">安全</span></td><td>askdb 只执行 SELECT（R-02 保证），重跑不改变数据</td></tr>
+      <tr><td class="mono">plan / generate / assess</td><td class="c"><span class="tag soft">花钱</span></td><td>会再调一次模型。<b>不是正确性问题，是成本问题</b> —— 由 §4.1 修好后的 R-17 兜住</td></tr>
+      <tr><td class="mono">finalize</td><td class="c"><span class="tag soft">注意</span></td><td>写审计。恢复应写<b>新的一条</b>（新 trace_id）而非覆盖，两条通过同一 thread_id 关联</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note good">
+    <span class="lbl">askdb 在这件事上占了便宜</span>
+    通用 Agent 做续跑最难的是副作用回滚（邮件已发、订单已建）。
+    askdb 的执行节点<b>只读</b>，R-02 从语句类型上就杜绝了写操作 ——
+    重跑最坏只是多花一次模型调用的钱。<b>这是"只读"这条约束的额外红利。</b>
+  </div>
+</section>
+
+<section id="s6">
+  <h2><span class="n">6</span>分阶段计划</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">阶段</th><th>交付</th><th>验收</th><th class="c">目标日期</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><b>R0</b></td><td><b>前置</b>：R-17 累计 token 移入状态</td>
+          <td>用例：中断后恢复，<code>used</code> 从状态回种而非归零；反复中断恢复不能突破 <code>cost_cap_tokens</code></td><td class="c">2026-08-15</td></tr>
+      <tr><td class="c"><b>R1</b></td><td>thread_id 与 trace_id 解耦 + <code>finished</code> 标记</td>
+          <td>同一 thread 的两次执行在审计里可关联</td><td class="c">2026-08-16</td></tr>
+      <tr><td class="c"><b>R2</b></td><td><code>POST /api/resume</code> + 页面横幅与续跑面板</td>
+          <td>杀进程后重开页面出现横幅；续跑不重跑已完成节点</td><td class="c">2026-08-18</td></tr>
+      <tr><td class="c"><b>R3</b></td><td>评测批跑续跑（按题粒度）</td>
+          <td>中途终止后可从第 N 题继续，已完成题目不重跑</td><td class="c">2026-08-21</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s7">
+  <h2><span class="n">7</span>风险与未决</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">等级</th><th>事项</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><span class="tag p0">高</span></td><td><b>R-17 被重置</b>（§4.1）</td><td>R0 阶段前置修复，不修不上线</td></tr>
+      <tr><td class="c"><span class="tag p1">中</span></td><td><b>未完成任务无限堆积。</b>检查点已无保留期，续跑会让"未完成 thread"长期滞留</td><td>需要保留期策略（建议：未完成任务 24h 后不可恢复，检查点按天清理）。<b>本设计不含，须另立议题</b></td></tr>
+      <tr><td class="c"><span class="tag p1">中</span></td><td><b>存储成本翻倍。</b>当前每次调用 97 KB，续跑意味着更长的保留期</td><td>与上一条同案。另可评估是否改用更精简的自定义 saver</td></tr>
+      <tr><td class="c"><span class="tag p2">低</span></td><td>浏览器清缓存后 thread_id 丢失，任务无法恢复</td><td>接受。无账号体系下这是必然代价，不为此引入列表接口</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="n">7.1</span>两项已定夺事项（V1.1）</h3>
+
+  <h4>① 续跑<b>计入</b>每日配额</h4>
+  <p><b>决定：计入，按一次独立调用计。</b>理由与 §4.1 同源 ——
+     不计入就等于开了一条绕过配额的路径：中断一次、恢复一次，
+     两次模型调用只扣一次额度；反复中断即可无限刷。</p>
+  <p>界面上必须说明这一点（原型状态③的横幅已写：
+     「本次续跑另计一次每日配额」）—— 否则用户会以为续跑是"补完上次"因而免费。</p>
+  <div class="note">
+    <span class="lbl">与「跳过的节点不花钱」不矛盾</span>
+    续跑确实跳过了已完成节点、没有重复调用模型，<b>省下的是 token 成本</b>；
+    但配额限制的是<b>调用次数</b>，是防滥用的闸门，不是成本的度量。
+    两者目的不同，不该互相抵扣。
+  </div>
+
+  <h4>② <b>不做</b>自动恢复</h4>
+  <p><b>决定：只在页面上由人点击触发。</b>三条理由：</p>
+  <ul>
+    <li><b>自动重试会放大故障。</b>中断的常见原因是模型超时、配额耗尽、
+        数据源不可用 —— 这些情况下自动恢复只会立刻再失败一次，
+        并把故障期间的请求量翻倍。这与 §5.1 的判断一致：
+        <b>连接不可达时重试纯属浪费</b>。</li>
+    <li><b>成本必须由人确认。</b>续跑要花钱、要占配额，
+        界面已明确显示"中断前已花 ¥0.0021 不会退"与"本次另计一次配额"，
+        让人在知情下决定。</li>
+    <li><b>失败诚实优先于自愈。</b>设计文档 §4.5 的原则是"不做静默降级"——
+        自动恢复是另一种形式的静默：用户不知道系统替他重跑过。</li>
+  </ul>
+  <p>后续若确有需要，可考虑「仅对<b>明确可重试</b>的中断原因自动恢复一次」
+     （如进程重启，排除模型故障与配额耗尽），但那需要先有中断原因的分类，
+     本版不做。</p>
+</section>
+
+</main>
+</div>
+
+<div class="foot">
+  任务中断恢复设计说明 V1.0 · 拟制日期 2026-08-14 · 状态：待评审 ·
+  前置条件：R-17 累计成本计数须先移入检查点状态
+</div>
+
+<script>
+const S = [
+  {name:"执行中", banner:null, steps:[
+    {s:"ok",  n:"Schema 召回",  d:"命中 3 张表", r:"0 ms"},
+    {s:"ok",  n:"规划",        d:"判定需多步：先看取值分布，再按库分组", r:"3.7 s · 210 tok"},
+    {s:"ok",  n:"SQL 生成",    d:"第 1 步", r:"1.3 s · 890 tok"},
+    {s:"ok",  n:"静态校验",     d:"注入租户谓词、LIMIT 200", r:"30 ms"},
+    {s:"ok",  n:"只读执行",     d:"返回 2 行", r:"1.4 s"},
+    {s:"ok",  n:"结果评估",     d:"不足以作答 → 重规划（第 1/3 步）", r:"1.8 s · 180 tok"},
+    {s:"run", n:"SQL 生成",    d:"第 2 步：按知识库分组统计 …", r:"进行中"},
+  ], m:{步数:"1 / 3", 已用:"1 280 tok", 成本:"¥0.0021"}},
+
+  {name:"中断", banner:{
+     t:"检测到一个未完成的任务",
+     d:"这次提问执行到<b>第 2 步的 SQL 生成</b>时中断（服务重启）。已完成的 6 步无需重跑，" +
+       "可以从断点继续。<br>中断前已消耗 <b>1 280 tokens · ¥0.0021</b>，这部分不会退回。"},
+   steps:[
+    {s:"ok",  n:"Schema 召回",  d:"命中 3 张表", r:"已完成"},
+    {s:"ok",  n:"规划",        d:"判定需多步", r:"已完成"},
+    {s:"ok",  n:"SQL 生成",    d:"第 1 步", r:"已完成"},
+    {s:"ok",  n:"静态校验",     d:"注入租户谓词、LIMIT 200", r:"已完成"},
+    {s:"ok",  n:"只读执行",     d:"返回 2 行", r:"已完成"},
+    {s:"ok",  n:"结果评估",     d:"不足以作答 → 重规划", r:"已完成"},
+    {cut:"中断点 · 检查点保存于此"},
+    {s:"wait",n:"SQL 生成",    d:"第 2 步 —— 未执行", r:"待续跑"},
+    {s:"wait",n:"静态校验",     d:"", r:""},
+    {s:"wait",n:"只读执行",     d:"", r:""},
+   ], m:{步数:"1 / 3", 已用:"1 280 tok", 成本:"¥0.0021"}},
+
+  {name:"续跑中", banner:{
+     t:"正在从检查点继续",
+     d:"前 6 步直接跳过，未重新调用模型。<b>本次续跑另计一次每日配额</b>。"},
+   steps:[
+    {s:"skip",n:"Schema 召回",  d:"已完成，跳过", r:"—"},
+    {s:"skip",n:"规划",        d:"已完成，跳过", r:"—"},
+    {s:"skip",n:"SQL 生成",    d:"已完成，跳过", r:"—"},
+    {s:"skip",n:"静态校验",     d:"已完成，跳过", r:"—"},
+    {s:"skip",n:"只读执行",     d:"已完成，跳过", r:"—"},
+    {s:"skip",n:"结果评估",     d:"已完成，跳过", r:"—"},
+    {cut:"从这里继续"},
+    {s:"ok",  n:"SQL 生成",    d:"第 2 步：按知识库分组统计 parse_status", r:"1.3 s · 640 tok"},
+    {s:"run", n:"静态校验",     d:"", r:"进行中"},
+   ], m:{步数:"2 / 3", "本次新增":"640 tok", 累计:"1 920 tok · ¥0.0031"}},
+
+  {name:"完成", banner:null, steps:[
+    {s:"skip",n:"Schema 召回",  d:"中断前已完成，跳过", r:"—"},
+    {s:"skip",n:"规划",        d:"中断前已完成，跳过", r:"—"},
+    {s:"skip",n:"SQL 生成",    d:"第 1 步 · 中断前已完成", r:"—"},
+    {s:"skip",n:"静态校验",     d:"中断前已完成，跳过", r:"—"},
+    {s:"skip",n:"只读执行",     d:"中断前已完成，跳过", r:"—"},
+    {s:"skip",n:"结果评估",     d:"中断前已完成，跳过", r:"—"},
+    {cut:"续跑起点"},
+    {s:"ok",  n:"SQL 生成",    d:"第 2 步", r:"1.3 s · 640 tok"},
+    {s:"ok",  n:"静态校验",     d:"注入租户谓词：d.kb_id IN (…)", r:"7 ms"},
+    {s:"ok",  n:"只读执行",     d:"返回 5 行", r:"1.3 s"},
+    {s:"ok",  n:"结果评估",     d:"足以作答 ✓", r:"1.2 s · 190 tok"},
+    {s:"ok",  n:"结果与溯源",   d:"已附两轮全部 SQL、数据时间、步数", r:"0 ms"},
+  ], m:{步数:"2 / 3", "本次新增":"830 tok", 累计:"2 110 tok · ¥0.0034", 节省:"未重跑 6 个节点"}},
+];
+
+const ICON = {ok:"✓", run:"◔", skip:"–", wait:"", cut:""};
+function render(i){
+  const st = S[i];
+  document.getElementById("pState").textContent = st.name;
+  let h = "";
+  if (st.banner) h += `<div class="rbanner"><div class="t">${st.banner.t}</div>
+    <div class="d">${st.banner.d}</div>` +
+    (i===1 ? `<button class="rbtn" onclick="render(2);sync(2)">继续执行</button>
+              <button class="rbtn ghost">放弃并重新提问</button>` : ``) + `</div>`;
+  h += `<ul class="steps">` + st.steps.map(x => x.cut
+    ? `<li style="border:0;padding:2px 0"><div class="cut" style="width:100%">${x.cut}</div></li>`
+    : `<li class="${x.s==='skip'?'skipped':''}">
+         <span class="dot2 d-${x.s}">${ICON[x.s]||""}</span>
+         <div><div class="sname">${x.n}</div>${x.d?`<div class="snote">${x.d}</div>`:``}</div>
+         <div class="sright">${x.r||""}</div></li>`).join("") + `</ul>`;
+  h += `<div class="mrow">` + Object.entries(st.m)
+        .map(([k,v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("") + `</div>`;
+  document.getElementById("body").innerHTML = h;
+}
+function sync(i){ document.querySelectorAll(".sbtn").forEach((b,j)=>b.classList.toggle("on", j===i)); }
+document.querySelectorAll(".sbtn").forEach((b,i)=>b.onclick=()=>{render(i);sync(i);});
+render(0);
+
+document.getElementById('themeBtn').onclick = () => {
+  const r = document.documentElement;
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = (r.dataset.theme || (dark?'dark':'light')) === 'dark' ? 'light' : 'dark';
+};
+const links = [...document.querySelectorAll('#toc a')];
+const targets = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+const io = new IntersectionObserver(es => es.forEach(e => {
+  if(e.isIntersecting) links.forEach(a =>
+    a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id));
+}), {rootMargin:'-10% 0px -80% 0px'});
+targets.forEach(t => io.observe(t));
+</script>
+
+</body>
+</html>

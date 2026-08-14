@@ -41,6 +41,8 @@ In one line: **a general-purpose agent is a probe; askdb is a production line.**
 |---|---|
 | [`docs/tech-design.html`](docs/tech-design.html) | Technical design spec V1.1 — 11 chapters + 2 appendices: 17 guardrail rules, evaluation plan, production boundaries |
 | [`docs/prototype.html`](docs/prototype.html) | Interactive prototype — data onboarding wizard, query pipeline, multi-step planning |
+| [`docs/design-resume.html`](docs/design-resume.html) | Task resume design V1.1 — continue from checkpoint instead of restarting, with UI prototype; blocked on fixing R-17 counter reset |
+| [`docs/design-replay-api.html`](docs/design-replay-api.html) | Decision-chain replay API design V1.1 — turns checkpoints from CLI-only into page-visible; field allowlist and dual kill-switch |
 
 Single-file HTML, no external dependencies — download and open in a browser (GitHub does not render HTML).
 **Every metric in those two documents is a design-stage placeholder** — the measured

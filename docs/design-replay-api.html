@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdb 判定链路回放接口 · 设计说明 V1.1</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+  --accent:#2a78d6;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --good-ink:#0a7a0a; --crit-ink:#c22f2f; --warn-ink:#8a6300;
+  --wash:rgba(42,120,214,0.08);
+  --code-bg:#f4f4f1;
+  --inj:rgba(42,120,214,0.16);
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --accent:#3987e5;
+    --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+    --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19;
+  --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+  --accent:#3987e5;
+  --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+  --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+html,body{max-width:100%;overflow-x:hidden}
+body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--plane);color:var(--ink);font-size:14.5px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.mono,code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* header */
+.doc-head{border-bottom:1px solid var(--border);background:var(--surface)}
+.doc-head-in{max-width:1180px;margin:0 auto;padding:26px 24px 20px}
+.doc-title{font-size:26px;font-weight:650;letter-spacing:-.02em;line-height:1.3}
+.doc-sub{font-size:14px;color:var(--muted);margin-top:4px}
+.meta{display:flex;gap:10px 26px;flex-wrap:wrap;margin-top:16px;font-size:12.5px}
+.meta div{display:flex;gap:7px}
+.meta dt{color:var(--muted)}
+.meta dd{font-weight:600}
+.status{font-size:11.5px;padding:2px 9px;border-radius:999px;background:var(--wash);color:var(--accent);font-weight:600}
+.themebtn{position:absolute;right:24px;top:24px;font:inherit;font-size:12.5px;padding:5px 10px;border-radius:7px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink-2);cursor:pointer}
+
+/* layout */
+.shell{max-width:1180px;margin:0 auto;padding:0 24px 100px;display:grid;grid-template-columns:214px minmax(0,1fr);gap:40px}
+@media (max-width:940px){.shell{grid-template-columns:minmax(0,1fr);gap:0}.toc{display:none}}
+.toc{position:sticky;top:0;align-self:start;padding-top:28px;max-height:100vh;overflow-y:auto}
+.toc h4{font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:9px}
+.toc a{display:block;font-size:12.5px;color:var(--ink-2);text-decoration:none;padding:3.5px 0 3.5px 10px;
+  border-left:2px solid transparent;line-height:1.45}
+.toc a:hover{color:var(--accent)}
+.toc a.on{color:var(--accent);border-left-color:var(--accent);font-weight:600}
+.toc a.sub{padding-left:22px;font-size:12px;color:var(--muted)}
+.toc a.sub:hover,.toc a.sub.on{color:var(--accent)}
+
+main{padding-top:28px;min-width:0}
+section{margin-bottom:44px;scroll-margin-top:20px}
+h2{font-size:20px;font-weight:650;letter-spacing:-.01em;margin-bottom:6px;padding-bottom:9px;border-bottom:1px solid var(--border)}
+h2 .n{color:var(--muted);font-weight:500;margin-right:9px}
+h3{font-size:15.5px;font-weight:650;margin:26px 0 8px}
+h3 .n{color:var(--muted);font-weight:500;margin-right:7px}
+h4{font-size:13.5px;font-weight:650;margin:18px 0 6px;color:var(--ink-2)}
+p{margin:9px 0}
+ul,ol{margin:9px 0 9px 22px}
+li{margin:4px 0}
+b,strong{font-weight:650}
+code{background:var(--code-bg);border:1px solid var(--border);padding:1px 5px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:14px 16px;
+  overflow-x:auto;font-size:12.5px;line-height:1.72;margin:12px 0}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+pre .k{color:var(--accent);font-weight:600}
+pre .s{color:var(--good-ink)}
+pre .c{color:var(--muted)}
+pre .inj{background:var(--inj);border-radius:3px;padding:1px 3px;font-weight:600}
+
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:9px;margin:12px 0}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--grid);vertical-align:top}
+th{font-weight:650;color:var(--ink-2);background:var(--plane);font-size:12px;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.c,th.c{text-align:center;white-space:nowrap}
+td .mono{font-size:12.5px}
+
+.note{border-left:3px solid var(--accent);background:var(--surface);padding:11px 15px;border-radius:0 9px 9px 0;
+  font-size:13.5px;color:var(--ink-2);margin:14px 0}
+.note.warn{border-left-color:var(--serious)}
+.note.crit{border-left-color:var(--critical)}
+.note.good{border-left-color:var(--good)}
+.note b{color:var(--ink)}
+.note .lbl{display:block;font-size:11.5px;font-weight:700;letter-spacing:.04em;margin-bottom:3px}
+.note .lbl{color:var(--accent)}
+.note.warn .lbl{color:var(--warn-ink)}
+.note.crit .lbl{color:var(--crit-ink)}
+.note.good .lbl{color:var(--good-ink)}
+
+.pipe{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin:14px 0;
+  font-size:12.5px;line-height:1.95;overflow-x:auto;white-space:pre}
+.pipe .b{color:var(--accent);font-weight:700}
+.pipe .g{color:var(--muted)}
+.pipe .r{color:var(--crit-ink);font-weight:600}
+
+.tag{font-size:11px;padding:1.5px 7px;border-radius:5px;font-weight:650;white-space:nowrap}
+.tag.p0{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.tag.p1{background:rgba(236,131,90,.16);color:var(--warn-ink)}
+.tag.p2{background:var(--wash);color:var(--accent)}
+.tag.done{background:rgba(12,163,12,.14);color:var(--good-ink)}
+.tag.hard{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.tag.soft{background:var(--wash);color:var(--accent)}
+
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:760px){.two{grid-template-columns:1fr}}
+.box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.box h4{margin-top:0}
+hr{border:0;border-top:1px solid var(--border);margin:32px 0}
+.foot{max-width:1180px;margin:0 auto;padding:0 24px 60px;font-size:12.5px;color:var(--muted)}
+</style>
+
+</head>
+<body>
+
+<header class="doc-head">
+  <button class="themebtn" id="themeBtn">切换主题</button>
+  <div class="doc-head-in">
+    <div class="doc-title">判定链路回放接口 · 设计说明</div>
+    <div class="doc-sub">askdb 检查点从「命令行可查」到「页面可查」</div>
+    <dl class="meta">
+      <div><dt>拟制日期</dt><dd>2026-08-14</dd></div>
+      <div><dt>版本</dt><dd>V1.1</dd></div>
+      <div><dt>最近修订</dt><dd>2026-08-14</dd></div>
+      <div><dt>状态</dt><dd><span class="status">已定版 · 待实施</span></dd></div>
+      <div><dt>拟制</dt><dd>架构组</dd></div>
+      <div><dt>关联</dt><dd>技术设计说明书 §5 / §10.1</dd></div>
+    </dl>
+  </div>
+</header>
+
+<div class="shell">
+<nav class="toc" id="toc">
+  <h4>目录</h4>
+  <a href="#rev">修订记录</a>
+  <a href="#s1">1 为什么要做</a>
+  <a href="#s2">2 目标与非目标</a>
+  <a href="#s3">3 现状盘点</a>
+  <a href="#s4">4 接口设计</a>
+  <a href="#s4-2" class="sub">4.2 字段白名单</a>
+  <a href="#s5">5 安全设计</a>
+  <a href="#s5-1" class="sub">5.1 三条风险</a>
+  <a href="#s5-2" class="sub">5.2 双开关</a>
+  <a href="#s6">6 前端交互</a>
+  <a href="#s7">7 分阶段计划</a>
+  <a href="#s8">8 风险与未决</a>
+</nav>
+
+<main>
+
+<section id="rev">
+  <h2><span class="n">§</span>修订记录</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>版本</th><th>日期</th><th>修订内容</th><th>拟制</th></tr></thead>
+    <tbody>
+      <tr><td><b>V1.1</b></td><td>2026-08-14</td><td><b>定版。§8.1 两项未决事项已定夺：不返回 <code>reasoning</code>；<code>trace_id</code> 维持 12 位并明确「限流是该长度成立的前提」</b></td><td>架构组</td></tr>
+      <tr><td>V1.0</td><td>2026-08-14</td><td>初稿。由线上验收发现「页面承诺了访问者用不了的能力」而立项</td><td>架构组</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s1">
+  <h2><span class="n">1</span>为什么要做</h2>
+
+  <h3><span class="n">1.1</span>页面正在承诺一个用不了的能力</h3>
+  <p>提问结束后，结果区会显示：</p>
+  <pre><code>trace_id  f8551ebadb0e   [复制]
+原样复现整条判定链路：<span class="k">askdb replay f8551ebadb0e -c config/public.yaml</span>   [复制命令]</code></pre>
+  <p>评测页的失败样本明细里也给了同样的命令。<b>但访问者进不了容器</b> ——
+     这条命令对页面前的人毫无意义。</p>
+
+  <div class="note crit">
+    <span class="lbl">这是同一类问题的第四次</span>
+    此前已修过三处「界面承诺了做不到的事」：接入页的「连接数据源」实为只读回显、
+    <code>askdb replay</code> 命令一度根本不存在、评测页写着「每条失败都带 trace_id
+    可原样复现」却既不列 trace_id 也无入口。
+    <b>它们的共性是：能力做了、文案宣称了，但把两者接起来的那一段没做。</b>
+  </div>
+
+  <h3><span class="n">1.2</span>而检查点恰好是这个项目最值钱的部分之一</h3>
+  <p>设计文档 §1 把核心命题定为「<b>在模型不可靠的前提下，让整条执行链路可靠</b>」。
+     检查点是这句话唯一可以被<b>他人核验</b>的证据 —— 它能把下面这串完整摊开：</p>
+  <div class="pipe">模型第一次写了什么   <span class="g">→</span>   <span class="r">被哪条规则拦下</span>   <span class="g">→</span>   真实错误怎么回灌
+    <span class="g">→</span>   第二次改成了什么   <span class="g">→</span>   哪一步是首个偏离步</div>
+  <p>目前这部分<b>只有能登服务器的人看得到</b>。§10.1 要求的「失败报告按步拆解、
+     标注首个偏离步」在命令行已经实现，页面上是空白。</p>
+</section>
+
+<section id="s2">
+  <h2><span class="n">2</span>目标与非目标</h2>
+  <div class="two">
+    <div class="box">
+      <h4 style="color:var(--good-ink)">目标</h4>
+      <ul>
+        <li>页面上可查看任意一次调用的完整判定链路</li>
+        <li>标注首个偏离步（§10.1）</li>
+        <li>失败样本可从评测页一键跳转查看</li>
+        <li><b>接口本身在任何实例上都不泄露数据</b> —— 不依赖部署方记得关开关</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h4 style="color:var(--crit-ink)">非目标</h4>
+      <ul>
+        <li>不做「重新执行」——只读回放，不重跑任何 SQL</li>
+        <li>不做跨调用检索 / 列表页（无账号体系，列表即枚举）</li>
+        <li>不返回查询结果行</li>
+        <li>不做检查点的保留期管理（另案）</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="n">3</span>现状盘点</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>能力</th><th class="c">状态</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>检查点写入</td><td class="c"><span class="tag done">已有</span></td><td>每次 <code>/api/ask</code> 自动写；线上实测 WAL 持续增长</td></tr>
+      <tr><td>检查点持久化</td><td class="c"><span class="tag done">已有</span></td><td>hostPath <code>/opt/askdb/var</code>，Pod 重启不丢</td></tr>
+      <tr><td><code>graph.replay()</code></td><td class="c"><span class="tag done">已有</span></td><td>按 trace_id 取回全部快照</td></tr>
+      <tr><td><code>askdb replay</code> 命令</td><td class="c"><span class="tag done">已有</span></td><td>按节点打印并标注首个偏离步</td></tr>
+      <tr><td>页面显示 trace_id</td><td class="c"><span class="tag done">已有</span></td><td>结果区与评测页失败明细</td></tr>
+      <tr><td><b>HTTP 回放接口</b></td><td class="c"><span class="tag p0">缺</span></td><td><code>/api/replay</code> 实测 404</td></tr>
+      <tr><td><b>页面回放面板</b></td><td class="c"><span class="tag p0">缺</span></td><td>本设计的两项交付</td></tr>
+    </tbody>
+  </table></div>
+  <p><b>底层全都有，缺的只是一层 HTTP 封装与渲染。</b>工作量集中在安全边界的界定上，不在功能实现。</p>
+</section>
+
+<section id="s4">
+  <h2><span class="n">4</span>接口设计</h2>
+
+  <h3><span class="n">4.1</span>路由与响应</h3>
+  <pre><code><span class="k">GET</span> /api/replay?trace_id=f8551ebadb0e</code></pre>
+  <div class="tablewrap"><table>
+    <thead><tr><th>情形</th><th class="c">状态码</th><th>响应</th></tr></thead>
+    <tbody>
+      <tr><td>正常</td><td class="c">200</td><td><code>{ok:true, trace_id, steps:[…], first_deviation:n}</code></td></tr>
+      <tr><td>trace 不存在</td><td class="c">404</td><td><code>{ok:false, hint:"…"}</code></td></tr>
+      <tr><td>功能未开启</td><td class="c">404</td><td><b>与「不存在」返回完全一致</b> —— 见 §5.2</td></tr>
+      <tr><td>trace_id 格式非法</td><td class="c">422</td><td>参数校验，不进入检查点库</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="s4-2"><span class="n">4.2</span>字段白名单 —— 本设计的核心决定</h3>
+  <p><code>AskState</code> 共 35 个字段，其中两个<b>绝不能出接口</b>：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>字段</th><th class="c">出接口</th><th>理由</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">rows</td><td class="c"><span class="tag hard">否</span></td><td><b>真实查询结果行。</b>公开实例连的是合成库、此处无敏感数据 —— 但同一份代码会部署到连生产库的实例上，靠「记得关开关」保安全是不可接受的</td></tr>
+      <tr><td class="mono">schema_prompt</td><td class="c"><span class="tag hard">否</span></td><td>完整注入文本，含全部表结构与业务口径定义。体量大，且等于把白名单细节和盘托出</td></tr>
+      <tr><td class="mono">next / attempt / step_no</td><td class="c"><span class="tag done">是</span></td><td>链路位置与重试计数</td></tr>
+      <tr><td class="mono">sql_raw / sql_final</td><td class="c"><span class="tag done">是</span></td><td>模型产出与强制改写后 —— 这正是要展示的东西</td></tr>
+      <tr><td class="mono">rejected_by / error</td><td class="c"><span class="tag done">是</span></td><td>规则编号与真实错误原文</td></tr>
+      <tr><td class="mono">rules_fired / rewrites</td><td class="c"><span class="tag done">是</span></td><td>命中的规则与人类可读的改写说明</td></tr>
+      <tr><td class="mono">row_count / explain_rows</td><td class="c"><span class="tag done">是</span></td><td>只给<b>条数</b>，不给内容</td></tr>
+      <tr><td class="mono">goal / converged_early</td><td class="c"><span class="tag done">是</span></td><td>多步规划的本步目标与收敛原因</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note good">
+    <span class="lbl">为什么用白名单而不是黑名单</span>
+    黑名单要求「每次给 AskState 加字段时都记得评估要不要屏蔽」——
+    这条纪律迟早会破。白名单的失败方向是<b>漏给一个无害字段</b>（体验问题），
+    黑名单的失败方向是<b>漏挡一个敏感字段</b>（安全事故）。
+    <b>让失败朝安全的方向发生。</b>
+  </div>
+
+  <h3><span class="n">4.3</span>首个偏离步</h3>
+  <p>后端计算，不交给前端 —— 判定规则应与 CLI 完全一致，两处各写一遍必然漂移：</p>
+  <pre><code><span class="c"># 第一个出现 error 或 rejected_by 的快照下标</span>
+first_deviation = next((i <span class="k">for</span> i, s <span class="k">in</span> enumerate(steps)
+                        <span class="k">if</span> s[<span class="s">"error"</span>] <span class="k">or</span> s[<span class="s">"rejected_by"</span>]), <span class="k">None</span>)</code></pre>
+</section>
+
+<section id="s5">
+  <h2><span class="n">5</span>安全设计</h2>
+
+  <h3 id="s5-1"><span class="n">5.1</span>三条风险</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">#</th><th>风险</th><th>缓解</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="c"><span class="tag p0">高</span></td>
+        <td><b>回放内容泄露数据。</b>状态里带着结果行与完整 schema</td>
+        <td>字段白名单（§4.2）从<b>接口层</b>杜绝，不依赖配置开关</td>
+      </tr>
+      <tr>
+        <td class="c"><span class="tag p1">中</span></td>
+        <td><b>trace_id 枚举。</b>askdb 无账号体系，拿到 id 就能看</td>
+        <td>id 为 12 位十六进制（约 7.9×10<sup>14</sup> 空间）；接口按 <code>[0-9a-f]{12}</code> 严格校验；命中与未命中<b>同为 404</b>，不区分「不存在」与「存在但无权」；单独限流</td>
+      </tr>
+      <tr>
+        <td class="c"><span class="tag p1">中</span></td>
+        <td><b>检查点库被当作查询接口滥用。</b>每次回放都要开 SQLite 并遍历历史</td>
+        <td>nginx 单开一档 <code>30r/min</code>；响应加 <code>Cache-Control: no-store</code>（内容含判定细节，不宜被中间层缓存）</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="s5-2"><span class="n">5.2</span>双开关：白名单 + 配置</h3>
+  <p>两层独立生效，任一层都足以防止泄露：</p>
+  <pre><code><span class="c"># config/public.yaml</span>
+observability:
+  replay_api: <span class="k">true</span>     <span class="c"># 默认 false。连真实数据源的实例不要打开</span></code></pre>
+  <div class="note warn">
+    <span class="lbl">关闭时返回 404 而不是 403</span>
+    403 等于告诉探测方「这里有个功能，只是没开」。
+    404 与「trace 不存在」完全一致，<b>不泄露该实例是否具备该能力</b>。
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>配置</th><th class="c">replay_api</th><th>理由</th></tr></thead>
+    <tbody>
+      <tr><td><code>public.yaml</code>（对外实例）</td><td class="c"><span class="tag done">开</span></td><td>连合成样例库，且字段白名单已挡住结果行</td></tr>
+      <tr><td><code>askdb.yaml</code>（本机开发）</td><td class="c"><span class="tag done">开</span></td><td>本机自用</td></tr>
+      <tr><td><code>ragforge-prod.yaml</code></td><td class="c"><span class="tag hard">关</span></td><td>连真实生产库 —— 即便白名单已挡住结果行，SQL 文本本身也会暴露业务口径与表结构细节</td></tr>
+      <tr><td><code>ragforge-eval.yaml</code></td><td class="c"><span class="tag hard">关</span></td><td>同上</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s6">
+  <h2><span class="n">6</span>前端交互</h2>
+  <h3><span class="n">6.1</span>入口</h3>
+  <ul>
+    <li><b>提问页</b> —— trace_id 旁增加「查看判定链路」按钮，就地展开面板</li>
+    <li><b>评测页</b> —— 失败样本明细每行的 trace_id 变为可点击</li>
+  </ul>
+  <p>命令行提示<b>保留但降级</b>：仍给出 <code>askdb replay</code> 命令，
+     但不再是唯一入口 —— 它对有服务器权限的人仍是最快的排查方式。</p>
+
+  <h3><span class="n">6.2</span>面板形态</h3>
+  <pre><code>判定链路 · f8551ebadb0e                                    [收起]
+─────────────────────────────────────────────────────────────
+ ✓  [0] __start__
+ ✓  [1] retrieve        命中 3 张表
+ ✓  [2] generate
+ <span class="r">✗  [3] guard           R-04 字段不存在：kb_id（表 knowledge_bases 无此列）</span>   <span class="c">← 首个偏离步</span>
+    │   模型产出  WITH doc_counts AS (SELECT kb_id, COUNT(*) …
+ ✓  [4] reflect         第 1 次重试：把真实错误回灌模型重新生成
+ ✓  [5] generate        第 2 轮重新生成
+ ✓  [6] guard           注入租户谓词：documents.org_id = 65；注入 LIMIT 200
+ ✓  [7] dry_run         预估扫描 41,661 行
+ ✓  [8] execute         返回 11 行
+ ✓  [9] finalize</code></pre>
+  <p>强制改写的部分沿用结果区已有的高亮样式 —— 让人一眼看出<b>哪些是系统塞进去的、模型改不掉</b>。</p>
+</section>
+
+<section id="s7">
+  <h2><span class="n">7</span>分阶段计划</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">阶段</th><th>交付</th><th>验收</th><th class="c">目标日期</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><b>R1</b></td><td><code>/api/replay</code> + 字段白名单 + 配置开关</td><td>白名单外字段（<code>rows</code>/<code>schema_prompt</code>）不出现在任何响应中；开关关闭时与不存在同为 404</td><td class="c">2026-08-15</td></tr>
+      <tr><td class="c"><b>R2</b></td><td>提问页回放面板</td><td>可展开、标注首个偏离步、改写高亮</td><td class="c">2026-08-16</td></tr>
+      <tr><td class="c"><b>R3</b></td><td>评测页失败样本可点击跳转</td><td>9 条失败样本均可就地查看</td><td class="c">2026-08-16</td></tr>
+      <tr><td class="c"><b>R4</b></td><td>nginx 单独限流 + 上线</td><td>线上实测超限返回 429；生产实例确认为 404</td><td class="c">2026-08-17</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s8">
+  <h2><span class="n">8</span>风险与未决</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th class="c">等级</th><th>事项</th><th>处理</th></tr></thead>
+    <tbody>
+      <tr><td class="c"><span class="tag p1">中</span></td><td><b>检查点库无限增长。</b>当前无保留期，WAL 已达 2.3MB 且持续增长</td><td>本设计不处理，但会因此更快暴露。建议另立「检查点保留期」议题（按天清理或按容量滚动）</td></tr>
+      <tr><td class="c"><span class="tag p1">中</span></td><td><b>SQL 文本本身即敏感信息。</b>即便不返回结果行，生产库的 SQL 也会暴露表结构与业务口径</td><td>正是生产配置默认关闭的理由。若将来要开，需要先有账号体系</td></tr>
+      <tr><td class="c"><span class="tag p2">低</span></td><td>回放需打开 SQLite 并遍历历史，冷启动有延迟</td><td>先观测；必要时加短 TTL 的内存缓存</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3><span class="n">8.1</span>两项已定夺事项（V1.1）</h3>
+
+  <h4>① 不返回 <code>reasoning</code></h4>
+  <p><b>决定：不返回。</b>它是模型的自述文本，价值在于解释「为什么这么写」，
+     但两条理由压过了这份价值：</p>
+  <ul>
+    <li><b>内容不可预期。</b>模型可能在思路里复述 schema、口径定义甚至表结构 ——
+        而 §4.2 刚刚把 <code>schema_prompt</code> 挡在接口之外，
+        再从 <code>reasoning</code> 漏出去等于白挡。</li>
+    <li><b>它不是判定链路的一部分。</b>本接口要回答的是「护栏做了什么判断」，
+        那是<b>代码判定</b>的记录；模型自述属于另一类信息，混进来会让人误以为
+        它也是可信的判定依据。</li>
+  </ul>
+  <p>真要看模型思路，命令行仍可从检查点取到 —— 那条路径的使用者本就有服务器权限。</p>
+
+  <h4>② <code>trace_id</code> 维持 12 位十六进制</h4>
+  <p><b>决定：不加长。</b>但理由必须写清楚，因为它不是「12 位本身够安全」：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>项</th><th>值</th></tr></thead>
+    <tbody>
+      <tr><td>取值空间</td><td>16<sup>12</sup> ≈ 2.8 × 10<sup>14</sup></td></tr>
+      <tr><td>限流上限（§5.1）</td><td>30 r/min ≈ 4.3 × 10<sup>4</sup> 次/天</td></tr>
+      <tr><td>穷举期望耗时</td><td>约 6.5 × 10<sup>9</sup> 天</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note crit">
+    <span class="lbl">限流是这个长度成立的前提，不是优化项</span>
+    12 位之所以够用，<b>完全依赖 §5.1 那条 30 r/min 的限流</b>。
+    若将来有人以「回放接口太慢/太紧」为由放宽或去掉限流，
+    这个长度的安全论证同时失效 —— <b>两者必须一起改，不能单独动其中一个</b>。
+    加长到 16 位会改变已有审计记录与检查点的 thread_id 格式，
+    需要一次性迁移，收益不抵成本。
+  </div>
+</section>
+
+</main>
+</div>
+
+<div class="foot">
+  判定链路回放接口设计说明 V1.0 · 拟制日期 2026-08-14 · 状态：待评审 ·
+  关联：技术设计说明书 §5（检查点）、§10.1（失败报告按步拆解）
+</div>
+
+<script>
+document.getElementById('themeBtn').onclick = () => {
+  const r = document.documentElement;
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = (r.dataset.theme || (dark?'dark':'light')) === 'dark' ? 'light' : 'dark';
+};
+const links = [...document.querySelectorAll('#toc a')];
+const targets = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+const io = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if(!e.isIntersecting) return;
+    links.forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id));
+  });
+}, {rootMargin:'-10% 0px -80% 0px', threshold:0});
+targets.forEach(t => io.observe(t));
+</script>
+
+</body>
+</html>
