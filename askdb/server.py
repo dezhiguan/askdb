@@ -37,6 +37,34 @@ def _quota_view(cfg: Config) -> dict[str, Any]:
 
 WEB = Path(__file__).resolve().parent / "web"
 
+# 回放 id 严格校验：12 位十六进制，命中与未命中同为 404
+_TRACE_ID_RE = __import__("re").compile(r"[0-9a-f]{12}")
+
+
+class _RateLimit:
+    """回放接口的进程内固定窗口限流。
+
+    单独限流而不是复用全局配额：回放不花 token，但每次都要开 SQLite
+    遍历检查点历史 —— 防的是把它当查询接口刷（设计说明 §5.1）。
+    """
+
+    def __init__(self, limit: int = 30, window_s: int = 60) -> None:
+        self.limit, self.window_s = limit, window_s
+        self._hits: list[float] = []
+
+    def allow(self) -> bool:
+        import time as _t
+
+        now = _t.monotonic()
+        self._hits = [t for t in self._hits if now - t < self.window_s]
+        if len(self._hits) >= self.limit:
+            return False
+        self._hits.append(now)
+        return True
+
+
+_REPLAY_RL = _RateLimit()
+
 
 def _paired_delta(base: list[dict], other: list[dict]) -> dict[str, Any] | None:
     """两组在**同一批题**上的差异，以及它的置信区间与显著性。
@@ -407,6 +435,44 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         out["replay_config"] = (bd.get("provenance") or {}).get("config", "")
         out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）
         return out
+
+    @app.get("/api/replay")
+    def replay_trace(trace_id: str = "") -> JSONResponse:
+        """判定链路回放（设计说明 V1.1）。
+
+        三条硬规则，都是为了"接口本身在任何实例上都不泄露数据"：
+        - 字段白名单（audit.REPLAY_FIELDS）：rows / schema_prompt 永不出接口；
+        - 开关关闭、id 非法、id 不存在 **同为 404**，不区分"不存在"与
+          "存在但无权"——区分本身就是信息泄露；
+        - 独立限流：每次回放都要开 SQLite 遍历历史，不能被当查询接口刷。
+        """
+        not_found = JSONResponse({"error": "not found"}, status_code=404)
+        if not cfg.raw["observability"].get("replay_api", False):
+            return not_found
+        if not _REPLAY_RL.allow():
+            return JSONResponse({"error": "rate limited"}, status_code=429)
+        if not _TRACE_ID_RE.fullmatch(trace_id or ""):
+            return not_found
+
+        from .audit import REPLAY_FIELDS, get_audit
+
+        rec = get_audit(cfg.audit_log, trace_id)
+        if rec is None:
+            return not_found
+
+        out = {k: rec.get(k) for k in REPLAY_FIELDS}
+        # 检查点快照只有走图的调用（ask）才有；直查/配额拦截没有线程，
+        # 如实给空列表而不是省略字段 —— 前端不用猜字段存不存在。
+        snapshots: list[dict[str, Any]] = []
+        if rec.get("kind", "ask") == "ask" and rec.get("attempts"):
+            from .graph import replay as _snap
+
+            try:
+                snapshots = _snap(trace_id, cfg)
+            except Exception:
+                snapshots = []
+        out["snapshots"] = snapshots
+        return JSONResponse(out)
 
     @app.post("/api/ask")
     def ask(req: AskRequest) -> JSONResponse:

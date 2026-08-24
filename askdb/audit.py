@@ -26,6 +26,17 @@ SUMMARY_FIELDS = (
     "step_count", "multi_step",
 )
 
+# /api/replay 的字段白名单（判定链路回放接口设计说明 §4.2）。
+# rows / schema_prompt 两个字段在设计上**绝不出接口** —— 用白名单而不是
+# 黑名单：漏给一个无害字段是体验问题，漏挡一个敏感字段是事故。
+REPLAY_FIELDS = (
+    "trace_id", "ts", "kind", "org_id", "question",
+    "tables_hit", "metrics_hit", "sql_raw", "sql_final",
+    "rules_fired", "rejected_by", "attempts", "explain_rows",
+    "step_count", "multi_step", "converged_early", "rows_returned",
+    "elapsed_ms", "tok_in", "tok_out", "cost_cny", "steps",
+)
+
 
 def read_records(path: Path) -> list[dict[str, Any]]:
     """读出全部审计记录，保持文件（时间）顺序。"""
