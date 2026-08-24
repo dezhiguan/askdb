@@ -150,3 +150,27 @@ def test_sql_endpoint_writes_audit_even_when_blocked(cfg, monkeypatch):
     assert blocked["trace_id"] == r1["trace_id"]
     # 流水页据此区分两类调用
     assert audit.list_audits(cfg.audit_log, kind="sql")["total"] == 2
+
+
+def test_audit_endpoints_paginate_and_stats(cfg, monkeypatch):
+    """/api/audit 分页检索 + /api/audit/stats 统计与 replay_api 开关透出。"""
+    from fastapi.testclient import TestClient
+
+    from askdb import server
+
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+    client = TestClient(server.create_app("ignored.yaml"))
+    for _ in range(3):
+        client.post("/api/sql", json={"sql": "SELECT file_name FROM documents"})
+    client.post("/api/sql", json={"sql": "DROP TABLE documents"})
+
+    d = client.get("/api/audit", params={"page": 1, "page_size": 2}).json()
+    assert d["total"] == 4 and len(d["items"]) == 2
+    assert "sql_raw" not in d["items"][0]              # 列表不带 SQL 文本
+    assert client.get("/api/audit", params={"q": d["items"][0]["trace_id"]}).json()["total"] == 1
+
+    st = client.get("/api/audit/stats").json()
+    assert st["calls"] == 4 and st["blocked"] == 1
+    assert st["block_rate"] == 0.25 and st["by_kind"] == {"sql": 4}
+    assert st["replay_api"] is False                   # 默认关，前端据此置灰复放入口
+    assert st["daily"] and st["daily"][-1]["calls"] == 4

@@ -436,6 +436,31 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）
         return out
 
+    @app.get("/api/audit")
+    def audit_list(page: int = 1, page_size: int = 10,
+                   q: str = "", kind: str = "") -> dict[str, Any]:
+        """审计流水（摘要分页）。列表有意不含 SQL 文本与结果行 ——
+        细节只经 /api/replay 的白名单+开关出去。"""
+        from .audit import list_audits
+
+        return list_audits(cfg.audit_log, page=page, page_size=page_size,
+                           q=q.strip(), kind=kind.strip())
+
+    @app.get("/api/audit/stats")
+    def audit_stats(days: int = 30) -> dict[str, Any]:
+        """时间窗统计：调用/拦截率/成本/按日序列。
+
+        replay_api 开关状态一并带出 —— 前端据此决定"复放"入口
+        显示还是置灰，而不是点了才发现 404。
+        """
+        from .audit import stats as _stats
+
+        days = min(max(int(days), 1), 365)
+        return {
+            **_stats(cfg.audit_log, days=days),
+            "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
+        }
+
     @app.get("/api/replay")
     def replay_trace(trace_id: str = "") -> JSONResponse:
         """判定链路回放（设计说明 V1.1）。
