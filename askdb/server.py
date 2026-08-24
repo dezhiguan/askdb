@@ -532,6 +532,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                    explain_rows: int | None = None, rows_returned: int = 0) -> None:
             write_audit(cfg.audit_log, {
                 "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
+                "model": None,
                 "org_id": org, "question": "（直查模式）",
                 "tables_hit": [], "metrics_hit": [],
                 "sql_raw": req.sql, "sql_final": sql_final,

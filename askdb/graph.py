@@ -639,6 +639,7 @@ def ask(
         # 与"放行了多少"同等重要，缺一半就对不上账。
         write_audit(cfg.audit_log, {
             "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
+            "model": cfg.llm.get("model"),
             "org_id": org, "question": question,
             "tables_hit": [], "metrics_hit": [], "sql_raw": "", "sql_final": "",
             "rules_fired": [], "rejected_by": "QUOTA", "attempts": 0,
@@ -712,6 +713,7 @@ def ask(
 
     write_audit(cfg.audit_log, {
         "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
+        "model": cfg.llm.get("model"),
         "org_id": org, "question": question,
         "tables_hit": result.tables_hit, "metrics_hit": result.metrics_hit,
         "sql_raw": result.sql_raw, "sql_final": result.sql_final,

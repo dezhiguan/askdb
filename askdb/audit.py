@@ -126,6 +126,7 @@ def stats(path: Path, days: int = 30) -> dict[str, Any]:
     daily: dict[str, dict[str, Any]] = {}
     by_kind: dict[str, int] = {}
     by_rule: dict[str, int] = {}
+    by_model: dict[str, dict[str, Any]] = {}
     for r in recent:
         day = str(r.get("ts", ""))[:10]
         d = daily.setdefault(day, {"date": day, "calls": 0, "cost_cny": 0.0})
@@ -134,6 +135,13 @@ def stats(path: Path, days: int = 30) -> dict[str, Any]:
         by_kind[r.get("kind", "ask")] = by_kind.get(r.get("kind", "ask"), 0) + 1
         if r.get("rejected_by"):
             by_rule[str(r["rejected_by"])] = by_rule.get(str(r["rejected_by"]), 0) + 1
+        # 直查不经模型（model=None）不计入模型维度；老记录无 model 字段，
+        # 按调用类型如实归为"未记录"而不是猜一个模型名
+        m = r.get("model") or ("（未记录）" if r.get("kind", "ask") == "ask" else None)
+        if m:
+            e = by_model.setdefault(m, {"calls": 0, "cost_cny": 0.0})
+            e["calls"] += 1
+            e["cost_cny"] = round(e["cost_cny"] + float(r.get("cost_cny") or 0), 6)
 
     return {
         "days": days,
@@ -147,4 +155,5 @@ def stats(path: Path, days: int = 30) -> dict[str, Any]:
         "daily": sorted(daily.values(), key=lambda d: d["date"]),
         "by_kind": by_kind,
         "by_rule": dict(sorted(by_rule.items(), key=lambda kv: -kv[1])),
+        "by_model": dict(sorted(by_model.items(), key=lambda kv: -kv[1]["cost_cny"])),
     }

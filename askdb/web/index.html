@@ -1764,6 +1764,9 @@ function openCost() {
   const bars = days.map(d =>
     `<i style="height:${Math.max(3, Math.round(d.cost_cny / max * 100))}%"
         title="${esc(d.date)} · ¥${d.cost_cny} · ${d.calls} 次"></i>`).join("");
+  const modelRows = Object.entries(s.by_model || {}).map(([k, v]) =>
+    `<tr><td class="mono">${esc(k)}</td><td class="num">${v.calls}</td><td class="num">¥${v.cost_cny}</td></tr>`).join("")
+    || `<tr><td colspan="3" class="sub">窗口内没有经模型的调用</td></tr>`;
   const kindRows = Object.entries(s.by_kind).map(([k, v]) =>
     `<tr><td>${k === "sql" ? "直查 SQL" : "提问"}</td><td class="num">${v}</td></tr>`).join("");
   const ruleRows = Object.entries(s.by_rule).map(([k, v]) =>
@@ -1773,7 +1776,8 @@ function openCost() {
     <p style="font-size:13px"><b>¥${s.cost_cny}</b> · ${s.calls} 次调用 · ${(s.tok_in + s.tok_out).toLocaleString()} tok</p>
     <div class="abars">${bars}</div>
     <div class="abarlbl"><span>${esc(days[0]?.date || "")}</span><span>按日成本 · 悬停看明细</span><span>${esc(days[days.length - 1]?.date || "")}</span></div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px">
+      <div><h3>按模型</h3><table><thead><tr><th>模型</th><th class="num">次数</th><th class="num">成本</th></tr></thead><tbody>${modelRows}</tbody></table></div>
       <div><h3>按类型</h3><table><thead><tr><th>类型</th><th class="num">次数</th></tr></thead><tbody>${kindRows}</tbody></table></div>
       <div><h3>按拦截规则</h3><table><thead><tr><th>规则</th><th class="num">次数</th></tr></thead><tbody>${ruleRows}</tbody></table></div>
     </div>`);

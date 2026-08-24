@@ -123,6 +123,8 @@ def test_stats_window_and_block_rate(tmp_path: Path):
     assert st["cost_cny"] == 0.002
     assert st["by_kind"] == {"ask": 1, "sql": 1}
     assert st["by_rule"] == {"R-02": 1}
+    # 直查不计模型维度；老 ask 记录无 model 字段 → 如实归"未记录"
+    assert st["by_model"] == {"（未记录）": {"calls": 1, "cost_cny": 0.002}}
     # 带步骤 trace 的只有 1/2 —— 这格必须按实情算，不写死 100%
     assert st["trace_complete"] == 0.5
     assert len(st["daily"]) == 2
