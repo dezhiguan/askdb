@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -414,18 +415,47 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
     @app.post("/api/sql")
     def sql(req: SqlRequest) -> JSONResponse:
-        """直查模式：跳过模型，只跑 护栏 → 干跑 → 执行。未配密钥时也能用。"""
+        """直查模式：跳过模型，只跑 护栏 → 干跑 → 执行。未配密钥时也能用。
+
+        直查同样一调用一条审计：拦截也留痕。此前这条路径不落流水，
+        审计页上"被 R-02 挡掉的删表尝试"根本不存在 —— 而那恰恰是
+        最需要留底的记录。
+        """
+        import uuid as _uuid
+
+        from .trace import now_iso, write_audit
+
         org = cfg.default_org if req.org_id is None else req.org_id
+        trace_id = _uuid.uuid4().hex[:12]
+        t0 = time.perf_counter()
         steps: list[dict[str, Any]] = []
+
+        def _audit(*, rejected_by: str | None, sql_final: str = "",
+                   rules_fired: list[str] | None = None,
+                   explain_rows: int | None = None, rows_returned: int = 0) -> None:
+            write_audit(cfg.audit_log, {
+                "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
+                "org_id": org, "question": "（直查模式）",
+                "tables_hit": [], "metrics_hit": [],
+                "sql_raw": req.sql, "sql_final": sql_final,
+                "rules_fired": rules_fired or [], "rejected_by": rejected_by,
+                "attempts": 1, "explain_rows": explain_rows,
+                "step_count": 1, "multi_step": False, "converged_early": "",
+                "rows_returned": rows_returned,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,
+            })
+
         g = guard.check(req.sql, cfg, org_id=org, dialect=cfg.dialect)
         if not g.ok:
             steps.append({"step": "guard", "ms": 0, "status": "blocked",
                           "note": f"{g.rejected_by} {g.reason}"})
+            _audit(rejected_by=g.rejected_by)
             return JSONResponse({
                 "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
                 "rejected_by": g.rejected_by, "error": g.reason,
                 "hint": "改完 SQL 再试；这是纯代码的 AST 判定，不消耗 token。",
-                "steps": steps, "org_id": org,
+                "steps": steps, "org_id": org, "trace_id": trace_id,
             })
         steps.append({"step": "guard", "ms": 0, "status": "ok",
                       "note": "；".join(g.rewrites) or "无需改写"})
@@ -434,11 +464,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             ep = ex.explain(g.sql)
             if not ep.ok:
                 steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
+                _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)
                 return JSONResponse({
                     "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
                     "sql_final": g.sql, "rejected_by": "R-11", "error": ep.reason,
                     "hint": "缩小时间范围或增加筛选条件，把扫描量降下来。",
                     "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                    "trace_id": trace_id,
                 })
             steps.append({"step": "dry_run", "ms": 0, "status": "ok",
                           "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
@@ -447,14 +479,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 res = ex.run(g.sql)
             except DataSourceError as e:
                 steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
+                _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,
+                       explain_rows=ep.est_rows)
                 return JSONResponse({
                     "ok": False, "question": "（直查模式）", "sql_final": g.sql,
                     "rejected_by": "EXEC", "error": str(e), "hint": e.hint,
                     "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                    "trace_id": trace_id,
                 })
 
         steps.append({"step": "execute", "ms": res.elapsed_ms, "status": "ok",
                       "note": f"返回 {res.row_count} 行"})
+        _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,
+               explain_rows=ep.est_rows, rows_returned=res.row_count)
         return JSONResponse({
             "ok": True, "question": "（直查模式）", "sql_raw": req.sql, "sql_final": g.sql,
             "rules_fired": g.rules_fired, "rewrites": g.rewrites,
@@ -466,6 +503,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "as_of": res.as_of,
             "elapsed_ms": res.elapsed_ms, "attempts": 1, "org_id": org,
             "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,
+            "trace_id": trace_id,
         })
 
     return app

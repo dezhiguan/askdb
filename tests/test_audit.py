@@ -126,3 +126,27 @@ def test_stats_window_and_block_rate(tmp_path: Path):
     # 带步骤 trace 的只有 1/2 —— 这格必须按实情算，不写死 100%
     assert st["trace_complete"] == 0.5
     assert len(st["daily"]) == 2
+
+
+def test_sql_endpoint_writes_audit_even_when_blocked(cfg, monkeypatch):
+    """直查模式一调用一条审计，拦截也留痕（kind=sql）。"""
+    from fastapi.testclient import TestClient
+
+    from askdb import server
+
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+    client = TestClient(server.create_app("ignored.yaml"))
+
+    r1 = client.post("/api/sql", json={"sql": "DELETE FROM documents"}).json()
+    assert r1["ok"] is False and r1["trace_id"]
+    r2 = client.post("/api/sql", json={"sql": "SELECT file_name FROM documents"}).json()
+    assert r2["ok"] is True and r2["trace_id"]
+
+    recs = audit.read_records(cfg.audit_log)
+    assert len(recs) == 2
+    blocked, passed = recs[0], recs[1]
+    assert blocked["kind"] == "sql" and blocked["rejected_by"]
+    assert passed["rejected_by"] is None and passed["rows_returned"] > 0
+    assert blocked["trace_id"] == r1["trace_id"]
+    # 流水页据此区分两类调用
+    assert audit.list_audits(cfg.audit_log, kind="sql")["total"] == 2
