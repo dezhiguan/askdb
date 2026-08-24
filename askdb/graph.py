@@ -673,7 +673,14 @@ def ask(
     try:
         out = _GRAPH.invoke(
             init,
-            {"recursion_limit": 40, "configurable": {"thread_id": trace_id, "deps": deps}},
+            {
+                "recursion_limit": 40,
+                "configurable": {"thread_id": trace_id, "deps": deps},
+                # LangSmith 接线：run 树以 metadata.trace_id 与本地审计互相
+                # 定位。未开启 tracing 时这两项只是无人消费的元数据，零开销。
+                "run_name": "askdb.ask",
+                "metadata": {"trace_id": trace_id, "org_id": org, "kind": "ask"},
+            },
         )
     finally:
         if own_exec:

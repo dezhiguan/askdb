@@ -20,6 +20,7 @@ from .config import Config, load
 from .executor import DataSourceError, Executor
 from .graph import ask as run_ask, jsonable
 from .quota import build_quota
+from .trace import langsmith_status as _ls_status
 
 
 def _quota_view(cfg: Config) -> dict[str, Any]:
@@ -234,6 +235,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 配额用量与计数后端。后端是 file 还是 redis 直接决定了多副本下
             # 上限还成不成立，属于运维要一眼看到的信息，不能只写在配置里。
             "quota": _quota_view(cfg),
+            "observability": {
+                "langsmith": _ls_status(),
+                "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
+            },
         }
 
     @app.get("/api/schema")
@@ -459,6 +464,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return {
             **_stats(cfg.audit_log, days=days),
             "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
+            "langsmith": _ls_status(),
         }
 
     @app.get("/api/replay")

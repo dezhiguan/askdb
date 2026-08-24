@@ -590,7 +590,7 @@ tbody tr.sel{background:var(--wash)}
       </div>
       <div class="tablewrap"><table id="audTable">
         <thead><tr><th>时间</th><th>trace</th><th>类型</th><th>摘要</th><th>护栏</th>
-        <th class="num">耗时</th><th class="num">成本</th><th>复放</th></tr></thead>
+        <th class="num">耗时</th><th class="num">成本</th><th>复放</th><th>观测</th></tr></thead>
         <tbody id="audRows"></tbody>
       </table></div>
       <div class="apg">
@@ -1679,7 +1679,11 @@ async function loadAuditStats() {
     <div class="tile" style="cursor:pointer" id="tileCost"><div class="lab">近 ${s.days} 天成本</div>
       <div class="val" style="color:var(--accent)">¥${s.cost_cny} ↗</div><div class="foot">点开看按日与按类分布</div></div>
     <div class="tile"><div class="lab">判定链路回放</div><div class="val">${AUD.replay ? "已开启" : "已关闭"}</div>
-      <div class="foot">observability.replay_api</div></div>`;
+      <div class="foot">observability.replay_api</div></div>
+    <div class="tile"><div class="lab">LangSmith 观测</div><div class="val">${s.langsmith && s.langsmith.enabled ? "已接入" : "未接入"}</div>
+      <div class="foot">${s.langsmith && s.langsmith.enabled
+        ? `项目 ${esc(s.langsmith.project)} · run 树按 metadata.trace_id 关联`
+        : "设 LANGSMITH_TRACING=true 开启，异步上报不阻塞主链路"}</div></div>`;
   $("tileCost").onclick = openCost;
 }
 
@@ -1696,11 +1700,15 @@ async function loadAudit() {
     const rp = AUD.replay
       ? `<span class="alink" data-rp="${esc(r.trace_id)}">复放</span>`
       : `<span class="alink dim" title="replay_api 未开启（连真实数据源的实例默认关闭）">复放</span>`;
+    const ls = (AUD.stats && AUD.stats.langsmith && AUD.stats.langsmith.enabled && r.kind !== "sql")
+      ? `<a class="alink" href="https://smith.langchain.com" target="_blank" rel="noopener"
+           title="在项目 ${esc(AUD.stats.langsmith.project)} 内按 metadata.trace_id=${esc(r.trace_id)} 过滤">LangSmith ↗</a>`
+      : `<span class="alink dim" title="${r.kind === "sql" ? "直查不经模型，无 run 树" : "LangSmith 未接入"}">—</span>`;
     return `<tr><td>${esc(fmtAsOf(r.ts))}</td><td class="mono">${esc(r.trace_id)}</td>
       <td>${kind}</td><td>${esc(String(r.question || "").slice(0, 60))}</td><td>${guard}</td>
       <td class="num">${(r.elapsed_ms / 1000).toFixed(1)}s</td>
-      <td class="num">¥${r.cost_cny ?? 0}</td><td>${rp}</td></tr>`;
-  }).join("") || `<tr><td colspan="8" style="color:var(--muted)">没有匹配的记录</td></tr>`;
+      <td class="num">¥${r.cost_cny ?? 0}</td><td>${rp}</td><td>${ls}</td></tr>`;
+  }).join("") || `<tr><td colspan="9" style="color:var(--muted)">没有匹配的记录</td></tr>`;
   $("audRows").querySelectorAll("[data-rp]").forEach(a => a.onclick = () => openReplay(a.dataset.rp));
 
   const pages = Math.max(1, Math.ceil(d.total / AUD.size));

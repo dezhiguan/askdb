@@ -174,3 +174,31 @@ def test_audit_endpoints_paginate_and_stats(cfg, monkeypatch):
     assert st["block_rate"] == 0.25 and st["by_kind"] == {"sql": 4}
     assert st["replay_api"] is False                   # 默认关，前端据此置灰复放入口
     assert st["daily"] and st["daily"][-1]["calls"] == 4
+
+
+def test_langsmith_status_from_env(monkeypatch):
+    """观测状态只认环境变量，如实报告 —— 不发请求也不编成功率。"""
+    from askdb.trace import langsmith_status
+
+    for var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2",
+                "LANGSMITH_PROJECT", "LANGCHAIN_PROJECT"):
+        monkeypatch.delenv(var, raising=False)
+    assert langsmith_status() == {"enabled": False, "project": None}
+
+    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+    monkeypatch.setenv("LANGSMITH_PROJECT", "askdb-prod")
+    assert langsmith_status() == {"enabled": True, "project": "askdb-prod"}
+
+
+def test_stats_and_health_expose_observability(cfg, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from askdb import server
+
+    monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+    monkeypatch.delenv("LANGCHAIN_TRACING_V2", raising=False)
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+    client = TestClient(server.create_app("ignored.yaml"))
+    assert client.get("/api/audit/stats").json()["langsmith"]["enabled"] is False
+    obs = client.get("/api/health").json()["observability"]
+    assert obs["langsmith"]["enabled"] is False and obs["replay_api"] is False
