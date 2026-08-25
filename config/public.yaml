@@ -38,7 +38,9 @@ datasource:
 
 tenant:
   column: org_id
-  default_ctx: 65                    # 样例库里 org 65 与 66 各有数据，可切换对比
+  # 2026-08-25 按运营要求默认 316。注意：样例库只有 org 65/66 有数据，
+  # 默认租户下查询为空是预期现象；页面上可随时切回 65/66 看样例数据。
+  default_ctx: 316
   mode: predicate                    # DuckDB 无 RLS，只有应用层改写这一层
   on_unresolved: reject
 
