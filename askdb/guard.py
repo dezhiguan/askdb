@@ -341,6 +341,13 @@ def _has_condition(where_or_on: exp.Expression, cond: exp.Expression) -> bool:
     stack = [node]
     while stack:
         cur = stack.pop()
+        # 括号只是分组，不改变合取语义 —— 不剥开它，
+        # `((a AND t) AND t2)` 里的租户谓词就永远比对不上，
+        # 把改写结果贴回直查框会看到谓词重复叠加（幂等失效）。
+        if isinstance(cur, exp.Paren):
+            if cur.this is not None:
+                stack.append(cur.this)
+            continue
         if cur.sql() == want:
             return True
         if isinstance(cur, exp.And):

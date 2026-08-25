@@ -209,10 +209,13 @@ jobs:
           assert d["ok"] is False and d["rejected_by"] == "R-02", d
           PY
 
-      - name: Introspection endpoints are not exposed
+      - name: Introspection endpoints are open (2026-08-25 运营决定)
         run: |
+          # 对外实例已放开自检/内省与 ask 每 IP 限流，只保留应用层每日配额
+          # （入口配置见 rag-forge#14）。冒烟改为钉住"放开"这个新姿态：
+          # 若哪天又变回 404，说明入口被回滚，需要有人知道。
           BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
           for p in /api/introspect /api/selfcheck; do
             CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE}${p}")"
-            [[ "${CODE}" == "404" ]] || { echo "${p} 期望 404，实得 ${CODE}"; exit 1; }
+            [[ "${CODE}" == "200" ]] || { echo "${p} 期望 200，实得 ${CODE}"; exit 1; }
           done

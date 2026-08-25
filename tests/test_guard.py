@@ -454,3 +454,24 @@ def test_r04_still_catches_hallucination_alongside_alias(cfg):
     """有别名不代表放行一切 —— 真幻觉字段照样要拦。"""
     r = chk("SELECT status AS 状态, nope_col FROM documents ORDER BY 状态", cfg)
     assert not r.ok and r.rejected_by == "R-04"
+
+
+def test_r10_idempotent_through_nested_parens(cfg):
+    """把改写产物贴回直查框（谓词包在嵌套括号里）不得重复注入。"""
+    sql = ("SELECT COUNT(*) AS c FROM documents AS d "
+           "JOIN knowledge_bases AS kb ON d.kb_id = kb.id "
+           "WHERE ((kb.name = 'x' AND d.status = 'COMPLETED') "
+           "AND d.org_id = 65) AND kb.org_id = 65 LIMIT 200")
+    r = guard.check(sql, cfg, org_id=65)
+    assert r.ok
+    assert r.sql.count("d.org_id = 65") == 1
+    assert r.sql.count("kb.org_id = 65") == 1
+
+
+def test_r10_still_injects_when_existing_value_differs(cfg):
+    """已有谓词值不同（伪造他租户）时必须照注 —— AND 交集为空，安全。"""
+    sql = ("SELECT COUNT(*) AS c FROM documents AS d "
+           "WHERE d.org_id = 999")
+    r = guard.check(sql, cfg, org_id=65)
+    assert r.ok
+    assert "d.org_id = 65" in r.sql and "d.org_id = 999" in r.sql
