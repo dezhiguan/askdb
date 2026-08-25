@@ -479,6 +479,7 @@ tbody tr.sel{background:var(--wash)}
 
   <!-- ============ ② 提问 ============ -->
   <section id="ask" hidden>
+    <div id="resumeBar"></div>
     <div class="card hide" id="noDs">
       <h2>数据源还没就绪</h2>
       <p class="sub" style="margin-bottom:0">先到「① 接入数据」把连接自检跑通，再回来提问。</p>
@@ -948,7 +949,74 @@ async function submit() {
     done(); return;
   }
   render(data);
+  saveResumable(data);
   done();
+}
+
+/* ---------- 任务中断恢复（设计说明 V1.1）：横幅 + 续跑 ---------- */
+/* 无账号体系，不做"未完成任务列表"（那是枚举接口）——
+   只在本浏览器留有该 thread_id 时给恢复入口；清缓存即丢，是既定代价。 */
+const RESUME_KEY = "askdb_resumable";
+
+function saveResumable(d) {
+  if (d && d.rejected_by === "INTERRUPTED" && d.thread_id) {
+    localStorage.setItem(RESUME_KEY, JSON.stringify({
+      thread_id: d.thread_id, question: d.question || "",
+      cost: d.cost_cny || 0, ts: Date.now(),
+    }));
+  } else if (d && d.ok) {
+    const cur = readResumable();
+    if (cur && cur.thread_id === d.thread_id) localStorage.removeItem(RESUME_KEY);
+  }
+  renderResumeBar();
+}
+
+function readResumable() {
+  try {
+    const it = JSON.parse(localStorage.getItem(RESUME_KEY) || "null");
+    // 24h 保留期：检查点不会永久保留，过期入口只会带来一个 404
+    if (!it || Date.now() - it.ts > 24 * 3600 * 1000) { localStorage.removeItem(RESUME_KEY); return null; }
+    return it;
+  } catch { return null; }
+}
+
+function renderResumeBar() {
+  const it = readResumable();
+  if (!it) { $("resumeBar").innerHTML = ""; return; }
+  $("resumeBar").innerHTML = `<div class="notice" style="margin-bottom:14px">
+    <div class="t">上次有任务在执行中中断</div>
+    <div class="why">「${esc(it.question)}」 · 中断前已花 ¥${it.cost}（不会退）。
+      续跑从断点节点继续，已完成的步骤跳过；<b>本次另计一次每日配额</b>。</div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn" id="resumeGo">从断点续跑</button>
+      <button class="btn ghost" id="resumeDrop">放弃</button>
+    </div></div>`;
+  $("resumeDrop").onclick = () => { localStorage.removeItem(RESUME_KEY); renderResumeBar(); };
+  $("resumeGo").onclick = async () => {
+    $("resumeGo").disabled = true;
+    $("resumeGo").innerHTML = '<span class="spin"></span> 续跑中…';
+    try {
+      const res = await fetch("/api/resume", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: it.thread_id }),
+      });
+      if (res.status === 404) {
+        localStorage.removeItem(RESUME_KEY);
+        $("resumeBar").innerHTML = `<div class="notice" style="margin-bottom:14px">
+          <div class="t">这个任务已不可恢复</div>
+          <div class="why">它可能已经完成，或超过了检查点保留期。重新提问即可。</div></div>`;
+        return;
+      }
+      const d = await res.json();
+      localStorage.removeItem(RESUME_KEY);
+      renderResumeBar();
+      render(d);
+      saveResumable(d);          // 续跑再次中断时重新登记（thread 不变）
+    } catch {
+      $("resumeGo").disabled = false;
+      $("resumeGo").textContent = "从断点续跑";
+    }
+  };
 }
 function done() {
   BUSY = false;
@@ -1658,6 +1726,7 @@ function barPath(x, y, w, h, r) {
 }
 
 boot();
+renderResumeBar();
 
 /* ---------- ④ 审计与复放 ---------- */
 const AUD = { page: 1, size: 10, q: "", kind: "", replay: false, stats: null, booted: false };
@@ -1712,8 +1781,10 @@ async function loadAudit() {
   $("audRows").innerHTML = d.items.map(r => {
     const guard = r.ok
       ? `<span class="badge good">通过</span>`
-      : `<span class="badge bad">${esc(r.rejected_by)} 拦截</span>`;
-    const kind = r.kind === "sql" ? "直查" : "提问";
+      : r.rejected_by === "INTERRUPTED"
+        ? `<span class="badge" style="background:var(--warn-bg);color:var(--warn-ink)">中断 · 可续跑</span>`
+        : `<span class="badge bad">${esc(r.rejected_by)} 拦截</span>`;
+    const kind = r.kind === "sql" ? "直查" : r.kind === "resume" ? "续跑" : "提问";
     const rp = AUD.replay
       ? `<span class="alink" data-rp="${esc(r.trace_id)}">复放</span>`
       : `<span class="alink dim" title="replay_api 未开启（连真实数据源的实例默认关闭）">复放</span>`;
@@ -1763,7 +1834,7 @@ async function openReplay(tid) {
       ${sn.rejected_by ? `<span class="sub" style="display:block;margin:0">拦截：${esc(sn.rejected_by)} ${esc(sn.error || "")}</span>` : ""}</span></div>`).join("");
   aModal("判定链路复放", `trace ${tid}`, `
     <p style="font-size:13px"><b>${esc(d.question)}</b></p>
-    <p class="sub">${esc(fmtAsOf(d.ts))} · ${d.kind === "sql" ? "直查" : "提问"} · org ${esc(d.org_id)}
+    <p class="sub">${esc(fmtAsOf(d.ts))} · ${d.kind === "sql" ? "直查" : d.kind === "resume" ? "续跑" : "提问"} · org ${esc(d.org_id)}${d.thread_id && d.thread_id !== d.trace_id ? ` · 关联线程 ${esc(d.thread_id)}` : ``}
       · ${d.attempts} 轮 · ¥${d.cost_cny ?? 0} · ${d.tok_in ?? 0}+${d.tok_out ?? 0} tok</p>
     <h3 style="margin:10px 0 2px">步骤链</h3>${steps || `<p class="sub">该记录没有步骤明细</p>`}
     ${snaps ? `<h3 style="margin:14px 0 2px">检查点快照（${d.snapshots.length}）</h3>${snaps}` : ""}
