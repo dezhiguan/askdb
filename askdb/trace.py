@@ -91,3 +91,19 @@ def write_audit(path: Path, record: dict[str, Any]) -> None:
             os.close(fd)
     except OSError:
         pass
+
+
+def langsmith_status() -> dict[str, Any]:
+    """LangSmith 观测是否启用 —— 只读环境变量，不发探测请求。
+
+    只如实报告 enabled / project 两件事。不报"上报成功率"：上报是
+    langchain 内部的异步旁路，进程里量不出真实成功率，编一个 100%
+    出来就是在审计页上撒谎。
+    """
+    flag = os.environ.get(
+        "LANGSMITH_TRACING", os.environ.get("LANGCHAIN_TRACING_V2", "")
+    ).strip().lower()
+    enabled = flag in ("1", "true", "yes")
+    project = (os.environ.get("LANGSMITH_PROJECT")
+               or os.environ.get("LANGCHAIN_PROJECT") or "default")
+    return {"enabled": enabled, "project": project if enabled else None}

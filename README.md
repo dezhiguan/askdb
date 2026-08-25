@@ -351,6 +351,7 @@ of why scores measured on a database you built yourself can mislead.
 | P3 | **58-question golden set, replay harness, six ablation groups** | 2026-08-25 | ✅ |
 | P4 | MCP packaging (stateless spec) | 2026-08-28 | ✅ |
 | P5 | Multi-step query planning (R-15…R-17), ablation group F | 2026-09-02 | ✅ |
+| P6 | Audit & replay page; `/api/replay` per the replay-API design (field allowlist + dual kill-switch); every call — including blocked ones and direct SQL — now leaves one audit record; optional LangSmith wiring | 2026-08-24 | ✅ |
 
 > **No unmeasured metric appears in this README.** Every figure above was actually run,
 > published alongside the held-out set score and the unfiltered distribution of failure categories.

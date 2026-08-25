@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from .config import Config, load
 from .executor import DataSourceError, Executor
 from .graph import ask as run_ask, jsonable
 from .quota import build_quota
+from .trace import langsmith_status as _ls_status
 
 
 def _quota_view(cfg: Config) -> dict[str, Any]:
@@ -35,6 +37,34 @@ def _quota_view(cfg: Config) -> dict[str, Any]:
     }
 
 WEB = Path(__file__).resolve().parent / "web"
+
+# 回放 id 严格校验：12 位十六进制，命中与未命中同为 404
+_TRACE_ID_RE = __import__("re").compile(r"[0-9a-f]{12}")
+
+
+class _RateLimit:
+    """回放接口的进程内固定窗口限流。
+
+    单独限流而不是复用全局配额：回放不花 token，但每次都要开 SQLite
+    遍历检查点历史 —— 防的是把它当查询接口刷（设计说明 §5.1）。
+    """
+
+    def __init__(self, limit: int = 30, window_s: int = 60) -> None:
+        self.limit, self.window_s = limit, window_s
+        self._hits: list[float] = []
+
+    def allow(self) -> bool:
+        import time as _t
+
+        now = _t.monotonic()
+        self._hits = [t for t in self._hits if now - t < self.window_s]
+        if len(self._hits) >= self.limit:
+            return False
+        self._hits.append(now)
+        return True
+
+
+_REPLAY_RL = _RateLimit()
 
 
 def _paired_delta(base: list[dict], other: list[dict]) -> dict[str, Any] | None:
@@ -205,6 +235,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 配额用量与计数后端。后端是 file 还是 redis 直接决定了多副本下
             # 上限还成不成立，属于运维要一眼看到的信息，不能只写在配置里。
             "quota": _quota_view(cfg),
+            "observability": {
+                "langsmith": _ls_status(),
+                "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
+            },
         }
 
     @app.get("/api/schema")
@@ -407,6 +441,70 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）
         return out
 
+    @app.get("/api/audit")
+    def audit_list(page: int = 1, page_size: int = 10,
+                   q: str = "", kind: str = "") -> dict[str, Any]:
+        """审计流水（摘要分页）。列表有意不含 SQL 文本与结果行 ——
+        细节只经 /api/replay 的白名单+开关出去。"""
+        from .audit import list_audits
+
+        return list_audits(cfg.audit_log, page=page, page_size=page_size,
+                           q=q.strip(), kind=kind.strip())
+
+    @app.get("/api/audit/stats")
+    def audit_stats(days: int = 30) -> dict[str, Any]:
+        """时间窗统计：调用/拦截率/成本/按日序列。
+
+        replay_api 开关状态一并带出 —— 前端据此决定"复放"入口
+        显示还是置灰，而不是点了才发现 404。
+        """
+        from .audit import stats as _stats
+
+        days = min(max(int(days), 1), 365)
+        return {
+            **_stats(cfg.audit_log, days=days),
+            "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
+            "langsmith": _ls_status(),
+        }
+
+    @app.get("/api/replay")
+    def replay_trace(trace_id: str = "") -> JSONResponse:
+        """判定链路回放（设计说明 V1.1）。
+
+        三条硬规则，都是为了"接口本身在任何实例上都不泄露数据"：
+        - 字段白名单（audit.REPLAY_FIELDS）：rows / schema_prompt 永不出接口；
+        - 开关关闭、id 非法、id 不存在 **同为 404**，不区分"不存在"与
+          "存在但无权"——区分本身就是信息泄露；
+        - 独立限流：每次回放都要开 SQLite 遍历历史，不能被当查询接口刷。
+        """
+        not_found = JSONResponse({"error": "not found"}, status_code=404)
+        if not cfg.raw["observability"].get("replay_api", False):
+            return not_found
+        if not _REPLAY_RL.allow():
+            return JSONResponse({"error": "rate limited"}, status_code=429)
+        if not _TRACE_ID_RE.fullmatch(trace_id or ""):
+            return not_found
+
+        from .audit import REPLAY_FIELDS, get_audit
+
+        rec = get_audit(cfg.audit_log, trace_id)
+        if rec is None:
+            return not_found
+
+        out = {k: rec.get(k) for k in REPLAY_FIELDS}
+        # 检查点快照只有走图的调用（ask）才有；直查/配额拦截没有线程，
+        # 如实给空列表而不是省略字段 —— 前端不用猜字段存不存在。
+        snapshots: list[dict[str, Any]] = []
+        if rec.get("kind", "ask") == "ask" and rec.get("attempts"):
+            from .graph import replay as _snap
+
+            try:
+                snapshots = _snap(trace_id, cfg)
+            except Exception:
+                snapshots = []
+        out["snapshots"] = snapshots
+        return JSONResponse(out)
+
     @app.post("/api/ask")
     def ask(req: AskRequest) -> JSONResponse:
         r = run_ask(req.question.strip(), cfg, org_id=req.org_id)
@@ -414,18 +512,48 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
     @app.post("/api/sql")
     def sql(req: SqlRequest) -> JSONResponse:
-        """直查模式：跳过模型，只跑 护栏 → 干跑 → 执行。未配密钥时也能用。"""
+        """直查模式：跳过模型，只跑 护栏 → 干跑 → 执行。未配密钥时也能用。
+
+        直查同样一调用一条审计：拦截也留痕。此前这条路径不落流水，
+        审计页上"被 R-02 挡掉的删表尝试"根本不存在 —— 而那恰恰是
+        最需要留底的记录。
+        """
+        import uuid as _uuid
+
+        from .trace import now_iso, write_audit
+
         org = cfg.default_org if req.org_id is None else req.org_id
+        trace_id = _uuid.uuid4().hex[:12]
+        t0 = time.perf_counter()
         steps: list[dict[str, Any]] = []
+
+        def _audit(*, rejected_by: str | None, sql_final: str = "",
+                   rules_fired: list[str] | None = None,
+                   explain_rows: int | None = None, rows_returned: int = 0) -> None:
+            write_audit(cfg.audit_log, {
+                "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
+                "model": None,
+                "org_id": org, "question": "（直查模式）",
+                "tables_hit": [], "metrics_hit": [],
+                "sql_raw": req.sql, "sql_final": sql_final,
+                "rules_fired": rules_fired or [], "rejected_by": rejected_by,
+                "attempts": 1, "explain_rows": explain_rows,
+                "step_count": 1, "multi_step": False, "converged_early": "",
+                "rows_returned": rows_returned,
+                "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+                "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,
+            })
+
         g = guard.check(req.sql, cfg, org_id=org, dialect=cfg.dialect)
         if not g.ok:
             steps.append({"step": "guard", "ms": 0, "status": "blocked",
                           "note": f"{g.rejected_by} {g.reason}"})
+            _audit(rejected_by=g.rejected_by)
             return JSONResponse({
                 "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
                 "rejected_by": g.rejected_by, "error": g.reason,
                 "hint": "改完 SQL 再试；这是纯代码的 AST 判定，不消耗 token。",
-                "steps": steps, "org_id": org,
+                "steps": steps, "org_id": org, "trace_id": trace_id,
             })
         steps.append({"step": "guard", "ms": 0, "status": "ok",
                       "note": "；".join(g.rewrites) or "无需改写"})
@@ -434,11 +562,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             ep = ex.explain(g.sql)
             if not ep.ok:
                 steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
+                _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)
                 return JSONResponse({
                     "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
                     "sql_final": g.sql, "rejected_by": "R-11", "error": ep.reason,
                     "hint": "缩小时间范围或增加筛选条件，把扫描量降下来。",
                     "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                    "trace_id": trace_id,
                 })
             steps.append({"step": "dry_run", "ms": 0, "status": "ok",
                           "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
@@ -447,14 +577,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 res = ex.run(g.sql)
             except DataSourceError as e:
                 steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
+                _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,
+                       explain_rows=ep.est_rows)
                 return JSONResponse({
                     "ok": False, "question": "（直查模式）", "sql_final": g.sql,
                     "rejected_by": "EXEC", "error": str(e), "hint": e.hint,
                     "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                    "trace_id": trace_id,
                 })
 
         steps.append({"step": "execute", "ms": res.elapsed_ms, "status": "ok",
                       "note": f"返回 {res.row_count} 行"})
+        _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,
+               explain_rows=ep.est_rows, rows_returned=res.row_count)
         return JSONResponse({
             "ok": True, "question": "（直查模式）", "sql_raw": req.sql, "sql_final": g.sql,
             "rules_fired": g.rules_fired, "rewrites": g.rewrites,
@@ -466,6 +601,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "as_of": res.as_of,
             "elapsed_ms": res.elapsed_ms, "attempts": 1, "org_id": org,
             "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,
+            "trace_id": trace_id,
         })
 
     return app

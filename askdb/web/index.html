@@ -283,6 +283,51 @@ tbody tr.sel{background:var(--wash)}
 .spin{display:inline-block;width:13px;height:13px;border:2px solid var(--border);
   border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- ④ 审计与复放 ---------- */
+.arow{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:11px}
+.ainput{flex:1;min-width:220px;font:inherit;font-size:13px;padding:7px 12px;border-radius:8px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink)}
+.ainput:focus{outline:none;border-color:var(--accent)}
+.asel{font:inherit;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1px solid var(--border);
+  background:var(--surface);color:var(--ink)}
+.apg{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;
+  margin-top:11px;font-size:12.5px;color:var(--ink-2)}
+.apg b{color:var(--ink)}
+.apgctl{display:inline-flex;align-items:center;gap:7px}
+#audBtns{display:inline-flex;gap:5px;align-items:center;margin-left:6px}
+.apgbtn{font:inherit;font-size:12.5px;min-width:30px;padding:4px 8px;border-radius:8px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink);cursor:pointer}
+.apgbtn:hover{border-color:var(--axis)}
+.apgbtn.cur{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.apgbtn[disabled]{opacity:.4;cursor:default}
+.apgdots{padding:0 2px;color:var(--muted)}
+.alink{color:var(--accent);cursor:pointer;white-space:nowrap}
+.alink.dim{color:var(--muted);cursor:default}
+.aovl[hidden]{display:none}
+.aovl{position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:80;display:flex;
+  align-items:center;justify-content:center;padding:24px}
+.amodal{background:var(--surface);border:1px solid var(--border);border-radius:14px;max-width:880px;
+  width:100%;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 18px 50px rgba(0,0,0,.25)}
+.amodal-h{display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--border)}
+.amodal-h b{font-size:14px}
+.amodal-x{margin-left:auto;font:inherit;font-size:16px;border:0;background:none;color:var(--muted);
+  cursor:pointer;padding:2px 8px}
+.amodal-x:hover{color:var(--ink)}
+.amodal-b{padding:16px 18px;overflow-y:auto}
+.astep{display:flex;gap:12px;padding:8px 2px;border-bottom:1px solid var(--border);align-items:flex-start;font-size:12.5px}
+.astep:last-child{border-bottom:0}
+.astep .adot{width:19px;height:19px;min-width:19px;border-radius:99px;color:#fff;font-size:11px;
+  display:flex;align-items:center;justify-content:center;margin-top:1px;background:var(--good-ink)}
+.astep.blocked .adot{background:var(--crit-ink)}
+.astep.failed .adot{background:var(--crit-ink)}
+.astep.skipped .adot{background:var(--axis)}
+.astep .am{color:var(--muted);font-size:11.5px;white-space:nowrap;margin-left:auto}
+.abars{display:flex;align-items:flex-end;gap:2px;height:110px;border-bottom:1.5px solid var(--axis);
+  padding:0 2px;margin-top:6px}
+.abars>i{flex:1;background:var(--accent);border-radius:3px 3px 0 0;min-height:3px}
+.abars>i:hover{filter:brightness(1.12)}
+.abarlbl{font-size:10.5px;color:var(--muted);display:flex;justify-content:space-between;margin-top:4px}
 </style>
 </head>
 <body>
@@ -303,6 +348,7 @@ tbody tr.sel{background:var(--wash)}
     <button class="tab" role="tab" aria-selected="true" data-p="setup">① 接入数据</button>
     <button class="tab" role="tab" aria-selected="false" data-p="ask">② 提问</button>
     <button class="tab" role="tab" aria-selected="false" data-p="eval">③ 评测</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="audit">④ 审计与复放</button>
   </nav>
 
   <p class="disclaimer">
@@ -526,7 +572,79 @@ tbody tr.sel{background:var(--wash)}
       <div id="evalBody"></div>
     </div>
   </section>
+
+  <!-- ============ ④ 审计与复放 ============ -->
+  <section id="audit" hidden>
+    <div class="tiles" id="auditTiles"></div>
+
+    <div class="card">
+      <h2>调用流水</h2>
+      <p class="sub">一次调用一条记录，拦截也留痕；列表不含 SQL 文本，判定细节走「复放」</p>
+      <div class="arow">
+        <input id="audQ" class="ainput" placeholder="按 trace_id / 问题关键词检索">
+        <select id="audKind" class="asel">
+          <option value="">全部类型</option>
+          <option value="ask">提问</option>
+          <option value="sql">直查 SQL</option>
+        </select>
+      </div>
+      <div class="tablewrap"><table id="audTable">
+        <thead><tr><th>时间</th><th>trace</th><th>类型</th><th>摘要</th><th>护栏</th>
+        <th class="num">耗时</th><th class="num">成本</th><th>复放</th><th>观测</th></tr></thead>
+        <tbody id="audRows"></tbody>
+      </table></div>
+      <div class="apg">
+        <span id="audInfo"></span>
+        <span class="apgctl">每页
+          <select id="audSize" class="asel"><option>10</option><option>20</option><option>50</option></select> 条
+          <span id="audBtns"></span>
+        </span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>双写职责边界</h2>
+      <p class="sub">本地审计是权威记录；LangSmith 是可选的观测面，失联不影响主链路</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th></th><th>本地审计（权威）</th><th>LangSmith（观测，可选）</th></tr></thead>
+        <tbody>
+          <tr><td>内容</td><td>一次调用一条 JSON：判定链路 + 步骤级耗时/token + SQL</td>
+              <td>LangGraph 节点级 run 树、token / 延迟分布</td></tr>
+          <tr><td>用途</td><td>本页流水与复放、<span class="mono">askdb replay</span>、审计取证</td>
+              <td>链路瓶颈分析、失败聚类、跨 run 对比</td></tr>
+          <tr><td>失效影响</td><td>O_APPEND 原子追加；写失败不影响查询主链路</td>
+              <td>异步上报，未接入 / 失联时本页一切照常</td></tr>
+          <tr><td>数据边界</td><td>全量（仅本机文件）</td>
+              <td>不上报结果行，仅元数据与 SQL 文本</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h2>Checkpoint 恢复语义</h2>
+      <p class="sub">恢复的是图状态，不是外部世界 —— 三个场景、三条边界</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th>场景</th><th>机制</th><th>现状</th></tr></thead>
+        <tbody>
+          <tr><td>失败复现（时间旅行）</td><td>按 trace_id 回放全部检查点快照</td>
+              <td>本页「复放」与 <span class="mono">askdb replay</span>，已可用</td></tr>
+          <tr><td>线程持久化</td><td>同 thread_id 逐次接续，跨进程重启存活</td>
+              <td>检查点随每次提问落 SQLite，已可用</td></tr>
+          <tr><td>断点续跑</td><td>从最后完成的超步继续，预算计数一并恢复</td>
+              <td>设计已定版（任务中断恢复 V1.1），落地前先修 R-17 计数器复位</td></tr>
+        </tbody>
+      </table></div>
+      <p class="sub" style="margin-top:8px">边界：已发生的副作用不随回退撤销；预算计数必须入图状态，否则续跑绕穿上限；
+      回放还原的是判定现场，不承诺数据新鲜度。</p>
+    </div>
+  </section>
 </div>
+
+<div class="aovl" id="aovl" hidden><div class="amodal">
+  <div class="amodal-h"><b id="aovlT"></b><span class="pill" id="aovlP"></span>
+  <button class="amodal-x" id="aovlX">✕</button></div>
+  <div class="amodal-b" id="aovlB"></div>
+</div></div>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -568,7 +686,8 @@ $("themeBtn").onclick = () => {
 };
 document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t));
-  ["setup", "ask", "eval"].forEach(id => $(id).hidden = id !== t.dataset.p);
+  ["setup", "ask", "eval", "audit"].forEach(id => $(id).hidden = id !== t.dataset.p);
+  if (t.dataset.p === "audit") auditBoot();
 });
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
@@ -1523,6 +1642,146 @@ function barPath(x, y, w, h, r) {
 }
 
 boot();
+
+/* ---------- ④ 审计与复放 ---------- */
+const AUD = { page: 1, size: 10, q: "", kind: "", replay: false, stats: null, booted: false };
+
+function aModal(title, pill, html) {
+  $("aovlT").textContent = title; $("aovlP").textContent = pill;
+  $("aovlB").innerHTML = html; $("aovl").hidden = false;
+}
+$("aovlX").onclick = () => $("aovl").hidden = true;
+$("aovl").onclick = e => { if (e.target === $("aovl")) $("aovl").hidden = true; };
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("aovl").hidden = true; });
+
+function auditBoot() {
+  if (AUD.booted) return;
+  AUD.booted = true;
+  loadAuditStats(); loadAudit();
+  let deb;
+  $("audQ").addEventListener("input", () => {
+    clearTimeout(deb);
+    deb = setTimeout(() => { AUD.q = $("audQ").value.trim(); AUD.page = 1; loadAudit(); }, 300);
+  });
+  $("audKind").onchange = () => { AUD.kind = $("audKind").value; AUD.page = 1; loadAudit(); };
+  $("audSize").onchange = () => { AUD.size = +$("audSize").value; AUD.page = 1; loadAudit(); };
+}
+
+async function loadAuditStats() {
+  let s;
+  try { s = await (await fetch("/api/audit/stats")).json(); } catch { return; }
+  AUD.replay = !!s.replay_api; AUD.stats = s;
+  const pct = v => v == null ? "—" : Math.round(v * 100) + "%";
+  $("auditTiles").innerHTML = `
+    <div class="tile"><div class="lab">近 ${s.days} 天调用</div><div class="val">${s.calls.toLocaleString()}</div></div>
+    <div class="tile"><div class="lab">护栏拦截</div><div class="val">${s.blocked}</div><div class="foot">拦截率 ${pct(s.block_rate)}</div></div>
+    <div class="tile"><div class="lab">调用具备步骤级 trace</div><div class="val">${pct(s.trace_complete)}</div></div>
+    <div class="tile" style="cursor:pointer" id="tileCost"><div class="lab">近 ${s.days} 天成本</div>
+      <div class="val" style="color:var(--accent)">¥${s.cost_cny} ↗</div><div class="foot">点开看按日与按类分布</div></div>
+    <div class="tile"><div class="lab">判定链路回放</div><div class="val">${AUD.replay ? "已开启" : "已关闭"}</div>
+      <div class="foot">observability.replay_api</div></div>
+    <div class="tile"><div class="lab">LangSmith 观测</div><div class="val">${s.langsmith && s.langsmith.enabled ? "已接入" : "未接入"}</div>
+      <div class="foot">${s.langsmith && s.langsmith.enabled
+        ? `项目 ${esc(s.langsmith.project)} · run 树按 metadata.trace_id 关联`
+        : "设 LANGSMITH_TRACING=true 开启，异步上报不阻塞主链路"}</div></div>`;
+  $("tileCost").onclick = openCost;
+}
+
+async function loadAudit() {
+  const u = `/api/audit?page=${AUD.page}&page_size=${AUD.size}` +
+            `&q=${encodeURIComponent(AUD.q)}&kind=${AUD.kind}`;
+  let d;
+  try { d = await (await fetch(u)).json(); } catch { return; }
+  $("audRows").innerHTML = d.items.map(r => {
+    const guard = r.ok
+      ? `<span class="badge good">通过</span>`
+      : `<span class="badge bad">${esc(r.rejected_by)} 拦截</span>`;
+    const kind = r.kind === "sql" ? "直查" : "提问";
+    const rp = AUD.replay
+      ? `<span class="alink" data-rp="${esc(r.trace_id)}">复放</span>`
+      : `<span class="alink dim" title="replay_api 未开启（连真实数据源的实例默认关闭）">复放</span>`;
+    const ls = (AUD.stats && AUD.stats.langsmith && AUD.stats.langsmith.enabled && r.kind !== "sql")
+      ? `<a class="alink" href="https://smith.langchain.com" target="_blank" rel="noopener"
+           title="在项目 ${esc(AUD.stats.langsmith.project)} 内按 metadata.trace_id=${esc(r.trace_id)} 过滤">LangSmith ↗</a>`
+      : `<span class="alink dim" title="${r.kind === "sql" ? "直查不经模型，无 run 树" : "LangSmith 未接入"}">—</span>`;
+    return `<tr><td>${esc(fmtAsOf(r.ts))}</td><td class="mono">${esc(r.trace_id)}</td>
+      <td>${kind}</td><td>${esc(String(r.question || "").slice(0, 60))}</td><td>${guard}</td>
+      <td class="num">${(r.elapsed_ms / 1000).toFixed(1)}s</td>
+      <td class="num">¥${r.cost_cny ?? 0}</td><td>${rp}</td><td>${ls}</td></tr>`;
+  }).join("") || `<tr><td colspan="9" style="color:var(--muted)">没有匹配的记录</td></tr>`;
+  $("audRows").querySelectorAll("[data-rp]").forEach(a => a.onclick = () => openReplay(a.dataset.rp));
+
+  const pages = Math.max(1, Math.ceil(d.total / AUD.size));
+  const st = d.total ? (AUD.page - 1) * AUD.size + 1 : 0;
+  $("audInfo").innerHTML = `第 <b>${st}–${Math.min(AUD.page * AUD.size, d.total)}</b> 条 / 共 <b>${d.total.toLocaleString()}</b> 条`;
+  let ps = [...new Set([1, AUD.page - 1, AUD.page, AUD.page + 1, pages]
+             .filter(n => n >= 1 && n <= pages))].sort((a, b) => a - b);
+  let h = `<button class="apgbtn" ${AUD.page === 1 ? "disabled" : ""} data-pg="${AUD.page - 1}">‹</button>`, prev = 0;
+  for (const n of ps) {
+    if (n - prev > 1) h += `<span class="apgdots">…</span>`;
+    h += `<button class="apgbtn${n === AUD.page ? " cur" : ""}" data-pg="${n}">${n}</button>`; prev = n;
+  }
+  h += `<button class="apgbtn" ${AUD.page === pages ? "disabled" : ""} data-pg="${AUD.page + 1}">›</button>`;
+  $("audBtns").innerHTML = h;
+  $("audBtns").querySelectorAll("[data-pg]").forEach(b =>
+    b.onclick = () => { AUD.page = +b.dataset.pg; loadAudit(); });
+}
+
+async function openReplay(tid) {
+  const r = await fetch(`/api/replay?trace_id=${encodeURIComponent(tid)}`);
+  if (r.status === 429) return aModal("判定链路复放", tid, `<p>回放接口被限流了，稍等一分钟再试。</p>`);
+  if (!r.ok) return aModal("判定链路复放", tid,
+    `<p>取不到这条记录：回放开关未开启，或记录不存在。</p>
+     <p class="sub">命令行等价入口：<span class="mono">askdb replay ${esc(tid)}</span></p>`);
+  const d = await r.json();
+  const steps = (d.steps || []).map(s => `
+    <div class="astep ${esc(s.status)}"><span class="adot">${s.status === "ok" ? "✓" : "✕"}</span>
+      <span><b>${esc(STEP_NAMES[s.step] || s.step)}</b>
+      ${s.note ? `<span class="sub" style="display:block;margin:0">${esc(s.note)}</span>` : ""}</span>
+      <span class="am">${s.ms} ms${s.tok_in ? ` · ${s.tok_in}+${s.tok_out} tok` : ""}</span></div>`).join("");
+  const snaps = (d.snapshots || []).map((sn, i) => `
+    <div class="astep"><span class="adot" style="background:var(--axis)">${i + 1}</span>
+      <span><b>第 ${(sn.attempt ?? 0) + 1} 轮${sn.next && sn.next.length ? ` · 下一节点 ${esc(sn.next.join(","))}` : " · 终态"}</b>
+      ${sn.rejected_by ? `<span class="sub" style="display:block;margin:0">拦截：${esc(sn.rejected_by)} ${esc(sn.error || "")}</span>` : ""}</span></div>`).join("");
+  aModal("判定链路复放", `trace ${tid}`, `
+    <p style="font-size:13px"><b>${esc(d.question)}</b></p>
+    <p class="sub">${esc(fmtAsOf(d.ts))} · ${d.kind === "sql" ? "直查" : "提问"} · org ${esc(d.org_id)}
+      · ${d.attempts} 轮 · ¥${d.cost_cny ?? 0} · ${d.tok_in ?? 0}+${d.tok_out ?? 0} tok</p>
+    <h3 style="margin:10px 0 2px">步骤链</h3>${steps || `<p class="sub">该记录没有步骤明细</p>`}
+    ${snaps ? `<h3 style="margin:14px 0 2px">检查点快照（${d.snapshots.length}）</h3>${snaps}` : ""}
+    ${d.sql_final ? `<h3 style="margin:14px 0 6px">最终 SQL（实际执行的就是这条）
+        <span class="badge good">护栏通过 · 只读执行</span></h3>
+      <pre>${esc(d.sql_final)}</pre>` : ""}
+    ${d.sql_raw && d.sql_raw !== d.sql_final ? `<details><summary class="sub" style="cursor:pointer">模型原始 SQL（改写前）</summary>
+      <pre>${esc(d.sql_raw)}</pre></details>` : ""}
+    <p class="sub" style="margin-top:10px">结果行与注入提示词不在本接口返回范围（字段白名单，设计说明 §4.2）。</p>`);
+}
+
+function openCost() {
+  const s = AUD.stats; if (!s) return;
+  const days = s.daily.slice(-14);
+  const max = Math.max(...days.map(d => d.cost_cny), 0.000001);
+  const bars = days.map(d =>
+    `<i style="height:${Math.max(3, Math.round(d.cost_cny / max * 100))}%"
+        title="${esc(d.date)} · ¥${d.cost_cny} · ${d.calls} 次"></i>`).join("");
+  const modelRows = Object.entries(s.by_model || {}).map(([k, v]) =>
+    `<tr><td class="mono">${esc(k)}</td><td class="num">${v.calls}</td><td class="num">¥${v.cost_cny}</td></tr>`).join("")
+    || `<tr><td colspan="3" class="sub">窗口内没有经模型的调用</td></tr>`;
+  const kindRows = Object.entries(s.by_kind).map(([k, v]) =>
+    `<tr><td>${k === "sql" ? "直查 SQL" : "提问"}</td><td class="num">${v}</td></tr>`).join("");
+  const ruleRows = Object.entries(s.by_rule).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td class="num">${v}</td></tr>`).join("")
+    || `<tr><td colspan="2" class="sub">窗口内没有拦截记录</td></tr>`;
+  aModal("成本与调用分布", `近 ${s.days} 天 · 本地审计聚合`, `
+    <p style="font-size:13px"><b>¥${s.cost_cny}</b> · ${s.calls} 次调用 · ${(s.tok_in + s.tok_out).toLocaleString()} tok</p>
+    <div class="abars">${bars}</div>
+    <div class="abarlbl"><span>${esc(days[0]?.date || "")}</span><span>按日成本 · 悬停看明细</span><span>${esc(days[days.length - 1]?.date || "")}</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px">
+      <div><h3>按模型</h3><table><thead><tr><th>模型</th><th class="num">次数</th><th class="num">成本</th></tr></thead><tbody>${modelRows}</tbody></table></div>
+      <div><h3>按类型</h3><table><thead><tr><th>类型</th><th class="num">次数</th></tr></thead><tbody>${kindRows}</tbody></table></div>
+      <div><h3>按拦截规则</h3><table><thead><tr><th>规则</th><th class="num">次数</th></tr></thead><tbody>${ruleRows}</tbody></table></div>
+    </div>`);
+}
 </script>
 </body>
 </html>

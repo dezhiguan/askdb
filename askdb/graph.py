@@ -635,6 +635,19 @@ def ask(
     over, used = dq.exhausted()
     if over:
         tracer.add("quota", tracer.start(), f"当日已用 {used}/{dq.limit}", status="blocked")
+        # 拦截也留痕：配额挡下的调用同样要进流水 —— 审计页上"被挡了多少"
+        # 与"放行了多少"同等重要，缺一半就对不上账。
+        write_audit(cfg.audit_log, {
+            "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
+            "model": cfg.llm.get("model"),
+            "org_id": org, "question": question,
+            "tables_hit": [], "metrics_hit": [], "sql_raw": "", "sql_final": "",
+            "rules_fired": [], "rejected_by": "QUOTA", "attempts": 0,
+            "explain_rows": None, "step_count": 0, "multi_step": False,
+            "converged_early": "", "rows_returned": 0,
+            "elapsed_ms": tracer.elapsed_ms, "tok_in": 0, "tok_out": 0,
+            "cost_cny": 0.0, "steps": tracer.as_list(),
+        })
         return AskResult(
             ok=False, question=question, trace_id=trace_id, org_id=org,
             rejected_by="QUOTA",
@@ -661,7 +674,14 @@ def ask(
     try:
         out = _GRAPH.invoke(
             init,
-            {"recursion_limit": 40, "configurable": {"thread_id": trace_id, "deps": deps}},
+            {
+                "recursion_limit": 40,
+                "configurable": {"thread_id": trace_id, "deps": deps},
+                # LangSmith 接线：run 树以 metadata.trace_id 与本地审计互相
+                # 定位。未开启 tracing 时这两项只是无人消费的元数据，零开销。
+                "run_name": "askdb.ask",
+                "metadata": {"trace_id": trace_id, "org_id": org, "kind": "ask"},
+            },
         )
     finally:
         if own_exec:
@@ -692,7 +712,9 @@ def ask(
     )
 
     write_audit(cfg.audit_log, {
-        "trace_id": trace_id, "ts": now_iso(), "org_id": org, "question": question,
+        "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
+        "model": cfg.llm.get("model"),
+        "org_id": org, "question": question,
         "tables_hit": result.tables_hit, "metrics_hit": result.metrics_hit,
         "sql_raw": result.sql_raw, "sql_final": result.sql_final,
         "rules_fired": result.rules_fired, "rejected_by": result.rejected_by,
