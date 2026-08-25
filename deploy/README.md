@@ -85,6 +85,13 @@ kubectl -n askdb create secret generic askdb-llm \
 # 配额共享计数（可选；不建则退回本地文件计数，单副本下依然正确）
 kubectl -n askdb create secret generic askdb-redis \
   --from-literal=ASKDB_REDIS_URL='redis://:口令@172.25.90.183:6379/2'
+
+# LangSmith 观测（可选；不建则审计页如实显示"未接入"，主链路零影响）
+# API key 在 smith.langchain.com → Settings → API Keys 生成
+kubectl -n askdb create secret generic askdb-langsmith \
+  --from-literal=LANGSMITH_TRACING=true \
+  --from-literal=LANGSMITH_API_KEY=lsv2_... \
+  --from-literal=LANGSMITH_PROJECT=askdb-prod
 ```
 
 建完用 `curl -s https://askdb.ragforge.net/api/health | jq .quota` 确认

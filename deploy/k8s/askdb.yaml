@@ -89,6 +89,13 @@ spec:
             - secretRef:
                 name: askdb-redis
                 optional: true
+            # LangSmith 观测（可选）。没建这个 Secret 时审计页如实显示
+            # "未接入"，主链路零影响；建好即启用，无需改代码。
+            # 需要三个键：LANGSMITH_TRACING=true / LANGSMITH_API_KEY /
+            # LANGSMITH_PROJECT（建议 askdb-prod），见 deploy/README.md。
+            - secretRef:
+                name: askdb-langsmith
+                optional: true
           resources:
             requests: { cpu: "50m",  memory: "192Mi" }
             limits:   { cpu: "500m", memory: "512Mi" }
