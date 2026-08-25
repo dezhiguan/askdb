@@ -783,7 +783,13 @@ async function boot() {
     renderChips();
   } catch { /* 数据源不可用时已有横幅提示 */ }
 
-  fetch("/api/selfcheck").then(r => r.json()).then(renderChecks).catch(() => {
+  fetch("/api/selfcheck").then(r => {
+    if (r.status === 404) {
+      $("checks").innerHTML = `<p style="font-size:12.5px;color:var(--muted)">本实例已关闭连接自检（对外实例安全策略），可直接到「② 提问」使用。</p>`;
+      return;
+    }
+    return r.json().then(renderChecks);
+  }).catch(() => {
     $("checks").innerHTML = `<p style="font-size:12.5px;color:var(--muted)">自检没跑起来，多半是数据源还没准备好。</p>`;
   });
 }
@@ -1231,7 +1237,17 @@ askdb check                # 六项自检，含写操作实探`;
 $("testBtn").onclick = async () => {
   $("checks").innerHTML = '<span class="spin"></span> 检测中…';
   try {
-    renderChecks(await (await fetch("/api/selfcheck")).json());
+    const r = await fetch("/api/selfcheck");
+    // 对外实例的 nginx 刻意挡掉自检/内省端点（部署说明·验证一节，期望 404）。
+    // 这不是故障，要如实说明，而不是让访问者去"确认 serve 还在跑"。
+    if (r.status === 404) {
+      $("checks").innerHTML = `<div class="notice"><div class="t">该实例已关闭连接自检</div>
+        <div class="why">这是对外开放实例的既定安全策略：自检与内省端点会暴露数据源细节，
+        已在入口层屏蔽。本地部署（askdb serve）时此功能可用；本实例连的是内置样例库，
+        可直接去「② 提问」使用。</div></div>`;
+      return;
+    }
+    renderChecks(await r.json());
   } catch {
     $("checks").innerHTML = `<div class="notice bad"><div class="t">✕ 自检没跑起来</div>
       <div class="why">确认 askdb serve 仍在运行。</div></div>`;
