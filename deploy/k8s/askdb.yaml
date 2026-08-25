@@ -89,10 +89,12 @@ spec:
             - secretRef:
                 name: askdb-redis
                 optional: true
-            # LangSmith 观测（可选）。没建这个 Secret 时审计页如实显示
-            # "未接入"，主链路零影响；建好即启用，无需改代码。
-            # 需要三个键：LANGSMITH_TRACING=true / LANGSMITH_API_KEY /
-            # LANGSMITH_PROJECT（建议 askdb-prod），见 deploy/README.md。
+            # 调用链观测（可选，二选一；都没建则审计页如实显示"未接入"，
+            # 主链路零影响）。国内机房推荐自托管 Langfuse —— 228 出网到
+            # LangSmith 云不通（实测超时），LangSmith 仅留给能出海的部署。
+            - secretRef:
+                name: askdb-langfuse
+                optional: true
             - secretRef:
                 name: askdb-langsmith
                 optional: true

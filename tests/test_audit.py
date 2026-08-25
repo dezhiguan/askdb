@@ -197,10 +197,28 @@ def test_stats_and_health_expose_observability(cfg, monkeypatch):
 
     from askdb import server
 
-    monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
-    monkeypatch.delenv("LANGCHAIN_TRACING_V2", raising=False)
+    for var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2",
+                "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(server, "load", lambda _p: cfg)
     client = TestClient(server.create_app("ignored.yaml"))
-    assert client.get("/api/audit/stats").json()["langsmith"]["enabled"] is False
+    assert client.get("/api/audit/stats").json()["tracing"]["enabled"] is False
     obs = client.get("/api/health").json()["observability"]
-    assert obs["langsmith"]["enabled"] is False and obs["replay_api"] is False
+    assert obs["tracing"]["backend"] is None and obs["replay_api"] is False
+
+
+def test_observability_prefers_selfhosted_langfuse(monkeypatch):
+    """Langfuse 与 LangSmith 都配了按 Langfuse 算 —— 国内机房出网到
+    LangSmith 云未必通，自托管是默认推荐。"""
+    from askdb.trace import observability_status
+
+    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-x")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-x")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://172.25.90.183:3000")
+    st = observability_status()
+    assert st["backend"] == "langfuse" and st["enabled"] is True
+    assert st["host"].endswith(":3000")
+
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY")
+    assert observability_status()["backend"] == "langsmith"

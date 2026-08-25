@@ -24,7 +24,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 
-from . import guard, planner, schema_rag
+from . import guard, observe, planner, schema_rag
 from .config import Config
 from .executor import DataSourceError, Executor
 from .llm import LlmClient, LlmNotConfigured
@@ -677,8 +677,9 @@ def ask(
             {
                 "recursion_limit": 40,
                 "configurable": {"thread_id": trace_id, "deps": deps},
-                # LangSmith 接线：run 树以 metadata.trace_id 与本地审计互相
-                # 定位。未开启 tracing 时这两项只是无人消费的元数据，零开销。
+                # LangSmith 环境启用时 run 树以 metadata.trace_id 与本地审计
+                # 互相定位；Langfuse 不走 LangChain 集成（见 observe.py），
+                # 在审计落盘后按同一条记录上报。
                 "run_name": "askdb.ask",
                 "metadata": {"trace_id": trace_id, "org_id": org, "kind": "ask"},
             },
@@ -711,7 +712,7 @@ def ask(
         cost_cny=cost_cny(tok_in, tok_out, cfg.llm),
     )
 
-    write_audit(cfg.audit_log, {
+    audit_rec = {
         "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
         "model": cfg.llm.get("model"),
         "org_id": org, "question": question,
@@ -724,5 +725,7 @@ def ask(
         "rows_returned": result.row_count,
         "elapsed_ms": result.elapsed_ms, "tok_in": tok_in, "tok_out": tok_out,
         "cost_cny": result.cost_cny, "steps": result.steps,
-    })
+    }
+    write_audit(cfg.audit_log, audit_rec)
+    observe.report(audit_rec)          # 观测双写：同一条记录，异步旁路
     return result

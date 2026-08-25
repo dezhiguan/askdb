@@ -86,8 +86,15 @@ kubectl -n askdb create secret generic askdb-llm \
 kubectl -n askdb create secret generic askdb-redis \
   --from-literal=ASKDB_REDIS_URL='redis://:口令@172.25.90.183:6379/2'
 
-# LangSmith 观测（可选；不建则审计页如实显示"未接入"，主链路零影响）
-# API key 在 smith.langchain.com → Settings → API Keys 生成
+# 调用链观测（可选，二选一；不建则审计页如实显示"未接入"，主链路零影响）
+# 首选：自托管 Langfuse（部署在数据机 /opt/langfuse，docker compose）。
+# 注意数据机安全组需放行 3000 端口（源 = 172.25.90.184/32，即 k8s 节点）。
+kubectl -n askdb create secret generic askdb-langfuse \
+  --from-literal=LANGFUSE_HOST=http://172.25.90.183:3000 \
+  --from-literal=LANGFUSE_PUBLIC_KEY=pk-lf-... \
+  --from-literal=LANGFUSE_SECRET_KEY=sk-lf-...
+
+# 备选：LangSmith 云（仅在部署环境能出海时可用；228 机房实测不通）
 kubectl -n askdb create secret generic askdb-langsmith \
   --from-literal=LANGSMITH_TRACING=true \
   --from-literal=LANGSMITH_API_KEY=lsv2_... \

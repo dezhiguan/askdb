@@ -107,3 +107,22 @@ def langsmith_status() -> dict[str, Any]:
     project = (os.environ.get("LANGSMITH_PROJECT")
                or os.environ.get("LANGCHAIN_PROJECT") or "default")
     return {"enabled": enabled, "project": project if enabled else None}
+
+
+def observability_status() -> dict[str, Any]:
+    """观测后端状态：Langfuse（自托管）优先，其次 LangSmith（云）。
+
+    只认环境变量、不发探测请求。国内机房到 LangSmith 云出网未必通，
+    自托管 Langfuse 是默认推荐；两者都配了按 Langfuse 算。
+    """
+    if os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY"):
+        return {
+            "backend": "langfuse", "enabled": True,
+            "project": os.environ.get("LANGFUSE_PROJECT", "askdb-prod"),
+            "host": os.environ.get("LANGFUSE_HOST", ""),
+        }
+    ls = langsmith_status()
+    if ls["enabled"]:
+        return {"backend": "langsmith", "enabled": True,
+                "project": ls["project"], "host": "https://smith.langchain.com"}
+    return {"backend": None, "enabled": False, "project": None, "host": ""}

@@ -1680,10 +1680,11 @@ async function loadAuditStats() {
       <div class="val" style="color:var(--accent)">¥${s.cost_cny} ↗</div><div class="foot">点开看按日与按类分布</div></div>
     <div class="tile"><div class="lab">判定链路回放</div><div class="val">${AUD.replay ? "已开启" : "已关闭"}</div>
       <div class="foot">observability.replay_api</div></div>
-    <div class="tile"><div class="lab">LangSmith 观测</div><div class="val">${s.langsmith && s.langsmith.enabled ? "已接入" : "未接入"}</div>
-      <div class="foot">${s.langsmith && s.langsmith.enabled
-        ? `项目 ${esc(s.langsmith.project)} · run 树按 metadata.trace_id 关联`
-        : "设 LANGSMITH_TRACING=true 开启，异步上报不阻塞主链路"}</div></div>`;
+    <div class="tile"><div class="lab">调用链观测</div><div class="val">${s.tracing && s.tracing.enabled
+        ? (s.tracing.backend === "langfuse" ? "Langfuse" : "LangSmith") + " 已接入" : "未接入"}</div>
+      <div class="foot">${s.tracing && s.tracing.enabled
+        ? `项目 ${esc(s.tracing.project)} · run 树按 metadata.trace_id 关联`
+        : "配置 LANGFUSE_*（自托管，推荐）或 LANGSMITH_* 后启用，异步上报不阻塞主链路"}</div></div>`;
   $("tileCost").onclick = openCost;
 }
 
@@ -1700,10 +1701,11 @@ async function loadAudit() {
     const rp = AUD.replay
       ? `<span class="alink" data-rp="${esc(r.trace_id)}">复放</span>`
       : `<span class="alink dim" title="replay_api 未开启（连真实数据源的实例默认关闭）">复放</span>`;
-    const ls = (AUD.stats && AUD.stats.langsmith && AUD.stats.langsmith.enabled && r.kind !== "sql")
-      ? `<a class="alink" href="https://smith.langchain.com" target="_blank" rel="noopener"
-           title="在项目 ${esc(AUD.stats.langsmith.project)} 内按 metadata.trace_id=${esc(r.trace_id)} 过滤">LangSmith ↗</a>`
-      : `<span class="alink dim" title="${r.kind === "sql" ? "直查不经模型，无 run 树" : "LangSmith 未接入"}">—</span>`;
+    const tr0 = AUD.stats && AUD.stats.tracing;
+    const ls = (tr0 && tr0.enabled && r.kind !== "sql")
+      ? `<a class="alink" href="${esc(tr0.backend === "langfuse" ? (tr0.host + "/project/" + tr0.project + "/traces/" + r.trace_id) : "https://smith.langchain.com")}" target="_blank" rel="noopener"
+           title="在项目 ${esc(tr0.project)} 内按 metadata.trace_id=${esc(r.trace_id)} 过滤${tr0.backend === "langfuse" ? "（自托管地址，外网访问需隧道）" : ""}">${tr0.backend === "langfuse" ? "Langfuse" : "LangSmith"} ↗</a>`
+      : `<span class="alink dim" title="${r.kind === "sql" ? "直查不经模型，无 run 树" : "调用链观测未接入"}">—</span>`;
     return `<tr><td>${esc(fmtAsOf(r.ts))}</td><td class="mono">${esc(r.trace_id)}</td>
       <td>${kind}</td><td>${esc(String(r.question || "").slice(0, 60))}</td><td>${guard}</td>
       <td class="num">${(r.elapsed_ms / 1000).toFixed(1)}s</td>

@@ -14,6 +14,8 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=2.0",
     "langchain-core>=0.3",
     "langchain-openai>=0.3",
+    # LLM 观测（自托管 Langfuse，v2 服务端配 v2 SDK；import 路径在 v3 有变，锁大版本）
+    "langfuse>=2.60,<3",
     "sqlglot>=25.0",
     "duckdb>=1.0",
     "pydantic>=2.7",
