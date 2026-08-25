@@ -91,8 +91,11 @@ kubectl -n askdb create secret generic askdb-redis \
 # 注意数据机安全组需放行 3000 端口（源 = 172.25.90.184/32，即 k8s 节点）。
 kubectl -n askdb create secret generic askdb-langfuse \
   --from-literal=LANGFUSE_HOST=http://172.25.90.183:3000 \
+  --from-literal=LANGFUSE_PUBLIC_URL=http://localhost:3000 \
   --from-literal=LANGFUSE_PUBLIC_KEY=pk-lf-... \
   --from-literal=LANGFUSE_SECRET_KEY=sk-lf-...
+# PUBLIC_URL 是审计页"观测"链接的跳转地址：自托管实例仅内网可达，
+# 浏览器侧先挂隧道（ssh -f -N langfuse，见 ~/.ssh/config）再点链接。
 
 # 备选：LangSmith 云（仅在部署环境能出海时可用；228 机房实测不通）
 kubectl -n askdb create secret generic askdb-langsmith \

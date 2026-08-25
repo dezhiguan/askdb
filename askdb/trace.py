@@ -116,13 +116,18 @@ def observability_status() -> dict[str, Any]:
     自托管 Langfuse 是默认推荐；两者都配了按 Langfuse 算。
     """
     if os.environ.get("LANGFUSE_PUBLIC_KEY") and os.environ.get("LANGFUSE_SECRET_KEY"):
+        host = os.environ.get("LANGFUSE_HOST", "")
         return {
             "backend": "langfuse", "enabled": True,
             "project": os.environ.get("LANGFUSE_PROJECT", "askdb-prod"),
-            "host": os.environ.get("LANGFUSE_HOST", ""),
+            "host": host,
+            # 页面跳转地址与上报地址分离：自托管实例常常只在内网可达，
+            # 浏览器侧经隧道访问（如 localhost:3000）。没配就退回上报地址。
+            "url": os.environ.get("LANGFUSE_PUBLIC_URL", host),
         }
     ls = langsmith_status()
     if ls["enabled"]:
-        return {"backend": "langsmith", "enabled": True,
-                "project": ls["project"], "host": "https://smith.langchain.com"}
-    return {"backend": None, "enabled": False, "project": None, "host": ""}
+        return {"backend": "langsmith", "enabled": True, "project": ls["project"],
+                "host": "https://smith.langchain.com",
+                "url": "https://smith.langchain.com"}
+    return {"backend": None, "enabled": False, "project": None, "host": "", "url": ""}

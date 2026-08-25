@@ -1703,8 +1703,8 @@ async function loadAudit() {
       : `<span class="alink dim" title="replay_api 未开启（连真实数据源的实例默认关闭）">复放</span>`;
     const tr0 = AUD.stats && AUD.stats.tracing;
     const ls = (tr0 && tr0.enabled && r.kind !== "sql")
-      ? `<a class="alink" href="${esc(tr0.backend === "langfuse" ? (tr0.host + "/project/" + tr0.project + "/traces/" + r.trace_id) : "https://smith.langchain.com")}" target="_blank" rel="noopener"
-           title="在项目 ${esc(tr0.project)} 内按 metadata.trace_id=${esc(r.trace_id)} 过滤${tr0.backend === "langfuse" ? "（自托管地址，外网访问需隧道）" : ""}">${tr0.backend === "langfuse" ? "Langfuse" : "LangSmith"} ↗</a>`
+      ? `<a class="alink" href="${esc(tr0.backend === "langfuse" ? ((tr0.url || tr0.host) + "/project/" + tr0.project + "/traces/" + r.trace_id) : (tr0.url || "https://smith.langchain.com"))}" target="_blank" rel="noopener"
+           title="在项目 ${esc(tr0.project)} 内按 metadata.trace_id=${esc(r.trace_id)} 过滤${tr0.backend === "langfuse" ? "（自托管实例，先挂隧道：ssh -f -N langfuse）" : ""}">${tr0.backend === "langfuse" ? "Langfuse" : "LangSmith"} ↗</a>`
       : `<span class="alink dim" title="${r.kind === "sql" ? "直查不经模型，无 run 树" : "调用链观测未接入"}">—</span>`;
     return `<tr><td>${esc(fmtAsOf(r.ts))}</td><td class="mono">${esc(r.trace_id)}</td>
       <td>${kind}</td><td>${esc(String(r.question || "").slice(0, 60))}</td><td>${guard}</td>

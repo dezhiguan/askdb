@@ -219,6 +219,10 @@ def test_observability_prefers_selfhosted_langfuse(monkeypatch):
     st = observability_status()
     assert st["backend"] == "langfuse" and st["enabled"] is True
     assert st["host"].endswith(":3000")
+    assert st["url"] == st["host"]                    # 没配跳转地址时退回上报地址
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_URL", "http://localhost:3000")
+    assert observability_status()["url"] == "http://localhost:3000"
 
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY")
     assert observability_status()["backend"] == "langsmith"
