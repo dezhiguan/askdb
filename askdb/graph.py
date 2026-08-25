@@ -79,6 +79,10 @@ class AskState(TypedDict, total=False):
     carry: dict[str, list]
     enough: bool
     cost_cap_tokens: int
+    # R-17 的持久计数：累计 token 记在状态里、随检查点落盘。
+    # Tracer 是进程内对象，恢复时新建、计数归零 —— 以它判 R-17
+    # 等于给「中断→恢复」留一条绕过成本上限的后门（中断恢复设计 §4.1）。
+    tok_used: int
     converged_early: str
 
 
@@ -94,6 +98,16 @@ class Deps:
 
 def _deps(config: RunnableConfig) -> Deps:
     return config["configurable"]["deps"]
+
+
+def _spent(state: AskState, usage) -> dict[str, Any]:
+    """把本次模型消费累进状态（R-17 持久计数）。
+
+    每个花 token 的节点在 tracer.add 之外，还必须把增量并进返回值 ——
+    状态进检查点，续跑时自然回种，反复「中断→恢复」也突破不了上限。
+    """
+    return {"tok_used": int(state.get("tok_used", 0))
+            + usage.input_tokens + usage.output_tokens}
 
 
 @dataclass
@@ -234,13 +248,13 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             d.tracer.add("plan", t, f"重规划未给出目标，沿用结果评估的判定：{fallback}",
                          tok_in=usage.input_tokens, tok_out=usage.output_tokens)
             # 不要动 step_no —— 它由 assess 递增，这里再加一次就成了双重递增
-            return {"goal": fallback, "multi_step": True,
+            return {"goal": fallback, "multi_step": True, **_spent(state, usage),
                     "attempt": 0, "sql_raw": "", "error": None, "enough": False}
         # 连 assess 都没说清缺什么 —— 此时继续下去也是空转，如实收敛并标注
         d.tracer.add("plan", t, "重规划与结果评估均未给出下一步，收敛作答",
                      status="failed",
                      tok_in=usage.input_tokens, tok_out=usage.output_tokens)
-        return {"enough": True, "goal": "",
+        return {"enough": True, "goal": "", **_spent(state, usage),
                 "converged_early": "结果评估判定不足，但未能给出下一步目标"}
 
     if first:
@@ -249,7 +263,7 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         note = f"第 {step_no + 1} 步目标：{plan.goal}"
     d.tracer.add("plan", t, note, tok_in=usage.input_tokens, tok_out=usage.output_tokens)
     return {"multi_step": bool(plan.multi_step) if first else state.get("multi_step", False),
-            "goal": plan.goal or "", "enough": False}
+            "goal": plan.goal or "", "enough": False, **_spent(state, usage)}
 
 
 def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
@@ -293,8 +307,10 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             "error_hint": "换个问法，或在 config/tables.yaml 中开放更多表。",
             "rejected_by": "NO_SQL",
             "reasoning": draft.reasoning,
+            **_spent(state, usage),
         }
-    return {"sql_raw": draft.sql, "reasoning": draft.reasoning, "error": None, "rejected_by": None}
+    return {"sql_raw": draft.sql, "reasoning": draft.reasoning,
+            "error": None, "rejected_by": None, **_spent(state, usage)}
 
 
 def _n_guard(state: AskState, config: RunnableConfig) -> dict[str, Any]:
@@ -404,7 +420,8 @@ def _n_assess(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     if step_no >= int(state.get("max_steps", 3)):
         return _cap_hit(f"已达步数上限（{state.get('max_steps')} 步）")
     cap = int(state.get("cost_cap_tokens", 0))
-    used = d.tracer.tok_in + d.tracer.tok_out
+    # 读状态而非 Tracer：状态随检查点持久，续跑不清零（中断恢复设计 §4.1）
+    used = int(state.get("tok_used", 0))
     if cap and used >= cap:
         return _cap_hit(f"已达累计成本上限（{cap} tokens，已用 {used}）")
 
@@ -429,20 +446,20 @@ def _n_assess(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     if a.enough:
         d.tracer.add("assess", t, f"足以作答 ✓ {a.reason}",
                      tok_in=usage.input_tokens, tok_out=usage.output_tokens)
-        return {**base, "enough": True, "carry": {}}
+        return {**base, "enough": True, "carry": {}, **_spent(state, usage)}
 
     ok, why = planner.carry_within_limit(a.carry, d.cfg)
     if not ok:
         # R-15：下传规模超限往往说明上一步筛选本身有问题
         d.tracer.add("assess", t, f"{why}，收敛作答（R-15）", status="blocked",
                      tok_in=usage.input_tokens, tok_out=usage.output_tokens)
-        return {**base, "enough": True, "converged_early": why}
+        return {**base, "enough": True, "converged_early": why, **_spent(state, usage)}
 
     carried = "、".join(f"{k}={v}" for k, v in a.carry.items()) or "无"
     d.tracer.add("assess", t, f"不足以作答 → 重规划（第 {step_no}/{state.get('max_steps')} 步）"
                               f"；下传 {carried}",
                  status="failed", tok_in=usage.input_tokens, tok_out=usage.output_tokens)
-    return {**base, "enough": False, "carry": a.carry,
+    return {**base, "enough": False, "carry": a.carry, **_spent(state, usage),
             # 判"还不够"的人最清楚缺什么 —— 目标由 assess 给出，
             # plan 在模型说不出话时据此兜底，而不是推翻 assess 的判定
             "next_goal": (a.next_goal or a.reason or "").strip(),
@@ -670,6 +687,7 @@ def ask(
         "step_no": 0, "steps_done": [], "carry": {}, "multi_step": False,
         "max_steps": int(pl.get("max_steps", 3)),            # R-16
         "cost_cap_tokens": int(pl.get("cost_cap_tokens", 0)),  # R-17
+        "tok_used": 0,                                         # R-17 持久计数
     }
     try:
         out = _GRAPH.invoke(

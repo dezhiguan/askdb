@@ -499,3 +499,34 @@ def test_checkpoint_db_opens_in_wal_mode(cfg):
     finally:
         conn.execute("ROLLBACK")
         other.close()
+
+
+# ---------------------------------------------------------------------------
+# R-17 持久计数（任务中断恢复设计 §4.1 前置）
+# ---------------------------------------------------------------------------
+
+def test_tok_used_persisted_into_checkpoint_state(cfg, ex):
+    """累计 token 必须落进检查点状态 —— 恢复时回种的就是它。"""
+    r = graph.ask("有多少文档", cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    assert r.ok
+    g = graph.build_graph(cfg.checkpoint_db)
+    snap = g.get_state({"configurable": {"thread_id": r.trace_id}})
+    # FakeLlm 单步：generate 一次 = 100+50
+    assert snap.values.get("tok_used") == 150
+
+
+def test_r17_cap_reads_state_not_tracer(cfg, ex):
+    """R-17 判定读状态：新 Tracer（模拟恢复后进程）也拦得住。"""
+    from askdb.graph import Deps, _n_assess
+    from askdb.trace import Tracer
+
+    deps = Deps(cfg=cfg, llm=FakeLlm(), executor=ex, tracer=Tracer())
+    state = {
+        "question": "q", "multi_step": True, "step_no": 1, "max_steps": 5,
+        "cost_cap_tokens": 100, "tok_used": 120,     # 上一段进程已花 120
+        "steps_done": [], "carry": {}, "rows": [], "columns": [],
+        "sql_final": "SELECT 1", "row_count": 1,
+    }
+    out = _n_assess(state, {"configurable": {"deps": deps}})
+    assert out["enough"] is True
+    assert "累计成本上限" in out.get("converged_early", "")
