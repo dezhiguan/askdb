@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from . import guard
 from .config import Config, load
 from .executor import DataSourceError, Executor
-from .graph import ask as run_ask, jsonable
+from .graph import ask as run_ask, jsonable, resume as run_resume
 from .quota import build_quota
 from .trace import observability_status as _obs_status
 
@@ -175,6 +175,10 @@ class AskRequest(BaseModel):
 class SqlRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=20000)
     org_id: int | None = None
+
+
+class ResumeRequest(BaseModel):
+    thread_id: str = Field(min_length=1, max_length=64)
 
 
 def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
@@ -495,15 +499,32 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 检查点快照只有走图的调用（ask）才有；直查/配额拦截没有线程，
         # 如实给空列表而不是省略字段 —— 前端不用猜字段存不存在。
         snapshots: list[dict[str, Any]] = []
-        if rec.get("kind", "ask") == "ask" and rec.get("attempts"):
+        if rec.get("kind", "ask") in ("ask", "resume") and rec.get("attempts"):
             from .graph import replay as _snap
 
             try:
-                snapshots = _snap(trace_id, cfg)
+                # 续跑记录的检查点在原任务的线程上（trace 新开、thread 不变）
+                snapshots = _snap(rec.get("thread_id") or trace_id, cfg)
             except Exception:
                 snapshots = []
         out["snapshots"] = snapshots
         return JSONResponse(out)
+
+    @app.post("/api/resume")
+    def resume_task(req: ResumeRequest) -> JSONResponse:
+        """从断点续跑一次中断的提问（中断恢复设计 V1.1）。
+
+        只接受调用方自己持有的 thread_id；格式非法、不存在、已跑完
+        一律 404 且响应一致 —— 不提供未完成任务的枚举入口（§4.2）。
+        入口层限流应与 /api/ask 同档（见 deploy/nginx-askdb.conf）。
+        """
+        not_found = JSONResponse({"error": "not found"}, status_code=404)
+        if not _TRACE_ID_RE.fullmatch(req.thread_id or ""):
+            return not_found
+        r = run_resume(req.thread_id, cfg)
+        if r is None:
+            return not_found
+        return JSONResponse(r.to_dict())
 
     @app.post("/api/ask")
     def ask(req: AskRequest) -> JSONResponse:

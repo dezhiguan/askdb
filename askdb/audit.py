@@ -21,7 +21,7 @@ from typing import Any
 # 出现在流水列表里的字段。白名单式：新加字段须显式列入，
 # 避免未来往审计记录里塞了敏感字段后被列表接口顺手带出去。
 SUMMARY_FIELDS = (
-    "trace_id", "ts", "kind", "org_id", "question", "rejected_by",
+    "trace_id", "ts", "kind", "thread_id", "org_id", "question", "rejected_by",
     "attempts", "rows_returned", "elapsed_ms", "cost_cny",
     "step_count", "multi_step",
 )
@@ -30,7 +30,7 @@ SUMMARY_FIELDS = (
 # rows / schema_prompt 两个字段在设计上**绝不出接口** —— 用白名单而不是
 # 黑名单：漏给一个无害字段是体验问题，漏挡一个敏感字段是事故。
 REPLAY_FIELDS = (
-    "trace_id", "ts", "kind", "org_id", "question",
+    "trace_id", "ts", "kind", "thread_id", "org_id", "question",
     "tables_hit", "metrics_hit", "sql_raw", "sql_final",
     "rules_fired", "rejected_by", "attempts", "explain_rows",
     "step_count", "multi_step", "converged_early", "rows_returned",

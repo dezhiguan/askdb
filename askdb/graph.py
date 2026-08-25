@@ -141,6 +141,9 @@ class AskResult:
     sub_steps: list[dict[str, Any]] = field(default_factory=list)
     converged_early: str = ""
     steps: list[dict[str, Any]] = field(default_factory=list)
+    # 检查点线程。普通提问 == trace_id；续跑时保持原任务的线程不变，
+    # 而 trace_id 每次执行新开 —— 审计里由此能看出"这是第 2 次执行"。
+    thread_id: str = ""
     elapsed_ms: int = 0
     tok_in: int = 0
     tok_out: int = 0
@@ -622,94 +625,115 @@ def replay(trace_id: str, cfg: Config) -> list[dict[str, Any]]:
     return list(reversed(out))
 
 
-def ask(
-    question: str,
-    cfg: Config,
-    org_id: int | None = None,
-    executor: Executor | None = None,
-    llm: LlmClient | None = None,
-) -> AskResult:
-    """跑一次完整链路。executor / llm 可注入，便于测试与复用连接。"""
+def _ensure_graph(cfg: Config):
     global _GRAPH, _GRAPH_KEY
     key = str(cfg.checkpoint_db)
     if _GRAPH is None or _GRAPH_KEY != key:
         _GRAPH = build_graph(cfg.checkpoint_db)
         _GRAPH_KEY = key
+    return _GRAPH
 
-    org = cfg.default_org if org_id is None else org_id
-    trace_id = uuid.uuid4().hex[:12]
+
+def _audit_of(result: AskResult, cfg: Config, kind: str,
+              explain_rows: Any = None) -> dict[str, Any]:
+    """审计记录统一在这里成形 —— ask / resume / 中断三条路共用一个形状。"""
+    return {
+        "trace_id": result.trace_id, "ts": now_iso(), "kind": kind,
+        "thread_id": result.thread_id,
+        "model": cfg.llm.get("model"),
+        "org_id": result.org_id, "question": result.question,
+        "tables_hit": result.tables_hit, "metrics_hit": result.metrics_hit,
+        "sql_raw": result.sql_raw, "sql_final": result.sql_final,
+        "rules_fired": result.rules_fired, "rejected_by": result.rejected_by,
+        "attempts": result.attempts, "explain_rows": explain_rows,
+        "step_count": result.step_count, "multi_step": result.multi_step,
+        "converged_early": result.converged_early,
+        "rows_returned": result.row_count,
+        "elapsed_ms": result.elapsed_ms,
+        "tok_in": result.tok_in, "tok_out": result.tok_out,
+        "cost_cny": result.cost_cny, "steps": result.steps,
+    }
+
+
+def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
+             thread_id: str, kind: str,
+             executor: Executor | None, llm: LlmClient | None,
+             init: AskState | None) -> AskResult:
+    """一次图执行的公共壳：配额快速失败、中断兜底、结果打包、审计双写。
+
+    init 为 None 即恢复语义 —— LangGraph 从该线程最后一个完成的检查点
+    继续（恢复粒度是节点：断点所在节点整个重跑，多花的模型调用由
+    状态化后的 R-17 兜住）。
+    """
     tracer = Tracer()
 
-    # 每日配额（技术设计说明书 §8 准入条件第 6 条）。
-    #
-    # 这里只是**快速失败**：额度早已用尽时不必把整条链路跑到模型那一步，
-    # 直接给出明确结论。真正的扣减在 LlmClient 里，一次调用扣一次 ——
-    # 一次提问会调好几次模型，在入口按请求扣会低估花费好几倍。
-    #
-    # 只读探测拿到的用量是瞬时值，读完到真正调用之间还会有并发变化，
-    # 所以这一层不能算把关；把关靠 LlmClient 的原子预扣。
+    # 每日配额快速失败（真正的扣减在 LlmClient 原子预扣）。
+    # 续跑同样要过这一关 —— 中断一次、恢复一次是两次真实的模型消费，
+    # 不计入就等于开了一条绕过配额的路径（中断恢复设计 §7.1）。
     dq = build_quota(cfg)
     over, used = dq.exhausted()
     if over:
         tracer.add("quota", tracer.start(), f"当日已用 {used}/{dq.limit}", status="blocked")
-        # 拦截也留痕：配额挡下的调用同样要进流水 —— 审计页上"被挡了多少"
-        # 与"放行了多少"同等重要，缺一半就对不上账。
-        write_audit(cfg.audit_log, {
-            "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
-            "model": cfg.llm.get("model"),
-            "org_id": org, "question": question,
-            "tables_hit": [], "metrics_hit": [], "sql_raw": "", "sql_final": "",
-            "rules_fired": [], "rejected_by": "QUOTA", "attempts": 0,
-            "explain_rows": None, "step_count": 0, "multi_step": False,
-            "converged_early": "", "rows_returned": 0,
-            "elapsed_ms": tracer.elapsed_ms, "tok_in": 0, "tok_out": 0,
-            "cost_cny": 0.0, "steps": tracer.as_list(),
-        })
-        return AskResult(
+        result = AskResult(
             ok=False, question=question, trace_id=trace_id, org_id=org,
-            rejected_by="QUOTA",
+            thread_id=thread_id, rejected_by="QUOTA",
             error=f"已达当日模型调用上限（{used}/{dq.limit}）",
             hint="明日自动恢复；也可调高配置中的 observability.daily_quota。",
             steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
         )
+        write_audit(cfg.audit_log, _audit_of(result, cfg, kind))
+        return result
 
     own_exec = executor is None
     ex = executor or Executor(cfg)
     deps = Deps(cfg=cfg, llm=llm or LlmClient(cfg), executor=ex, tracer=tracer)
 
-    pl = cfg.raw.get("planner", {}) or {}
-    init: AskState = {
-        "question": question, "org_id": org, "trace_id": trace_id,
-        "attempt": 0, "max_retry": cfg.max_retry, "out_of_scope": False,
-        "exec_retryable": False, "next_goal": "",
-        # 多步相关的上限进状态而非从 cfg 现取 —— 路由只读状态，
-        # 检查点回放时也就能还原出当时真实的约束
-        "step_no": 0, "steps_done": [], "carry": {}, "multi_step": False,
-        "max_steps": int(pl.get("max_steps", 3)),            # R-16
-        "cost_cap_tokens": int(pl.get("cost_cap_tokens", 0)),  # R-17
-        "tok_used": 0,                                         # R-17 持久计数
-    }
+    interrupted: Exception | None = None
+    out: dict[str, Any] = {}
     try:
         out = _GRAPH.invoke(
             init,
             {
                 "recursion_limit": 40,
-                "configurable": {"thread_id": trace_id, "deps": deps},
+                "configurable": {"thread_id": thread_id, "deps": deps},
                 # LangSmith 环境启用时 run 树以 metadata.trace_id 与本地审计
                 # 互相定位；Langfuse 不走 LangChain 集成（见 observe.py），
                 # 在审计落盘后按同一条记录上报。
-                "run_name": "askdb.ask",
-                "metadata": {"trace_id": trace_id, "org_id": org, "kind": "ask"},
+                "run_name": f"askdb.{kind}",
+                "metadata": {"trace_id": trace_id, "org_id": org, "kind": kind},
             },
         )
+    except Exception as e:            # noqa: BLE001 —— 中断兜底，见下
+        # 逃出图的异常（进程级故障、递归上限、检查点库损坏等）说明
+        # 执行停在了某个节点边界 —— 检查点已经存了现场。此前这里直接
+        # 向上抛成 500，客户端拿不到 trace_id，"可续跑"就无从谈起。
+        # 兜住它：留痕、给出续跑入口，但不吞 KeyboardInterrupt/SystemExit。
+        interrupted = e
     finally:
         if own_exec:
             ex.close()
 
     tok_in, tok_out = tracer.tok_in, tracer.tok_out
+    if interrupted is not None:
+        tracer.add("interrupted", tracer.start(),
+                   f"执行在中断点停止：{interrupted}", status="failed")
+        result = AskResult(
+            ok=False, question=question, trace_id=trace_id, org_id=org,
+            thread_id=thread_id, rejected_by="INTERRUPTED",
+            error=f"任务在执行中中断：{interrupted}",
+            hint="判定现场已存入检查点，可从断点续跑；续跑另计一次每日配额。",
+            steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
+            tok_in=tok_in, tok_out=tok_out,
+            cost_cny=cost_cny(tok_in, tok_out, cfg.llm),
+        )
+        rec = _audit_of(result, cfg, kind)
+        write_audit(cfg.audit_log, rec)
+        observe.report(rec)
+        return result
+
     result = AskResult(
         ok=not out.get("error") and bool(out.get("sql_final")),
-        question=question, trace_id=trace_id, org_id=org,
+        question=question, trace_id=trace_id, org_id=org, thread_id=thread_id,
         sql_raw=out.get("sql_raw", ""), sql_final=out.get("sql_final", ""),
         reasoning=out.get("reasoning", ""),
         rules_fired=list(out.get("rules_fired") or []),
@@ -729,21 +753,62 @@ def ask(
         tok_in=tok_in, tok_out=tok_out,
         cost_cny=cost_cny(tok_in, tok_out, cfg.llm),
     )
-
-    audit_rec = {
-        "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
-        "model": cfg.llm.get("model"),
-        "org_id": org, "question": question,
-        "tables_hit": result.tables_hit, "metrics_hit": result.metrics_hit,
-        "sql_raw": result.sql_raw, "sql_final": result.sql_final,
-        "rules_fired": result.rules_fired, "rejected_by": result.rejected_by,
-        "attempts": result.attempts, "explain_rows": out.get("explain_rows"),
-        "step_count": result.step_count, "multi_step": result.multi_step,
-        "converged_early": result.converged_early,
-        "rows_returned": result.row_count,
-        "elapsed_ms": result.elapsed_ms, "tok_in": tok_in, "tok_out": tok_out,
-        "cost_cny": result.cost_cny, "steps": result.steps,
-    }
-    write_audit(cfg.audit_log, audit_rec)
-    observe.report(audit_rec)          # 观测双写：同一条记录，异步旁路
+    rec = _audit_of(result, cfg, kind, explain_rows=out.get("explain_rows"))
+    write_audit(cfg.audit_log, rec)
+    observe.report(rec)          # 观测双写：同一条记录，异步旁路
     return result
+
+
+def ask(
+    question: str,
+    cfg: Config,
+    org_id: int | None = None,
+    executor: Executor | None = None,
+    llm: LlmClient | None = None,
+) -> AskResult:
+    """跑一次完整链路。executor / llm 可注入，便于测试与复用连接。"""
+    _ensure_graph(cfg)
+    org = cfg.default_org if org_id is None else org_id
+    trace_id = uuid.uuid4().hex[:12]
+
+    pl = cfg.raw.get("planner", {}) or {}
+    init: AskState = {
+        "question": question, "org_id": org, "trace_id": trace_id,
+        "attempt": 0, "max_retry": cfg.max_retry, "out_of_scope": False,
+        "exec_retryable": False, "next_goal": "",
+        # 多步相关的上限进状态而非从 cfg 现取 —— 路由只读状态，
+        # 检查点回放时也就能还原出当时真实的约束
+        "step_no": 0, "steps_done": [], "carry": {}, "multi_step": False,
+        "max_steps": int(pl.get("max_steps", 3)),            # R-16
+        "cost_cap_tokens": int(pl.get("cost_cap_tokens", 0)),  # R-17
+        "tok_used": 0,                                         # R-17 持久计数
+    }
+    return _execute(cfg, question=question, org=org, trace_id=trace_id,
+                    thread_id=trace_id, kind="ask",
+                    executor=executor, llm=llm, init=init)
+
+
+def resume(
+    thread_id: str,
+    cfg: Config,
+    executor: Executor | None = None,
+    llm: LlmClient | None = None,
+) -> AskResult | None:
+    """从最后一个完成的检查点继续一次中断的提问（中断恢复设计 V1.1）。
+
+    - 只接受调用方自己持有的 thread_id；不存在或已跑完返回 None，
+      由接口层与"不存在"同样处理 —— 不提供任何枚举入口（§4.2）；
+    - 检查点线程保持不变，审计写**新的 trace_id**，两条经 thread_id
+      关联，审计里能看出"这是第 2 次执行"；
+    - 另计一次每日配额；R-17 累计计数在状态里回种，不会归零。
+    """
+    g = _ensure_graph(cfg)
+    snap = g.get_state({"configurable": {"thread_id": thread_id}})
+    if not snap.values or not snap.next:
+        return None
+    question = str(snap.values.get("question", ""))
+    org = int(snap.values.get("org_id", cfg.default_org))
+    trace_id = uuid.uuid4().hex[:12]
+    return _execute(cfg, question=question, org=org, trace_id=trace_id,
+                    thread_id=thread_id, kind="resume",
+                    executor=executor, llm=llm, init=None)
