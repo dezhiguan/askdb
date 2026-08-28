@@ -491,9 +491,9 @@ tbody tr.sel{background:var(--wash)}
         <button class="mode" data-m="sql" aria-pressed="false">直查 SQL</button>
         <span class="spacer"></span>
         <span class="orgbox" id="orgBox">
-          <label class="f" for="orgInput" style="margin:0" id="orgLabel">租户</label>
+          <label class="f" for="orgInput" style="margin:0" id="orgLabel">组织</label>
           <input id="orgInput" type="number" min="0" inputmode="numeric">
-          <button class="ctl" id="orgApply" title="按新租户重跑上一个问题">切换</button>
+          <button class="ctl" id="orgApply" title="按新组织重跑上一个问题">切换</button>
         </span>
       </div>
       <div class="qrow">
@@ -745,7 +745,7 @@ async function boot() {
   $("pillLlm").textContent = l.ok ? l.model : (l.disabled ? "仅直查 SQL" : "未配置密钥");
   if (HEALTH.tenant.enabled) {
     $("pillOrg").textContent = `${HEALTH.tenant.column} = ${HEALTH.tenant.org_id}`;
-    $("orgLabel").textContent = "租户 " + HEALTH.tenant.column;
+    $("orgLabel").textContent = "组织 " + HEALTH.tenant.column;
     $("orgInput").value = HEALTH.tenant.org_id;
     $("orgInput").title = "护栏按这个值强制注入租户谓词；改完点「切换」重跑上一个问题";
   } else {

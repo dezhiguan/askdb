@@ -29,12 +29,15 @@ SMALL_KBS = [
 @pytest.fixture(scope="session")
 def sample_db(tmp_path_factory: pytest.TempPathFactory, request) -> Path:
     out = tmp_path_factory.mktemp("db") / "sample.duckdb"
-    original = seed.KBS
+    original, original_316 = seed.KBS, seed.KBS_316
     seed.KBS = SMALL_KBS
+    # 真实的 KBS_316 有 1.4 万行，会话级小库不需要它；不置空的话
+    # 每个用例都要背着这份数据，且行数断言全部对不上。
+    seed.KBS_316 = []
     try:
         seed.build(out=out, quiet=True)
     finally:
-        seed.KBS = original
+        seed.KBS, seed.KBS_316 = original, original_316
     return out
 
 

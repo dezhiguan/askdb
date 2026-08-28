@@ -209,6 +209,23 @@ jobs:
           assert d["ok"] is False and d["rejected_by"] == "R-02", d
           PY
 
+      - name: Default tenant actually returns data
+        run: |
+          # 2026-08-25 把 default_ctx 改成了样例库里不存在的组织，站点从此
+          # 查什么都是 0 行 —— 而且全链路不报错（护栏照常注入租户谓词，
+          # 只是匹配不到行），冒烟一路全绿，三天后才由人肉发现。
+          # 这里钉住"默认租户下确实查得到数据"，不再依赖有人去点页面。
+          BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
+          BODY="$(curl --fail --silent --show-error --max-time 15 -X POST "${BASE}/api/sql" \
+            -H 'Content-Type: application/json' -d '{"sql":"SELECT COUNT(1) AS c FROM documents"}')"
+          python3 - <<'PY' "${BODY}"
+          import json, sys
+          d = json.loads(sys.argv[1])
+          assert d["ok"] is True, d
+          n = d["rows"][0][0]
+          assert n > 0, f"默认租户 org_id={d['org_id']} 下文档数为 0 —— 页面等于查不到任何数据"
+          PY
+
       - name: Introspection endpoints are open (2026-08-25 运营决定)
         run: |
           # 对外实例已放开自检/内省与 ask 每 IP 限流，只保留应用层每日配额

@@ -17,10 +17,13 @@ from pathlib import Path
 import duckdb
 
 SEED = 20260811
+# org 316 用独立种子，与上面那条流互不干扰（原因见 KBS_316 的注释）
+SEED_316 = 20260828
 NOW = datetime(2026, 8, 11, 14, 0, 0)
 OUT = Path(__file__).resolve().parent / "sample.duckdb"
 
-ORGS = [(65, "平台组织"), (66, "外部合作方"), (67, "测试组织")]
+ORGS = [(65, "平台组织"), (66, "外部合作方"), (67, "测试组织"),
+        (316, "职场数据分享组织")]
 
 # (kb_id, org_id, 名称, 文档量, 失败率, 卡住数)
 KBS = [
@@ -39,6 +42,31 @@ KBS = [
     (41, 66, "合作方归档",  2050, 0.019, 0),
     (50, 67, "沙箱",         820, 0.052, 0),
 ]
+
+# org 316「职场数据分享组织」—— 对外实例的默认租户（config/public.yaml）。
+#
+# 单独一张表、单独一条随机流（SEED_316），**不能并进 KBS**：两个生成循环
+# 共用同一个 rnd，往 KBS 里追加会让后面的 model_usage 循环整体偏移，
+# 65/66/67 的既有用量数据全部改变，历史评测就不可比了 —— 实测确认过。
+# 以后再加组织照这个模式来：新组织一张新表 + 一个新种子，老组织永不受扰。
+#
+# 文档总量 13,959 对齐真实 org 316 的规模（见 README.zh-CN.md 的环境对照表），
+# 知识库主题也照真实组织的求职数据构成来，便于用样例库预演真实场景的问法。
+KBS_316 = [
+    (70, 316, "职位描述库",  5240, 0.023, 1),
+    (71, 316, "公司情报库",  2680, 0.041, 0),
+    (72, 316, "面试题库",    2115, 0.014, 2),
+    (73, 316, "薪资样本库",  1460, 0.009, 0),
+    (74, 316, "行业研报库",  1520, 0.196, 1),
+    (75, 316, "简历样本库",   944, 0.011, 0),
+]
+
+# 走独立随机流的组织。再加新组织时三处一起补：KBS_xxx、SEED_xxx、这里。
+EXT_ORGS = {316}
+
+# 每个组织生成多少条模型用量
+USAGE_ROWS = {65: 4000, 316: 2500}
+USAGE_ROWS_DEFAULT = 600
 
 FILE_TYPES = ["pdf", "docx", "xlsx", "pptx", "md", "txt"]
 FILE_WEIGHTS = [46, 24, 14, 8, 5, 3]
@@ -110,19 +138,14 @@ def _bulk_load(con: duckdb.DuckDBPyConnection, table: str, rows: list[tuple], tm
     con.execute(f"COPY {table} FROM '{path}' (FORMAT CSV, HEADER false, NULLSTR '')")
 
 
-def build(out: Path | None = None, quiet: bool = False) -> Path:
-    rnd = random.Random(SEED)
-    target = out or OUT
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        target.unlink()
+def _gen_docs(rnd: random.Random, kbs: list, doc_id: int) -> tuple[list, int]:
+    """按知识库清单生成文档行，返回 (行, 下一个 doc_id)。
 
-    con = duckdb.connect(str(target))
-    con.execute(DDL)
-
-    docs = []
-    doc_id = 1
-    for kb_id, org_id, kb_name, total, fail_rate, stuck in KBS:
+    rnd 由调用方传入而不是在函数里新建：哪些组织共用一条随机流、哪些各走各的，
+    是这份样例库可复现性的关键约定，必须留在 build() 里一眼看全。
+    """
+    docs: list[tuple] = []
+    for kb_id, org_id, kb_name, total, fail_rate, stuck in kbs:
         for _ in range(total):
             created = NOW - timedelta(minutes=rnd.randint(30, 60 * 24 * 90))
             ftype = rnd.choices(FILE_TYPES, FILE_WEIGHTS)[0]
@@ -149,10 +172,14 @@ def build(out: Path | None = None, quiet: bool = False) -> Path:
                          ftype, "PROCESSING", None, created, updated))
             doc_id += 1
 
+    return docs, doc_id
+
+
+def _gen_usage(rnd: random.Random, orgs: list, uid: int) -> tuple[list, int]:
+    """按组织清单生成模型用量行，返回 (行, 下一个 uid)。"""
     usage: list[tuple] = []
-    uid = 1
-    for org_id, _ in ORGS:
-        n = 4000 if org_id == 65 else 600
+    for org_id, _ in orgs:
+        n = USAGE_ROWS.get(org_id, USAGE_ROWS_DEFAULT)
         for _ in range(n):
             model, stage, in_price, out_price = rnd.choice(MODELS)
             tin = rnd.randint(400, 9000)
@@ -162,10 +189,41 @@ def build(out: Path | None = None, quiet: bool = False) -> Path:
             usage.append((uid, org_id, model, stage, tin, tout, round(cost, 6), ts))
             uid += 1
 
+    return usage, uid
+
+
+def build(out: Path | None = None, quiet: bool = False) -> Path:
+    # 两条独立的随机流。rnd 覆盖 org 65/66/67（历史口径，任何改动都不许扰动它），
+    # rnd_316 只管 org 316。两条流的消费顺序互不影响，所以新增组织不会改动老数据。
+    rnd = random.Random(SEED)
+    rnd_316 = random.Random(SEED_316)
+
+    target = out or OUT
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+
+    con = duckdb.connect(str(target))
+    con.execute(DDL)
+
+    base_orgs = [o for o in ORGS if o[0] not in EXT_ORGS]
+    orgs_316 = [o for o in ORGS if o[0] in EXT_ORGS]
+
+    # 先跑老组织再跑 316，让既有 doc_id / uid 保持原值（新数据一律排在后面）
+    docs, doc_id = _gen_docs(rnd, KBS, 1)
+    docs_316, _ = _gen_docs(rnd_316, KBS_316, doc_id)
+    docs += docs_316
+
+    usage, uid = _gen_usage(rnd, base_orgs, 1)
+    usage_316, _ = _gen_usage(rnd_316, orgs_316, uid)
+    usage += usage_316
+
+    all_kbs = KBS + KBS_316
+
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         _bulk_load(con, "orgs", [tuple(o) for o in ORGS], tmp)
-        _bulk_load(con, "knowledge_bases", [(k, o, n, cnt) for k, o, n, cnt, _, _ in KBS], tmp)
+        _bulk_load(con, "knowledge_bases", [(k, o, n, cnt) for k, o, n, cnt, _, _ in all_kbs], tmp)
         _bulk_load(con, "documents", docs, tmp)
         _bulk_load(con, "model_usage", usage, tmp)
 
@@ -181,7 +239,7 @@ def build(out: Path | None = None, quiet: bool = False) -> Path:
         print(f"样例库已生成：{target}")
         print(f"  documents    {stats[0]:>8,}  （FAILED {stats[1]:,} · PROCESSING {stats[2]:,}）")
         print(f"  model_usage  {stats[3]:>8,}")
-        print(f"  knowledge_bases {len(KBS)} · orgs {len(ORGS)}")
+        print(f"  knowledge_bases {len(all_kbs)} · orgs {len(ORGS)}")
     return target
 
 
