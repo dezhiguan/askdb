@@ -53,14 +53,33 @@ def test_write_endpoints_are_closed_by_default(cfg, monkeypatch):
         assert call().status_code == 403
 
 
-def test_public_config_keeps_it_off():
-    """对外实例的这颗开关被改开都不该悄悄上线。"""
+def test_public_instance_keeps_its_remaining_guards():
+    """对外实例的 allow_runtime_add 于 2026-09-01 按决定放开。
+
+    开关没了之后，挡在「任何人都能让服务器向任意地址建连」前面的只剩两样东西，
+    所以这条测试改成钉住它们 —— 一道边界撤了，剩下的两道不能再悄悄消失。
+    """
+    import os
     from pathlib import Path
 
+    from askdb import server
     from askdb.config import load
 
     root = Path(__file__).resolve().parent.parent
-    assert sources.enabled(load(root / "config" / "public.yaml")) is False
+    assert sources.enabled(load(root / "config" / "public.yaml")) is True
+
+    # 1. 出站建连限流
+    assert server._SOURCE_RL.limit <= 10, "出站建连限流被放宽了"
+    assert server._SOURCE_RL.window_s >= 60
+
+    # 2. 没有主密钥就不接受明文口令
+    key = os.environ.pop("ASKDB_SECRET_KEY", None)
+    try:
+        with pytest.raises(sources.SourceError):
+            sources.encrypt_password("x")
+    finally:
+        if key is not None:
+            os.environ["ASKDB_SECRET_KEY"] = key
 
 
 # --------------------------------------------------------------- 生命周期
