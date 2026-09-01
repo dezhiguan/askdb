@@ -91,6 +91,7 @@ class _Backend:
         self.con: Any = None
 
     def connect(self) -> Any: ...          # pragma: no cover
+    def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]: ...  # pragma: no cover
     def explain_rows(self, sql: str) -> tuple[int | None, str]: ...   # pragma: no cover
     def fetch(self, sql: str, cap: int) -> tuple[list[str], list[list[Any]], str]: ...  # pragma: no cover
     def env_checks(self) -> list[tuple[str, bool, str]]: ...          # pragma: no cover
@@ -118,6 +119,18 @@ class _DuckBackend(_Backend):
         except Exception as e:  # pragma: no cover - 依赖具体环境
             raise DataSourceError(f"无法打开数据库：{e}", hint="确认文件未被其他进程以写模式占用。") from e
         return self.con
+
+    def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
+        if not names:
+            return {}
+        holes = ", ".join("?" for _ in names)
+        rows = self.connect().execute(f"""
+            SELECT table_name, column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'main' AND table_name IN ({holes})
+            ORDER BY table_name, ordinal_position
+        """, names).fetchall()
+        return _group_columns(rows)
 
     def explain_rows(self, sql: str) -> tuple[int | None, str]:
         rows = self.connect().execute(f"EXPLAIN {sql}").fetchall()
@@ -324,6 +337,32 @@ class _PgBackend(_Backend):
             return [{"name": r[0], "rows": int(r[1] or 0), "cols": int(r[2]),
                      "tenant": bool(r[3])} for r in cur.fetchall()]
 
+    def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
+        if not names:
+            return {}
+        with self.connect().cursor() as cur:
+            cur.execute("""
+                SELECT table_name, column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = ANY(%s)
+                ORDER BY table_name, ordinal_position
+            """, (names,))
+            return _group_columns(cur.fetchall())
+
+
+def _group_columns(rows: Any) -> dict[str, list[dict[str, Any]]]:
+    """(表, 列, 类型) 三元组按表归组。
+
+    这是新增数据源时构造白名单的原料：白名单必须带上字段名与类型，
+    否则 R-04（字段真实性）与 R-05（展开 SELECT *）没有判定依据 ——
+    它们会退化成放行，而放行是最不该出现的失败方向。
+    """
+    out: dict[str, list[dict[str, Any]]] = {}
+    for table, column, dtype in rows:
+        out.setdefault(str(table), []).append(
+            {"name": str(column), "type": str(dtype).upper()})
+    return out
+
 
 # ==========================================================================
 # 对外
@@ -356,6 +395,10 @@ class Executor:
     def introspect(self) -> list[dict[str, Any]]:
         """列出数据源里**全部**表，不限于白名单 —— 供接入向导选表。"""
         return self.backend.introspect()
+
+    def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """取指定表的字段名与类型，用于构造白名单。"""
+        return self.backend.describe(names)
 
     def set_org(self, org_id: int) -> None:
         """把租户上下文同步给引擎（PostgreSQL 的 RLS 依赖它）。"""
@@ -409,16 +452,20 @@ class Executor:
         else:
             add("授权表集合", True, f"白名单 {len(allow)} 张 · 可见 {len(actual)} 张")
 
-        # 写操作实探 —— 必须被拒绝
-        probe = next(iter(sorted(allow)), None)
+        # 写操作实探 —— 必须被拒绝。
+        # 白名单为空时退到任意可见表：新接入的数据源还没勾选开放表，
+        # 而"这个连接到底拦不拦写"恰恰是那一刻最该问的问题。
+        # 原来直接判失败，等于在最需要它的时候把这项检查关掉了。
+        probe = next(iter(sorted(allow)), None) or next(iter(sorted(actual)), None)
         if probe is None:
-            add("写操作实探", False, "白名单为空，无法探测")
+            add("写操作实探", False, "库里没有可见的表，无法探测")
         else:
+            via = "" if probe in allow else f"（白名单为空，用可见表 {probe} 探测）"
             try:
                 self.backend.fetch(f"DELETE FROM {probe} WHERE 1=0", 1)
-                add("写操作实探", False, "写操作未被拒绝，连接并非只读")
+                add("写操作实探", False, f"写操作未被拒绝，连接并非只读{via}")
             except Exception:
-                add("写操作实探", True, "写操作已被引擎拒绝 ✓ 符合预期")
+                add("写操作实探", True, f"写操作已被引擎拒绝 ✓ 符合预期{via}")
         return checks
 
     # ---------- R-11 干跑 ----------

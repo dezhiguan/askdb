@@ -133,3 +133,9 @@ observability:
 
 tables_file: ./config/tables.yaml
 metrics_file: ./config/metrics.yaml
+
+# 对外开放实例：**必须关闭**。
+# 开着等于给出一个无鉴权的出站建连入口 —— 任何人都能让部署方的服务器
+# 去连任意 host:port，并从连接报错的差异里推断内网哪些端口开着。
+datasources:
+  allow_runtime_add: false

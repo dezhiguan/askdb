@@ -264,3 +264,89 @@ export async function fetchIntrospect(): Promise<Introspect> {
   if (!response.ok) throw new Error(`/api/introspect ${response.status}`)
   return response.json()
 }
+
+/* ---------------- 数据源注册表 ---------------- */
+
+export interface SourceCard {
+  id: string
+  name: string
+  type: string
+  env: string
+  host: string
+  credential: string
+  created_at: string
+  table_count: number
+  builtin: boolean
+}
+
+export interface SourceList {
+  can_add: boolean
+  supported_types: string[]
+  /** 主密钥没配就只有「环境变量名」这一条路，表单据此禁用明文口令 */
+  can_store_password: boolean
+  items: SourceCard[]
+}
+
+export interface ScannedTable {
+  name: string
+  rows: number
+  cols: number
+  tenant: boolean
+  allowed?: boolean
+}
+
+export interface Probe {
+  ok: boolean
+  checks: { name: string; ok: boolean; detail: string; ms?: number }[]
+  latency_ms: number | null
+  tables: ScannedTable[]
+  error?: string
+  hint?: string
+}
+
+export interface SourceInput {
+  name: string
+  type: string
+  dsn: string
+  env: string
+  upstream?: string
+  password_env?: string
+  password?: string
+}
+
+/** 后端把不合规与连不上都表述成 detail 文本，原样抛给用户看 ——
+ *  「操作失败」这种话对排查毫无帮助。 */
+async function post<T>(url: string, body: unknown, method = 'POST'): Promise<T> {
+  const response = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(data?.detail || `${url} ${response.status}`)
+  return data as T
+}
+
+export async function fetchSources(): Promise<SourceList> {
+  const response = await fetch('/api/sources')
+  if (!response.ok) throw new Error(`/api/sources ${response.status}`)
+  return response.json()
+}
+
+export const testSource = (input: SourceInput) => post<Probe>('/api/sources/test', input)
+
+export const createSource = (input: SourceInput) =>
+  post<{ source: SourceCard } & Probe>('/api/sources', input)
+
+export async function scanSource(id: string): Promise<Probe> {
+  const response = await fetch(`/api/sources/${id}/scan`)
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(data?.detail || `扫描失败 ${response.status}`)
+  return data
+}
+
+export const setSourceTables = (id: string, tables: string[]) =>
+  post<SourceCard>(`/api/sources/${id}/tables`, { tables }, 'PUT')
+
+export const deleteSource = (id: string) =>
+  post<{ ok: boolean }>(`/api/sources/${id}`, {}, 'DELETE')

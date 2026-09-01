@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  fetchIntrospect, fetchSchema, fetchSelfCheck,
-  type Introspect, type Schema, type SelfCheck,
+  deleteSource, fetchIntrospect, fetchSchema, fetchSelfCheck, fetchSources,
+  type Introspect, type Schema, type SelfCheck, type SourceCard, type SourceList,
 } from '../api'
+import { AddSourceModal, ScanTablesModal } from '../components/AddSourceModal'
 import { PageHeader } from '../components/AppShell'
 import type { HealthState } from '../useHealth'
 
@@ -25,7 +26,10 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
   const [error, setError] = useState('')
   const [showConfig, setShowConfig] = useState(false)
   const [showAdd, setShowAdd] = useState(false)
+  const [manage, setManage] = useState<SourceCard | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [sources, setSources] = useState<SourceList | null>(null)
+  const [reload, setReload] = useState(0)
 
   useEffect(() => {
     let alive = true
@@ -34,6 +38,24 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
       .catch(e => { if (alive) setError(String(e.message || e)) })
     return () => { alive = false }
   }, [])
+
+  useEffect(() => {
+    let alive = true
+    fetchSources()
+      .then(value => { if (alive) setSources(value) })
+      .catch(e => { if (alive) setError(String(e.message || e)) })
+    return () => { alive = false }
+  }, [reload])
+
+  const removeSource = async (card: SourceCard) => {
+    if (!window.confirm(`删除数据源「${card.name}」？白名单一并删除，历史审计记录不受影响。`)) return
+    try {
+      await deleteSource(card.id)
+      setReload(n => n + 1)
+    } catch (e) {
+      setError(String((e as Error).message || e))
+    }
+  }
 
   const runCheck = async () => {
     setChecking(true)
@@ -66,7 +88,16 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
         eyebrow="Phase 1 · Readonly Data"
         title="数据源管理"
         description="只连测试库与生产只读镜像，连接由配置文件指定。表白名单同时是安全边界与准确率边界。"
-        action={<button className="primary" onClick={() => setShowAdd(true)}>＋ 添加数据源</button>}
+        action={
+          <button
+            className="primary"
+            disabled={!sources?.can_add}
+            title={sources && !sources.can_add
+              ? '本实例未开启运行时添加数据源：服务端会按填入的地址主动建连，而 askdb 不设账号体系，对外实例一律关闭'
+              : undefined}
+            onClick={() => setShowAdd(true)}
+          >＋ 添加数据源</button>
+        }
       />
 
       {error && <div className="audit-error">读取数据源信息失败：{error}</div>}
@@ -118,6 +149,29 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
             </button>
           </div>
         </article>
+
+        {sources?.items.filter(item => !item.builtin).map(card => (
+          <article className="source-card" key={card.id}>
+            <div className="source-top">
+              <i className="db-icon">{TYPE_MARK[card.type] ?? card.type.slice(0, 2).toUpperCase()}</i>
+              <span className={`card-status ${card.table_count ? '' : 'off'}`}>
+                {card.table_count ? <><i className="online" /> 可查询</> : '● 未开放表'}
+              </span>
+            </div>
+            <h3>{card.name}</h3>
+            <p>{card.type} · {card.host || '—'}</p>
+            <div className="mini-metrics">
+              <div className="mini-metric"><span>环境</span><strong>{ENV_LABEL[card.env] ?? card.env}</strong></div>
+              <div className="mini-metric"><span>开放表</span><strong>{card.table_count}</strong></div>
+              <div className="mini-metric"><span>凭证</span><strong>{card.credential || '无口令'}</strong></div>
+              <div className="mini-metric"><span>租户隔离</span><strong>单租户</strong></div>
+            </div>
+            <div className="source-actions">
+              <button className="secondary" onClick={() => setManage(card)}>开放的表</button>
+              <button className="ghost" onClick={() => removeSource(card)}>删除</button>
+            </div>
+          </article>
+        ))}
       </div>
 
       {showConfig && (
@@ -205,67 +259,26 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
         </div>
       )}
 
-      {showAdd && <AddSourceModal onClose={() => setShowAdd(false)} />}
+      {showAdd && sources && (
+        <AddSourceModal
+          meta={sources}
+          onClose={() => setShowAdd(false)}
+          onDone={() => { setShowAdd(false); setReload(n => n + 1) }}
+        />
+      )}
+      {manage && (
+        <ScanTablesModal
+          id={manage.id}
+          name={manage.name}
+          onClose={() => setManage(null)}
+          onDone={() => { setManage(null); setReload(n => n + 1) }}
+        />
+      )}
     </div>
   )
 }
 
-/** 「添加数据源」不是一个表单。
- *
- *  在 askdb 里新增数据源 = 写一份配置 + 重启进程，页面无权参与 ——
- *  所以这里给的是真正要做的事，而不是一个收数据库口令、点了假装成功的表单。 */
-function AddSourceModal({ onClose }: { onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
-  return (
-    <div className="modal-backdrop" onMouseDown={event => { if (event.currentTarget === event.target) onClose() }}>
-      <div className="modal">
-        <header>
-          <div>
-            <div className="eyebrow">Config-driven</div>
-            <h3>添加数据源</h3>
-            <p>连接由配置文件指定，页面不参与 —— 下面是实际要做的三步。</p>
-          </div>
-          <button onClick={onClose} aria-label="关闭">×</button>
-        </header>
-
-        <div className="modal-body">
-          <ol className="add-steps">
-          <li>
-            <b>写一份配置</b>
-            <span>复制 <code>config/askdb.yaml</code>，改 <code>datasource</code> 段。口令只写环境变量名，不写值。</span>
-            <pre className="drawer-code">{`datasource:
-  type: postgresql
-  dsn: "host=… dbname=… user=…"
-  password_env: ASKDB_DB_PASSWORD
-  upstream: "10.0.0.7:5432"   # 经隧道时写真实库地址`}</pre>
-          </li>
-          <li>
-            <b>配一份表白名单与业务口径</b>
-            <span>
-              同名的 <code>*-tables.yaml</code> 与 <code>*-metrics.yaml</code>。
-              没进白名单的表，模型看不见也查不到 —— 白名单同时是安全边界与准确率边界。
-            </span>
-          </li>
-          <li>
-            <b>用这份配置起一个进程</b>
-            <span>一个进程一份配置一个数据源。换数据源 = 换配置重启，不是在页面上切。</span>
-            <pre className="drawer-code">python -m askdb.cli serve -c config/你的配置.yaml</pre>
-          </li>
-          </ol>
-
-        <div className="modal-actions">
-            <button className="primary" onClick={onClose}>知道了</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
+const ENV_LABEL: Record<string, string> = { test: '测试环境', prod_ro: '生产只读', builtin: '内置' }
 
 function relative(at: Date): string {
   const seconds = Math.floor((Date.now() - at.getTime()) / 1000)

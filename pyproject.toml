@@ -21,6 +21,9 @@ dependencies = [
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "typer>=0.12",
+    # 运行时添加的数据源若直接提交口令，用主密钥加密后落盘（sources.py）。
+    # 此前只是 langchain 链路的传递依赖，现在是直接依赖，必须显式声明。
+    "cryptography>=42",
     "rich>=13.7",
 ]
 
