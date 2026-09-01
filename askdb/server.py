@@ -186,11 +186,14 @@ class AddMemberRequest(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
     org_id: int | None = None
+    # 运行时数据源 id。留空 / "builtin" 走启动配置里的那个源
+    source: str = Field(default="", max_length=32)
 
 
 class SqlRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=20000)
     org_id: int | None = None
+    source: str = Field(default="", max_length=32)
 
 
 class SourceRequest(BaseModel):
@@ -815,11 +818,32 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """
         return _identity.ANONYMOUS
 
+    def _cfg_for(source: str) -> Config:
+        """按数据源 id 取配置。空 / "builtin" 走启动配置。
+
+        顺序上先选源、再按角色收窄 —— 收窄只会去表不会加表，
+        所以任何数据源都逃不过角色策略。反过来先收窄再换源，
+        换源那一步会把收窄结果整个替掉，等于绕开权限。
+        """
+        sid = (source or "").strip()
+        if not sid or sid == "builtin":
+            return cfg
+        src = _sources.get_source(cfg, sid)
+        if src is None:
+            raise HTTPException(status_code=404, detail="数据源不存在")
+        if not src.tables:
+            raise HTTPException(
+                status_code=400,
+                detail="该数据源还没有开放任何表。到「数据源」页勾选后再查 —— "
+                       "白名单同时是安全边界与准确率边界。",
+            )
+        return _sources.derive_config(cfg, src)
+
     @app.post("/api/ask")
     def ask(req: AskRequest) -> JSONResponse:
         # 按角色收窄后再进链路。护栏、执行器、Schema 召回全部从配置取值，
         # 所以收窄一次即全链路生效 —— 模型连不可见的表都召回不到。
-        scoped = _identity.for_role(cfg, _caller_role())
+        scoped = _identity.for_role(_cfg_for(req.source), _caller_role())
         r = run_ask(req.question.strip(), scoped, org_id=req.org_id)
         return JSONResponse(r.to_dict())
 
@@ -836,7 +860,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         from .trace import now_iso, write_audit
 
         # 直查同样按角色收窄：它绕过模型，但**不绕过权限**
-        scoped = _identity.for_role(cfg, _caller_role())
+        scoped = _identity.for_role(_cfg_for(req.source), _caller_role())
         org = scoped.default_org if req.org_id is None else req.org_id
         trace_id = _uuid.uuid4().hex[:12]
         t0 = time.perf_counter()
@@ -849,6 +873,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
                 "model": None,
                 "org_id": org, "role": scoped.role, "question": "（直查模式）",
+                "source": scoped.source_id or "builtin",
+                "source_name": scoped.source_name or scoped.path,
                 "tables_hit": [], "metrics_hit": [],
                 "sql_raw": req.sql, "sql_final": sql_final,
                 "rules_fired": rules_fired or [], "rejected_by": rejected_by,

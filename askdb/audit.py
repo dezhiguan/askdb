@@ -23,7 +23,7 @@ from typing import Any
 SUMMARY_FIELDS = (
     "trace_id", "ts", "kind", "thread_id", "org_id", "role", "question", "rejected_by",
     "attempts", "rows_returned", "elapsed_ms", "cost_cny",
-    "step_count", "multi_step",
+    "step_count", "multi_step", "source", "source_name",
 )
 
 # /api/replay 的字段白名单（判定链路回放接口设计说明 §4.2）。
@@ -35,6 +35,7 @@ REPLAY_FIELDS = (
     "rules_fired", "rejected_by", "attempts", "explain_rows",
     "step_count", "multi_step", "converged_early", "rows_returned",
     "elapsed_ms", "tok_in", "tok_out", "cost_cny", "steps",
+    "source", "source_name",
 )
 
 

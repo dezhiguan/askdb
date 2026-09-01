@@ -24,6 +24,11 @@ def open_cfg(cfg, tmp_path):
 @pytest.fixture
 def client(open_cfg, monkeypatch):
     monkeypatch.setattr(server, "load", lambda _p: open_cfg)
+    # 出站建连限流器是模块级单例（生产上一进程一个 app，这是有意的）。
+    # 测试里多个用例共用一个进程，配额会跨用例累积 —— 攒到第 10 次之后
+    # 后面的用例全部拿到 429，而报错是 KeyError: 'source' 这种看不出根因的样子。
+    # 每个用例发一个干净的限流器。
+    monkeypatch.setattr(server, "_SOURCE_RL", server._RateLimit(limit=10, window_s=60))
     return TestClient(server.create_app("ignored.yaml"))
 
 
@@ -182,3 +187,48 @@ def test_derived_config_disables_tenancy(cfg):
     derived = sources.derive_config(cfg, src)
     assert derived.raw["tenant"]["enabled"] is False
     assert derived.raw["guard"] == cfg.raw["guard"]      # 护栏阈值是部署策略，跟着走
+
+
+# --------------------------------------------------------------- 按源查询
+
+def test_query_against_source_without_tables_is_refused(client, sample_db):
+    """0 张开放表的源查不出任何东西。与其让人查完撞 R-03，不如当场说清楚。"""
+    sid = client.post("/api/sources", json=_body(dsn=str(sample_db))).json()["source"]["id"]
+    r = client.post("/api/sql", json={"sql": "SELECT 1", "source": sid})
+    assert r.status_code == 400 and "没有开放任何表" in r.json()["detail"]
+
+
+def test_query_against_unknown_source_is_404(client):
+    r = client.post("/api/sql", json={"sql": "SELECT 1", "source": "src_000000000000"})
+    assert r.status_code == 404
+
+
+def test_query_is_isolated_to_the_chosen_source(client, open_cfg, sample_db):
+    """选了源就只能看见那个源的白名单。
+
+    换源换掉的是整份配置（白名单、方言、连接），不是加一个过滤条件 ——
+    所以内置源上开放的表，在新源上必须照样查不到。
+    """
+    sid = client.post("/api/sources", json=_body(dsn=str(sample_db))).json()["source"]["id"]
+    client.put(f"/api/sources/{sid}/tables", json={"tables": ["orgs"]})
+
+    ok = client.post("/api/sql", json={"sql": "SELECT id FROM orgs", "source": sid}).json()
+    assert ok["ok"], ok
+
+    # documents 在内置配置里开放，但这个源只开了 orgs
+    blocked = client.post("/api/sql", json={"sql": "SELECT id FROM documents", "source": sid}).json()
+    assert not blocked["ok"] and blocked["rejected_by"] == "R-03"
+
+
+def test_audit_records_which_source_was_queried(client, sample_db):
+    """多源之后，审计不记数据源就说不清「这条 SQL 打的哪个库」——
+    而那是审计存在的全部意义。"""
+    sid = client.post("/api/sources", json=_body(dsn=str(sample_db))).json()["source"]["id"]
+    client.put(f"/api/sources/{sid}/tables", json={"tables": ["orgs"]})
+    client.post("/api/sql", json={"sql": "SELECT id FROM orgs", "source": sid})
+    client.post("/api/sql", json={"sql": "SELECT id FROM documents"})
+
+    items = client.get("/api/audit?page=1&page_size=5").json()["items"]
+    got = {i["source"] for i in items if i.get("source")}
+    assert sid in got, "按源查询没有记下数据源"
+    assert "builtin" in got, "内置源的调用没有记成 builtin"

@@ -75,3 +75,31 @@
   .stats.stats-6 { grid-template-columns: repeat(2, 1fr) !important; }
   .audit-drawer { width: min(520px, 100vw); }
 }
+
+/* 矮视口。阈值取自设计原型：多数笔记本窗口高度都在 900px 以下，
+   而查询页是竖向最吃紧的一页 —— 头部每多占一行，结果区就少一行。 */
+@media (max-height: 900px) {
+  .phase-card { display: none; }
+
+  .query-page { padding: 10px 16px 8px; }
+  .query-page .page-head { margin-bottom: 7px; }
+  .query-page .page-head .eyebrow { margin-bottom: 2px; }
+  .query-page .page-head h1 { font-size: 18px; }
+  .query-page .page-head p { margin-top: 2px; }
+  .query-page .workspace-grid { gap: 9px; }
+
+  .stage-head { padding: 6px 9px; }
+  .stage-source .source-code { width: 24px; height: 24px; }
+  .composer { padding: 9px 10px 7px; }
+  .welcome { padding-block: 14px; }
+  .welcome-mark { width: 34px; height: 34px; font-size: 13px; }
+  .welcome h2 { margin: 9px 0 3px; font-size: 16px; }
+  .assurance-hero { padding: 9px 10px; }
+  .score-ring { width: 36px; height: 36px; }
+}
+
+@media (max-height: 760px) {
+  /* 再矮就把说明句收掉 —— 它是介绍性的，结果区不是 */
+  .query-page .page-head p { display: none; }
+  .welcome > p { display: none; }
+}

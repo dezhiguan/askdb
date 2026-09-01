@@ -41,6 +41,13 @@
 .main-content { min-width: 0; overflow-y: auto; }
 .page { width: 100%; max-width: 1420px; margin: 0 auto; padding: 24px 28px 48px; animation: pageIn .25s ease both; }
 .query-page { height: 100%; display: flex; flex-direction: column; padding-bottom: 16px; overflow: hidden; }
+/* 查询页的头部压到最小：这一页是工作面，上面每多占 10px，
+   下面的结果区就少 10px。标题层级保留，只收紧字号与间距。 */
+.query-page { padding-top: 16px; }
+.query-page .page-head { align-items: center; margin-bottom: 10px; }
+.query-page .page-head h1 { font-size: 21px; }
+.query-page .page-head .eyebrow { margin-bottom: 3px; }
+.query-page .page-head p { margin-top: 2px; }
 @keyframes pageIn { from { opacity: 0; transform: translateY(4px); } }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
 .page-head h1 { margin: 0; font-size: 25px; }

@@ -412,11 +412,12 @@ export interface AskResult {
   cost_cny?: number
 }
 
-export const askQuestion = (question: string, orgId?: number) =>
-  post<AskResult>('/api/ask', { question, org_id: orgId ?? null })
+/** source 是运行时数据源 id；留空走启动配置里的内置源。 */
+export const askQuestion = (question: string, source = '', orgId?: number) =>
+  post<AskResult>('/api/ask', { question, source, org_id: orgId ?? null })
 
-export const runSql = (sql: string, orgId?: number) =>
-  post<AskResult>('/api/sql', { sql, org_id: orgId ?? null })
+export const runSql = (sql: string, source = '', orgId?: number) =>
+  post<AskResult>('/api/sql', { sql, source, org_id: orgId ?? null })
 
 /** 从断点续跑。thread_id 非法/不存在/已跑完一律 404 —— 不提供未完成任务的枚举入口。 */
 export async function resumeTask(threadId: string): Promise<AskResult | null> {

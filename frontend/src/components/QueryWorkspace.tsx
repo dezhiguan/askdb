@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import { askQuestion, fetchSchema, runSql, type AskResult, type Schema } from '../api'
+import {
+  askQuestion, fetchSchema, fetchSources, runSql,
+  type AskResult, type Schema, type SourceCard,
+} from '../api'
 import type { ResultTab, View } from '../types'
 import type { HealthState } from '../useHealth'
 import { ResultTabs } from './ResultTabs'
@@ -26,25 +29,69 @@ export function QueryWorkspace({ health, onNavigate }: {
   const [error, setError] = useState('')
   const [tab, setTab] = useState<ResultTab>('result')
   const [schema, setSchema] = useState<Schema | null>(null)
+  const [sources, setSources] = useState<SourceCard[]>([])
+  const [sourceId, setSourceId] = useState('')      // 空 = 内置源
+  const [menuOpen, setMenuOpen] = useState(false)
 
   useEffect(() => {
     let alive = true
     fetchSchema().then(s => { if (alive) setSchema(s) }).catch(() => {})
+    fetchSources().then(d => { if (alive) setSources(d.items) }).catch(() => {})
     return () => { alive = false }
   }, [])
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const close = () => setMenuOpen(false)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [menuOpen])
 
   const ready = health.status === 'ready' ? health.health : null
   const canAsk = !!ready?.datasource.ok && !!ready?.llm.ok
   const canSql = !!ready?.datasource.ok
   const mode: Mode = modeChoice ?? (canAsk ? 'ask' : 'sql')
-  const usable = mode === 'ask' ? canAsk : canSql
+
+  // 内置源的名字取 health 里的真实库名，而不是配置文件路径 ——
+  // 工作台上要回答的是"我在查哪个库"
+  const options: SourceOption[] = [
+    {
+      id: '',
+      code: ready ? MARK[ready.datasource.type] ?? 'DB' : '··',
+      name: ready?.datasource.detail ?? '读取中…',
+      meta: ready
+        ? `${ready.datasource.type} · 只读`
+          + (ready.tenant.enabled ? ` · ${ready.tenant.column}=${ready.tenant.org_id}` : '')
+          + (schema ? ` · 开放 ${schema.tables.length} 张表` : '')
+        : '',
+      tables: schema?.tables.length ?? 1,
+    },
+    ...sources.filter(c => !c.builtin).map(c => ({
+      id: c.id,
+      code: MARK[c.type] ?? c.type.slice(0, 2).toUpperCase(),
+      name: c.name,
+      meta: `${c.type} · ${c.host || '—'} · 开放 ${c.table_count} 张表`,
+      tables: c.table_count,
+    })),
+  ]
+  const current = options.find(o => o.id === sourceId) ?? options[0]
+  const usable = (mode === 'ask' ? canAsk : canSql) && current.tables > 0
+
+  const pickSource = (id: string) => {
+    if (id === sourceId) { setMenuOpen(false); return }
+    setSourceId(id)
+    setMenuOpen(false)
+    // 旧结果出自另一个库，留着就是张冠李戴
+    setResult(null)
+    setError('')
+  }
 
   const run = async () => {
     const text = question.trim()
     if (!text) return
     setRunning(true); setError('')
     try {
-      const value = mode === 'ask' ? await askQuestion(text) : await runSql(text)
+      const value = mode === 'ask' ? await askQuestion(text, sourceId) : await runSql(text, sourceId)
       setResult(value)
       // 被拦下时先看拦截原因，而不是一张空结果表
       setTab(value.ok ? 'result' : value.rejected_by === 'INTERRUPTED' ? 'checkpoint' : 'sql')
@@ -59,17 +106,13 @@ export function QueryWorkspace({ health, onNavigate }: {
     <div className="workspace-grid">
       <section className="query-stage">
         <div className="stage-head">
-          <div className="stage-source">
-            <span className="source-code">{ready ? MARK[ready.datasource.type] ?? 'DB' : '··'}</span>
-            <span>
-              <strong>{ready?.datasource.detail ?? '读取中…'}</strong>
-              <small>
-                {ready ? `${ready.datasource.type} · 只读` : ''}
-                {ready?.tenant.enabled && ` · ${ready.tenant.column}=${ready.tenant.org_id}`}
-                {schema && ` · 开放 ${schema.tables.length} 张表`}
-              </small>
-            </span>
-          </div>
+          <SourceSelector
+            open={menuOpen}
+            onToggle={() => setMenuOpen(v => !v)}
+            onPick={pickSource}
+            current={current}
+            options={options}
+          />
           <div className="mode-tabs">
             <button className={mode === 'ask' ? 'active' : ''} disabled={!canAsk}
                     title={canAsk ? undefined : '未配置模型密钥，自然语言提问不可用'}
@@ -158,6 +201,55 @@ function Welcome({ mode, schema, usable, onPick }: {
           {samples.map(s => (
             <button key={s.title + s.text} onClick={() => onPick(s.text)}>
               <strong>{s.title}</strong><small>{s.desc}</small>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+interface SourceOption {
+  id: string
+  code: string
+  name: string
+  meta: string
+  /** 开放表数。0 张的源查不出任何东西 —— 与其让人查完撞 R-03，不如直接禁选 */
+  tables: number
+}
+
+function SourceSelector({ open, onToggle, onPick, current, options }: {
+  open: boolean
+  onToggle: () => void
+  onPick: (id: string) => void
+  current: SourceOption
+  options: SourceOption[]
+}) {
+  const usable = options.filter(o => o.tables > 0).length
+  return (
+    <div className={`source-selector ${open ? 'open' : ''}`} onClick={e => e.stopPropagation()}>
+      <button className="source-trigger" onClick={onToggle}>
+        <span className="source-code">{current.code}</span>
+        <span><strong>{current.name}</strong><small>{current.meta}</small></span>
+        <b>⌄</b>
+      </button>
+      {open && (
+        <div className="source-menu">
+          <div className="source-menu-label">
+            <span>选择本次查询的数据源</span>
+            <span>{usable} / {options.length} 可查</span>
+          </div>
+          {options.map(option => (
+            <button
+              key={option.id || 'builtin'}
+              className={`${option.tables > 0 ? '' : 'disabled'} ${option.id === current.id ? 'active' : ''}`}
+              title={option.tables > 0 ? undefined : '该数据源还没有开放任何表，到「数据源」页勾选后才能查'}
+              onClick={() => option.tables > 0 && onPick(option.id)}
+            >
+              <span className="source-code">{option.code}</span>
+              <span><strong>{option.name}</strong><small>{option.meta}</small></span>
+              <em>{option.tables > 0 ? '● 可查' : '未开放表'}</em>
             </button>
           ))}
         </div>

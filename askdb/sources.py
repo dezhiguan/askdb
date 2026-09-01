@@ -271,7 +271,8 @@ def derive_config(base: Config, src: Source) -> Config:
         )
 
     return Config(root=base.root, raw=raw, tables=tables, metrics=[],
-                  path=f"{base.path}#{src.id}")
+                  path=f"{base.path}#{src.id}", role=base.role,
+                  source_id=src.id, source_name=src.name)
 
 
 def to_public(src: Source, *, table_count: int | None = None) -> dict[str, Any]:

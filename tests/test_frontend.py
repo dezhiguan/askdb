@@ -255,3 +255,30 @@ def test_admin_token_never_persisted_in_browser_storage():
             if "localStorage" in text or "sessionStorage" in text:
                 offenders.append(str(path.relative_to(ROOT)))
     assert not offenders, f"管理员令牌被存进了浏览器存储：{offenders}"
+
+
+def test_no_undefined_css_variables():
+    """用了主题里没定义的变量，整条声明会静默失效。
+
+    实际踩过：勾选框写成 `border: 1px solid var(--axis)`，而 --axis 是旧单文件
+    页面的变量、React 主题里没有 —— 颜色回退成 currentColor，同一条规则里
+    又是 color: white，于是白框画在近白底上，字面意义的隐形。
+    页面不报错、样式不报错，只是那个框看不见了。
+    """
+    styles = FRONTEND_SRC / "styles"
+    defined = set()
+    for path in styles.glob("*.css"):
+        defined |= set(re.findall(r"^\s*(--[a-z0-9-]+)\s*:", path.read_text(encoding="utf-8"), re.M))
+    assert defined, "没扫到任何变量定义，目录结构变了"
+
+    # 行内 style 里传进去的，且用处都带了兜底值
+    inline = {"--ratio"}
+
+    # 只看代码：这条测试的说明文字里就写着 var(--axis)，
+    # 不剥注释的话它会把自己的病历当成病灶
+    used = set()
+    for path in [*styles.glob("*.css"), *FRONTEND_SRC.rglob("*.tsx")]:
+        used |= set(re.findall(r"var\((--[a-z0-9-]+)", _code_only(path)))
+
+    missing = sorted(used - defined - inline)
+    assert not missing, f"用到了主题里没有的 CSS 变量，这些声明会静默失效：{missing}"
