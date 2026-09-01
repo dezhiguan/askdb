@@ -38,12 +38,6 @@ const NOTICES: Partial<Record<View, Notice>> = {
     backend: '业务口径已经在跑：定义在 config/*-metrics.yaml，命中后强制注入提示词并参与召回，'
       + '只是还没有页面。本页等 schema registry 落地后接线。',
   },
-  traces: {
-    phase: '接后端：下一步',
-    backend: '链路数据已全部存在：每次调用落一条步骤级 trace，自托管 Langfuse 已接入并按 trace_id 关联 run 树。'
-      + '本页尚未接上 /api/replay。',
-    legacy: true,
-  },
   connectors: {
     phase: '接后端：阶段 F',
     backend: '尚无分布式数据面，当前进程直连单一数据源。这一项需要真实的多 VPC 环境才谈得上验证。',

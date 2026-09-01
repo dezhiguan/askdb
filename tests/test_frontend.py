@@ -109,9 +109,9 @@ def test_step_names_cover_every_traced_node():
         traced |= set(re.findall(r'tracer\.add\("([a-z_]+)"', path.read_text(encoding="utf-8")))
     assert traced, "没扫到任何 tracer.add，正则或代码结构变了"
 
-    src = AUDIT_PAGE.read_text(encoding="utf-8")
-    block = re.search(r"const STEP_NAMES[^{]*\{(.*?)\n\}", src, re.S)
-    assert block, "AuditPage 里找不到 STEP_NAMES"
+    src = (FRONTEND_SRC / "traceSteps.ts").read_text(encoding="utf-8")
+    block = re.search(r"export const STEP_NAMES[^{]*\{(.*?)\n\}", src, re.S)
+    assert block, "traceSteps.ts 里找不到 STEP_NAMES"
     known = set(re.findall(r"^\s*([a-z_]+):", block.group(1), re.M))
 
     missing = sorted(traced - known)
@@ -146,3 +146,38 @@ def test_no_credential_collecting_form_in_frontend():
         if hit:
             offenders.append(f"{path.relative_to(ROOT)}: {hit}")
     assert not offenders, f"前端出现了收数据库连接凭证的表单：{offenders}"
+TRACES_PAGE = FRONTEND_SRC / "pages" / "TracesPage.tsx"
+
+
+def test_traces_page_is_wired_to_real_endpoints():
+    src = TRACES_PAGE.read_text(encoding="utf-8")
+    for fn in ("fetchAudit", "fetchAuditStats", "fetchReplay"):
+        assert fn in src, f"执行追踪页没有调用 {fn}"
+
+    notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
+    assert "traces:" not in notices, "执行追踪页已接真实数据，MockNotice 里的条目要删掉"
+
+
+def test_step_names_are_defined_once():
+    """审计复放与执行追踪都要把节点 id 翻成中文。各存一份必然漂移 ——
+    而漂移的表现只是页面上显示原始 id，不报错、不好发现。
+    """
+    offenders = [
+        str(p.relative_to(ROOT))
+        for p in FRONTEND_SRC.rglob("*.tsx")
+        if "const STEP_NAMES" in p.read_text(encoding="utf-8")
+    ]
+    assert not offenders, f"STEP_NAMES 只能定义在 src/traceSteps.ts，这些文件另存了一份：{offenders}"
+
+
+def test_traces_page_does_not_claim_false_privacy_policy():
+    """原型那块写的是「prompt: REDACTED / sql: HASH ONLY」。
+
+    askdb 的实际上报策略不是这样 —— observe.py 把 question 原文当 input、
+    sql_final 全文当 output 送出去。照抄原型就成了一句假的隐私承诺，
+    而假的隐私承诺比没有承诺更危险。
+    """
+    src = TRACES_PAGE.read_text(encoding="utf-8")
+    for claim in ("REDACTED", "HASH ONLY"):
+        assert claim not in src, f"页面声称 {claim}，与 observe.py 的实际上报不符"
+    assert "结果行: 不上报" in src, "必须写明真正不上报的是结果行"

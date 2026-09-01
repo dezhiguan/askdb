@@ -1,0 +1,46 @@
+/* 执行追踪页。
+ *
+ * 单独一个文件而不是往 pages.css 末尾追加：数据源页正在另一条分支上改同一个
+ * 文件的末尾，两边都往末尾加就必然冲突。按页拆文件，合并时只碰 App.tsx 一行 import。
+ */
+
+/* 左侧最近执行列表 —— 圆形状态点，对齐原型 .trace-status */
+.trace-list { padding: 6px; }
+.trace-list > button { border-radius: 6px; border-bottom: 0; cursor: pointer; }
+.trace-list > button:hover { background: var(--green-wash); }
+.trace-list > button > i {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--green);
+  font-size: 7px;
+  font-style: normal;
+}
+.trace-list > button > i.bad { background: var(--red); }
+.trace-list > button > strong { font-size: 8px; }
+.trace-list code { color: var(--green); }
+.trace-list .audit-empty { padding: 14px 8px; }
+
+/* 链路条：被拦截的那一段要看得出来，否则整条链看着像跑完了 */
+.trace-flow > span.bad { border-color: #d4aaa3; background: var(--red-wash); }
+.trace-flow > span.bad small { color: var(--red); }
+
+/* Span 类型标。颜色按节点性质分档，与原型的 span-type 一致 */
+.span-type { display: inline-flex; padding: 2px 4px; border-radius: 3px; font: 6px var(--mono); font-weight: 700; }
+.span-type.model { color: var(--blue); background: var(--blue-wash); }
+.span-type.tool { color: var(--amber); background: var(--amber-wash); }
+.span-type.guard { color: var(--green); background: var(--green-wash); }
+.span-type.db { color: var(--ink-2); background: var(--paper-2); }
+.span-type.sys { color: var(--muted); background: var(--paper-2); }
+
+.trace-detail .trace-title { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.trace-detail .trace-facts { grid-template-columns: repeat(4, 1fr); }
+.trace-detail .table-scroll { margin-top: 12px; }
+
+/* 禁用态的顶部动作：说清为什么不可用，而不是让按钮看着能点 */
+.page-head button:disabled { color: var(--muted); background: var(--paper-2); cursor: not-allowed; }
+.page-head a.primary { display: inline-block; text-decoration: none; }
+

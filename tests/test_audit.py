@@ -226,3 +226,30 @@ def test_observability_prefers_selfhosted_langfuse(monkeypatch):
 
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY")
     assert observability_status()["backend"] == "langsmith"
+
+
+def test_latency_percentiles_are_real_observations(tmp_path: Path):
+    """执行追踪页把 P95 当核心指标显示，它必须是真发生过的一次耗时。
+
+    用最近秩法而不是插值：插值会造出一个从没出现过的数字，
+    而这页要回答的是「实际最慢的那次有多慢」。
+    """
+    p = tmp_path / "a.jsonl"
+    _write(p, [_rec(f"{i:012x}", _now(), elapsed_ms=ms)
+               for i, ms in enumerate([10, 20, 30, 40, 5000])])
+
+    s = audit.stats(p, days=30)
+    assert s["elapsed_p50_ms"] == 30
+    assert s["elapsed_p95_ms"] == 5000
+    # 任何分位都必须落在真实观测值集合里
+    assert s["elapsed_p50_ms"] in {10, 20, 30, 40, 5000}
+
+
+def test_latency_percentiles_none_when_no_calls(tmp_path: Path):
+    """窗口内没有调用时给 null，而不是 0 —— 0 会被读成「快得不得了」。"""
+    p = tmp_path / "a.jsonl"
+    _write(p, [_rec("aaaaaaaaaaa1", _now(offset_days=90))])
+
+    s = audit.stats(p, days=30)
+    assert s["calls"] == 0
+    assert s["elapsed_p50_ms"] is None and s["elapsed_p95_ms"] is None

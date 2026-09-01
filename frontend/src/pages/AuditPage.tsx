@@ -4,23 +4,8 @@ import {
   type AuditItem, type AuditList, type AuditStats, type Replay, type ReplayResult,
 } from '../api'
 import { PageHeader } from '../components/AppShell'
+import { KIND_NAMES, STEP_NAMES } from '../traceSteps'
 
-/** 图节点的中文名。后端给的是节点 id，页面上直接显示 id 没人看得懂。 */
-const STEP_NAMES: Record<string, string> = {
-  quota: '配额检查',
-  schema_recall: 'Schema 召回',
-  plan: '单步/多步判定',
-  generate_sql: 'SQL 生成',
-  guard: '静态校验',
-  dry_run: 'EXPLAIN 干跑',
-  execute: '只读执行',
-  assess: '结果自检',
-  reflect: '反思重试',
-  finalize: '结果与溯源',
-  interrupted: '执行中断',
-}
-
-const KIND_NAMES: Record<string, string> = { ask: '提问', sql: '直查', resume: '续跑' }
 
 function fmtTime(ts: string): string {
   const d = new Date(ts)

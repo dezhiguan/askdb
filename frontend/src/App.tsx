@@ -16,6 +16,7 @@ import './styles/theme.css'
 import './styles/shell.css'
 import './styles/components.css'
 import './styles/pages.css'
+import './styles/traces.css'
 import './styles/responsive.css'
 
 function App() {
@@ -38,7 +39,7 @@ function App() {
     if (view === 'permissions') return <PermissionsPage notify={notify} />
     if (view === 'glossary') return <GlossaryPage notify={notify} />
     if (view === 'audit') return <AuditPage />
-    if (view === 'traces') return <TracesPage openModal={setModal} notify={notify} />
+    if (view === 'traces') return <TracesPage />
     if (view === 'connectors') return <ConnectorsPage openModal={setModal} />
     if (view === 'developer') return <DeveloperPage notify={notify} />
     return <RoadmapPage notify={notify} />

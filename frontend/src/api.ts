@@ -82,6 +82,9 @@ export interface AuditStats {
   tok_out: number
   /** 没有调用时为 null。后端如实算占比，不写死 100% —— 这格数字要经得起对账。 */
   trace_complete: number | null
+  /** 最近秩分位：一定是真发生过的某一次耗时，不是插值。窗口内无调用时为 null。 */
+  elapsed_p50_ms: number | null
+  elapsed_p95_ms: number | null
   daily: { date: string; calls: number; cost_cny: number }[]
   by_kind: Record<string, number>
   by_rule: Record<string, number>
