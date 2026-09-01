@@ -1,4 +1,5 @@
 import { navGroups } from '../data/mockData'
+import type { Me } from '../api'
 import type { HealthState } from '../useHealth'
 import type { View } from '../types'
 
@@ -6,6 +7,8 @@ interface AppShellProps {
   activeView: View
   health: HealthState
   onNavigate: (view: View) => void
+  me: Me | null
+  onOpenLogin: () => void
   onSignOut: () => void
   notice?: React.ReactNode
   children: React.ReactNode
@@ -48,7 +51,7 @@ function WorkspaceContext({ health }: { health: HealthState }) {
   )
 }
 
-export function AppShell({ activeView, health, onNavigate, onSignOut, notice, children }: AppShellProps) {
+export function AppShell({ activeView, health, onNavigate, me, onOpenLogin, onSignOut, notice, children }: AppShellProps) {
   const configPath = health.status === 'ready' ? health.health.config : '—'
 
   return (
@@ -62,7 +65,7 @@ export function AppShell({ activeView, health, onNavigate, onSignOut, notice, ch
           <span className="context-chip config-chip hide-mobile" title="当前实例加载的配置文件">
             配置文件 {configPath}
           </span>
-          <button className="ghost" onClick={onSignOut}>退出</button>
+          <Identity me={me} onOpenLogin={onOpenLogin} onSignOut={onSignOut} />
         </div>
       </header>
 
@@ -92,6 +95,45 @@ export function AppShell({ activeView, health, onNavigate, onSignOut, notice, ch
       </aside>
       <main className="main-content">{notice}{children}</main>
     </div>
+  )
+}
+
+/** 顶栏身份位。
+ *
+ * 除了「是谁」，还要把**生效边界**摆出来（可见表数 / 行上限）——
+ * 权限体系最怕的是"配了但看不出有没有生效"，而这一格是访客唯一会看的地方。
+ */
+function Identity({ me, onOpenLogin, onSignOut }: {
+  me: Me | null
+  onOpenLogin: () => void
+  onSignOut: () => void
+}) {
+  if (!me) return <span className="context-chip">…</span>
+  if (!me.enabled) {
+    return <span className="context-chip" title="未配置会话密钥，登录整体关闭">登录未启用</span>
+  }
+
+  const scope = `${me.scope.tables.length} 表 · ${me.scope.max_rows} 行`
+
+  if (!me.username) {
+    return (
+      <>
+        <span className="context-chip" title={`可见表：${me.scope.tables.join('、')}`}>
+          匿名 · {scope}
+        </span>
+        <button className="primary" onClick={onOpenLogin}>登录 / 一键体验</button>
+      </>
+    )
+  }
+  return (
+    <>
+      <span className="context-chip identity-chip" title={`可见表：${me.scope.tables.join('、')}`}>
+        <b>{me.display_name || me.username}</b>
+        <em>{me.roles.join('+') || '无角色'}</em>
+        <span className="dim">{scope}</span>
+      </span>
+      <button className="ghost" onClick={onSignOut}>退出</button>
+    </>
   )
 }
 

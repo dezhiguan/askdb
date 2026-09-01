@@ -128,6 +128,41 @@ def policy_for(cfg: Config, role_code: str) -> Policy:
     return Policy(tables=tables, max_rows=max_rows)
 
 
+def combine(policies: list[Policy]) -> Policy:
+    """多个角色叠加。
+
+    RBAC 是**加法**：一个人身兼两职，看得到的是两者之和。表取并集、
+    行上限取大 —— 但每个策略本身都已经是实例白名单的子集，所以并集
+    仍然是子集，「只能收窄」这条不变量不受影响。
+
+    这个语义顺带把职责分离表达对了：SYS_ADMIN 的策略是空表集，
+    与任何数据角色取并集都等于那个数据角色 —— 当管理员既不增加也不减少
+    数据权限。只有 SYS_ADMIN 的人则并集为空，一张表也看不到。
+    """
+    if not policies:
+        return Policy()
+
+    tables: frozenset[str] | None = frozenset()
+    for p in policies:
+        if p.tables is None:          # 有一个不额外收窄，合起来就不收窄
+            tables = None
+            break
+        tables |= p.tables
+
+    caps = [p.max_rows for p in policies]
+    max_rows = None if any(c is None for c in caps) else max(caps)
+
+    return Policy(tables=tables, max_rows=max_rows)
+
+
+def for_roles(cfg: Config, role_codes: list[str]) -> Config:
+    """取一组角色叠加后的配置。登录用户走这条。"""
+    if not role_codes:
+        return for_role(cfg, ANONYMOUS)
+    combined = combine([policy_for(cfg, code) for code in role_codes])
+    return narrow(cfg, combined, "+".join(sorted(role_codes)))
+
+
 def narrow(cfg: Config, policy: Policy, role_code: str = ANONYMOUS) -> Config:
     """按策略收窄一份配置，供本次调用使用。
 

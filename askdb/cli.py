@@ -231,6 +231,35 @@ def cmd_replay(
         con.print(f"\n[bold]首个偏离步[/] 第 {first_bad} 个检查点")
 
 
+@app.command("hash-password")
+def cmd_hash_password(
+    password: str = typer.Argument(..., help="要哈希的口令"),
+) -> None:
+    """生成一条口令哈希，粘进配置的 auth.accounts[].password_hash。
+
+    口令**不进配置文件、不进版本库**，配置里只放哈希。
+    scrypt n=2^14，本机约 60~100ms —— 登录慢一点无所谓，离线爆破要足够贵。
+    """
+    from .auth import hash_password
+
+    # 裸 print：rich 会按终端宽度折行，而这串要被原样复制进配置。
+    # 折行过一次，粘进去的哈希是截断的，登录直接 500。
+    print(hash_password(password))
+    con.print("[dim]粘到 config 的 auth.accounts[].password_hash；口令本身不要入库。[/]")
+
+
+@app.command("session-secret")
+def cmd_session_secret() -> None:
+    """生成一把会话签名密钥，写进 .env 的 ASKDB_SESSION_SECRET。
+
+    多副本必须共用同一把 —— 各签各的会表现为「刷新几次就掉线」，
+    而这种故障比登不上更难查。
+    """
+    import secrets as _secrets
+
+    print(f"ASKDB_SESSION_SECRET={_secrets.token_urlsafe(32)}")
+
+
 def _load(path: str):
     try:
         return load(path)

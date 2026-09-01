@@ -12,10 +12,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from . import auth as _auth
 from . import guard
 from . import identity as _identity
 from . import sources as _sources
@@ -174,6 +175,15 @@ def _dsn_label(dsn: str, upstream: str = "") -> str:
     if upstream:
         return f"{db} @ {upstream}（经隧道 {local}）"
     return f"{db} @ {local}"
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class DemoRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
 
 
 class AddMemberRequest(BaseModel):
@@ -806,25 +816,123 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             return not_found
         return JSONResponse(r.to_dict())
 
-    def _caller_role() -> str:
-        """本次调用的角色。
+    # 登录失败限流。口令是离线可爆破的，接口侧必须先把速率压下去。
+    _LOGIN_RL = _RateLimit(limit=10, window_s=60)
 
-        登录尚未接入，因此恒为匿名。**留这个函数而不是到处写 ANONYMOUS**：
-        接入会话后只改这一处，两条查询链路自动跟着变，不会漏掉其中一条 ——
-        漏掉的那条就是一条无声的提权路径。
+    def _current_user(request: Request) -> str | None:
+        return _auth.read(request.cookies.get(_auth.COOKIE_NAME))
+
+    def _scoped(request: Request) -> Config:
+        """本次调用生效的配置 —— 按调用方角色收窄。
+
+        **两条查询链路共用这一个入口**。角色的解析只有这一处，
+        接入新的认证方式也只改这里；散开写就迟早漏掉一条，
+        而漏掉的那条就是一条无声的提权路径。
         """
-        return _identity.ANONYMOUS
+        username = _current_user(request)
+        if not username:
+            return _identity.for_role(cfg, _identity.ANONYMOUS)
+        return _identity.for_roles(cfg, _auth.roles_of(cfg, username))
+
+    def _require_login(request: Request) -> None:
+        if _auth.required(cfg) and not _current_user(request):
+            raise HTTPException(status_code=401, detail="本实例需要登录后才能查询")
+
+    def _require_scope(scoped: Config) -> None:
+        """当前角色一张表都看不到时，给一句能懂的话。
+
+        不这么做的话，用户会撞上 R-03「用到了没有开放的表」——
+        那是给"表没开放"准备的措辞，用在"你没有数据角色"上会把人引向
+        完全错误的排查方向。
+        """
+        if not scoped.tables:
+            raise HTTPException(
+                status_code=403,
+                detail="当前角色没有数据访问权限。系统管理员只管理成员，"
+                       "要查数需另行加入某个数据角色。",
+            )
+
+    def _set_session(response: Response, username: str) -> None:
+        response.set_cookie(
+            _auth.COOKIE_NAME, _auth.issue(username),
+            max_age=_auth.DEFAULT_TTL_S, httponly=True, samesite="lax",
+            # HttpOnly 挡住 JS 读取；SameSite=Lax 挡住跨站携带。
+            # secure 跟随部署：本地 http 调试也要能登进去，线上由入口强制 HTTPS。
+            secure=bool(cfg.raw.get("auth", {}).get("cookie_secure", False)),
+            path="/",
+        )
+
+    @app.get("/api/auth/me")
+    def auth_me(request: Request) -> dict[str, Any]:
+        """当前身份与**生效边界**。
+
+        把 tables / max_rows 一并给出去，是为了让人看得见角色到底收窄了什么 ——
+        权限体系最怕的是"配了但看不出有没有生效"。
+        """
+        username = _current_user(request)
+        scoped = _scoped(request)
+        acc = _auth.accounts(cfg).get((username or "").lower()) if username else None
+        return {
+            "enabled": _auth.enabled(cfg),
+            "required": _auth.required(cfg),
+            "username": username,
+            "display_name": acc.display_name if acc else "",
+            "roles": _auth.roles_of(cfg, username) if username else [],
+            "scope": {"tables": sorted(scoped.tables), "max_rows": scoped.max_rows},
+            "demo_accounts": [
+                {"username": a.username, "display_name": a.display_name,
+                 "roles": list(a.roles), "note": a.note}
+                for a in _auth.demo_accounts(cfg)
+            ],
+        }
+
+    @app.post("/api/auth/login")
+    def auth_login(req: LoginRequest, response: Response) -> dict[str, Any]:
+        if not _auth.enabled(cfg):
+            raise HTTPException(status_code=404, detail="本实例未启用登录")
+        if not _LOGIN_RL.allow():
+            raise HTTPException(status_code=429, detail="尝试过于频繁，稍后再试")
+        try:
+            acc = _auth.authenticate(cfg, req.username, req.password)
+        except _auth.AuthError as e:
+            # 账号不存在与口令不对同一句话、同一状态码 —— 区分就是账号枚举
+            raise HTTPException(status_code=401, detail=str(e)) from e
+        _set_session(response, acc.username)
+        return {"ok": True, "username": acc.username, "roles": list(acc.roles)}
+
+    @app.post("/api/auth/demo")
+    def auth_demo(req: DemoRequest, response: Response) -> dict[str, Any]:
+        """一键体验：**只跳过认证，不跳过授权**。
+
+        体验账号拿到的是它自己角色的收窄配置，和口令登录走完全同一条路径。
+        白名单由配置显式声明，不是一个"允许免密"的总开关。
+        """
+        if not _auth.enabled(cfg):
+            raise HTTPException(status_code=404, detail="本实例未启用登录")
+        try:
+            acc = _auth.enter_demo(cfg, req.username)
+        except _auth.AuthError as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        _set_session(response, acc.username)
+        return {"ok": True, "username": acc.username, "roles": list(acc.roles)}
+
+    @app.post("/api/auth/logout")
+    def auth_logout(response: Response) -> dict[str, Any]:
+        response.delete_cookie(_auth.COOKIE_NAME, path="/")
+        return {"ok": True}
 
     @app.post("/api/ask")
-    def ask(req: AskRequest) -> JSONResponse:
+    def ask(req: AskRequest, request: Request) -> JSONResponse:
         # 按角色收窄后再进链路。护栏、执行器、Schema 召回全部从配置取值，
         # 所以收窄一次即全链路生效 —— 模型连不可见的表都召回不到。
-        scoped = _identity.for_role(cfg, _caller_role())
+        _require_login(request)
+        scoped = _scoped(request)
+        _require_scope(scoped)
         r = run_ask(req.question.strip(), scoped, org_id=req.org_id)
         return JSONResponse(r.to_dict())
 
     @app.post("/api/sql")
-    def sql(req: SqlRequest) -> JSONResponse:
+    def sql(req: SqlRequest, request: Request) -> JSONResponse:
         """直查模式：跳过模型，只跑 护栏 → 干跑 → 执行。未配密钥时也能用。
 
         直查同样一调用一条审计：拦截也留痕。此前这条路径不落流水，
@@ -836,7 +944,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         from .trace import now_iso, write_audit
 
         # 直查同样按角色收窄：它绕过模型，但**不绕过权限**
-        scoped = _identity.for_role(cfg, _caller_role())
+        _require_login(request)
+        scoped = _scoped(request)
+        _require_scope(scoped)
         org = scoped.default_org if req.org_id is None else req.org_id
         trace_id = _uuid.uuid4().hex[:12]
         t0 = time.perf_counter()
