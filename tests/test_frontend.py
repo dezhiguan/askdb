@@ -31,6 +31,23 @@ def client(cfg, monkeypatch):
     return TestClient(server.create_app("ignored.yaml"))
 
 
+def _code_only(path: Path) -> str:
+    """去掉注释后的源码。
+
+    扫描类断言只该看**代码**。注释里为了解释「为什么不这么做」而写下
+    localStorage、REDACTED 这类词，会把自己的说明当成违规命中 ——
+    已经被绊倒两次了。剥注释比反复改措辞可靠。
+
+    `//` 只在不是 `://` 的情况下才当行注释 —— 否则 https:// 的后半截会被吃掉。
+    这只挡住协议头这一种情形：字符串里出现 `a//b` 仍会被当成注释起点，
+    该行后半段随之丢失。对这些扫描断言够用（要找的标识符本身出现在代码里，
+    不会藏在这种串里），但别把它当成通用的注释解析器。
+    """
+    text = path.read_text(encoding="utf-8")
+    text = re.sub(r"/\*[\s\S]*?\*/", "", text)          # 块注释，含 JSX 里的 {/* */}
+    text = re.sub(r"(?<!:)//[^\n]*", "", text)            # 行注释，放过 ://
+    return text
+
 def test_build_output_is_committed():
     """产物缺失不会报错，只会让人看到上一版界面 —— 必须由测试挡住。"""
     page = WEB / "index.html"
@@ -150,7 +167,43 @@ def test_credentials_never_touch_browser_storage():
     """
     offenders = []
     for path in FRONTEND_SRC.rglob("*.tsx"):
-        text = path.read_text(encoding="utf-8")
+        text = _code_only(path)
         if "localStorage" in text or "sessionStorage" in text:
             offenders.append(str(path.relative_to(ROOT)))
     assert not offenders, f"前端往浏览器存储写了东西，需人工确认不含凭证：{offenders}"
+
+
+PERMISSIONS_PAGE = FRONTEND_SRC / "pages" / "PermissionsPage.tsx"
+
+
+def test_permissions_page_is_wired_to_real_endpoints():
+    src = PERMISSIONS_PAGE.read_text(encoding="utf-8")
+    for fn in ("fetchRoles", "fetchMembers", "addMember", "removeMember"):
+        assert fn in src, f"身份与权限页没有调用 {fn}"
+
+    notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
+    assert "permissions:" not in notices, "身份与权限页已接真实数据，MockNotice 里的条目要删掉"
+
+
+def test_permissions_page_states_roles_are_not_enforced_yet():
+    """成员名单是真的，但角色还不参与执行判定 —— 两件事必须分开说清楚。
+
+    不写明，就会有人以为把某人加进「测试」角色就限制住他能查什么了；
+    实际上 askdb 还没接入登录，请求上没有任何身份，护栏仍按实例配置
+    对所有调用一视同仁。这种误解直接关系到有没有人敢把生产库接上来。
+    """
+    src = PERMISSIONS_PAGE.read_text(encoding="utf-8")
+    assert "角色目前不参与执行判定" in src
+
+
+def test_admin_token_never_persisted_in_browser_storage():
+    """管理员令牌是部署方持有的共享口令，写进 localStorage 等于把它
+    长期留在浏览器里。只准留在内存，刷新即失效。
+    """
+    offenders = []
+    for path in list(FRONTEND_SRC.rglob("*.tsx")) + list(FRONTEND_SRC.rglob("*.ts")):
+        text = _code_only(path)
+        if "Admin-Token" in text or "adminWrite" in text:
+            if "localStorage" in text or "sessionStorage" in text:
+                offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, f"管理员令牌被存进了浏览器存储：{offenders}"

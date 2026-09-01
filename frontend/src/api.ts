@@ -350,3 +350,76 @@ export const setSourceTables = (id: string, tables: string[]) =>
 
 export const deleteSource = (id: string) =>
   post<{ ok: boolean }>(`/api/sources/${id}`, {}, 'DELETE')
+
+/* ---------------- 身份与权限 ---------------- */
+
+export interface RoleInfo {
+  code: string
+  name: string
+  scope: string
+  desc: string
+  /** 系统角色只管人不看数据（职责分离），页面要把它和数据角色区分开 */
+  system: boolean
+  members: number
+}
+
+export interface RolesResponse {
+  enabled: boolean
+  /** 是否配了 ASKDB_ADMIN_TOKEN。没配则写接口整体关闭 —— fail-closed */
+  writable: boolean
+  roles: RoleInfo[]
+}
+
+export interface RoleMember {
+  id: number
+  role_code: string
+  auth_user_id: number | null
+  username: string
+  display_name: string
+  note: string
+  created_at: string
+  created_by: string
+  /** 是否已关联到网关账号。登录接入前恒为 false，页面必须如实标注。 */
+  bound: boolean
+}
+
+export async function fetchRoles(): Promise<RolesResponse> {
+  const response = await fetch('/api/identity/roles')
+  if (!response.ok) throw new Error(`/api/identity/roles ${response.status}`)
+  return response.json()
+}
+
+export async function fetchMembers(roleCode: string): Promise<RoleMember[]> {
+  const response = await fetch(`/api/identity/members?role=${encodeURIComponent(roleCode)}`)
+  if (!response.ok) throw new Error(`/api/identity/members ${response.status}`)
+  return (await response.json()).items
+}
+
+/** 管理员令牌只放在内存里，刷新即失效。
+ *  它是部署方持有的共享口令，落进 localStorage 等于把它长期留在浏览器里。 */
+async function adminWrite(url: string, token: string, init: RequestInit): Promise<void> {
+  const response = await fetch(url, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', 'X-Askdb-Admin-Token': token },
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    throw new Error(body.detail || `${url} ${response.status}`)
+  }
+}
+
+export function addMember(token: string, member: {
+  role_code: string
+  username: string
+  display_name: string
+  note: string
+}): Promise<void> {
+  return adminWrite('/api/identity/members', token, {
+    method: 'POST',
+    body: JSON.stringify(member),
+  })
+}
+
+export function removeMember(token: string, id: number): Promise<void> {
+  return adminWrite(`/api/identity/members/${id}`, token, { method: 'DELETE' })
+}

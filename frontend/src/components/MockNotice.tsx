@@ -28,11 +28,6 @@ const NOTICES: Partial<Record<View, Notice>> = {
     backend: '尚无任务队列，/api/ask 目前是同步请求。'
       + 'LangGraph 中断与断点续跑（/api/resume）已上线，可作为任务状态机的底座。',
   },
-  permissions: {
-    phase: '接后端：阶段 D',
-    backend: 'askdb 现在不设账号体系 —— 权限边界是数据库连接本身。'
-      + '本页的角色与策略开关均未生效，接入 SSO 属于设计前提变更，须先定版。',
-  },
   glossary: {
     phase: '接后端：阶段 B',
     backend: '业务口径已经在跑：定义在 config/*-metrics.yaml，命中后强制注入提示词并参与召回，'
