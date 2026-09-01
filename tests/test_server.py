@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from askdb import server
-from askdb.server import WEB
+from askdb.server import WEB, WEB_LEGACY
 from askdb.llm import LlmUsage, SqlDraft
 
 
@@ -23,8 +23,15 @@ def client(cfg, monkeypatch):
 
 
 def test_index_serves_page(client):
+    """首页现在是前端工程的构建产物，页面主体在带 hash 的 bundle 里。
+
+    仍然钉住「页面自报家门」：同一台机器上会同时跑多个实例，
+    拿不准眼前这个是谁，排查就无从下手。
+    """
     r = client.get("/")
-    assert r.status_code == 200 and "askdb" in r.text
+    assert r.status_code == 200
+    assert 'name="application-name" content="askdb"' in r.text
+    assert '<div id="root"></div>' in r.text
 
 
 def test_health_reports_datasource_and_llm(client, cfg, monkeypatch):
@@ -282,7 +289,7 @@ def test_step_count_is_a_scalar_not_the_trace_array(client):
     assert isinstance(d["step_count"], int)
     assert isinstance(d["steps"], list)          # 追踪数组，不是步数
 
-    page = (WEB / "index.html").read_text(encoding="utf-8")
+    page = (WEB_LEGACY / "index.html").read_text(encoding="utf-8")
     assert 'd.steps || d.step_count' not in page
     assert '$("mSteps").textContent = (d.step_count' in page
 

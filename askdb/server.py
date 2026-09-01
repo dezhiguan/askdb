@@ -37,6 +37,9 @@ def _quota_view(cfg: Config) -> dict[str, Any]:
     }
 
 WEB = Path(__file__).resolve().parent / "web"
+# 换壳前的单文件页面。它仍然是唯一一处接了真实数据的界面 ——
+# 新前端把后端能力接回来之前，不能只剩一个查不了数的壳，所以留在 /legacy。
+WEB_LEGACY = Path(__file__).resolve().parent / "web_legacy"
 
 # 回放 id 严格校验：12 位十六进制，命中与未命中同为 404
 _TRACE_ID_RE = __import__("re").compile(r"[0-9a-f]{12}")
@@ -185,13 +188,24 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     cfg: Config = load(config_path)
     app = FastAPI(title="askdb", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
+    _NO_STORE = {"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"}
+
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        # 不缓存：页面会随配置与数据源变化，缓存住旧版本会让人误判为 bug
-        return FileResponse(WEB / "index.html", headers={
-            "Cache-Control": "no-store, must-revalidate",
-            "Pragma": "no-cache",
-        })
+        # 不缓存：页面会随配置与数据源变化，缓存住旧版本会让人误判为 bug。
+        # 构建产物里的 /assets/*.js 带 hash，由 StaticFiles 各自设缓存，不受这里影响。
+        return FileResponse(WEB / "index.html", headers=_NO_STORE)
+
+    @app.get("/legacy", include_in_schema=False)
+    def legacy_index() -> FileResponse:
+        return FileResponse(WEB_LEGACY / "index.html", headers=_NO_STORE)
+
+    # 构建产物可能还没生成（新克隆、只跑单测的环境）。
+    # 缺了就不挂载 —— 接口测试不该因为没装 node 而整体起不来。
+    if (WEB / "assets").is_dir():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/assets", StaticFiles(directory=str(WEB / "assets")), name="assets")
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:

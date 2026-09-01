@@ -21,7 +21,7 @@ from askdb import server
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNNER = ROOT / "tests" / "js" / "run_page.js"
-PAGE = ROOT / "askdb" / "web" / "index.html"
+PAGE = ROOT / "askdb" / "web_legacy" / "index.html"
 
 pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="未安装 Node")
 

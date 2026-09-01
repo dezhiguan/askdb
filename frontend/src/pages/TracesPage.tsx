@@ -1,0 +1,19 @@
+import { useState } from 'react'
+import { PageHeader } from '../components/AppShell'
+import type { ModalName } from '../types'
+
+export function TracesPage({ openModal, notify }: { openModal: (modal: ModalName) => void; notify: (message: string) => void }) {
+  const [trace, setTrace] = useState(0)
+  const traces = [['今天支付失败订单','林晓 · 18:31:08 · 1.64s','7A2F'],['物流超时趋势','周琪 · 18:28:42 · 2.31s','6C19'],['导出用户支付记录','王凯 · 18:22:17 · 已拦截','4B80'],['退款失败原因','陈晨 · 18:10:33 · 1.08s','3D14']]
+  const spans = [['GUARD','authz.evaluate','user + data_source','PRODUCT / PROD-RO','12ms'],['TOOL','schema.retrieve','支付失败订单','3 tables / 14 columns','83ms'],['MODEL','llm.generate_sql','脱敏 Prompt','SQL SHA-256: 8ad2…','740ms'],['GUARD','sql.validate','SQL AST','readonly / cost 12%','18ms'],['TOOL','database.query','QRY-183108','3 rows / 1,842 scanned','480ms'],['MODEL','llm.summarize','脱敏聚合结果','答案 + 可信证据','310ms']]
+  return <div className="page"><PageHeader eyebrow="Phase 2 · Agent Observability" title="智能体执行追踪" description="查看每次查询经过的模型、工具、策略和数据库节点，为 Langfuse/OpenTelemetry 预留统一 Trace 结构。" action={<div className="card-actions"><button className="ghost" onClick={() => notify('OpenTelemetry Trace 已准备导出（样例数据，未接后端）')}>导出 OpenTelemetry</button><button className="primary" onClick={() => openModal('langfuse')}>接入 Langfuse</button></div>} />
+    <div className="stats">{[['今日 Traces','286','100% 已关联审计'],['P95 总耗时','2.8s','目标 < 4 秒'],['模型调用成功率','98.6%','4 次自动重试'],['平均 Token','1,842','较上周 -11%']].map(stat => <div key={stat[0]}><span>{stat[0]}</span><strong>{stat[1]}</strong><small>{stat[2]}</small></div>)}</div>
+    <div className="trace-layout"><section className="card trace-list"><div className="card-head"><strong>最近执行</strong><span className="status">LIVE</span></div>{traces.map((item,index) => <button className={trace === index ? 'active' : ''} key={item[2]} onClick={() => { setTrace(index); notify('已切换 Trace · 使用固定 Span 详情') }}><i>{index === 2 ? '!' : '✓'}</i><span><strong>{item[0]}</strong><small>{item[1]}</small></span><code>{item[2]}</code></button>)}</section>
+      <section className="card trace-detail"><div className="trace-title"><div><h3>{traces[trace][0]}</h3><p>TRACE-20260828-183108-{traces[trace][2]} · SUCCESS · ONE-SHOT</p></div><span className="status">可信度 96</span></div>
+        <div className="trace-facts">{[['总耗时','1.64s'],['模型','claude-sonnet'],['Token','1,842'],['工具调用','4'],['SQL Hash','8ad2…91cf']].map(fact => <div key={fact[0]}><span>{fact[0]}</span><strong>{fact[1]}</strong></div>)}</div>
+        <div className="trace-flow">{['AuthZ','Schema Tool','Generate SQL','SQL Guard','DB Query','Summarize'].map((node,index) => <span key={node}><strong>{node}</strong><small>{['12ms','83ms','740ms','18ms','480ms','310ms'][index]}</small>{index < 5 && <i>→</i>}</span>)}</div>
+        <div className="table-scroll"><table><thead><tr><th>类型</th><th>Span</th><th>输入摘要</th><th>输出摘要</th><th>耗时</th><th>状态</th></tr></thead><tbody>{spans.map(row => <tr key={row[1]}>{row.map((cell,index) => <td key={cell}>{index === 0 ? <span className={`span-type ${cell.toLowerCase()}`}>{cell}</span> : cell}</td>)}<td className="good">OK</td></tr>)}</tbody></table></div>
+      </section></div>
+    <div className="observe-grid"><article className="integration-card"><div><h3>Langfuse 集成预留</h3><p>Agent Harness 统一产生 Trace/Span；后期接入时不需要改动业务节点。</p></div><span className="status wait">NOT CONNECTED</span><div className="attribute-list">{['trace_id','user_id','task_id','data_source','model','sql_hash','policy_result'].map(item => <code key={item}>{item}</code>)}</div></article><article className="integration-card"><div><h3>隐私上报策略</h3><p>默认只发送元数据和哈希；原始 Prompt、SQL 和查询结果保持关闭。</p></div><span className="status">SAFE DEFAULT</span><div className="attribute-list"><code>prompt: REDACTED</code><code>sql: HASH ONLY</code><code>result: OFF</code></div></article></div>
+  </div>
+}

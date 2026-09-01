@@ -1,0 +1,1878 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdb · 可信数据问答 Agent</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,.10);
+  --accent:#2a78d6;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --good-ink:#0a7a0a; --crit-ink:#c22f2f; --warn-ink:#8a6300;
+  --wash:rgba(42,120,214,.08); --code-bg:#f4f4f1; --inj:rgba(42,120,214,.18);
+  --good-bg:rgba(12,163,12,.08); --crit-bg:rgba(208,59,59,.08); --warn-bg:rgba(250,178,25,.12);
+}
+@media (prefers-color-scheme:dark){:root:where(:not([data-theme="light"])){
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+  --accent:#3987e5; --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+  --wash:rgba(57,135,229,.14); --code-bg:#141413; --inj:rgba(57,135,229,.28);
+  --good-bg:rgba(12,163,12,.12); --crit-bg:rgba(208,59,59,.12); --warn-bg:rgba(250,178,25,.14);
+}}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19; --ink:#fff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10);
+  --accent:#3987e5; --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+  --wash:rgba(57,135,229,.14); --code-bg:#141413; --inj:rgba(57,135,229,.28);
+  --good-bg:rgba(12,163,12,.12); --crit-bg:rgba(208,59,59,.12); --warn-bg:rgba(250,178,25,.14);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{max-width:100%;overflow-x:hidden}
+body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--plane);color:var(--ink);font-size:14px;line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;padding:0 20px 72px}
+.mono,code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.hide{display:none!important}
+
+/* top */
+.topbar{border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:30}
+.topbar-in{max-width:1180px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;gap:11px;flex-wrap:wrap}
+.logo{display:flex;align-items:baseline;gap:9px}
+.logo b{font-size:17px;letter-spacing:-.01em}
+.logo span{font-size:12px;color:var(--muted)}
+.pill{font-size:11.5px;padding:2.5px 9px;border-radius:999px;border:1px solid var(--border);color:var(--ink-2);white-space:nowrap}
+.pill.ok{border-color:transparent;background:var(--good-bg);color:var(--good-ink)}
+.pill.warn{border-color:transparent;background:var(--warn-bg);color:var(--warn-ink)}
+.pill.bad{border-color:transparent;background:var(--crit-bg);color:var(--crit-ink)}
+.spacer{flex:1}
+.ctl{font:inherit;font-size:12.5px;padding:5px 10px;border-radius:7px;border:1px solid var(--border);
+  background:var(--surface);color:var(--ink-2);cursor:pointer}
+.ctl:hover{border-color:var(--axis)}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:18px}
+.tab{font:inherit;font-size:13.5px;padding:11px 16px;background:none;border:0;color:var(--muted);
+  cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab:hover{color:var(--ink-2)}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px 18px}
+.card+.card{margin-top:14px}
+h2{font-size:13px;font-weight:600;letter-spacing:.02em}
+.sub{font-size:12px;color:var(--muted);margin:2px 0 13px}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 262px;gap:14px;align-items:start}
+@media (max-width:980px){.cols{grid-template-columns:minmax(0,1fr)}}
+
+/* 横幅：配置类问题 */
+.banner{border-radius:11px;padding:13px 16px;margin-bottom:14px;border:1px solid var(--border);
+  display:flex;gap:12px;align-items:flex-start}
+.banner.warn{background:var(--warn-bg);border-color:rgba(250,178,25,.4)}
+.banner.bad{background:var(--crit-bg);border-color:rgba(208,59,59,.34)}
+.banner .ico{font-size:16px;line-height:1.3;flex:none}
+.banner b{display:block;font-size:13.5px;margin-bottom:3px}
+.banner p{font-size:12.5px;color:var(--ink-2)}
+.cmd{display:flex;align-items:center;gap:8px;margin-top:8px;background:var(--code-bg);
+  border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:12px;
+  font-family:ui-monospace,Menlo,monospace;overflow-x:auto}
+.cmd button{font:inherit;font-size:11px;padding:2px 8px;border-radius:5px;border:1px solid var(--border);
+  background:var(--surface);color:var(--ink-2);cursor:pointer;margin-left:auto;flex:none}
+.cmd button:hover{border-color:var(--accent);color:var(--accent)}
+
+/* 输入 */
+.modes{display:flex;gap:6px;margin-bottom:11px;align-items:center;flex-wrap:wrap}
+.orgbox{display:inline-flex;align-items:center;gap:7px;padding:3px 4px 3px 11px;border-radius:8px;
+  border:1px solid var(--border);background:var(--plane)}
+.orgbox label{font-size:12px;color:var(--muted);white-space:nowrap}
+.orgbox input{width:72px;font:inherit;font-size:12.5px;padding:4px 7px;border:1px solid var(--border);
+  border-radius:6px;background:var(--surface);color:var(--ink);
+  font-family:ui-monospace,Menlo,monospace;text-align:right}
+.orgbox input:focus{outline:2px solid var(--wash);border-color:var(--accent)}
+.orgbox button{font-size:12px;padding:4px 10px}
+.orgbox.off{opacity:.6}
+.mode{font:inherit;font-size:12.5px;padding:5px 13px;border-radius:8px;cursor:pointer;
+  border:1px solid var(--border);background:var(--plane);color:var(--ink-2)}
+.mode[aria-pressed="true"]{background:var(--wash);border-color:var(--accent);color:var(--accent);font-weight:600}
+.qrow{display:flex;gap:8px;align-items:flex-start}
+#q{flex:1;min-width:0;font:inherit;font-size:14.5px;padding:11px 13px;border:1px solid var(--border);
+  border-radius:9px;background:var(--plane);color:var(--ink);resize:vertical;min-height:44px}
+#q.sqlmode{font-family:ui-monospace,Menlo,monospace;font-size:13px;min-height:92px}
+#q:focus{outline:2px solid var(--wash);border-color:var(--accent)}
+#q:disabled{opacity:.55;cursor:not-allowed}
+.btn{font:inherit;font-size:13.5px;font-weight:600;padding:11px 20px;border:0;border-radius:9px;
+  background:var(--accent);color:#fff;cursor:pointer;white-space:nowrap}
+.btn:disabled{opacity:.45;cursor:default}
+.hintline{font-size:11.5px;color:var(--muted);margin-top:7px}
+.chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}
+.chip{font:inherit;font-size:12.5px;padding:6px 11px;border-radius:999px;cursor:pointer;
+  border:1px solid var(--border);background:var(--plane);color:var(--ink-2);text-align:left}
+.chip:hover{border-color:var(--accent);color:var(--accent)}
+.chip[data-kind="danger"]{border-style:dashed}
+.chip .k{font-size:10.5px;color:var(--muted);margin-right:6px}
+
+/* 空状态 */
+.empty{text-align:center;padding:38px 20px;color:var(--muted)}
+.empty .big{font-size:30px;margin-bottom:10px;opacity:.55}
+.empty b{display:block;color:var(--ink-2);font-size:14px;font-weight:600;margin-bottom:5px}
+.empty p{font-size:12.5px;max-width:430px;margin:0 auto}
+
+/* 步骤 */
+.steps{list-style:none}
+.step{display:grid;grid-template-columns:22px minmax(0,1fr) auto;gap:11px;align-items:start;
+  padding:8px 0;border-top:1px solid var(--grid);animation:fade .22s ease both}
+.step:first-child{border-top:0}
+@keyframes fade{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+.dot{width:18px;height:18px;border-radius:50%;margin-top:2px;display:grid;place-items:center;
+  font-size:10px;font-weight:700;border:1.5px solid var(--axis);color:var(--muted);background:var(--surface)}
+.step.ok .dot{border-color:var(--good);background:var(--good);color:#fff}
+.step.blocked .dot{border-color:var(--critical);background:var(--critical);color:#fff}
+.step.failed .dot{border-color:var(--warning);background:var(--warning);color:#3a2a00}
+.step.skipped .dot{border-style:dashed}
+.step.run .dot{border-color:var(--accent);color:var(--accent);animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.sname{font-size:13.5px;font-weight:600}
+.snote{font-size:12.5px;color:var(--ink-2);margin-top:1px;word-break:break-word}
+.step.blocked .snote{color:var(--crit-ink);font-weight:600}
+.step.failed .snote{color:var(--serious)}
+.smeta{font-size:11.5px;color:var(--muted);text-align:right;white-space:nowrap;
+  font-variant-numeric:tabular-nums;padding-top:3px}
+
+/* SQL */
+.sqlhead{display:flex;align-items:center;gap:9px;margin-bottom:7px}
+.sqlhead h3{font-size:12px;font-weight:600;color:var(--ink-2)}
+.badge{font-size:11px;padding:2px 8px;border-radius:5px;font-weight:600}
+.badge.good{background:var(--good-bg);color:var(--good-ink)}
+.badge.bad{background:var(--crit-bg);color:var(--crit-ink)}
+.copy{font:inherit;font-size:11.5px;padding:3px 9px;border-radius:6px;cursor:pointer;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink-2);margin-left:auto}
+.copy:hover{border-color:var(--accent);color:var(--accent)}
+pre.sql{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:12px 14px;
+  overflow-x:auto;font-size:12.5px;line-height:1.7;white-space:pre}
+pre.sql.dead{opacity:.6}
+pre.sql .inj{background:var(--inj);border-radius:3px;padding:1px 3px;font-weight:700}
+/* 责任边界（§8 准入条件 #8）。常驻、不可关闭 —— 可关闭的免责等于没有免责。 */
+.disclaimer{font-size:12px;color:var(--ink-2);background:var(--surface);
+  border:1px solid var(--border);border-left:3px solid var(--warning);
+  border-radius:0 8px 8px 0;padding:8px 13px;margin:0 0 14px;line-height:1.6}
+.disclaimer b{color:var(--ink)}
+.legend{font-size:11.5px;color:var(--ink-2);margin-top:9px;display:flex;align-items:center;gap:7px}
+.sw{width:11px;height:11px;border-radius:3px;background:var(--inj);border:1px solid var(--accent);flex:none}
+
+/* 结果 / 提示卡 */
+.notice{border-radius:10px;padding:13px 15px;border:1px solid var(--border);font-size:13px}
+.notice.bad{background:var(--crit-bg);border-color:rgba(208,59,59,.3)}
+.notice.info{background:var(--wash);border-color:rgba(42,120,214,.28)}
+.notice .t{font-weight:700;font-size:13.5px;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+.notice.bad .t{color:var(--crit-ink)}
+.notice.info .t{color:var(--accent)}
+.notice .why{color:var(--ink-2);margin-bottom:6px}
+.notice .fix{color:var(--ink-2);font-size:12.5px;padding-top:7px;border-top:1px dashed var(--border)}
+.notice .fix b{color:var(--ink)}
+.rulecode{font-family:ui-monospace,Menlo,monospace;font-size:11px;padding:1.5px 7px;border-radius:5px;
+  background:rgba(208,59,59,.16);color:var(--crit-ink);font-weight:700}
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:9px;max-height:460px}
+/* macOS 的覆盖式滚动条平时不可见，表格横向溢出时看上去就像右侧的列凭空消失了。
+   这里强制留出滚动条轨道，让「还能往右看」这件事有可见的提示。 */
+.tablewrap::-webkit-scrollbar{height:9px;-webkit-appearance:none}
+.tablewrap::-webkit-scrollbar-thumb{background:var(--axis);border-radius:5px}
+.tablewrap{scrollbar-width:thin}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--grid)}
+/* 表头不折行，数据单元格允许折行并限宽：否则一个超长文本列（如中文文件名）会把
+   后面的列整个挤出可视区，窄窗口下用户会以为那一列不存在。 */
+th{white-space:nowrap}
+td{white-space:normal;overflow-wrap:anywhere;max-width:44ch}
+th{font-weight:600;color:var(--ink-2);background:var(--plane);font-size:11.5px;position:sticky;top:0;z-index:1}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--plane)}
+
+.kv{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--grid);font-size:12.5px}
+.kv:first-of-type{border-top:0}
+.kv dt{color:var(--muted)}
+.kv dd{font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+.tag{font-size:10.5px;padding:1.5px 7px;border-radius:5px;background:var(--wash);color:var(--accent);
+  font-family:ui-monospace,Menlo,monospace;margin:0 4px 4px 0;display:inline-block}
+
+/* 分步执行 */
+.rcard{border:1px solid var(--border);border-radius:10px;padding:13px 15px;margin-top:11px;background:var(--plane)}
+.rcard:first-child{margin-top:0}
+.rhead{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.rnum{width:21px;height:21px;border-radius:6px;display:grid;place-items:center;font-size:11px;
+  font-weight:700;background:var(--wash);color:var(--accent);flex:none}
+.rgoal{font-size:12.5px;color:var(--ink-2);margin:4px 0 9px}
+.rsql{background:var(--code-bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;
+  overflow-x:auto;font-size:11.5px;line-height:1.7;white-space:pre}
+.rmeta{font-size:11.5px;color:var(--muted);margin-top:7px}
+.carry{display:inline-block;margin-top:6px;font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+  background:var(--inj);border-radius:5px;padding:2.5px 8px;font-weight:600}
+
+/* 图表 */
+.chartbox{position:relative}
+/* trace_id 与复现命令 —— 检查点的唯一入口，此前页面完全没给 */
+.traceline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:11px;
+  padding-top:10px;border-top:1px dashed var(--border);font-size:12px;color:var(--muted)}
+.traceline code{font-size:11.5px}
+.cpbtn{font:inherit;font-size:11.5px;padding:2px 8px;border-radius:6px;cursor:pointer;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink-2)}
+.cpbtn:hover{border-color:var(--accent);color:var(--accent)}
+svg{display:block;width:100%;height:auto;overflow:visible}
+.tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-118%);
+  background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:7px 11px;
+  font-size:12px;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,.14);transition:opacity .1s;z-index:5}
+
+/* 向导 */
+.stepper{display:flex;align-items:center;margin-bottom:16px}
+.sstep{display:flex;align-items:center;gap:9px;cursor:pointer;background:none;border:0;font:inherit;padding:0}
+.sdot{width:25px;height:25px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;
+  border:1.5px solid var(--axis);color:var(--muted);background:var(--surface);flex:none}
+.sstep[aria-current="true"] .sdot{border-color:var(--accent);background:var(--accent);color:#fff}
+.sstep.done .sdot{border-color:var(--good);background:var(--good);color:#fff}
+.slab{font-size:13px;color:var(--muted);white-space:nowrap}
+.sstep[aria-current="true"] .slab{color:var(--ink);font-weight:600}
+.sstep.done .slab{color:var(--ink-2)}
+.sline{flex:1;height:1px;background:var(--grid);margin:0 14px;min-width:18px}
+.gtitle{font-size:11.5px;font-weight:700;letter-spacing:.04em;color:var(--ink-2);
+  padding-bottom:6px;margin-bottom:9px;border-bottom:1px solid var(--grid)}
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:11px}
+label.f{display:block;font-size:11.5px;color:var(--muted);margin-bottom:4px}
+.inp{width:100%;font:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;
+  background:var(--plane);color:var(--ink);font-family:ui-monospace,Menlo,monospace}
+.inp[readonly]{color:var(--ink-2);cursor:default}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:14px}
+.btn.ghost{background:none;border:1px solid var(--border);color:var(--ink-2);font-weight:500}
+.btn.ghost:hover{border-color:var(--axis)}
+pre.code{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:12px 14px;
+  overflow-x:auto;font-size:11.5px;line-height:1.7;white-space:pre;max-height:330px}
+input[type=checkbox]{width:15px;height:15px;accent-color:var(--accent);cursor:pointer;vertical-align:-2px}
+tbody tr.sel{background:var(--wash)}
+.tag2{font-size:10.5px;padding:1.5px 6px;border-radius:5px;font-weight:600}
+.tag2.ten{background:var(--wash);color:var(--accent)}
+.tag2.hi{background:var(--good-bg);color:var(--good-ink)}
+.tag2.low{background:var(--warn-bg);color:var(--warn-ink)}
+.summary{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-2);margin-top:11px;align-items:center}
+.fields{list-style:none}
+.fields li{display:grid;grid-template-columns:170px minmax(0,1fr);gap:10px;align-items:start;
+  padding:7px 0;border-top:1px solid var(--grid)}
+.fields li:first-child{border-top:0}
+.fname{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.ftype{font-size:10.5px;color:var(--muted);margin-left:6px}
+.fdesc{font-size:12.5px;color:var(--ink-2)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.tile{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:13px 15px}
+.tile .lab{font-size:11.5px;color:var(--muted);margin-bottom:4px}
+.tile .val{font-size:23px;font-weight:650;letter-spacing:-.02em;line-height:1.15}
+.tile .val small{font-size:13px;font-weight:600;color:var(--ink-2);margin-left:2px}
+.tile .foot{font-size:11.5px;color:var(--muted);margin-top:3px}
+
+/* schema 页 */
+.tlist{list-style:none;border:1px solid var(--border);border-radius:9px;overflow:hidden}
+.tlist li{padding:9px 12px;border-bottom:1px solid var(--grid);cursor:pointer;font-size:12.5px;
+  display:flex;justify-content:space-between;gap:9px;align-items:center}
+.tlist li:last-child{border-bottom:0}
+.tlist li[aria-selected="true"]{background:var(--wash);color:var(--accent);font-weight:600}
+.chk{display:flex;gap:9px;align-items:flex-start;padding:7px 0;border-top:1px solid var(--grid);font-size:12.5px}
+.chk:first-child{border-top:0}
+.chk .m{width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font-size:10px;
+  font-weight:700;flex:none;margin-top:2px}
+.chk .m.ok{background:var(--good);color:#fff}
+.chk .m.no{background:var(--critical);color:#fff}
+.chk .d{color:var(--muted);margin-left:auto;font-family:ui-monospace,Menlo,monospace;font-size:11px;text-align:right}
+.spin{display:inline-block;width:13px;height:13px;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- ④ 审计与复放 ---------- */
+.arow{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:11px}
+.ainput{flex:1;min-width:220px;font:inherit;font-size:13px;padding:7px 12px;border-radius:8px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink)}
+.ainput:focus{outline:none;border-color:var(--accent)}
+.asel{font:inherit;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1px solid var(--border);
+  background:var(--surface);color:var(--ink)}
+.apg{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;
+  margin-top:11px;font-size:12.5px;color:var(--ink-2)}
+.apg b{color:var(--ink)}
+.apgctl{display:inline-flex;align-items:center;gap:7px}
+#audBtns{display:inline-flex;gap:5px;align-items:center;margin-left:6px}
+.apgbtn{font:inherit;font-size:12.5px;min-width:30px;padding:4px 8px;border-radius:8px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink);cursor:pointer}
+.apgbtn:hover{border-color:var(--axis)}
+.apgbtn.cur{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.apgbtn[disabled]{opacity:.4;cursor:default}
+.apgdots{padding:0 2px;color:var(--muted)}
+.alink{color:var(--accent);cursor:pointer;white-space:nowrap}
+.alink.dim{color:var(--muted);cursor:default}
+.aovl[hidden]{display:none}
+.aovl{position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:80;display:flex;
+  align-items:center;justify-content:center;padding:24px}
+.amodal{background:var(--surface);border:1px solid var(--border);border-radius:14px;max-width:880px;
+  width:100%;max-height:86vh;display:flex;flex-direction:column;box-shadow:0 18px 50px rgba(0,0,0,.25)}
+.amodal-h{display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--border)}
+.amodal-h b{font-size:14px}
+.amodal-x{margin-left:auto;font:inherit;font-size:16px;border:0;background:none;color:var(--muted);
+  cursor:pointer;padding:2px 8px}
+.amodal-x:hover{color:var(--ink)}
+.amodal-b{padding:16px 18px;overflow-y:auto}
+.astep{display:flex;gap:12px;padding:8px 2px;border-bottom:1px solid var(--border);align-items:flex-start;font-size:12.5px}
+.astep:last-child{border-bottom:0}
+.astep .adot{width:19px;height:19px;min-width:19px;border-radius:99px;color:#fff;font-size:11px;
+  display:flex;align-items:center;justify-content:center;margin-top:1px;background:var(--good-ink)}
+.astep.blocked .adot{background:var(--crit-ink)}
+.astep.failed .adot{background:var(--crit-ink)}
+.astep.skipped .adot{background:var(--axis)}
+.astep .am{color:var(--muted);font-size:11.5px;white-space:nowrap;margin-left:auto}
+.abars{display:flex;align-items:flex-end;gap:2px;height:110px;border-bottom:1.5px solid var(--axis);
+  padding:0 2px;margin-top:6px}
+.abars>i{flex:1;background:var(--accent);border-radius:3px 3px 0 0;min-height:3px}
+.abars>i:hover{filter:brightness(1.12)}
+.abarlbl{font-size:10.5px;color:var(--muted);display:flex;justify-content:space-between;margin-top:4px}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <div class="logo"><b>askdb</b><span>可信数据问答 Agent</span></div>
+    <span class="pill" id="pillDs">连接中…</span>
+    <span class="pill" id="pillLlm">检查中…</span>
+    <span class="pill" id="pillOrg"></span>
+    <span class="spacer"></span>
+    <button class="ctl" id="themeBtn">切换主题</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-p="setup">① 接入数据</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="ask">② 提问</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="eval">③ 评测</button>
+    <button class="tab" role="tab" aria-selected="false" data-p="audit">④ 审计与复放</button>
+  </nav>
+
+  <p class="disclaimer">
+    <b>辅助工具，输出需人工核对，不作为决策唯一依据。</b>
+    本工具保证的是<b>过程可信</b> —— 危险操作可被拦截、结果附带 SQL 可自验、判定链路可追溯；
+    而非<b>结果可信</b>：底层由大模型生成 SQL，口径理解出错时结果依然可能"看起来合理"。
+  </p>
+
+  <div id="banners"></div>
+
+  <!-- ============ ① 接入数据 ============ -->
+  <section id="setup">
+    <div class="stepper">
+      <button class="sstep" data-s="0" aria-current="true"><span class="sdot">1</span><span class="slab">确认数据源</span></button>
+      <span class="sline"></span>
+      <button class="sstep" data-s="1"><span class="sdot">2</span><span class="slab">选择开放的表</span></button>
+      <span class="sline"></span>
+      <button class="sstep" data-s="2"><span class="sdot">3</span><span class="slab">补注释与口径</span></button>
+    </div>
+
+    <!-- 第 1 步 -->
+    <div id="w0">
+      <div class="cols">
+        <div class="card">
+          <h2>当前数据源</h2>
+          <p class="sub" id="dsSub">连接由部署方在配置文件中指定，页面不可修改</p>
+          <div class="notice info" style="margin:0 0 14px">
+            <div class="t">◇ 为什么这里不给填连接串</div>
+            <div class="why">askdb 不设账号体系，<b>数据库连接本身即权限边界</b>。
+              表白名单、租户隔离、业务口径都是跟着这份连接配的 —— 页面若能改连接，
+              等于任何打开页面的人都能把这套护栏整体换掉。
+              换数据源请换配置文件后重启，见右侧。</div>
+          </div>
+          <div class="gtitle">连接参数</div>
+          <div class="form" id="dsForm"></div>
+          <div class="gtitle" style="margin-top:16px">租户隔离</div>
+          <div class="form" id="tenantForm"></div>
+          <div id="tenantNote"></div>
+          <div class="row">
+            <button class="btn" id="testBtn">运行连接自检</button>
+            <button class="btn ghost" id="next0">下一步 · 选择表</button>
+          </div>
+          <div id="checks" style="margin-top:12px"></div>
+        </div>
+        <aside class="card">
+          <h2>换一个数据源</h2>
+          <p class="sub">一个数据源 = 一份配置，用启动参数切换，不改文件</p>
+          <pre class="code">python -m askdb.cli serve \
+  -c config/askdb.yaml         # 本机样例库
+  -c config/ragforge.yaml      # 本机 PG
+  -c config/ragforge-prod.yaml # 云上 PG</pre>
+          <div class="notice info" style="margin-top:10px">
+            <div class="why">每份配置自带配套的 <code>*-tables.yaml</code> 与 <code>*-metrics.yaml</code>
+              —— 白名单和业务口径是跟着库走的，所以换源不可能只换一个连接串。
+              密码只从环境变量读，不进配置文件。</div>
+          </div>
+        </aside>
+
+        <aside class="card">
+          <h2>还没有只读账号？</h2>
+          <p class="sub">把这段跑一遍，护栏做在数据库层</p>
+          <pre class="code" id="roSql"></pre>
+          <div class="notice info" style="margin-top:10px">
+            <div class="why">就算应用层校验被绕过，数据库这边也执行不了 —— <b>双保险</b>。</div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <!-- 第 2 步 -->
+    <div id="w1" class="hide">
+      <div class="card">
+        <h2>选择开放的表</h2>
+        <p class="sub">白名单既是安全边界，也是准确率边界 —— 只开你真正会问的表</p>
+        <div class="tablewrap" style="max-height:360px"><table id="tblTable"></table></div>
+        <div class="summary" id="tblSummary"></div>
+        <div class="notice info" style="margin-top:12px">
+          <div class="t">◇ 白名单由配置文件决定</div>
+          <div class="why">勾选变化会生成对应的 <code>tables.yaml</code> 片段，在第 3 步复制。
+            askdb 是配置即代码 —— 网页不直接改文件，避免线上被人误点。</div>
+        </div>
+        <div class="row">
+          <button class="btn ghost" id="back1">上一步</button>
+          <button class="btn" id="next1">下一步 · 补注释</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 就绪状态 -->
+    <div id="ready" class="hide">
+      <div class="tiles" id="readyTiles"></div>
+      <div class="card">
+        <h2>接入完成</h2>
+        <p class="sub">现在可以去「② 提问」了</p>
+        <div class="row" style="margin-top:0">
+          <button class="btn" id="gotoAsk2">开始提问</button>
+          <button class="btn ghost" id="redo">重新配置</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 第 3 步 -->
+    <div id="w2" class="hide">
+      <div class="cols">
+        <div class="card">
+          <h2>补字段注释</h2>
+          <p class="sub">库里的 COMMENT 大概率是空的，而这份说明的质量 ≈ 项目的准确率</p>
+          <div class="cols" style="grid-template-columns:170px minmax(0,1fr)">
+            <ul class="tlist" id="annTables"></ul>
+            <div><ul class="fields" id="annFields"></ul></div>
+          </div>
+          <div class="summary" id="annSummary"></div>
+          <div class="row">
+            <button class="btn ghost" id="back2">上一步</button>
+            <button class="btn" id="genYaml">生成 tables.yaml 片段</button>
+            <button class="btn ghost" id="gotoAsk">去提问</button>
+          </div>
+          <pre class="code hide" id="yamlOut" style="margin-top:12px"></pre>
+        </div>
+        <aside class="card">
+          <h2>业务口径</h2>
+          <p class="sub">模型猜不出来的那一层，必须写下来</p>
+          <div id="metrics"></div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ ② 提问 ============ -->
+  <section id="ask" hidden>
+    <div id="resumeBar"></div>
+    <div class="card hide" id="noDs">
+      <h2>数据源还没就绪</h2>
+      <p class="sub" style="margin-bottom:0">先到「① 接入数据」把连接自检跑通，再回来提问。</p>
+    </div>
+    <div id="askMain">
+    <div class="card">
+      <div class="modes">
+        <button class="mode" data-m="nl" aria-pressed="true">自然语言</button>
+        <button class="mode" data-m="sql" aria-pressed="false">直查 SQL</button>
+        <span class="spacer"></span>
+        <span class="orgbox" id="orgBox">
+          <label class="f" for="orgInput" style="margin:0" id="orgLabel">组织</label>
+          <input id="orgInput" type="number" min="0" inputmode="numeric">
+          <button class="ctl" id="orgApply" title="按新组织重跑上一个问题">切换</button>
+        </span>
+      </div>
+      <div class="qrow">
+        <textarea id="q" rows="1" placeholder="用一句话问数据，例如：有哪些文档卡在处理中超过一小时"></textarea>
+        <button class="btn" id="go">提问</button>
+      </div>
+      <div class="hintline" id="hintline">Enter 提交 · Shift+Enter 换行</div>
+      <div class="chips" id="chips"></div>
+    </div>
+
+    <div class="cols" style="margin-top:14px">
+      <div>
+        <div class="card hide" id="multiCard">
+          <h2>分步执行过程 <span class="tag2 ten" id="stepCount"></span></h2>
+          <p class="sub">每一步独立生成、独立过完整护栏；中间结果只下传标识列字面量</p>
+          <div id="rounds"></div>
+        </div>
+        <div class="card" id="pipeCard">
+          <h2>执行链路</h2>
+          <p class="sub" id="pipeSub">每步的状态、耗时与 token 都可归因</p>
+          <div class="empty" id="emptyState">
+            <div class="big">◇</div>
+            <b>还没有查询</b>
+            <p>点上面的示例问题，或直接输入你想查的内容。<br>
+               每次查询都会返回可复制的 SQL，方便你自己核对。</p>
+          </div>
+          <ul class="steps hide" id="steps"></ul>
+
+          <div class="hide" id="sqlBox" style="margin-top:14px">
+            <div class="sqlhead">
+              <h3 id="sqlTitle">最终 SQL</h3>
+              <span class="badge" id="sqlBadge"></span>
+              <button class="copy" id="copySql">复制</button>
+            </div>
+            <pre class="sql" id="sql"></pre>
+            <div class="legend hide" id="injLegend"><i class="sw"></i>系统强制注入，模型改不掉</div>
+          <div class="traceline hide" id="traceLine"></div>
+          </div>
+        </div>
+
+        <div class="card hide" id="outCard">
+          <h2 id="outTitle">查询结果</h2>
+          <p class="sub" id="outSub"></p>
+          <div id="outBody"></div>
+        </div>
+      </div>
+
+      <aside>
+        <div class="card">
+          <h2>本次调用</h2>
+          <dl>
+            <div class="kv"><dt>执行步数</dt><dd id="mSteps">—</dd></div>
+            <div class="kv"><dt>耗时</dt><dd id="mLat">—</dd></div>
+            <div class="kv"><dt>行数</dt><dd id="mRows">—</dd></div>
+            <div class="kv"><dt>轮次</dt><dd id="mAtt">—</dd></div>
+            <div class="kv"><dt>token</dt><dd id="mTok">—</dd></div>
+            <div class="kv"><dt>成本</dt><dd id="mCost">—</dd></div>
+          </dl>
+          <div id="hitBox" style="margin-top:11px"></div>
+        </div>
+        <div class="card">
+          <h2>护栏状态</h2>
+          <p class="sub">配置来自 config/askdb.yaml</p>
+          <dl id="guardBox"><div class="kv"><dt>加载中</dt><dd>—</dd></div></dl>
+        </div>
+      </aside>
+    </div>
+    </div>
+  </section>
+
+  <!-- ============ ③ 评测 ============ -->
+  <section id="eval" hidden>
+    <div class="tiles" id="evalTiles"></div>
+    <div class="card">
+      <h2>消融实验</h2>
+      <p class="sub">同一黄金集、同一模型、同一随机种子，仅改变链路配置</p>
+      <div id="evalBody"></div>
+    </div>
+  </section>
+
+  <!-- ============ ④ 审计与复放 ============ -->
+  <section id="audit" hidden>
+    <div class="tiles" id="auditTiles"></div>
+
+    <div class="card">
+      <h2>调用流水</h2>
+      <p class="sub">一次调用一条记录，拦截也留痕；列表不含 SQL 文本，判定细节走「复放」</p>
+      <div class="arow">
+        <input id="audQ" class="ainput" placeholder="按 trace_id / 问题关键词检索">
+        <select id="audKind" class="asel">
+          <option value="">全部类型</option>
+          <option value="ask">提问</option>
+          <option value="sql">直查 SQL</option>
+        </select>
+      </div>
+      <div class="tablewrap"><table id="audTable">
+        <thead><tr><th>时间</th><th>trace</th><th>类型</th><th>摘要</th><th>护栏</th>
+        <th class="num">耗时</th><th class="num">成本</th><th>复放</th><th>观测</th></tr></thead>
+        <tbody id="audRows"></tbody>
+      </table></div>
+      <div class="apg">
+        <span id="audInfo"></span>
+        <span class="apgctl">每页
+          <select id="audSize" class="asel"><option>10</option><option>20</option><option>50</option></select> 条
+          <span id="audBtns"></span>
+        </span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>双写职责边界</h2>
+      <p class="sub">本地审计是权威记录；LangSmith 是可选的观测面，失联不影响主链路</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th></th><th>本地审计（权威）</th><th>LangSmith（观测，可选）</th></tr></thead>
+        <tbody>
+          <tr><td>内容</td><td>一次调用一条 JSON：判定链路 + 步骤级耗时/token + SQL</td>
+              <td>LangGraph 节点级 run 树、token / 延迟分布</td></tr>
+          <tr><td>用途</td><td>本页流水与复放、<span class="mono">askdb replay</span>、审计取证</td>
+              <td>链路瓶颈分析、失败聚类、跨 run 对比</td></tr>
+          <tr><td>失效影响</td><td>O_APPEND 原子追加；写失败不影响查询主链路</td>
+              <td>异步上报，未接入 / 失联时本页一切照常</td></tr>
+          <tr><td>数据边界</td><td>全量（仅本机文件）</td>
+              <td>不上报结果行，仅元数据与 SQL 文本</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h2>Checkpoint 恢复语义</h2>
+      <p class="sub">恢复的是图状态，不是外部世界 —— 三个场景、三条边界</p>
+      <div class="tablewrap"><table>
+        <thead><tr><th>场景</th><th>机制</th><th>现状</th></tr></thead>
+        <tbody>
+          <tr><td>失败复现（时间旅行）</td><td>按 trace_id 回放全部检查点快照</td>
+              <td>本页「复放」与 <span class="mono">askdb replay</span>，已可用</td></tr>
+          <tr><td>线程持久化</td><td>同 thread_id 逐次接续，跨进程重启存活</td>
+              <td>检查点随每次提问落 SQLite，已可用</td></tr>
+          <tr><td>断点续跑</td><td>从最后完成的超步继续，预算计数一并恢复</td>
+              <td>设计已定版（任务中断恢复 V1.1），落地前先修 R-17 计数器复位</td></tr>
+        </tbody>
+      </table></div>
+      <p class="sub" style="margin-top:8px">边界：已发生的副作用不随回退撤销；预算计数必须入图状态，否则续跑绕穿上限；
+      回放还原的是判定现场，不承诺数据新鲜度。</p>
+    </div>
+  </section>
+</div>
+
+<div class="aovl" id="aovl" hidden><div class="amodal">
+  <div class="amodal-h"><b id="aovlT"></b><span class="pill" id="aovlP"></span>
+  <button class="amodal-x" id="aovlX">✕</button></div>
+  <div class="amodal-b" id="aovlB"></div>
+</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let HEALTH = null, SCHEMA = null, MODE = "nl", BUSY = false;
+
+/* 当前租户。单租户模式或输入非法时返回 null，由后端用配置默认值。 */
+function currentOrg() {
+  if (!HEALTH || !HEALTH.tenant.enabled) return null;
+  const v = ($("orgInput") || {}).value;
+  return v === "" || v === undefined || isNaN(+v) ? null : +v;
+}
+
+/* ---------- 规则的人话解释 + 建议动作 ---------- */
+const RULES = {
+  "R-01": ["只能执行一条语句", "把多条语句拆开，一次问一件事。"],
+  "R-02": ["只允许查询，不允许改数据", "askdb 是只读工具。要改数据请走正常的运维流程。"],
+  "R-03": ["用到了没有开放的表", "在 config/tables.yaml 里把这张表加进白名单，然后重启服务。"],
+  "R-04": ["用到了不存在的字段", "错误信息里已经列出该表的真实字段名，照着改即可；也可到「① 接入数据」第 3 步逐字段核对。"],
+  "R-05": ["不允许 SELECT *", "显式写出需要的列，避免把不该看的字段也带出来。"],
+  "R-07": ["用到了被禁用的函数", "这些函数能读文件或访问外部资源，不在只读查询的范围内。"],
+  "R-10": ["无法确定这条查询属于哪个租户", "查询涉及的表带租户列，但系统没能定位到它。换个写法，别用会掩盖表来源的构造。"],
+  "R-11": ["预计要扫描的数据量太大", "加上时间范围或更具体的筛选条件，把扫描量降下来。"],
+  "EXEC": ["数据源出问题了", ""],
+  "LLM":  ["模型调用没成功", ""],
+  "NO_SQL": ["这个问题用现有的表回答不了", "换个问法，或在 config/tables.yaml 里开放更多表。"],
+};
+let CFG_PATH = "";   // 当前服务用的配置，复现命令要带它
+
+const STEP_NAMES = {
+  schema_recall: "Schema 召回", generate_sql: "SQL 生成", guard: "静态校验",
+  dry_run: "EXPLAIN 干跑", execute: "只读执行", reflect: "反思重试", finalize: "结果与溯源",
+};
+
+/* ---------- 基础 ---------- */
+$("themeBtn").onclick = () => {
+  const r = document.documentElement;
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  r.dataset.theme = (r.dataset.theme || (dark ? "dark" : "light")) === "dark" ? "light" : "dark";
+};
+document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", x === t));
+  ["setup", "ask", "eval", "audit"].forEach(id => $(id).hidden = id !== t.dataset.p);
+  if (t.dataset.p === "audit") auditBoot();
+});
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+/* 数据时间取自数据源时钟，只显示到分钟 —— 这里是判断新鲜度，不是对账 */
+function fmtAsOf(s) {
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  const p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} `
+       + `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function copyBtn(text, label = "复制") {
+  // JSON.stringify 出来的双引号会提前闭合 onclick 属性，剩下的 JS 就漏成可见文本了
+  // （实际发生过：连不上数据源的横幅里露出半截 setTimeout）。属性上下文必须再转义一次。
+  return `<button onclick="navigator.clipboard&&navigator.clipboard.writeText(${esc(JSON.stringify(text))});this.textContent='已复制';setTimeout(()=>this.textContent=${esc(JSON.stringify(label))},1400)">${esc(label)}</button>`;
+}
+
+/* ---------- 横幅：配置类问题一进页面就说清楚 ---------- */
+function renderBanners(h) {
+  const out = [];
+  if (!h.datasource.ok) {
+    out.push(`<div class="banner bad"><span class="ico">✕</span><div>
+      <b>连不上数据源</b>
+      <p>${esc(h.datasource.detail)}</p>
+      ${h.datasource.hint ? `<p style="margin-top:4px">${esc(h.datasource.hint)}</p>` : ""}
+      <div class="cmd"><span>python -m data.seed</span>${copyBtn("python -m data.seed")}</div>
+    </div></div>`);
+  }
+  if (!h.llm.ok) {
+    out.push(`<div class="banner warn"><span class="ico">!</span><div>
+      <b>还没配置模型密钥，自然语言提问暂时用不了</b>
+      <p>把密钥写进 <code>.env</code>（该文件不会入库），然后重启服务。
+         在此之前，<b>「直查 SQL」模式仍然可用</b> —— 护栏、干跑、执行全都会照常跑。</p>
+      <div class="cmd"><span>cp .env.example .env &amp;&amp; echo '${esc(h.llm.env)}=你的密钥' &gt;&gt; .env</span>${copyBtn(`cp .env.example .env && echo '${h.llm.env}=你的密钥' >> .env`)}</div>
+    </div></div>`);
+  }
+  $("banners").innerHTML = out.join("");
+}
+
+/* ---------- 启动 ---------- */
+async function boot() {
+  try {
+    HEALTH = await (await fetch("/api/health")).json();
+    CFG_PATH = HEALTH.config || "";
+  } catch {
+    $("banners").innerHTML = `<div class="banner bad"><span class="ico">✕</span><div>
+      <b>连不上 askdb 服务</b><p>确认 <code>askdb serve</code> 还在运行，然后刷新页面。</p></div></div>`;
+    return;
+  }
+  renderEval();
+  gateAsk();
+  const d = HEALTH.datasource, l = HEALTH.llm;
+  $("pillDs").className = "pill " + (d.ok ? "ok" : "bad");
+  $("pillDs").textContent = d.ok ? `${d.type} · ${d.detail}` : "数据源不可用";
+  $("pillLlm").className = "pill " + (l.ok ? "ok" : "warn");
+  $("pillLlm").textContent = l.ok ? l.model : (l.disabled ? "仅直查 SQL" : "未配置密钥");
+  if (HEALTH.tenant.enabled) {
+    $("pillOrg").textContent = `${HEALTH.tenant.column} = ${HEALTH.tenant.org_id}`;
+    $("orgLabel").textContent = "组织 " + HEALTH.tenant.column;
+    $("orgInput").value = HEALTH.tenant.org_id;
+    $("orgInput").title = "护栏按这个值强制注入租户谓词；改完点「切换」重跑上一个问题";
+  } else {
+    // 单租户库：不做行级隔离，必须让人一眼看出来
+    $("pillOrg").className = "pill warn";
+    $("pillOrg").textContent = "单租户模式 · 不做行级隔离";
+    $("orgBox").classList.add("off");
+    $("orgInput").disabled = true;
+    $("orgApply").disabled = true;
+    $("orgLabel").textContent = "单租户，无需切换";
+  }
+  $("orgApply").onclick = () => {
+    $("pillOrg").textContent = `${HEALTH.tenant.column} = ${currentOrg()}`;
+    if ($("q").value.trim()) submit();
+  };
+  $("orgInput").addEventListener("keydown", e => {
+    if (e.key === "Enter") { e.preventDefault(); $("orgApply").click(); }
+  });
+  renderBanners(HEALTH);
+  renderStep1();
+
+  const g = HEALTH.guard;
+  $("guardBox").innerHTML = `
+    <div class="kv"><dt>写操作</dt><dd style="color:var(--crit-ink)">引擎层禁用</dd></div>
+    <div class="kv"><dt>租户谓词</dt><dd style="color:var(--good-ink)">强制注入</dd></div>
+    <div class="kv"><dt>结果行上限</dt><dd>${g.max_rows.toLocaleString()}</dd></div>
+    <div class="kv"><dt>扫描行阈值</dt><dd>${g.max_scan_rows.toLocaleString()}</dd></div>
+    <div class="kv"><dt>语句超时</dt><dd>${g.timeout_ms / 1000} s</dd></div>
+    <div class="kv"><dt>重试上限</dt><dd>${g.max_retry} 次</dd></div>`;
+
+  if (!l.ok) setMode("sql");
+
+  try {
+    SCHEMA = await (await fetch("/api/schema")).json();
+    buildExamples();
+    renderChips();
+  } catch { /* 数据源不可用时已有横幅提示 */ }
+
+  fetch("/api/selfcheck").then(r => {
+    if (r.status === 404) {
+      $("checks").innerHTML = `<p style="font-size:12.5px;color:var(--muted)">本实例已关闭连接自检（对外实例安全策略），可直接到「② 提问」使用。</p>`;
+      return;
+    }
+    return r.json().then(renderChecks);
+  }).catch(() => {
+    $("checks").innerHTML = `<p style="font-size:12.5px;color:var(--muted)">自检没跑起来，多半是数据源还没准备好。</p>`;
+  });
+}
+
+/* ---------- 示例：按真实 schema 生成 ---------- */
+/* 写死示例会在换数据源后全部失效 —— 样例库叫 file_name，别的库叫 filename。 */
+let EXAMPLES = [], SQL_EXAMPLES = [];
+
+function buildExamples() {
+  EXAMPLES = []; SQL_EXAMPLES = [];
+  if (!SCHEMA || !SCHEMA.tables.length) return;
+
+  const tables = SCHEMA.tables;
+  const main = tables.slice().sort((a, b) => b.columns.length - a.columns.length)[0];
+  const alias = t => (t.aliases && t.aliases[0]) || t.name;
+  const plain = t => t.columns.filter(c => !c.tenant && !/^id$/i.test(c.name));
+  const enumCol = t => t.columns.find(c => c.enum && c.enum.length);
+
+  // 自然语言：优先用已定义的业务口径，那是最能体现价值的一类问题。
+  // 谓词型口径（筛出一批行）问"有哪些"，表达式型（算出一个数）问"是多少"。
+  // 聚合型口径要问"按什么分组"。分组维度必须是外键指向的**另一张表**，
+  // 不能拿口径自己所在的表 —— 否则会拼出「各文档的文档数」这种病句。
+  // 租户列跳过：它被 R-10 强制注入成单值，按它分组只会得到一行。
+  const dimOf = t => {
+    for (const c of t.columns) {
+      const mm = /^(.+)_id$/.exec(c.name);
+      if (!mm || c.tenant) continue;
+      const stem = mm[1].toLowerCase();
+      const hit = tables.find(x => x !== t && (x.name.toLowerCase().startsWith(stem)
+        || (x.aliases || []).some(a => a.toLowerCase() === stem)));
+      if (hit) return hit;
+    }
+    return null;
+  };
+
+  SCHEMA.metrics.slice(0, 3).forEach(m => {
+    const scope = tables.find(t => (m.scope || []).includes(t.name));
+    const isPredicate = !/\bCOUNT\s*\(|\bSUM\s*\(|\bAVG\s*\(/i.test(m.definition || "");
+    let q;
+    if (isPredicate) {
+      q = `有哪些${m.name}`;
+    } else {
+      const dim = scope && dimOf(scope);
+      // 找不到维度表就不硬凑分组，直接问总数
+      q = dim ? `各${alias(dim)}的${m.name}分别是多少`
+              : `${scope ? alias(scope) : ""}的${m.name}是多少`;
+    }
+    EXAMPLES.push({ k: "命中业务口径", q });
+  });
+  if (tables.length >= 2) {
+    const a = tables[0], b = tables[1];
+    EXAMPLES.push({ k: "跨表聚合", q: `各${alias(a)}下面有多少${alias(b)}，从多到少排` });
+  }
+  const ec = enumCol(main);
+  if (ec) EXAMPLES.push({ k: "分组统计", q: `${alias(main)}按${ec.desc.split("。")[0].slice(0, 10)}分组各有多少` });
+  EXAMPLES.push({ k: "会被拦截", q: `把${alias(main)}删掉`, kind: "danger" });
+
+  // 直查 SQL：列名全部取自真实 schema
+  const cols = plain(main).slice(0, 2).map(c => c.name);
+  const filter = ec ? `\nWHERE ${ec.name} = '${ec.enum[0]}'` : "";
+  if (cols.length) {
+    SQL_EXAMPLES.push({ k: "正常查询",
+      q: `SELECT ${cols.join(", ")}\nFROM ${main.name}${filter}` });
+  }
+  SQL_EXAMPLES.push({ k: "会被拦截 · R-02", q: `DELETE FROM ${main.name}`, kind: "danger" });
+  SQL_EXAMPLES.push({ k: "会被拦截 · R-04",
+    q: `SELECT no_such_column FROM ${main.name}`, kind: "danger" });
+  if (tables.length >= 2) {
+    SQL_EXAMPLES.push({ k: "会被拦截 · R-01",
+      q: `SELECT ${cols[0] || "id"} FROM ${main.name}; UPDATE ${tables[1].name} SET name = 'x'`,
+      kind: "danger" });
+  }
+}
+
+function renderChips() {
+  const list = MODE === "nl" ? EXAMPLES : SQL_EXAMPLES;
+  if (!list.length) { $("chips").innerHTML = ""; return; }
+  $("chips").innerHTML = list.map((e, i) =>
+    `<button class="chip" data-i="${i}" ${e.kind ? `data-kind="${e.kind}"` : ""}>
+       <span class="k">${esc(e.k)}</span>${esc(e.q.replace(/\n/g, " "))}</button>`).join("");
+  $("chips").querySelectorAll(".chip").forEach(b => b.onclick = () => {
+    $("q").value = list[+b.dataset.i].q;
+    submit();
+  });
+}
+
+/* ---------- 模式切换 ---------- */
+function setMode(m) {
+  MODE = m;
+  document.querySelectorAll(".mode").forEach(b => b.setAttribute("aria-pressed", b.dataset.m === m));
+  const q = $("q");
+  q.classList.toggle("sqlmode", m === "sql");
+  q.rows = m === "sql" ? 4 : 1;
+  q.placeholder = m === "sql"
+    ? "直接写一条 SELECT，跳过模型，只验证护栏与执行"
+    : "用一句话问数据，例如：有哪些文档卡在处理中超过一小时";
+  $("go").textContent = m === "sql" ? "执行" : "提问";
+  $("hintline").textContent = m === "sql"
+    ? "不消耗 token，未配置密钥也能用 · Ctrl/⌘+Enter 提交"
+    : "Enter 提交 · Shift+Enter 换行";
+  const noKey = HEALTH && !HEALTH.llm.ok;
+  q.disabled = m === "nl" && noKey;
+  $("go").disabled = q.disabled;
+  if (q.disabled) $("hintline").textContent = "需要先配置模型密钥；上方横幅里有命令。";
+  renderChips();
+}
+document.querySelectorAll(".mode").forEach(b => b.onclick = () => setMode(b.dataset.m));
+
+/* ---------- 提交 ---------- */
+$("go").onclick = submit;
+$("q").addEventListener("keydown", e => {
+  if (e.key === "Enter" && (MODE === "nl" ? !e.shiftKey : (e.metaKey || e.ctrlKey))) {
+    e.preventDefault(); submit();
+  }
+});
+
+async function submit() {
+  if (BUSY) return;
+  const text = $("q").value.trim();
+  if (!text) { $("q").focus(); return; }
+
+  BUSY = true;
+  $("go").disabled = true;
+  $("go").innerHTML = '<span class="spin"></span>';
+  $("emptyState").classList.add("hide");
+  $("sqlBox").classList.add("hide");
+  $("outCard").classList.add("hide");
+  $("hitBox").innerHTML = "";
+  ["mSteps", "mLat", "mRows", "mAtt", "mTok", "mCost"].forEach(k => $(k).textContent = "—");
+  $("multiCard").classList.add("hide"); $("rounds").innerHTML = "";
+  $("steps").classList.remove("hide");
+  $("steps").innerHTML = `<li class="step run"><span class="dot">·</span>
+    <div><div class="sname">${MODE === "sql" ? "静态校验" : "Schema 召回"}</div>
+    <div class="snote">正在处理…</div></div><div class="smeta"></div></li>`;
+
+  let data;
+  try {
+    const res = await fetch(MODE === "sql" ? "/api/sql" : "/api/ask", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.assign(
+        MODE === "sql" ? { sql: text } : { question: text },
+        currentOrg() === null ? {} : { org_id: currentOrg() })),
+    });
+    if (!res.ok) throw new Error(`服务返回 ${res.status}`);
+    data = await res.json();
+  } catch (err) {
+    $("steps").innerHTML = "";
+    $("steps").classList.add("hide");
+    $("outTitle").textContent = "请求没有成功";
+    $("outSub").textContent = "";
+    $("outBody").innerHTML = `<div class="notice bad">
+      <div class="t">✕ 连不上 askdb 服务</div>
+      <div class="why">${esc(err.message || err)}</div>
+      <div class="fix"><b>下一步：</b>确认终端里的 <code>askdb serve</code> 还在运行，然后刷新页面重试。</div></div>`;
+    $("outCard").classList.remove("hide");
+    done(); return;
+  }
+  render(data);
+  saveResumable(data);
+  done();
+}
+
+/* ---------- 任务中断恢复（设计说明 V1.1）：横幅 + 续跑 ---------- */
+/* 无账号体系，不做"未完成任务列表"（那是枚举接口）——
+   只在本浏览器留有该 thread_id 时给恢复入口；清缓存即丢，是既定代价。 */
+const RESUME_KEY = "askdb_resumable";
+
+function saveResumable(d) {
+  if (d && d.rejected_by === "INTERRUPTED" && d.thread_id) {
+    localStorage.setItem(RESUME_KEY, JSON.stringify({
+      thread_id: d.thread_id, question: d.question || "",
+      cost: d.cost_cny || 0, ts: Date.now(),
+    }));
+  } else if (d && d.ok) {
+    const cur = readResumable();
+    if (cur && cur.thread_id === d.thread_id) localStorage.removeItem(RESUME_KEY);
+  }
+  renderResumeBar();
+}
+
+function readResumable() {
+  try {
+    const it = JSON.parse(localStorage.getItem(RESUME_KEY) || "null");
+    // 24h 保留期：检查点不会永久保留，过期入口只会带来一个 404
+    if (!it || Date.now() - it.ts > 24 * 3600 * 1000) { localStorage.removeItem(RESUME_KEY); return null; }
+    return it;
+  } catch { return null; }
+}
+
+function renderResumeBar() {
+  const it = readResumable();
+  if (!it) { $("resumeBar").innerHTML = ""; return; }
+  $("resumeBar").innerHTML = `<div class="notice" style="margin-bottom:14px">
+    <div class="t">上次有任务在执行中中断</div>
+    <div class="why">「${esc(it.question)}」 · 中断前已花 ¥${it.cost}（不会退）。
+      续跑从断点节点继续，已完成的步骤跳过；<b>本次另计一次每日配额</b>。</div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn" id="resumeGo">从断点续跑</button>
+      <button class="btn ghost" id="resumeDrop">放弃</button>
+    </div></div>`;
+  $("resumeDrop").onclick = () => { localStorage.removeItem(RESUME_KEY); renderResumeBar(); };
+  $("resumeGo").onclick = async () => {
+    $("resumeGo").disabled = true;
+    $("resumeGo").innerHTML = '<span class="spin"></span> 续跑中…';
+    try {
+      const res = await fetch("/api/resume", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ thread_id: it.thread_id }),
+      });
+      if (res.status === 404) {
+        localStorage.removeItem(RESUME_KEY);
+        $("resumeBar").innerHTML = `<div class="notice" style="margin-bottom:14px">
+          <div class="t">这个任务已不可恢复</div>
+          <div class="why">它可能已经完成，或超过了检查点保留期。重新提问即可。</div></div>`;
+        return;
+      }
+      const d = await res.json();
+      localStorage.removeItem(RESUME_KEY);
+      renderResumeBar();
+      render(d);
+      saveResumable(d);          // 续跑再次中断时重新登记（thread 不变）
+    } catch {
+      $("resumeGo").disabled = false;
+      $("resumeGo").textContent = "从断点续跑";
+    }
+  };
+}
+function done() {
+  BUSY = false;
+  $("go").disabled = MODE === "nl" && HEALTH && !HEALTH.llm.ok;
+  $("go").textContent = MODE === "sql" ? "执行" : "提问";
+}
+
+/* ---------- 渲染 ---------- */
+function render(d) {
+  // 步骤逐条揭示，节奏取自真实耗时
+  const steps = d.steps || [];
+  $("steps").innerHTML = "";
+  steps.forEach((s, i) => setTimeout(() => {
+    $("steps").insertAdjacentHTML("beforeend", `
+      <li class="step ${s.status}"><span class="dot">${
+        s.status === "ok" ? "✓" : s.status === "blocked" ? "✕" : s.status === "failed" ? "!" : "-"}</span>
+      <div><div class="sname">${esc(STEP_NAMES[s.step] || s.step)}</div>
+      <div class="snote">${esc(s.note)}</div></div>
+      <div class="smeta">${s.ms ? s.ms + " ms" : ""}${
+        (s.tok_in || s.tok_out) ? `<br>${s.tok_in}+${s.tok_out} tok` : ""}</div></li>`);
+  }, i * 90));
+
+  const delay = steps.length * 90 + 60;
+  setTimeout(() => {
+    $("mLat").textContent = d.elapsed_ms != null ? d.elapsed_ms + " ms" : "—";
+    $("mRows").textContent = d.ok ? (d.row_count ?? 0).toLocaleString() : "—";
+    // step_count 才是步数；d.steps 是步骤追踪数组（对象列表），
+    // 它非空即为真，写成 d.steps || … 会短路成整个数组
+    $("mSteps").textContent = (d.step_count ?? 1) + " 步";
+    $("mAtt").textContent = (d.attempts || 1) + " 轮";
+    renderRounds(d);
+    renderTrace(d);
+    $("mTok").textContent = (d.tok_in || 0) + "+" + (d.tok_out || 0);
+    $("mCost").textContent = "¥" + (d.cost_cny ?? 0).toFixed(4);
+
+    if ((d.tables_hit || []).length || (d.metrics_hit || []).length) {
+      $("hitBox").innerHTML =
+        `<div style="font-size:11.5px;color:var(--muted);margin-bottom:5px">命中</div>` +
+        (d.tables_hit || []).map(t => `<span class="tag">${esc(t)}</span>`).join("") +
+        (d.metrics_hit || []).map(m =>
+          `<span class="tag" style="background:var(--good-bg);color:var(--good-ink)">口径 ${esc(m)}</span>`).join("");
+    }
+
+    // SQL
+    const sql = d.sql_final || d.sql_raw;
+    if (sql) {
+      $("sqlBox").classList.remove("hide");
+      const executed = !!d.sql_final && d.rejected_by !== "R-11";
+      $("sqlTitle").textContent = d.ok ? "最终 SQL（实际执行的就是这条）"
+        : executed ? "改写后的 SQL（未执行）" : "模型产出（未执行）";
+      $("sqlBadge").className = "badge " + (d.ok ? "good" : "bad");
+      $("sqlBadge").textContent = d.ok ? "✓ 护栏通过 · 只读执行"
+        : d.rejected_by ? `✕ 已拦截 · ${d.rejected_by}` : "✕ 未执行";
+      $("sql").className = "sql" + (d.ok ? "" : " dead");
+      $("sql").innerHTML = highlight(sql);
+      $("injLegend").classList.toggle("hide", !(d.rewrites || []).length);
+      $("copySql").onclick = () => {
+        navigator.clipboard?.writeText(sql);
+        $("copySql").textContent = "已复制";
+        setTimeout(() => $("copySql").textContent = "复制", 1400);
+      };
+    }
+
+    renderOutput(d);
+  }, delay);
+}
+
+/* 多步时展开每一步：目标 / SQL / 结果规模 / 下传的标识列 */
+function renderRounds(d) {
+  const subs = d.sub_steps || [];
+  if (!d.multi_step || subs.length < 2) return;
+  $("stepCount").textContent = `${subs.length} 步` +
+    (d.converged_early ? ` · ${d.converged_early}` : "");
+  $("rounds").innerHTML = subs.map((s, i) => `
+    <div class="rcard">
+      <div class="rhead"><span class="rnum">${i + 1}</span><b>第 ${i + 1} 步 · ${esc(s.goal || "（单步）")}</b></div>
+      <pre class="rsql">${highlight(s.sql || "")}</pre>
+      <div class="rmeta">返回 ${s.row_count} 行${s.columns && s.columns.length
+        ? "（" + s.columns.map(esc).join("、") + "）" : ""}</div>
+    </div>`).join("");
+  $("multiCard").classList.remove("hide");
+}
+
+/* 每次调用都留下 trace_id，并给出能直接粘去跑的复现命令。
+   接口一直返回 trace_id，但页面从没渲染过 —— 评测页却写着"每条失败都带
+   trace_id，可从检查点原样复现"。有能力却没入口，等于没有。 */
+function renderTrace(d) {
+  const box = $("traceLine");
+  if (!d || !d.trace_id) { box.classList.add("hide"); return; }
+  // 检查点库跟着配置走，命令里必须带上 -c，否则会报"检查点里没有这个 trace"
+  const cmd = `askdb replay ${d.trace_id}${CFG_PATH ? ` -c ${CFG_PATH}` : ""}`;
+  box.innerHTML = `<span>trace_id</span><code>${esc(d.trace_id)}</code>
+    <button class="cpbtn" data-copy="${esc(d.trace_id)}">复制</button>
+    <span style="margin-left:4px">原样复现整条判定链路：</span><code>${esc(cmd)}</code>
+    <button class="cpbtn" data-copy="${esc(cmd)}">复制命令</button>`;
+  box.classList.remove("hide");
+}
+
+/* 复制按钮统一委托 —— 页面上多处都要用 */
+document.addEventListener("click", e => {
+  const b = e.target.closest("[data-copy]");
+  if (!b) return;
+  navigator.clipboard.writeText(b.dataset.copy);
+  const old = b.textContent;
+  b.textContent = "已复制";
+  setTimeout(() => (b.textContent = old), 1200);
+});
+
+/* 高亮强制注入的部分：租户谓词与 LIMIT */
+function highlight(sql) {
+  let h = esc(sql);
+  if (HEALTH) {
+    const col = HEALTH.tenant.column;
+    h = h.replace(new RegExp(`([\\w"]+\\.)?${col}\\s*=\\s*\\d+`, "g"), m => `<span class="inj">${m}</span>`);
+  }
+  h = h.replace(/\bLIMIT\s+\d+/gi, m => `<span class="inj">${m}</span>`);
+  return h;
+}
+
+function renderOutput(d) {
+  $("outCard").classList.remove("hide");
+
+  if (!d.ok) {
+    const [title, fix] = RULES[d.rejected_by] || ["这次查询没能完成", ""];
+    $("outTitle").textContent = "链路已终止";
+    $("outSub").textContent = "";
+    $("outBody").innerHTML = `<div class="notice bad">
+      <div class="t">${d.rejected_by ? `<span class="rulecode">${esc(d.rejected_by)}</span>` : ""}${esc(title)}</div>
+      <div class="why">${esc(d.error || "")}</div>
+      ${(fix || d.hint) ? `<div class="fix"><b>下一步：</b>${esc(d.hint || fix)}</div>` : ""}
+    </div>`;
+    return;
+  }
+
+  if (!d.row_count) {
+    $("outTitle").textContent = "查询成功，但没有匹配的数据";
+    $("outSub").textContent = "";
+    $("outBody").innerHTML = `<div class="notice info">
+      <div class="t">◇ 结果为空</div>
+      <div class="why">SQL 正常执行了，只是没有符合条件的行 —— 这不是错误。</div>
+      <div class="fix"><b>可能的原因：</b>时间范围内确实没有数据；筛选条件太严；
+        或者当前租户（${esc(HEALTH ? HEALTH.tenant.column + " = " + d.org_id : "")}）下没有这类记录。
+        上面的 SQL 可以复制出来自己调一下。</div></div>`;
+    return;
+  }
+
+  $("outTitle").textContent = "查询结果";
+  // 数据时间必须显示（§8 准入条件 #7）：不标时间的结果，隔天再看会被当成当前状态
+  $("outSub").textContent = `${d.row_count.toLocaleString()} 行`
+    + (d.truncated ? " · 已按行数上限截断（R-13）" : "")
+    + (d.as_of ? ` · 数据截至 ${fmtAsOf(d.as_of)}` : "")
+    + ` · 结果附带上面的 SQL，可自行核对`;
+  const head = `<tr>${d.columns.map(c => `<th>${esc(c)}</th>`).join("")}</tr>`;
+  const body = d.rows.map(r => `<tr>${r.map(v =>
+    `<td>${v === null ? '<span style="color:var(--muted)">NULL</span>' : esc(v)}</td>`).join("")}</tr>`).join("");
+  $("outBody").innerHTML = `<div class="tablewrap"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
+}
+
+/* ---------- ① 接入数据：三步向导 ---------- */
+let STEP = 0, INTRO = null, PICK = new Set(), CURT = null;
+
+function showStep(n) {
+  STEP = n;
+  [0, 1, 2].forEach(i => $("w" + i).classList.toggle("hide", i !== n));
+  document.querySelectorAll(".sstep").forEach(s => {
+    const i = +s.dataset.s;
+    s.setAttribute("aria-current", i === n);
+    s.classList.toggle("done", i < n);
+  });
+  if (n === 1) loadIntrospect();
+  if (n === 2) renderAnnotate();
+}
+document.querySelectorAll(".sstep").forEach(s => s.onclick = () => showStep(+s.dataset.s));
+$("next0").onclick = () => showStep(1);
+$("back1").onclick = () => showStep(0);
+$("next1").onclick = () => showStep(2);
+$("back2").onclick = () => showStep(1);
+$("gotoAsk").onclick = () => showReady();
+$("gotoAsk2").onclick = () => document.querySelector('.tab[data-p="ask"]').click();
+$("redo").onclick = () => { $("ready").classList.add("hide");
+  document.querySelector(".stepper").classList.remove("hide"); showStep(0); };
+
+/* 走完三步后的就绪汇总。数字全部取自真实配置与自检，不写死。 */
+function showReady() {
+  const ts = (SCHEMA && SCHEMA.tables) || [];
+  const all = ts.flatMap(t => t.columns);
+  const cov = all.length ? Math.round(all.filter(c => c.desc).length / all.length * 100) : 0;
+  const total = INTRO && INTRO.ok ? INTRO.total : ts.length;
+  const tenant = HEALTH.tenant;
+  $("readyTiles").innerHTML = [
+    ["数据源", HEALTH.datasource.detail, "", HEALTH.datasource.type],
+    ["开放表", ts.length, " 张", `库内共 ${total} 张，其余不可见`],
+    ["注释覆盖率", cov, "%", cov >= 60 ? "已达可用水平" : "偏低，会直接拖累准确率"],
+    ["业务口径", (SCHEMA && SCHEMA.metrics || []).length, " 条",
+     (SCHEMA && SCHEMA.metrics || []).slice(0, 2).map(m => m.name).join(" · ") || "未定义"],
+    ["租户隔离", tenant.enabled ? tenant.column : "未启用", "",
+     tenant.enabled ? "已绑定，强制注入" : "单租户库"],
+  ].map(([lab, v, u, foot]) => `<div class="tile"><div class="lab">${lab}</div>
+      <div class="val" style="${String(v).length > 8 ? "font-size:16px" : ""}">${esc(v)}<small>${u}</small></div>
+      <div class="foot${foot.includes("偏低") ? "" : " g"}">${esc(foot)}</div></div>`).join("");
+  ["w0", "w1", "w2"].forEach(i => $(i).classList.add("hide"));
+  document.querySelector(".stepper").classList.add("hide");
+  $("ready").classList.remove("hide");
+}
+
+/* 数据源没就绪就锁住提问 —— 让人先去接入，而不是查了才报错 */
+function gateAsk() {
+  const ok = HEALTH && HEALTH.datasource.ok;
+  $("noDs").classList.toggle("hide", ok);
+  $("askMain").classList.toggle("hide", !ok);
+}
+
+/* 第 1 步 —— 连接信息与自检 */
+const MODE_LABEL = {
+  predicate: "应用层 AST 改写",
+  rls: "数据库行级安全（RLS）",
+  rls_and_predicate: "双层：AST 改写 + 数据库 RLS",
+};
+
+function renderStep1() {
+  const d = HEALTH.datasource, t = HEALTH.tenant, isPg = d.type === "postgresql";
+  const field = ([k, v]) =>
+    `<div><label class="f">${esc(k)}</label><input class="inp" value="${esc(v)}" readonly></div>`;
+
+  // 连接参数：静态的、属于数据源本身的
+  $("dsForm").innerHTML = [
+    ["类型", d.type], ["连接", d.detail],
+    ["语句超时", HEALTH.guard.timeout_ms / 1000 + " s"],
+    ["扫描行阈值", HEALTH.guard.max_scan_rows.toLocaleString()],
+    ["结果行上限", HEALTH.guard.max_rows.toLocaleString()],
+    ["重试上限", HEALTH.guard.max_retry + " 次"],
+  ].map(field).join("");
+
+  // 租户隔离：单独成组。默认租户是运行时上下文，不属于连接配置 ——
+  // 混在一起会让人以为它跟连接串一样是固定的。
+  if (t.enabled) {
+    $("tenantForm").innerHTML = [
+      ["状态", "已启用"],
+      ["租户列", t.column],
+      ["隔离方式", MODE_LABEL[t.mode] || t.mode],
+      ["默认租户", t.org_id],
+      ["无法判定归属时", t.on_unresolved === "reject" ? "拒绝执行" : t.on_unresolved],
+      ["受约束的表", t.tables.length + " 张"],
+    ].map(field).join("");
+    $("tenantNote").innerHTML = `<div class="notice info" style="margin-top:11px">
+      <div class="why"><b>默认租户</b>是配置里的起始值（<code>tenant.default_ctx</code>），
+        属于运行时上下文而非连接参数 —— 在「② 提问」页可随时临时切换，不改配置文件。
+        护栏会按当时选定的值强制注入谓词。</div></div>`;
+  } else {
+    $("tenantForm").innerHTML = [
+      ["状态", "未启用（单租户库）"],
+      ["隔离方式", "不做行级隔离"],
+    ].map(field).join("");
+    $("tenantNote").innerHTML = `<div class="notice bad" style="margin-top:11px">
+      <div class="t">◇ 当前为单租户模式</div>
+      <div class="why">整库视为同属一个主体，<b>R-10 不参与</b>，查询不会被注入任何租户谓词。</div>
+      <div class="fix"><b>其余护栏照常：</b>写操作拦截、表白名单、幻觉字段、LIMIT 注入、
+        扫描阈值全部生效。若这其实是多租户库，请把 <code>tenant.enabled</code> 改回 true。</div></div>`;
+  }
+
+  $("roSql").textContent = isPg ? `-- PostgreSQL 只读角色
+CREATE ROLE askdb_ro LOGIN PASSWORD '***';
+
+GRANT CONNECT ON DATABASE ${(d.detail.split("@")[0] || "").trim()} TO askdb_ro;
+GRANT USAGE   ON SCHEMA public TO askdb_ro;
+
+-- 逐表授权，禁止 ALL TABLES
+GRANT SELECT ON documents, knowledge_bases TO askdb_ro;
+
+-- 三道数据库级硬护栏
+ALTER ROLE askdb_ro SET default_transaction_read_only = on;
+ALTER ROLE askdb_ro SET statement_timeout = '${HEALTH.guard.timeout_ms}ms';
+ALTER ROLE askdb_ro CONNECTION LIMIT 3;
+
+-- 行级安全：应用层 AST 改写之外的第二道
+ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+CREATE POLICY org_isolation ON documents FOR SELECT TO askdb_ro
+  USING (${HEALTH.tenant.column} = current_setting('app.org_id', true)::bigint);`
+  : `-- DuckDB 无需建账号：连接以 read_only 打开，
+-- 写操作在引擎层即被拒绝。
+
+python -m data.seed        # 生成样例库
+askdb check                # 六项自检，含写操作实探`;
+}
+
+$("testBtn").onclick = async () => {
+  $("checks").innerHTML = '<span class="spin"></span> 检测中…';
+  try {
+    const r = await fetch("/api/selfcheck");
+    // 对外实例的 nginx 刻意挡掉自检/内省端点（部署说明·验证一节，期望 404）。
+    // 这不是故障，要如实说明，而不是让访问者去"确认 serve 还在跑"。
+    if (r.status === 404) {
+      $("checks").innerHTML = `<div class="notice"><div class="t">该实例已关闭连接自检</div>
+        <div class="why">这是对外开放实例的既定安全策略：自检与内省端点会暴露数据源细节，
+        已在入口层屏蔽。本地部署（askdb serve）时此功能可用；本实例连的是内置样例库，
+        可直接去「② 提问」使用。</div></div>`;
+      return;
+    }
+    renderChecks(await r.json());
+  } catch {
+    $("checks").innerHTML = `<div class="notice bad"><div class="t">✕ 自检没跑起来</div>
+      <div class="why">确认 askdb serve 仍在运行。</div></div>`;
+  }
+};
+function renderChecks(r) {
+  $("checks").innerHTML = r.checks.map(c => `
+    <div class="chk"><span class="m ${c.ok ? "ok" : "no"}">${c.ok ? "✓" : "✕"}</span>
+      <span>${esc(c.name)}</span><span class="d">${esc(c.detail)}</span></div>`).join("")
+    + (r.ok ? "" : `<div class="notice bad" style="margin-top:10px">
+        <div class="t">✕ 自检未全部通过</div>
+        <div class="why">有检查项没过，查询结果可能不可靠。</div></div>`);
+}
+
+/* 第 2 步 —— 选表 */
+async function loadIntrospect() {
+  if (INTRO) return;
+  $("tblTable").innerHTML = '<tbody><tr><td><span class="spin"></span> 读取表清单…</td></tr></tbody>';
+  try {
+    INTRO = await (await fetch("/api/introspect")).json();
+  } catch {
+    $("tblTable").innerHTML = '<tbody><tr><td>读取失败</td></tr></tbody>'; return;
+  }
+  if (!INTRO.ok) {
+    $("tblTable").innerHTML = `<tbody><tr><td style="white-space:normal">${esc(INTRO.error)}<br>
+      <span style="color:var(--muted)">${esc(INTRO.hint || "")}</span></td></tr></tbody>`;
+    return;
+  }
+  PICK = new Set(INTRO.tables.filter(t => t.allowed).map(t => t.name));
+  renderTables();
+}
+function renderTables() {
+  const ts = INTRO.tables;
+  $("tblTable").innerHTML =
+    `<thead><tr><th style="width:34px"></th><th>表名</th><th>说明</th><th style="text-align:right" title="pg_class 统计估算值，且是全表跨租户的行数，不是当前租户能查到的行数">全表行数<br><small style="font-weight:400;color:var(--muted)">估算 · 跨租户</small></th>
+     <th style="text-align:right">列</th><th>租户隔离</th><th>注释覆盖</th></tr></thead><tbody>` +
+    ts.map((t, i) => `<tr class="${PICK.has(t.name) ? "sel" : ""}">
+      <td><input type="checkbox" data-i="${i}" ${PICK.has(t.name) ? "checked" : ""}></td>
+      <td class="mono">${esc(t.name)}</td>
+      <td style="color:var(--ink-2);white-space:normal">${esc(t.desc || "—")}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${t.rows.toLocaleString()}</td>
+      <td style="text-align:right">${t.cols}</td>
+      <td>${tenantCell(t)}</td>
+      <td>${t.allowed ? `<span class="tag2 ${t.coverage >= 60 ? "hi" : "low"}">${t.coverage}%</span>`
+        : '<span style="color:var(--muted)">未开放</span>'}</td>
+    </tr>`).join("") + "</tbody>";
+  $("tblTable").querySelectorAll("input").forEach(cb => cb.onchange = () => {
+    const t = ts[+cb.dataset.i];
+    cb.checked ? PICK.add(t.name) : PICK.delete(t.name);
+    cb.closest("tr").classList.toggle("sel", cb.checked);
+    updateSummary();
+  });
+  updateSummary();
+}
+/* 隔离方式必须分清"直接有租户列"与"经关联间接归属"。
+   documents 没有 org_id，靠 tenant_filter 经 kb_id 关联到 knowledge_bases.org_id
+   —— 此前这里显示"—"，读起来是"这张表没有租户隔离"，而这是整页最要害的一列。 */
+function tenantCell(t) {
+  if (!t.allowed) return '<span style="color:var(--muted)">—</span>';
+  if (t.tenant_mode === "column")
+    return `<span class="tag2 ten">${esc(t.tenant_via)}</span>`;
+  if (t.tenant_mode === "filter")
+    return `<span class="tag2 ten" title="本表无租户列，经关联表间接归属（R-10 会注入子查询）">
+      经 ${esc(t.tenant_via || "关联")} 间接</span>`;
+  if (t.tenant_mode === "exempt")
+    return `<span class="tag2" title="已显式声明豁免租户隔离">豁免</span>`;
+  return '<span style="color:var(--muted)">—</span>';
+}
+
+function updateSummary() {
+  const ts = INTRO.tables, sel = ts.filter(t => PICK.has(t.name));
+  const tok = sel.reduce((a, t) => a + t.cols * 9 + 40, 0);
+  const changed = sel.length !== INTRO.allowed_count
+    || sel.some(t => !t.allowed) ;
+  $("tblSummary").innerHTML =
+    `<span>已选 <b>${sel.length}</b> / <b>${ts.length}</b> 张</span>
+     <span style="color:var(--muted)">预计注入 <b>${tok.toLocaleString()}</b> tokens/次</span>
+     <span style="color:var(--muted)">已隔离 <b>${sel.filter(t =>
+        t.tenant_mode === "column" || t.tenant_mode === "filter").length}</b> / ${sel.length} 张</span>
+     ${changed ? '<span style="color:var(--warn-ink)">与当前配置不一致，第 3 步可生成新配置</span>' : ""}`;
+}
+
+/* 第 3 步 —— 注释与口径 */
+function renderAnnotate() {
+  if (!SCHEMA) return;
+  const ts = SCHEMA.tables;
+  CURT = CURT || (ts[0] && ts[0].name);
+  $("annTables").innerHTML = ts.map(t =>
+    `<li data-t="${esc(t.name)}" aria-selected="${t.name === CURT}">
+       <span class="mono" style="font-size:12px">${esc(t.name)}</span></li>`).join("");
+  $("annTables").querySelectorAll("li").forEach(li => li.onclick = () => {
+    CURT = li.dataset.t; renderAnnotate();
+  });
+  const t = ts.find(x => x.name === CURT) || ts[0];
+  if (!t) return;
+  $("annFields").innerHTML = t.columns.map(c => `
+    <li><span class="fname">${esc(c.name)}<span class="ftype">${esc(c.type)}</span>
+      ${c.tenant ? '<span class="tag2 ten" style="margin-left:6px">租户列</span>' : ""}</span>
+    <span class="fdesc">${c.desc ? esc(c.desc)
+      : '<span style="color:var(--warn-ink)">缺说明 —— 这一句直接决定准确率</span>'}
+      ${c.enum.length ? `<br><span style="color:var(--muted);font-size:11.5px">取值：${esc(c.enum.join(" / "))}</span>` : ""}
+    </span></li>`).join("");
+
+  const all = ts.flatMap(x => x.columns);
+  const cov = Math.round(all.filter(c => c.desc).length / Math.max(all.length, 1) * 100);
+  $("annSummary").innerHTML = `<span>注释覆盖率 <b>${cov}%</b>（${all.filter(c => c.desc).length}/${all.length} 个字段）</span>`;
+
+  $("metrics").innerHTML = SCHEMA.metrics.map(m => `
+    <div style="padding:9px 0;border-top:1px solid var(--grid)">
+      <b style="font-size:12.5px">${esc(m.name)}</b>
+      ${m.aliases.length ? `<div style="font-size:11.5px;color:var(--muted)">同义：${esc(m.aliases.join("、"))}</div>` : ""}
+      <div class="mono" style="font-size:11px;color:var(--ink-2);margin-top:3px;word-break:break-all">${esc(m.definition)}</div>
+      ${m.note ? `<div style="font-size:11.5px;color:var(--muted);margin-top:2px">${esc(m.note)}</div>` : ""}
+    </div>`).join("") || '<p class="sub">还没有定义业务口径。</p>';
+}
+
+$("genYaml").onclick = () => {
+  const known = new Map((SCHEMA ? SCHEMA.tables : []).map(t => [t.name, t]));
+  const lines = ["tables:"];
+  [...PICK].forEach(name => {
+    const t = known.get(name);
+    lines.push(`  - name: ${name}`);
+    lines.push(`    desc: ${t && t.desc ? t.desc : "TODO 一句话说明这张表是什么"}`);
+    lines.push(`    aliases: [${t ? t.aliases.join(", ") : ""}]`);
+    lines.push("    columns:");
+    if (t) {
+      t.columns.forEach(c => {
+        lines.push(`      ${c.name}: { type: ${c.type}, desc: ${c.desc || "TODO"}` +
+          (c.enum.length ? `, enum: [${c.enum.join(", ")}]` : "") +
+          (c.tenant ? ", tenant: true" : "") + " }");
+      });
+    } else {
+      lines.push("      # 该表尚未纳入配置，补全字段说明后再开放");
+    }
+  });
+  $("yamlOut").textContent = lines.join("\n");
+  $("yamlOut").classList.remove("hide");
+};
+
+/* ---------- ③ 评测 ---------- */
+async function renderEval() {
+  let d;
+  try { d = await (await fetch("/api/eval")).json(); } catch { d = { available: false }; }
+
+  if (!d.available) {
+    $("evalTiles").innerHTML = ["黄金集", "执行准确率", "误拒率", "单次平均成本"]
+      .map(l => `<div class="tile"><div class="lab">${l}</div>
+        <div class="val">—</div><div class="foot">尚未运行</div></div>`).join("");
+    $("evalBody").innerHTML = `<div class="notice info">
+      <div class="t">◇ 评测尚未运行</div>
+      <div class="why">本项目不展示未经实测的指标。</div>
+      <div class="fix"><b>跑一次：</b><code>python -m evals.replay --blind</code>（盲测集，最终成绩）
+        与 <code>python -m evals.ablation --groups A,B,C,D,E,F</code>（六组消融）。</div></div>`;
+    return;
+  }
+
+  const b = d.blind;
+  if (b) {
+    $("evalTiles").innerHTML = [
+      ["盲测集", b.n, " 题", "全程不参与调参，只跑一次"],
+      ["执行准确率", (b.accuracy * 100).toFixed(1), "%", "这是最终成绩"],
+      ["误拒率", (b.false_reject * 100).toFixed(1), "%", "越低越好，须与准确率同看"],
+      ["总成本", "¥" + b.cost_cny, "", `P95 ${(b.p95_ms / 1000).toFixed(1)} s`],
+    ].map(([lab, v, u, foot]) => `<div class="tile"><div class="lab">${lab}</div>
+      <div class="val">${v}<small>${u}</small></div><div class="foot">${foot}</div></div>`).join("");
+  }
+
+  // 出处横幅。一组成绩跑在哪个库上，直接决定它算不算数 ——
+  // 跑在合成样例库上的准确率，和当前连着的生产库没有关系。
+  const pv = d.provenance || {};
+  let html = "";
+  if (pv.current_datasource) {
+    const same = pv.matches_current;
+    html += `<div class="notice ${same ? "info" : "bad"}" style="margin-bottom:14px">
+      <div class="t">◇ 这组成绩跑在哪里</div>
+      <div class="why">
+        数据源 <b>${esc(pv.datasource || "未记录")}</b>${pv.synthetic
+          ? '（<b>合成数据</b> —— 由 seed.py 用固定随机种子生成，表名规范、字段有注释，'
+            + '正是设计文档 §1.2 判定"与学术基准不具可比性"的那种理想环境）' : ""}
+        ${pv.org_id != null ? ` · 租户 org_id=${pv.org_id}` : ""}
+        ${pv.model ? ` · 模型 ${esc(pv.model)}` : ""}
+        ${pv.golden ? ` · 题库 <code>${esc(pv.golden)}</code>` : ""}
+        ${pv.n_cases ? ` · ${pv.n_cases} 题` : ""}
+      </div>
+      ${same ? `<div class="fix">与当前连接的数据源一致。</div>`
+             : `<div class="fix"><b>与当前连接的数据源不是同一个</b>
+                 —— 当前连的是 <code>${esc(pv.current_datasource)}</code>。
+                 下面的数字<b>不代表</b>本系统在当前库上的表现。</div>`}
+    </div>`;
+  }
+  const gs = d.groups || [];
+  // 按题型的分布 —— 这才是这份数据里信息量最大的一张表。
+  // 总分只差一两题时读不出东西，但"口径题 0/7 → 3/7"是从零到非零，
+  // 不需要统计检验也站得住。故置于图之前。
+  const CATLAB = {single:"单表聚合", join:"多表关联", metric:"口径依赖",
+                  window:"时间窗口", multihop:"多跳"};
+  const catKeys = Object.keys(CATLAB).filter(c => gs.some(g => (g.by_category||{})[c]));
+  if (catKeys.length) {
+    html += `<div class="tablewrap"><table>
+      <thead><tr><th>组</th>${catKeys.map(c =>
+        `<th style="text-align:right">${CATLAB[c]}</th>`).join("")}</tr></thead><tbody>`
+      + gs.map(g => {
+          const bc = g.by_category || {};
+          return `<tr><td class="mono">${g.key}${g.key === d.shipped
+              ? ' <span class="tag2 hi">当前默认</span>' : ""}</td>`
+            + catKeys.map(c => {
+                const v = bc[c];
+                if (!v) return `<td style="text-align:right;color:var(--muted)">—</td>`;
+                // 0 分单独标出来：那是"这一层完全没起作用"，不是低分
+                const zero = v[0] === 0 && v[1] > 0;
+                return `<td style="text-align:right;font-variant-numeric:tabular-nums
+                        ${zero ? ";color:var(--crit-ink);font-weight:600" : ""}">${v[0]}/${v[1]}</td>`;
+              }).join("") + `</tr>`;
+        }).join("") + `</tbody></table></div>`;
+    html += `<div class="notice info" style="margin:10px 0 16px">
+      <div class="t">◇ 先看这张表，再看下面的图</div>
+      <div class="why">总分只差一两题时读不出东西，但<b>口径依赖那一列从 0/7 变成 3/7</b>
+        —— 从零到非零，不需要统计检验也站得住：<b>没有口径定义，模型在口径题上一道都答不对</b>。
+        多表关联各组都只有 1–2/10，说明护栏、召回、口径都救不了它，那是真正的短板
+        （其中一部分是题面没界定清楚，说明见 README）。</div></div>`;
+  }
+
+  if (gs.length) {
+    html += `<h3 style="margin:18px 0 2px;font-size:14px">各层相对基线 A 的增量</h3>
+      <p class="sub">画增量而不是绝对准确率：绝对值的柱长会让人读出并不存在的排序</p>
+      <div class="chartbox"><svg id="ablChart" viewBox="0 0 700 ${34 + gs.length * 34}"
+      role="img" aria-label="消融实验各组执行准确率"></svg><div class="tip" id="ablTip"></div></div>`;
+  }
+  html += `<div class="tablewrap" style="margin-top:14px"><table>
+    <thead><tr><th>组</th><th>配置</th><th style="text-align:right">准确率</th>
+    <th style="text-align:right">增量</th><th style="text-align:right">误拒率</th>
+    <th style="text-align:right">成本</th><th style="text-align:right">P95</th></tr></thead><tbody>` +
+    gs.map((g, i) => {
+      const prev = i > 0 ? gs[i - 1] : null;
+      // E/F 来自配额修复后的重跑，与前一组不同轮次，增量不可比
+      const cmp = prev && prev.rerun === g.rerun;
+      const dlt = cmp ? ((g.accuracy - prev.accuracy) * 100) : null;
+      const dtxt = dlt === null ? "—" : (dlt >= 0 ? "+" : "") + dlt.toFixed(1) + "pp";
+      const col = dlt === null ? "var(--muted)" : dlt > 0 ? "var(--good-ink)"
+                : dlt < 0 ? "var(--crit-ink)" : "var(--muted)";
+      const ship = g.key === d.shipped ? ' <span class="tag2 hi">当前默认</span>' : "";
+      return `<tr><td class="mono">${g.key}${ship}</td><td style="white-space:normal">${esc(g.label)}</td>
+        <td style="text-align:right;font-variant-numeric:tabular-nums">${(g.accuracy*100).toFixed(1)}%</td>
+        <td style="text-align:right;color:${col};font-weight:600">${dtxt}</td>
+        <td style="text-align:right">${(g.false_reject*100).toFixed(1)}%</td>
+        <td style="text-align:right">¥${g.cost_cny}</td>
+        <td style="text-align:right">${(g.p95_ms/1000).toFixed(1)}s</td></tr>`;
+    }).join("") + "</tbody></table></div>";
+
+  const fk = b && b.failure_kinds || {};
+  if (Object.keys(fk).length) {
+    html += `<div class="notice info" style="margin-top:14px">
+      <div class="t">◇ 盲测集失败分类（不做筛选，全量列出）</div>
+      <div class="why">${Object.entries(fk).map(([k, v]) => `${esc(k)} ${v}`).join(" · ")}</div>`;
+    // 逐条列出 —— 原先只给汇总数，却在这里写着"每条失败都带 trace_id 可原样复现"，
+    // 既不列 trace_id 也没有入口，等于告诉你有这个能力却不给用它的路径。
+    const fails = d.failures || [];
+    if (fails.length) {
+      const cfgArg = d.replay_config ? ` -c ${d.replay_config}` : "";
+      html += `<div class="tablewrap" style="margin-top:10px"><table>
+        <thead><tr><th>题号</th><th>题型</th><th>失败类型</th><th>问题</th>
+        <th>原样复现</th></tr></thead><tbody>`
+        + fails.map(f => {
+            const cmd = `askdb replay ${f.trace_id}${cfgArg}`;
+            return `<tr>
+              <td class="mono">${esc(f.id)}</td>
+              <td style="color:var(--ink-2)">${esc(CATLAB[f.category] || f.category)}</td>
+              <td>${esc(f.reason)}</td>
+              <td style="white-space:normal;color:var(--ink-2)"
+                  title="${esc(f.detail || "")}">${esc(f.question || "—")}</td>
+              <td style="white-space:nowrap"><code style="font-size:11px">${esc(f.trace_id)}</code>
+                <button class="cpbtn" data-copy="${esc(cmd)}">复制命令</button></td></tr>`;
+          }).join("") + `</tbody></table></div>
+        <div class="fix" style="margin-top:8px">检查点库跟着配置走 ——
+          复现命令里的 <code>-c</code> 不能省，否则会报"检查点里没有这个 trace"。</div>`;
+    }
+    html += `</div>`;
+  }
+  // §10.1 明确要求"报告中同时给出置信区间；不对小数点后第二位差异下结论"。
+  // 图上只画柱子而不画区间，等于默认读者会把 2 题的波动当成真实差异。
+  // nA 在下面的「解读」段也要用 —— 声明在 if 块内会让那里 ReferenceError，
+  // 整个 renderEval 抛出，evalBody 永远不被赋值（表现为消融卡是空的）。
+  const nA = Math.max(1, (gs[0] && gs[0].n) || (b && b.n) || 1);
+  if (b && b.n) {
+    html += `<div class="notice info" style="margin-top:12px">
+      <div class="t">◇ 怎么读这张图</div>
+      <div class="why">横线是<b>差值的</b> 95% 置信区间（配对，各组跑的是同一批题）。
+        <b>线跨过 0 就说明不了问题</b>，这类组已压成灰色。
+        可作答题 <b>${nA}</b> 道，<b>答对 1 题 ≈ ${(100 / nA).toFixed(1)}pp</b>
+        —— 图上 2.7pp 的差距，字面意思就是多答对了一道题。<br>
+        <b>目前没有任何一组达到显著</b>（最好的一组 p=0.18）。这份评测当前的规模
+        只够用来<b>证伪</b>，不够用来证实；要让"某一层确有增益"站得住，
+        题量需要上一个数量级。</div>
+    </div>`;
+  }
+  // 多跳题数与是否跨轮次都从数据里取 —— 写死的说明会随数据变化悄悄变成假话。
+  // 上一版写着"样例库只有 4 张表""E/F 来自重跑"，换到生产库后两句都不成立了。
+  const mh = (() => {
+    const c = gs.map(g => (g.by_category || {}).multihop).find(Boolean);
+    return c ? c[1] : 0;
+  })();
+  const rerun = gs.some(g => g.rerun);
+  html += `<div class="notice bad" style="margin-top:12px">
+    <div class="t">◇ 解读这些数字前必须知道</div>
+    <div class="why">${pv.tables ? `白名单 <b>${pv.tables.length}</b> 张表，` : ""}n 偏小（可作答题
+      <b>${nA}</b> 道${mh ? `、多跳题仅 <b>${mh}</b> 道` : ""}）——
+      <b>一两题之差就是 ±${(100 / nA).toFixed(1)}pp，低于这个幅度的差异应视为噪声</b>。</div>
+    ${rerun ? `<div class="fix">标注「重跑」的组与其余组不是同一轮次，增量不可直接相减。</div>`
+            : `<div class="fix">六组在同一轮次跑完，题目完全相同，增量可直接比较。</div>`}</div>`;
+  $("evalBody").innerHTML = html;
+
+  if (gs.length) drawAblation(gs, d.shipped);
+}
+
+function drawAblation(gs, shipped) {
+  /* 画的是**相对基线 A 的增量**，不是绝对准确率。
+     换掉柱状图的原因：六组的绝对准确率在统计上分不出高下，但柱长的视觉
+     权重远大于误差棒，读者照样会从长短里读出并不存在的排序 —— 画上区间
+     也救不回来。增量图把问题摆正：每条线跨没跨过 0，直接回答"这个差异
+     说明得了问题吗"，而这正是消融实验唯一想问的事。 */
+  const svg = $("ablChart"), tip = $("ablTip");
+  const W = 700, L = 210, R = 78, T = 20, band = 34;
+  const pw = W - L - R, ph = gs.length * band;
+
+  const vs = gs.map(g => g.vs_base).filter(Boolean);
+  if (!vs.length) { svg.innerHTML = ""; return; }
+  // 轴范围包住全部区间，并强制含 0 —— 0 是这张图的参照物，不能被裁掉
+  let lo = Math.min(0, ...vs.map(v => v.lo)), hi = Math.max(0, ...vs.map(v => v.hi));
+  const pad = Math.max((hi - lo) * 0.12, 0.02);
+  lo -= pad; hi += pad;
+  const X = v => L + ((v - lo) / (hi - lo)) * pw;
+
+  const FS = 11.5;
+  const textW = str => [...str].reduce((a, ch) =>
+    a + (/[⺀-鿿＀-｠　-〿]/.test(ch) ? FS : FS * 0.55), 0);
+  const fit = (str, max) => {
+    if (textW(str) <= max) return str;
+    let out = "";
+    for (const ch of str) { if (textW(out + "…") > max) break; out += ch; }
+    return out.trimEnd() + "…";
+  };
+
+  let s = "";
+  // 刻度：取整到 5pp
+  const step = (hi - lo) > 0.5 ? 0.1 : 0.05;
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) {
+    const x = X(v);
+    s += `<line x1="${x}" y1="${T}" x2="${x}" y2="${T + ph}" stroke="var(--grid)" stroke-width="1"/>`;
+    s += `<text x="${x}" y="${T + ph + 16}" fill="var(--muted)" font-size="11" text-anchor="middle"
+           style="font-variant-numeric:tabular-nums">${v > 0 ? "+" : ""}${(v * 100).toFixed(0)}pp</text>`;
+  }
+  // 0 线 —— 全图的参照物，画得比刻度重
+  const x0 = X(0);
+  s += `<line x1="${x0}" y1="${T - 8}" x2="${x0}" y2="${T + ph}" stroke="var(--axis)" stroke-width="1.5"/>`;
+  s += `<text x="${x0}" y="${T - 12}" fill="var(--muted)" font-size="10.5" text-anchor="middle">与基线无差异</text>`;
+
+  gs.forEach((g, i) => {
+    const cy = T + i * band + band / 2;
+    const full = `${g.key} ${g.label}`;
+    s += `<text x="${L - 11}" y="${cy + 4}" fill="var(--ink-2)" font-size="11.5"
+           text-anchor="end"><title>${esc(full)}</title>${esc(fit(full.split("（")[0].trim(), L - 15))}</text>`;
+    const v = g.vs_base;
+    if (!v) return;
+    if (g.key === "A") {
+      s += `<circle cx="${x0}" cy="${cy}" r="4" fill="var(--muted)"/>`;
+      s += `<text x="${x0 + 10}" y="${cy + 4}" fill="var(--muted)" font-size="11">基线</text>`;
+    } else {
+      // 区间跨过 0 就压成灰色：这一组"说明不了问题"，不该和确有差异的组同色
+      const solid = v.lo > 0 || v.hi < 0;
+      const col = solid ? "var(--accent)" : "var(--muted)";
+      const x1 = X(v.lo), x2 = X(v.hi), xd = X(v.delta);
+      s += `<line x1="${x1}" y1="${cy}" x2="${x2}" y2="${cy}" stroke="${col}"
+             stroke-width="1.5" opacity="${solid ? .9 : .5}"/>`;
+      for (const xx of [x1, x2]) {
+        s += `<line x1="${xx}" y1="${cy - 5}" x2="${xx}" y2="${cy + 5}" stroke="${col}"
+               stroke-width="1.5" opacity="${solid ? .9 : .5}"/>`;
+      }
+      s += `<circle cx="${xd}" cy="${cy}" r="4.5" fill="${col}"/>`;
+      s += `<text x="${W - R + 6}" y="${cy + 4}" fill="var(--ink)" font-size="12" font-weight="600"
+             style="font-variant-numeric:tabular-nums">${v.delta >= 0 ? "+" : ""}${(v.delta * 100).toFixed(1)}pp</text>`;
+    }
+    s += `<rect x="${L}" y="${T + i * band}" width="${pw}" height="${band}" fill="transparent" data-i="${i}"/>`;
+  });
+  svg.innerHTML = s;
+
+  svg.onmousemove = e => {
+    const h = e.target.closest("[data-i]");
+    if (!h) { tip.style.opacity = 0; return; }
+    const g = gs[+h.dataset.i], v = g.vs_base, box = svg.getBoundingClientRect();
+    tip.innerHTML = `<b>${esc(g.key)} ${esc(g.label)}</b><br>
+      <span style="color:var(--muted)">绝对准确率 ${(g.accuracy * 100).toFixed(1)}% ·
+      误拒 ${(g.false_reject * 100).toFixed(1)}% · ¥${g.cost_cny} · P95 ${(g.p95_ms / 1000).toFixed(1)}s</span>`
+      + (v && g.key !== "A" ? `<br><span style="color:var(--muted)">相对 A：变好 ${v.improved} 题 /
+         变坏 ${v.regressed} 题 · p=${v.p.toFixed(3)}
+         ${v.lo > 0 || v.hi < 0 ? "" : "· 区间跨 0，说明不了问题"}</span>` : "");
+    tip.style.left = (e.clientX - box.left) + "px";
+    tip.style.top = (e.clientY - box.top) + "px";
+    tip.style.opacity = 1;
+  };
+  svg.onmouseleave = () => tip.style.opacity = 0;
+}
+
+function barPath(x, y, w, h, r) {
+  r = Math.min(r, Math.max(w, 0));
+  if (w <= 0.5) return `M${x},${y} h0.5 v${h} h-0.5 Z`;
+  return `M${x},${y} H${x + w - r} A${r},${r} 0 0 1 ${x + w},${y + r} V${y + h - r}
+          A${r},${r} 0 0 1 ${x + w - r},${y + h} H${x} Z`;
+}
+
+boot();
+renderResumeBar();
+
+/* ---------- ④ 审计与复放 ---------- */
+const AUD = { page: 1, size: 10, q: "", kind: "", replay: false, stats: null, booted: false };
+
+function aModal(title, pill, html) {
+  $("aovlT").textContent = title; $("aovlP").textContent = pill;
+  $("aovlB").innerHTML = html; $("aovl").hidden = false;
+}
+$("aovlX").onclick = () => $("aovl").hidden = true;
+$("aovl").onclick = e => { if (e.target === $("aovl")) $("aovl").hidden = true; };
+document.addEventListener("keydown", e => { if (e.key === "Escape") $("aovl").hidden = true; });
+
+function auditBoot() {
+  if (AUD.booted) return;
+  AUD.booted = true;
+  loadAuditStats(); loadAudit();
+  let deb;
+  $("audQ").addEventListener("input", () => {
+    clearTimeout(deb);
+    deb = setTimeout(() => { AUD.q = $("audQ").value.trim(); AUD.page = 1; loadAudit(); }, 300);
+  });
+  $("audKind").onchange = () => { AUD.kind = $("audKind").value; AUD.page = 1; loadAudit(); };
+  $("audSize").onchange = () => { AUD.size = +$("audSize").value; AUD.page = 1; loadAudit(); };
+}
+
+async function loadAuditStats() {
+  let s;
+  try { s = await (await fetch("/api/audit/stats")).json(); } catch { return; }
+  AUD.replay = !!s.replay_api; AUD.stats = s;
+  const pct = v => v == null ? "—" : Math.round(v * 100) + "%";
+  $("auditTiles").innerHTML = `
+    <div class="tile"><div class="lab">近 ${s.days} 天调用</div><div class="val">${s.calls.toLocaleString()}</div></div>
+    <div class="tile"><div class="lab">护栏拦截</div><div class="val">${s.blocked}</div><div class="foot">拦截率 ${pct(s.block_rate)}</div></div>
+    <div class="tile"><div class="lab">调用具备步骤级 trace</div><div class="val">${pct(s.trace_complete)}</div></div>
+    <div class="tile" style="cursor:pointer" id="tileCost"><div class="lab">近 ${s.days} 天成本</div>
+      <div class="val" style="color:var(--accent)">¥${s.cost_cny} ↗</div><div class="foot">点开看按日与按类分布</div></div>
+    <div class="tile"><div class="lab">判定链路回放</div><div class="val">${AUD.replay ? "已开启" : "已关闭"}</div>
+      <div class="foot">observability.replay_api</div></div>
+    <div class="tile"><div class="lab">调用链观测</div><div class="val">${s.tracing && s.tracing.enabled
+        ? (s.tracing.backend === "langfuse" ? "Langfuse" : "LangSmith") + " 已接入" : "未接入"}</div>
+      <div class="foot">${s.tracing && s.tracing.enabled
+        ? `项目 ${esc(s.tracing.project)} · run 树按 metadata.trace_id 关联`
+        : "配置 LANGFUSE_*（自托管，推荐）或 LANGSMITH_* 后启用，异步上报不阻塞主链路"}</div></div>`;
+  $("tileCost").onclick = openCost;
+}
+
+async function loadAudit() {
+  const u = `/api/audit?page=${AUD.page}&page_size=${AUD.size}` +
+            `&q=${encodeURIComponent(AUD.q)}&kind=${AUD.kind}`;
+  let d;
+  try { d = await (await fetch(u)).json(); } catch { return; }
+  $("audRows").innerHTML = d.items.map(r => {
+    const guard = r.ok
+      ? `<span class="badge good">通过</span>`
+      : r.rejected_by === "INTERRUPTED"
+        ? `<span class="badge" style="background:var(--warn-bg);color:var(--warn-ink)">中断 · 可续跑</span>`
+        : `<span class="badge bad">${esc(r.rejected_by)} 拦截</span>`;
+    const kind = r.kind === "sql" ? "直查" : r.kind === "resume" ? "续跑" : "提问";
+    const rp = AUD.replay
+      ? `<span class="alink" data-rp="${esc(r.trace_id)}">复放</span>`
+      : `<span class="alink dim" title="replay_api 未开启（连真实数据源的实例默认关闭）">复放</span>`;
+    const tr0 = AUD.stats && AUD.stats.tracing;
+    const ls = (tr0 && tr0.enabled && r.kind !== "sql")
+      ? `<a class="alink" href="${esc(tr0.backend === "langfuse" ? ((tr0.url || tr0.host) + "/project/" + tr0.project + "/traces/" + r.trace_id) : (tr0.url || "https://smith.langchain.com"))}" target="_blank" rel="noopener"
+           title="在项目 ${esc(tr0.project)} 内按 metadata.trace_id=${esc(r.trace_id)} 过滤${tr0.backend === "langfuse" ? "（自托管实例，先挂隧道：ssh -f -N langfuse）" : ""}">${tr0.backend === "langfuse" ? "Langfuse" : "LangSmith"} ↗</a>`
+      : `<span class="alink dim" title="${r.kind === "sql" ? "直查不经模型，无 run 树" : "调用链观测未接入"}">—</span>`;
+    return `<tr><td>${esc(fmtAsOf(r.ts))}</td><td class="mono">${esc(r.trace_id)}</td>
+      <td>${kind}</td><td>${esc(String(r.question || "").slice(0, 60))}</td><td>${guard}</td>
+      <td class="num">${(r.elapsed_ms / 1000).toFixed(1)}s</td>
+      <td class="num">¥${r.cost_cny ?? 0}</td><td>${rp}</td><td>${ls}</td></tr>`;
+  }).join("") || `<tr><td colspan="9" style="color:var(--muted)">没有匹配的记录</td></tr>`;
+  $("audRows").querySelectorAll("[data-rp]").forEach(a => a.onclick = () => openReplay(a.dataset.rp));
+
+  const pages = Math.max(1, Math.ceil(d.total / AUD.size));
+  const st = d.total ? (AUD.page - 1) * AUD.size + 1 : 0;
+  $("audInfo").innerHTML = `第 <b>${st}–${Math.min(AUD.page * AUD.size, d.total)}</b> 条 / 共 <b>${d.total.toLocaleString()}</b> 条`;
+  let ps = [...new Set([1, AUD.page - 1, AUD.page, AUD.page + 1, pages]
+             .filter(n => n >= 1 && n <= pages))].sort((a, b) => a - b);
+  let h = `<button class="apgbtn" ${AUD.page === 1 ? "disabled" : ""} data-pg="${AUD.page - 1}">‹</button>`, prev = 0;
+  for (const n of ps) {
+    if (n - prev > 1) h += `<span class="apgdots">…</span>`;
+    h += `<button class="apgbtn${n === AUD.page ? " cur" : ""}" data-pg="${n}">${n}</button>`; prev = n;
+  }
+  h += `<button class="apgbtn" ${AUD.page === pages ? "disabled" : ""} data-pg="${AUD.page + 1}">›</button>`;
+  $("audBtns").innerHTML = h;
+  $("audBtns").querySelectorAll("[data-pg]").forEach(b =>
+    b.onclick = () => { AUD.page = +b.dataset.pg; loadAudit(); });
+}
+
+async function openReplay(tid) {
+  const r = await fetch(`/api/replay?trace_id=${encodeURIComponent(tid)}`);
+  if (r.status === 429) return aModal("判定链路复放", tid, `<p>回放接口被限流了，稍等一分钟再试。</p>`);
+  if (!r.ok) return aModal("判定链路复放", tid,
+    `<p>取不到这条记录：回放开关未开启，或记录不存在。</p>
+     <p class="sub">命令行等价入口：<span class="mono">askdb replay ${esc(tid)}</span></p>`);
+  const d = await r.json();
+  const steps = (d.steps || []).map(s => `
+    <div class="astep ${esc(s.status)}"><span class="adot">${s.status === "ok" ? "✓" : "✕"}</span>
+      <span><b>${esc(STEP_NAMES[s.step] || s.step)}</b>
+      ${s.note ? `<span class="sub" style="display:block;margin:0">${esc(s.note)}</span>` : ""}</span>
+      <span class="am">${s.ms} ms${s.tok_in ? ` · ${s.tok_in}+${s.tok_out} tok` : ""}</span></div>`).join("");
+  const snaps = (d.snapshots || []).map((sn, i) => `
+    <div class="astep"><span class="adot" style="background:var(--axis)">${i + 1}</span>
+      <span><b>第 ${(sn.attempt ?? 0) + 1} 轮${sn.next && sn.next.length ? ` · 下一节点 ${esc(sn.next.join(","))}` : " · 终态"}</b>
+      ${sn.rejected_by ? `<span class="sub" style="display:block;margin:0">拦截：${esc(sn.rejected_by)} ${esc(sn.error || "")}</span>` : ""}</span></div>`).join("");
+  aModal("判定链路复放", `trace ${tid}`, `
+    <p style="font-size:13px"><b>${esc(d.question)}</b></p>
+    <p class="sub">${esc(fmtAsOf(d.ts))} · ${d.kind === "sql" ? "直查" : d.kind === "resume" ? "续跑" : "提问"} · org ${esc(d.org_id)}${d.thread_id && d.thread_id !== d.trace_id ? ` · 关联线程 ${esc(d.thread_id)}` : ``}
+      · ${d.attempts} 轮 · ¥${d.cost_cny ?? 0} · ${d.tok_in ?? 0}+${d.tok_out ?? 0} tok</p>
+    <h3 style="margin:10px 0 2px">步骤链</h3>${steps || `<p class="sub">该记录没有步骤明细</p>`}
+    ${snaps ? `<h3 style="margin:14px 0 2px">检查点快照（${d.snapshots.length}）</h3>${snaps}` : ""}
+    ${d.sql_final ? `<h3 style="margin:14px 0 6px">最终 SQL（实际执行的就是这条）
+        <span class="badge good">护栏通过 · 只读执行</span></h3>
+      <pre>${esc(d.sql_final)}</pre>` : ""}
+    ${d.sql_raw && d.sql_raw !== d.sql_final ? `<details><summary class="sub" style="cursor:pointer">模型原始 SQL（改写前）</summary>
+      <pre>${esc(d.sql_raw)}</pre></details>` : ""}
+    <p class="sub" style="margin-top:10px">结果行与注入提示词不在本接口返回范围（字段白名单，设计说明 §4.2）。</p>`);
+}
+
+function openCost() {
+  const s = AUD.stats; if (!s) return;
+  const days = s.daily.slice(-14);
+  const max = Math.max(...days.map(d => d.cost_cny), 0.000001);
+  const bars = days.map(d =>
+    `<i style="height:${Math.max(3, Math.round(d.cost_cny / max * 100))}%"
+        title="${esc(d.date)} · ¥${d.cost_cny} · ${d.calls} 次"></i>`).join("");
+  const modelRows = Object.entries(s.by_model || {}).map(([k, v]) =>
+    `<tr><td class="mono">${esc(k)}</td><td class="num">${v.calls}</td><td class="num">¥${v.cost_cny}</td></tr>`).join("")
+    || `<tr><td colspan="3" class="sub">窗口内没有经模型的调用</td></tr>`;
+  const kindRows = Object.entries(s.by_kind).map(([k, v]) =>
+    `<tr><td>${k === "sql" ? "直查 SQL" : "提问"}</td><td class="num">${v}</td></tr>`).join("");
+  const ruleRows = Object.entries(s.by_rule).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td class="num">${v}</td></tr>`).join("")
+    || `<tr><td colspan="2" class="sub">窗口内没有拦截记录</td></tr>`;
+  aModal("成本与调用分布", `近 ${s.days} 天 · 本地审计聚合`, `
+    <p style="font-size:13px"><b>¥${s.cost_cny}</b> · ${s.calls} 次调用 · ${(s.tok_in + s.tok_out).toLocaleString()} tok</p>
+    <div class="abars">${bars}</div>
+    <div class="abarlbl"><span>${esc(days[0]?.date || "")}</span><span>按日成本 · 悬停看明细</span><span>${esc(days[days.length - 1]?.date || "")}</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px">
+      <div><h3>按模型</h3><table><thead><tr><th>模型</th><th class="num">次数</th><th class="num">成本</th></tr></thead><tbody>${modelRows}</tbody></table></div>
+      <div><h3>按类型</h3><table><thead><tr><th>类型</th><th class="num">次数</th></tr></thead><tbody>${kindRows}</tbody></table></div>
+      <div><h3>按拦截规则</h3><table><thead><tr><th>规则</th><th class="num">次数</th></tr></thead><tbody>${ruleRows}</tbody></table></div>
+    </div>`);
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+.app-shell { display: grid; grid-template-columns: 224px minmax(0, 1fr); grid-template-rows: 64px calc(100vh - 64px); height: 100vh; }
+.topbar { grid-column: 1 / -1; display: grid; grid-template-columns: 224px 1fr auto; align-items: center; border-bottom: 1px solid var(--line); background: rgba(239,237,230,.92); backdrop-filter: blur(18px); z-index: 20; }
+.brand { height: 100%; display: flex; align-items: center; gap: 10px; padding: 0 18px; }
+.topbar > .brand { border-right: 1px solid var(--line); }
+.brand-mark { position: relative; width: 29px; height: 29px; flex: none; border-radius: 8px 8px 8px 2px; background: var(--dark); }
+.brand-mark::before, .brand-mark::after { content: ""; position: absolute; left: 7px; right: 7px; height: 3px; border-radius: 3px; background: var(--green-2); }
+.brand-mark::before { top: 8px; box-shadow: 0 6px 0 rgba(255,255,255,.85); }
+.brand-mark::after { top: 20px; right: 14px; }
+/* 中文主名 8 个字，16px 宋体会顶到品牌栏右边界（224px 减去图标与内边距只剩约 155px），
+   收到 15px 并禁止折行。副标题用拉丁字母是有意的：等宽字体对中文不生效，
+   7px 中文还会糊成一团 —— 那条小字的字距排布只有拉丁字母撑得住。 */
+.brand strong { display: block; font-family: var(--serif); font-size: 15px; letter-spacing: .02em; white-space: nowrap; }
+.brand small { display: block; margin-top: 2px; color: var(--muted); font: 8px var(--mono); letter-spacing: .28em; }
+.workspace-context { display: flex; align-items: center; gap: 8px; padding-left: 20px; }
+.workspace-context > span { color: var(--muted); font-size: 9px; }
+.context-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.48); font-size: 9px; font-weight: 650; }
+.top-actions { display: flex; align-items: center; gap: 10px; padding-right: 16px; }
+.secure-label { display: flex; align-items: center; gap: 5px; color: var(--green); font: 7px var(--mono); }
+.user-menu { display: flex; align-items: center; gap: 8px; padding: 4px 7px 4px 4px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.48); }
+.avatar { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 50%; color: white; background: var(--dark); font-family: var(--serif); font-size: 11px; }
+.user-copy { text-align: left; }
+.user-copy strong { display: block; font-size: 8px; }
+.user-copy small { display: block; color: var(--muted); font-size: 7px; }
+.sidebar { padding: 15px 12px; border-right: 1px solid var(--line); background: rgba(228,225,215,.48); overflow-y: auto; }
+.quick-new { width: 100%; display: flex; justify-content: space-between; padding: 11px 12px; border: 0; border-radius: 7px; color: white; background: var(--dark); font-size: 10px; font-weight: 700; box-shadow: 0 7px 18px rgba(16,35,26,.15); }
+.nav-label { margin: 20px 9px 7px; color: var(--muted); font: 700 7px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+.nav-item { position: relative; width: 100%; display: flex; align-items: center; gap: 9px; padding: 8px 9px; border: 0; border-radius: 7px; background: transparent; text-align: left; }
+.nav-item:hover, .nav-item.active { background: rgba(255,255,255,.63); }
+.nav-item.active::before { content: ""; position: absolute; left: 0; width: 3px; height: 19px; border-radius: 3px; background: var(--green); }
+.nav-icon { width: 25px; height: 25px; display: grid; place-items: center; flex: none; border: 1px solid var(--line); border-radius: 5px; color: var(--green); background: rgba(255,255,255,.5); font: 700 7px var(--mono); }
+.nav-copy { flex: 1; }
+.nav-copy strong { display: block; font-size: 9px; }
+.nav-copy small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
+.nav-badge { padding: 2px 4px; border-radius: 99px; color: var(--green); background: var(--green-wash); font: 6px var(--mono); }
+.phase-card { margin-top: 20px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: rgba(250,249,245,.68); }
+.phase-card > span { color: var(--muted); font: 7px var(--mono); }
+.phase-card strong { display: block; margin-top: 4px; font-size: 9px; }
+.phase-card p { margin: 7px 0 0; color: var(--muted); font-size: 7px; line-height: 1.5; }
+.progress { height: 4px; margin-top: 9px; border-radius: 4px; background: #d8d5cc; overflow: hidden; }
+.progress i { display: block; width: 35%; height: 100%; background: var(--green-2); }
+.main-content { min-width: 0; overflow-y: auto; }
+.page { width: 100%; max-width: 1420px; margin: 0 auto; padding: 24px 28px 48px; animation: pageIn .25s ease both; }
+.query-page { height: 100%; display: flex; flex-direction: column; padding-bottom: 16px; overflow: hidden; }
+@keyframes pageIn { from { opacity: 0; transform: translateY(4px); } }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+.page-head h1 { margin: 0; font-size: 25px; }
+.page-head p { margin: 5px 0 0; color: var(--muted); font-size: 9px; }
+.login-screen { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; background: var(--bg); }
+.login-layout { width: min(880px, calc(100vw - 40px)); display: grid; grid-template-columns: 1.1fr .9fr; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: 0 28px 80px rgba(16,35,26,.16); overflow: hidden; }
+.login-story { min-height: 470px; padding: 48px; color: white; background: radial-gradient(circle at 0 0, rgba(44,179,110,.26), transparent 35%), var(--dark); }
+.login-story .brand { height: auto; padding: 0; }
+.login-story .brand-mark { background: white; }
+.login-story h1 { margin: 70px 0 18px; font-size: 40px; line-height: 1.18; }
+.login-story > p { max-width: 46ch; color: #b8c7be; font-size: 11px; line-height: 1.75; }
+.login-story > div:last-child { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 30px; }
+.login-story > div:last-child span { padding: 6px 8px; border: 1px solid rgba(255,255,255,.15); border-radius: 99px; font-size: 7px; }
+.login-form { display: flex; flex-direction: column; justify-content: center; padding: 44px; }
+.login-form h2 { margin: 4px 0 8px; font-size: 23px; }
+.login-form > p { margin: 0 0 22px; color: var(--muted); font-size: 9px; line-height: 1.6; }
+.login-form > button { margin-top: 8px; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: white; font-size: 9px; }
+.login-form .sso-button { border-color: var(--green); color: white; background: var(--green); font-weight: 700; }
+.login-divider { margin: 17px 0 3px; color: var(--muted); text-align: center; font-size: 7px; }
+.login-form > small { margin-top: 18px; color: var(--muted); font-size: 7px; line-height: 1.6; }
+
+/* ---------- 换壳期：真实性声明与禁用态 ---------- */
+
+/* 页面顶部的样例数据声明。做成整条横幅而不是角标 ——
+   截图会被拿去汇报，标记必须跟着页面主体一起进画面。 */
+.mock-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 28px 0;
+  padding: 10px 13px;
+  border: 1px solid #d9b48c;
+  border-left: 3px solid var(--amber);
+  border-radius: 8px;
+  background: var(--amber-wash);
+}
+.mock-tag {
+  flex: none;
+  padding: 3px 7px;
+  border-radius: 5px;
+  color: white;
+  background: var(--amber);
+  font: 7px var(--mono);
+  font-weight: 700;
+  letter-spacing: .1em;
+}
+.mock-copy { flex: 1; min-width: 0; }
+.mock-copy strong { display: block; font-size: 9px; color: #6f3f10; }
+.mock-copy small { display: block; margin-top: 3px; color: #7d5227; font-size: 7.5px; line-height: 1.6; }
+.mock-side { flex: none; display: flex; align-items: center; gap: 10px; }
+.mock-phase { color: #6f3f10; font: 7px var(--mono); font-weight: 700; letter-spacing: .08em; }
+.mock-link { color: var(--green); font-size: 7.5px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.mock-link:hover { text-decoration: underline; }
+
+/* 顶栏：配置文件与异常态 */
+.config-chip { color: var(--muted); font-family: var(--mono); font-size: 7px; font-weight: 600; }
+.danger-chip { border-color: #d4aaa3; color: var(--red); background: var(--red-wash); }
+
+/* 入口页：禁用态必须看得出是禁用，并说清归哪个阶段 */
+.login-form > button:disabled {
+  position: relative;
+  color: var(--muted);
+  background: var(--paper-2);
+  border-color: var(--line);
+  cursor: not-allowed;
+}
+.login-form > button:disabled em {
+  position: absolute;
+  top: 50%;
+  right: 11px;
+  transform: translateY(-50%);
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--line);
+  color: var(--ink-2);
+  font: 6px var(--mono);
+  font-weight: 700;
+  font-style: normal;
+  letter-spacing: .08em;
+}
+.login-form .sso-button:disabled { color: var(--muted); background: var(--paper-2); }
+.login-form .enter-button { border-color: var(--green); color: white; background: var(--green); font-weight: 700; }
+.login-form > small a { display: block; margin-top: 8px; color: var(--green); font-weight: 700; text-decoration: none; }

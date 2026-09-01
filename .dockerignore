@@ -1,0 +1,12 @@
+# 构建上下文瘦身。镜像只需要 askdb/（含已构建的 web/）、config/、data/、evals/results。
+# 前端工程本身不进镜像：产物由 npm run build 写进 askdb/web/ 并随代码提交。
+frontend/node_modules
+frontend/dist
+frontend/.vite
+.venv
+.git
+.chroma
+.pytest_cache
+**/__pycache__
+var
+.coverage

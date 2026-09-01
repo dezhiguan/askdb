@@ -1,0 +1,69 @@
+@media (max-width: 1080px) {
+  html, body, #root { min-width: 0; }
+  .app-shell { grid-template-columns: 76px minmax(0,1fr); }
+  .topbar { grid-template-columns: 76px minmax(0,1fr) auto; }
+  .topbar > .brand { justify-content: center; padding: 0; }
+  .topbar > .brand > div:last-child, .nav-label, .nav-copy, .nav-badge, .phase-card { display: none; }
+  .sidebar { padding-inline: 8px; }
+  .nav-item { justify-content: center; padding: 7px; }
+  .quick-new { justify-content: center; }
+  .quick-new span:first-child { display: none; }
+  .workspace-grid { grid-template-columns: minmax(0,1fr); overflow-y: auto; }
+  .query-page { overflow-y: auto; }
+  .query-stage { min-height: 650px; }
+  .trust-sidebar { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); overflow: visible; }
+  .audit-link { grid-column: 1 / -1; }
+  .roadmap { grid-template-columns: repeat(2,1fr); }
+}
+
+@media (max-width: 720px) {
+  html, body, #root { height: auto; min-height: 100%; overflow: visible; }
+  .app-shell { display: block; height: auto; min-height: 100vh; padding-top: 104px; }
+  .topbar { position: fixed; inset: 0 0 auto; z-index: 40; height: 56px; display: flex; justify-content: space-between; }
+  .topbar > .brand { width: 56px; border-right: 0; }
+  .workspace-context { flex: 1; min-width: 0; padding-left: 3px; }
+  .workspace-context > span, .hide-mobile, .secure-label, .user-copy, .user-menu > span:last-child { display: none; }
+  .top-actions { padding-right: 8px; }
+  .user-menu { padding: 2px; border: 0; background: transparent; }
+  .sidebar { position: fixed; z-index: 39; top: 56px; left: 0; right: 0; height: 48px; display: flex; gap: 4px; padding: 4px 8px; border-right: 0; border-bottom: 1px solid var(--line); background: rgba(228,225,215,.96); overflow-x: auto; overflow-y: hidden; }
+  .nav-group { display: contents; }
+  .quick-new, .nav-item { width: 38px; min-width: 38px; height: 38px; margin: 0; padding: 4px; }
+  .nav-icon { width: 28px; height: 28px; }
+  .main-content { overflow: visible; }
+  .page, .query-page { height: auto; min-height: calc(100vh - 104px); padding: 16px 12px 32px; overflow: visible; }
+  .page-head { align-items: flex-start; }
+  .page-head h1 { font-size: 21px; }
+  .workspace-grid, .policy-layout, .glossary-layout, .trace-layout, .observe-grid, .stats, .source-grid, .connector-grid, .tool-grid, .roadmap { grid-template-columns: minmax(0,1fr) !important; }
+  .workspace-grid { overflow: visible; }
+  .query-stage { min-height: 640px; }
+  .stage-head { align-items: stretch; flex-direction: column; }
+  .source-selector, .source-menu { width: 100%; min-width: 0; }
+  .mode-tabs { align-self: flex-start; }
+  .welcome { padding-inline: 20px; }
+  .suggestions { grid-template-columns: 1fr; }
+  .trust-sidebar { grid-template-columns: 1fr; }
+  .evidence-strip { grid-template-columns: repeat(2,1fr); }
+  .result-tabs { overflow-x: auto; }
+  .answer-card { grid-template-columns: 1fr; }
+  .answer-actions { grid-row: 3; }
+  .checkpoint-console { grid-template-columns: 1fr; }
+  .checkpoint-console > aside { border-right: 0; border-bottom: 1px solid var(--line); }
+  .checkpoint-facts { grid-template-columns: 1fr; }
+  .checkpoint-flow { overflow-x: auto; }
+  table { min-width: 620px; }
+  .stats { grid-template-columns: repeat(2,1fr) !important; }
+  .mini-metrics, .permission-grid { grid-template-columns: repeat(2,1fr); }
+  .topology { align-items: stretch; flex-direction: column; }
+  .topology > div { width: 100%; }
+  .topology > span { width: 1px; height: 24px; margin: 0 auto; }
+  .audit-filters { flex-wrap: wrap; }
+  .audit-filters input { min-width: 100%; }
+  .clarify-options { flex-direction: column; }
+  .clarify-progress { overflow-x: auto; }
+  .clarify-progress span { min-width: 90px; }
+  .form-grid { grid-template-columns: 1fr; }
+  .login-layout { grid-template-columns: 1fr; }
+  .login-story { display: none; }
+  .login-form { padding: 30px 22px; }
+  .audit-drawer { width: min(430px,100vw); }
+}
