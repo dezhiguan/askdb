@@ -24,9 +24,6 @@
 .trace-list code { color: var(--green); }
 .trace-list .audit-empty { padding: 14px 8px; }
 
-/* 链路条：被拦截的那一段要看得出来，否则整条链看着像跑完了 */
-.trace-flow > span.bad { border-color: #d4aaa3; background: var(--red-wash); }
-.trace-flow > span.bad small { color: var(--red); }
 
 /* Span 类型标。颜色按节点性质分档，与原型的 span-type 一致 */
 .span-type { display: inline-flex; padding: 2px 4px; border-radius: 3px; font: 6px var(--mono); font-weight: 700; }
@@ -36,11 +33,103 @@
 .span-type.db { color: var(--ink-2); background: var(--paper-2); }
 .span-type.sys { color: var(--muted); background: var(--paper-2); }
 
-.trace-detail .trace-title { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-.trace-detail .trace-facts { grid-template-columns: repeat(4, 1fr); }
-.trace-detail .table-scroll { margin-top: 12px; }
 
 /* 禁用态的顶部动作：说清为什么不可用，而不是让按钮看着能点 */
 .page-head button:disabled { color: var(--muted); background: var(--paper-2); cursor: not-allowed; }
 .page-head a.primary { display: inline-block; text-decoration: none; }
 
+
+/* ---------- 详情区：结构对齐原型 ----------
+ *
+ * 原型里这块是四段：标题 / 事实网格 / 链路条 / Span 表，每段自带内边距与分隔线，
+ * 容器本身不留 padding。前两段只用审计流水里的字段，**不依赖回放接口** ——
+ * 连真实数据源的实例默认关闭回放，那才是常态，右半屏不能因此空成一片。
+ */
+.trace-detail { padding: 0; overflow: hidden; }
+
+.trace-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px;
+  border-bottom: 1px solid var(--line);
+}
+.trace-detail-head h3 { margin: 0; font-family: var(--serif); font-size: 14px; }
+.trace-detail-head p { margin: 4px 0 0; color: var(--muted); font: 7px var(--mono); word-break: break-all; }
+
+/* 5 列联排，靠 1px 间隙露出底色当分隔线 —— 与 mini-metrics 那套独立圆角块不同，
+   这里是紧凑的事实清单，原型如此 */
+.trace-detail .trace-facts {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 1px;
+  margin: 0;
+  border: 0;
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.trace-fact { padding: 9px; background: var(--paper); }
+.trace-fact span { display: block; color: var(--muted); font-size: 6px; }
+.trace-fact strong {
+  display: block;
+  margin-top: 3px;
+  font: 7px var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 链路条自带底色带，把它和上下两段分开 */
+.trace-detail .trace-flow {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 14px 13px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: #eeece5;
+  overflow-x: auto;
+}
+.trace-node {
+  min-width: 74px;
+  flex: 1;
+  padding: 9px 5px;
+  border: 1px solid #b9cfc0;
+  border-radius: 6px;
+  background: var(--green-wash);
+  text-align: center;
+}
+.trace-node.model { border-color: #b8cad8; background: var(--blue-wash); }
+.trace-node.tool { border-color: #d7b995; background: var(--amber-wash); }
+/* 被拦截的那一段必须看得出来，否则整条链看着像跑完了 */
+.trace-node.bad { border-color: #d4aaa3; background: var(--red-wash); }
+.trace-node.bad small { color: var(--red); }
+.trace-node strong { display: block; font-size: 7px; }
+.trace-node small { display: block; margin-top: 3px; color: var(--muted); font: 6px var(--mono); }
+/* 选择器要压过 components.css 的 `.trace-flow i { position: absolute }` ——
+   那条是给查询工作台的迷你链路条写的，套到这里箭头会绝对定位错位。
+   同样是 (0,1,1)，靠后置生效不可靠，直接抬到 (0,2,1)。 */
+.trace-detail .trace-flow i.trace-arrow {
+  position: static;
+  width: 17px;
+  flex: none;
+  right: auto;
+  top: auto;
+  color: #8e9992;
+  text-align: center;
+  font: 9px var(--mono);
+  font-style: normal;
+}
+
+.span-table { padding: 0 13px 13px; }
+.span-table-title { display: flex; align-items: baseline; justify-content: space-between; padding: 11px 0 8px; }
+.span-table-title strong { font-size: 8px; }
+.span-table-title span { color: var(--muted); font: 6px var(--mono); }
+
+/* 降级说明只占链路条与 Span 表那两段的位置，标题与事实网格照常显示 */
+.trace-degraded { padding: 16px 13px 20px; }
+.trace-degraded strong { display: block; font-size: 9px; }
+.trace-degraded p { margin: 6px 0 0; color: var(--muted); font-size: 7.5px; line-height: 1.75; }
+.trace-degraded .drawer-code { margin-top: 10px; }
+.trace-empty { padding: 20px 13px; color: var(--muted); font-size: 8px; }
