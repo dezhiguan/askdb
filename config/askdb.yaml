@@ -100,3 +100,28 @@ metrics_file: ./config/metrics.yaml
 # 本机开发实例开启；任何对外可达的实例必须显式关闭（见 config/public.yaml）。
 datasources:
   allow_runtime_add: true
+
+# ---------------------------------------------------------------------------
+# 身份与权限（可选）
+#
+# 只存"谁属于哪个角色"。认证不在这里 —— 谁是谁交给 auth-gateway，
+# 它已经有 JWKS、OAuth token-exchange、应用级 membership 那一整套。
+#
+# 不配 dsn 或 enabled=false 时功能整体关闭，接口返回 404。
+# **对外开放实例必须保持关闭**：askdb 尚未接入登录，写接口没有请求方身份
+# 可依据，只能靠部署方持有的 ASKDB_ADMIN_TOKEN 兜底。
+#
+# 这里指向的是 askdb 自己的元数据库，与 datasource 是两个库：
+# datasource 是只读的业务数据源，绝不能往里写。
+# ---------------------------------------------------------------------------
+identity:
+  # 打开开关即可；连接串走环境变量 ASKDB_IDENTITY_DSN，不写在仓库里 ——
+  # 这里写死某台机器的库名和账号，别人克隆下来只会看到 503。
+  #
+  #   createdb askdb_identity
+  #   echo 'ASKDB_IDENTITY_DSN=host=127.0.0.1 port=5432 dbname=askdb_identity user=你的用户名' >> .env
+  #
+  # 没有这个环境变量时功能自动关闭（enabled 为真也一样），页面显示「未启用」，
+  # 不会报错 —— 身份不是跑通 askdb 的必要条件。
+  enabled: true
+  password_env: ASKDB_IDENTITY_PG_PASSWORD

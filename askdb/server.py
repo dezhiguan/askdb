@@ -12,11 +12,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import guard
+from . import identity as _identity
 from . import sources as _sources
 from .config import Config, load
 from .executor import DataSourceError, Executor
@@ -173,6 +174,13 @@ def _dsn_label(dsn: str, upstream: str = "") -> str:
     if upstream:
         return f"{db} @ {upstream}（经隧道 {local}）"
     return f"{db} @ {local}"
+
+
+class AddMemberRequest(BaseModel):
+    role_code: str = Field(min_length=1, max_length=32)
+    username: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(default="", max_length=64)
+    note: str = Field(default="", max_length=200)
 
 
 class AskRequest(BaseModel):
@@ -704,6 +712,83 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 snapshots = []
         out["snapshots"] = snapshots
         return JSONResponse(out)
+
+    # ---------- 身份与权限 ----------
+    #
+    # 认证不在这里：谁是谁交给 auth-gateway（它已有 JWKS、token-exchange、
+    # 应用级 membership）。本组接口只管"谁属于哪个角色"这一件事。
+    #
+    # 登录尚未接入，写接口因此**没有任何请求方身份可依据**。在那之前用一把
+    # 部署方持有的管理员令牌兜底，并且 fail-closed：没配 ASKDB_ADMIN_TOKEN
+    # 就整体拒绝写入。缺了这道闸，任何能访问页面的人都能给自己加角色。
+    def _require_admin(token: str | None) -> None:
+        import secrets
+
+        expected = os.environ.get("ASKDB_ADMIN_TOKEN", "")
+        if not expected:
+            raise HTTPException(
+                status_code=403,
+                detail="未配置 ASKDB_ADMIN_TOKEN，角色写入整体关闭。"
+                       "这是有意的默认值：登录未接入前，写接口没有请求方身份可依据。",
+            )
+        if not secrets.compare_digest(token or "", expected):
+            raise HTTPException(status_code=401, detail="管理员令牌不正确")
+
+    def _require_identity() -> None:
+        if not _identity.enabled(cfg):
+            raise HTTPException(
+                status_code=404,
+                detail="本实例未启用身份与权限（未配置 identity.dsn）。",
+            )
+
+    @app.get("/api/identity/roles")
+    def identity_roles() -> dict[str, Any]:
+        """角色清单。**未启用时也返回 200** —— 角色定义写在源码里，不是秘密，
+        而前端需要据此渲染「未启用」而不是「接口坏了」。"""
+        try:
+            roles = _identity.roles_with_counts(cfg)
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"身份库不可用：{e}") from e
+        return {
+            "enabled": _identity.enabled(cfg),
+            "writable": bool(os.environ.get("ASKDB_ADMIN_TOKEN")),
+            "roles": roles,
+        }
+
+    @app.get("/api/identity/members")
+    def identity_members(role: str = "") -> dict[str, Any]:
+        _require_identity()
+        try:
+            return {"items": _identity.list_members(cfg, role.strip())}
+        except Exception as e:
+            raise HTTPException(status_code=503, detail=f"身份库不可用：{e}") from e
+
+    @app.post("/api/identity/members")
+    def identity_add_member(
+        req: AddMemberRequest,
+        x_askdb_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _require_identity()
+        _require_admin(x_askdb_admin_token)
+        try:
+            return _identity.add_member(
+                cfg, role_code=req.role_code, username=req.username,
+                display_name=req.display_name, note=req.note, created_by="admin-token")
+        except _identity.IdentityError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except _identity.IdentityDisabled as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+
+    @app.delete("/api/identity/members/{member_id}")
+    def identity_remove_member(
+        member_id: int,
+        x_askdb_admin_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        _require_identity()
+        _require_admin(x_askdb_admin_token)
+        if not _identity.remove_member(cfg, member_id):
+            raise HTTPException(status_code=404, detail="成员不存在")
+        return {"ok": True}
 
     @app.post("/api/resume")
     def resume_task(req: ResumeRequest) -> JSONResponse:

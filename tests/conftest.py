@@ -53,6 +53,10 @@ def cfg(sample_db: Path, tmp_path: Path):
     c.raw["datasource"]["path"] = str(sample_db)
     c.raw["observability"]["audit_log"] = str(tmp_path / "audit.jsonl")
     c.raw["observability"]["checkpoint_db"] = str(tmp_path / "checkpoints.sqlite")
+    # 身份库是外部 PostgreSQL，和审计日志同属「跨用例累积的外部状态」，
+    # 而且它在开发配置里是打开的 —— 不摘掉，跑一次测试就会往开发库里写角色成员。
+    # 需要验证身份功能的用例自行打开（见 tests/test_identity.py）。
+    c.raw.pop("identity", None)
     return c
 
 

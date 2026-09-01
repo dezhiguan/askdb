@@ -1,0 +1,50 @@
+/* 身份与权限页。
+ *
+ * 单独成文件，与 traces.css 同理：pages.css 末尾是多条分支的公共追加点，
+ * 按页拆开就不会互相冲突。
+ */
+
+.permission-detail { padding: 14px; }
+.permission-detail h2 { margin: 4px 0 5px; font-family: var(--serif); font-size: 15px; }
+.permission-detail > p { color: var(--ink-2); font-size: 8px; line-height: 1.7; }
+
+.member-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 18px 0 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-family: var(--serif);
+  font-size: 12px;
+}
+
+/* 写入相关的说明常常是「为什么不能写」，比表单本身更需要被读到 */
+.form-note {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper-2);
+  color: var(--ink-2);
+  font-size: 7.5px;
+  line-height: 1.7;
+}
+
+.member-form { margin-top: 12px; }
+.member-form .form-note { margin: 0 0 8px; }
+.form-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.form-row input {
+  flex: 1;
+  min-width: 120px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  font-size: 8px;
+}
+.form-row input:focus { outline: 0; border-color: var(--green); }
+.form-row button { flex: none; }
+.form-row button:disabled { opacity: .5; cursor: not-allowed; }
+
+.role-list .audit-empty { padding: 14px 12px; }
