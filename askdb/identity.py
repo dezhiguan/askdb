@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import os
+import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
@@ -65,6 +66,95 @@ ROLES: tuple[Role, ...] = (
 )
 
 ROLE_BY_CODE = {r.code: r for r in ROLES}
+
+#: 匿名调用的角色码。它是一个**普通角色**，不是绕过分支 ——
+#: 授权代码里因此不存在"没有身份"这种第三态，少一整类判空错误。
+ANONYMOUS = "ANONYMOUS"
+
+
+@dataclass(frozen=True)
+class Policy:
+    """一个角色能看到什么。
+
+    只有两个维度，都是**收窄**语义：
+      · tables   —— 可见表。None 表示不额外收窄（用实例白名单）
+      · max_rows —— 返回行上限。None 表示不额外收窄（用实例配置）
+
+    刻意不做"允许列表"之外的能力位。权限模型每多一个维度，就多一处
+    "这条规则到底拦不拦得住"的争论；这两个维度直接落在既有的 R-03 与 R-13 上，
+    不需要新造任何判定。
+    """
+    tables: frozenset[str] | None = None
+    max_rows: int | None = None
+
+
+#: 内置默认。配置可以在此基础上**继续收窄**，不能放宽。
+#:
+#: 除系统角色外一律不额外收窄 —— 默认行为与没有角色时完全一致，
+#: 接入角色不会悄悄改变任何现有实例的可查范围。要收窄是部署方的显式决定。
+DEFAULT_POLICIES: dict[str, Policy] = {
+    # 职责分离在这里落到实处：管人的角色拿不到任何数据。
+    # 这不是配置项，是内置默认 —— 忘了配也不会漏。
+    "SYS_ADMIN": Policy(tables=frozenset(), max_rows=0),
+}
+
+
+def for_role(cfg: Config, role_code: str) -> Config:
+    """取某个角色眼里的配置。调用方只需要这一个入口。"""
+    return narrow(cfg, policy_for(cfg, role_code), role_code)
+
+
+def policy_for(cfg: Config, role_code: str) -> Policy:
+    """取角色的生效策略：内置默认与配置取**交集**。
+
+    两边都能收窄，谁也不能放宽 —— 配置写错了最多让人少看见几张表，
+    不会让人多看见。
+    """
+    base = DEFAULT_POLICIES.get(role_code, Policy())
+    spec = (cfg.raw.get("role_policies") or {}).get(role_code)
+    if not spec:
+        return base
+
+    tables = base.tables
+    if spec.get("tables") is not None:
+        want = frozenset(str(t).lower() for t in spec["tables"])
+        tables = want if tables is None else (tables & want)
+
+    max_rows = base.max_rows
+    if spec.get("max_rows") is not None:
+        cap = int(spec["max_rows"])
+        max_rows = cap if max_rows is None else min(max_rows, cap)
+
+    return Policy(tables=tables, max_rows=max_rows)
+
+
+def narrow(cfg: Config, policy: Policy, role_code: str = ANONYMOUS) -> Config:
+    """按策略收窄一份配置，供本次调用使用。
+
+    这是整个角色机制的全部实现 —— **护栏一行没改**。
+    guard / executor / schema_rag 全都从 cfg.tables 与 cfg.max_rows 取值，
+    所以喂给它们一份收窄的配置，R-03（表白名单）、R-13（行上限）自动按角色生效，
+    连 Schema 召回都只会看到该角色可见的表，模型压根不知道别的表存在。
+
+    在护栏内部按角色分支是另一条路，但那会让每条规则都多一个"当前是谁"的
+    入参，每加一个角色都要重读一遍全部规则 —— 收窄配置只有一处要读对。
+    """
+    tables = cfg.tables
+    if policy.tables is not None:
+        # 交集：角色给的表若不在实例白名单里，一律无效。
+        # 这条保证角色永远不可能成为提权路径。
+        tables = {n: t for n, t in cfg.tables.items() if n in policy.tables}
+
+    raw = cfg.raw
+    if policy.max_rows is not None and policy.max_rows < cfg.max_rows:
+        raw = {**cfg.raw, "guard": {**cfg.raw["guard"], "max_rows": policy.max_rows}}
+
+    # 口径引用的表若已不可见，一并摘掉 —— 留着只会让模型照口径写出
+    # 引用不可见表的 SQL，然后被 R-03 拦下，报错指向一个用户无法理解的地方
+    metrics = [m for m in cfg.metrics if all(t in tables for t in m.scope)]
+
+    return dataclasses.replace(cfg, tables=tables, raw=raw, metrics=metrics, role=role_code)
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS askdb_role_members (

@@ -642,6 +642,9 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         "thread_id": result.thread_id,
         "model": cfg.llm.get("model"),
         "org_id": result.org_id, "question": result.question,
+        # 结果出自谁的可见范围 —— 少了它，同一个问题在不同角色下拿到不同行数，
+        # 事后无从解释
+        "role": cfg.role or "ANONYMOUS",
         "tables_hit": result.tables_hit, "metrics_hit": result.metrics_hit,
         "sql_raw": result.sql_raw, "sql_final": result.sql_final,
         "rules_fired": result.rules_fired, "rejected_by": result.rejected_by,

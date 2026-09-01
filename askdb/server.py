@@ -806,9 +806,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             return not_found
         return JSONResponse(r.to_dict())
 
+    def _caller_role() -> str:
+        """本次调用的角色。
+
+        登录尚未接入，因此恒为匿名。**留这个函数而不是到处写 ANONYMOUS**：
+        接入会话后只改这一处，两条查询链路自动跟着变，不会漏掉其中一条 ——
+        漏掉的那条就是一条无声的提权路径。
+        """
+        return _identity.ANONYMOUS
+
     @app.post("/api/ask")
     def ask(req: AskRequest) -> JSONResponse:
-        r = run_ask(req.question.strip(), cfg, org_id=req.org_id)
+        # 按角色收窄后再进链路。护栏、执行器、Schema 召回全部从配置取值，
+        # 所以收窄一次即全链路生效 —— 模型连不可见的表都召回不到。
+        scoped = _identity.for_role(cfg, _caller_role())
+        r = run_ask(req.question.strip(), scoped, org_id=req.org_id)
         return JSONResponse(r.to_dict())
 
     @app.post("/api/sql")
@@ -823,7 +835,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         from .trace import now_iso, write_audit
 
-        org = cfg.default_org if req.org_id is None else req.org_id
+        # 直查同样按角色收窄：它绕过模型，但**不绕过权限**
+        scoped = _identity.for_role(cfg, _caller_role())
+        org = scoped.default_org if req.org_id is None else req.org_id
         trace_id = _uuid.uuid4().hex[:12]
         t0 = time.perf_counter()
         steps: list[dict[str, Any]] = []
@@ -831,10 +845,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         def _audit(*, rejected_by: str | None, sql_final: str = "",
                    rules_fired: list[str] | None = None,
                    explain_rows: int | None = None, rows_returned: int = 0) -> None:
-            write_audit(cfg.audit_log, {
+            write_audit(scoped.audit_log, {
                 "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
                 "model": None,
-                "org_id": org, "question": "（直查模式）",
+                "org_id": org, "role": scoped.role, "question": "（直查模式）",
                 "tables_hit": [], "metrics_hit": [],
                 "sql_raw": req.sql, "sql_final": sql_final,
                 "rules_fired": rules_fired or [], "rejected_by": rejected_by,
@@ -845,7 +859,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,
             })
 
-        g = guard.check(req.sql, cfg, org_id=org, dialect=cfg.dialect)
+        g = guard.check(req.sql, scoped, org_id=org, dialect=scoped.dialect)
         if not g.ok:
             steps.append({"step": "guard", "ms": 0, "status": "blocked",
                           "note": f"{g.rejected_by} {g.reason}"})
@@ -859,7 +873,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         steps.append({"step": "guard", "ms": 0, "status": "ok",
                       "note": "；".join(g.rewrites) or "无需改写"})
 
-        with Executor(cfg) as ex:
+        with Executor(scoped) as ex:
             ep = ex.explain(g.sql)
             if not ep.ok:
                 steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
