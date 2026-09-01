@@ -134,8 +134,14 @@ observability:
 tables_file: ./config/tables.yaml
 metrics_file: ./config/metrics.yaml
 
-# 对外开放实例：**必须关闭**。
-# 开着等于给出一个无鉴权的出站建连入口 —— 任何人都能让部署方的服务器
-# 去连任意 host:port，并从连接报错的差异里推断内网哪些端口开着。
+# 2026-09-01 按 @guandezhi 决定放开。
+#
+# 保留原来的风险陈述，不是唱反调，是让后来改这行的人知道自己在改什么：
+# 本实例无账号体系，开着这颗开关，**任何能打开页面的人**都能让部署方的
+# 服务器向任意 host:port 发起连接，并从连接报错的差异里推断内网哪些端口开着。
+#
+# 放开后只剩两道约束，改动它们等于把最后的边界也一并去掉：
+#   1. 出站建连限流 10 次 / 分钟（server._SOURCE_RL）
+#   2. 未配 ASKDB_SECRET_KEY 时不接受明文口令，只能填环境变量名（sources.py）
 datasources:
-  allow_runtime_add: false
+  allow_runtime_add: true
