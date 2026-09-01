@@ -27,6 +27,17 @@ data/audit*.jsonl
 data/checkpoints*.sqlite
 data/checkpoints*.sqlite-shm
 data/checkpoints*.sqlite-wal
+data/audit-quota.json
+# 同一批产物在 var/ 下也有一份，而且**那才是线上真正在写的位置** ——
+# 对外实例的 audit_log 指向 var/（k8s 在此挂持久卷，见 public.yaml 的说明）。
+# 上面那几条只覆盖了 data/，日志搬家时规则没跟着搬，于是同一次泄露又发生了一遍：
+# 六个 commit 里 var/audit-public.jsonl 一直躺在版本库里，存的是用户问过的问题原文。
+# 加规则的同时把已跟踪的那几个 git rm --cached 掉了。
+var/audit*.jsonl
+var/checkpoints*.sqlite
+var/checkpoints*.sqlite-shm
+var/checkpoints*.sqlite-wal
+var/*.json
 .chroma/
 
 # 编辑器与系统
