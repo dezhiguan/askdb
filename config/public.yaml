@@ -145,3 +145,67 @@ metrics_file: ./config/metrics.yaml
 #   2. 未配 ASKDB_SECRET_KEY 时不接受明文口令，只能填环境变量名（sources.py）
 datasources:
   allow_runtime_add: true
+
+# ---------------------------------------------------------------------------
+# 角色的生效边界
+#
+# 收窄语义：有效表 = 实例白名单 ∩ 这里列的表，行上限取小。**只能收窄，
+# 不能放宽** —— 这里写一张白名单之外的表不会有任何效果。
+#
+# 匿名也是一个普通角色，不是绕过分支。它拿到的是最窄的一档：能体验查数，
+# 但看不到文档明细与成本数据 —— 登录之后的差别因此是看得见的。
+# ---------------------------------------------------------------------------
+role_policies:
+  ANONYMOUS:
+    tables: [knowledge_bases, orgs]
+    max_rows: 20
+  QA:
+    tables: [knowledge_bases, orgs, documents]
+    max_rows: 50
+  PRODUCT:
+    # 不含 model_usage：token 与成本是内部经营数据，产品角色看业务不看账
+    tables: [knowledge_bases, orgs, documents]
+    max_rows: 100
+  DATA_OWNER:
+    tables: [knowledge_bases, orgs, documents, model_usage]
+    max_rows: 200
+  # SYS_ADMIN 不在这里 —— 它的"无数据权限"是内置默认，写在配置里反而像可改的
+
+# ---------------------------------------------------------------------------
+# 登录
+#
+# required: false —— **匿名可用，登录是可选的能力展示，不是门。**
+# 这个实例的目的是让人看到护栏、审计与角色收窄；登录页是访客流失最大的
+# 一处，拦在前面等于把要展示的东西全挡住了。
+#
+# 账号是固定的三个体验账号，没有注册、没有找回密码、没有短信。
+# 口令**不入配置**，配置里只有 scrypt 哈希（askdb hash-password 生成）。
+# demo: true 的账号同时开放一键体验 —— 那只跳过认证，不跳过授权：
+# 体验账号拿到的仍是它自己角色的收窄配置，与口令登录完全同一条路径。
+#
+# 会话是无状态签名票，密钥走 ASKDB_SESSION_SECRET（askdb session-secret 生成）。
+# 多副本必须共用同一把，否则表现为"刷新几次就掉线"。没配则登录整体关闭。
+# ---------------------------------------------------------------------------
+auth:
+  enabled: true
+  required: false
+  cookie_secure: true            # 入口强制 HTTPS
+  accounts:
+    - username: product
+      display_name: 产品角色
+      roles: [PRODUCT]
+      demo: true
+      note: 看业务数据，不看 token 与成本
+      password_hash: "scrypt$16384$8$1$+hmZytSP/U/trvz4LhtjHQ==$26LFIdK3jO6mgr7ne6rJf53Jj1sOrQvM5S7fgs1U3Xk="
+    - username: qa
+      display_name: 测试角色
+      roles: [QA]
+      demo: true
+      note: 可见表更少、返回行上限更低
+      password_hash: "scrypt$16384$8$1$2ZasnZMURkCQs2bb8t1c9A==$f6gkHl+WtNPrMxgP8KmTu6RNl8EgH9KTA9m6qhP3iVs="
+    - username: owner
+      display_name: 数据负责人
+      roles: [DATA_OWNER]
+      demo: true
+      note: 实例白名单内全部可见
+      password_hash: "scrypt$16384$8$1$5eQ0nqqMH2JJl4MhJ5ZAPg==$Yq9nGQYvZZzojLlLDgfJG4brluHvVcb4LQLoh0iklyo="

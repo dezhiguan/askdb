@@ -504,3 +504,55 @@ export function addMember(token: string, member: {
 export function removeMember(token: string, id: number): Promise<void> {
   return adminWrite(`/api/identity/members/${id}`, token, { method: 'DELETE' })
 }
+
+/* ---------------- 登录与会话 ---------------- */
+
+export interface DemoAccount {
+  username: string
+  display_name: string
+  roles: string[]
+  note: string
+}
+
+export interface Me {
+  enabled: boolean
+  /** false = 匿名可用，登录是可选的能力展示而不是门 */
+  required: boolean
+  username: string | null
+  display_name: string
+  roles: string[]
+  /** 当前身份的**生效边界**。权限体系最怕「配了但看不出有没有生效」。 */
+  scope: { tables: string[]; max_rows: number }
+  demo_accounts: DemoAccount[]
+}
+
+export async function fetchMe(): Promise<Me> {
+  const response = await fetch('/api/auth/me')
+  if (!response.ok) throw new Error(`/api/auth/me ${response.status}`)
+  return response.json()
+}
+
+async function authPost(url: string, body: unknown): Promise<void> {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}))
+    throw new Error(detail.detail || `登录失败（${response.status}）`)
+  }
+}
+
+export function login(username: string, password: string): Promise<void> {
+  return authPost('/api/auth/login', { username, password })
+}
+
+/** 一键体验。只跳过认证，不跳过授权 —— 拿到的仍是该账号角色的收窄配置。 */
+export function enterDemo(username: string): Promise<void> {
+  return authPost('/api/auth/demo', { username })
+}
+
+export function logout(): Promise<void> {
+  return authPost('/api/auth/logout', {})
+}
