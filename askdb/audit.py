@@ -106,6 +106,17 @@ def _parse_ts(ts: str) -> datetime | None:
         return None
 
 
+def _percentile(values: list[int], q: float) -> int | None:
+    """最近秩法取分位。样本少时它就等于某个真实观测值 —— 这是有意的：
+    插值会造出一个从没发生过的耗时，而这页要的是"实际最慢的那次有多慢"。
+    调用方须同时展示样本量，否则 7 次调用的 P95 会被当成稳定指标读。
+    """
+    if not values:
+        return None
+    k = max(0, min(len(values) - 1, round((len(values) - 1) * q)))
+    return values[k]
+
+
 def stats(path: Path, days: int = 30) -> dict[str, Any]:
     """时间窗内的调用/拦截/成本统计与按日序列。
 
@@ -122,6 +133,7 @@ def stats(path: Path, days: int = 30) -> dict[str, Any]:
     calls = len(recent)
     blocked = sum(1 for r in recent if r.get("rejected_by"))
     with_steps = sum(1 for r in recent if r.get("steps"))
+    elapsed = sorted(int(r.get("elapsed_ms") or 0) for r in recent)
 
     daily: dict[str, dict[str, Any]] = {}
     by_kind: dict[str, int] = {}
@@ -152,6 +164,8 @@ def stats(path: Path, days: int = 30) -> dict[str, Any]:
         "tok_in": sum(int(r.get("tok_in") or 0) for r in recent),
         "tok_out": sum(int(r.get("tok_out") or 0) for r in recent),
         "trace_complete": round(with_steps / calls, 4) if calls else None,
+        "elapsed_p50_ms": _percentile(elapsed, 0.5),
+        "elapsed_p95_ms": _percentile(elapsed, 0.95),
         "daily": sorted(daily.values(), key=lambda d: d["date"]),
         "by_kind": by_kind,
         "by_rule": dict(sorted(by_rule.items(), key=lambda kv: -kv[1])),
