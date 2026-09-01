@@ -10,7 +10,14 @@
 export interface Health {
   ok: boolean
   config: string
-  datasource: { ok: boolean; type: string; detail: string; hint: string }
+  datasource: {
+    ok: boolean
+    type: string
+    detail: string
+    hint: string
+    /** 口令所在的环境变量名（不含值）。空串 = 这个库不需要口令 */
+    credential: string
+  }
   llm: { ok: boolean; model: string; env: string; disabled: boolean }
   tenant: {
     enabled: boolean
@@ -172,4 +179,85 @@ export function tracingLink(tracing: Tracing, traceId: string): string | null {
     return `${base}/project/${tracing.project}/traces/${traceId}`
   }
   return base || 'https://smith.langchain.com'
+}
+
+/* ---------------- 数据源 ---------------- */
+
+export interface SchemaColumn {
+  name: string
+  type: string
+  desc: string
+  enum: string[]
+  tenant: boolean
+}
+
+export interface SchemaTable {
+  name: string
+  desc: string
+  aliases: string[]
+  tenant_column: string | null
+  columns: SchemaColumn[]
+}
+
+export interface SchemaMetric {
+  name: string
+  aliases: string[]
+  scope: string[]
+  definition: string
+  note: string
+}
+
+export interface Schema {
+  tables: SchemaTable[]
+  metrics: SchemaMetric[]
+}
+
+export interface SelfCheck {
+  ok: boolean
+  checks: { name: string; ok: boolean; detail: string; ms?: number }[]
+  /** 建连耗时。取不到连接时为 null —— 不要在界面上拿 0 冒充「很快」 */
+  latency_ms: number | null
+}
+
+/** 库里实际存在的表。**白名单之外的也会列出来** ——
+ *  先看得见，才谈得上决定开不开放。 */
+export interface IntrospectTable {
+  name: string
+  rows: number
+  cols: number
+  tenant: boolean
+  allowed: boolean
+  tenant_column: string | null
+  /** column = 表上有租户列；filter = 靠谓词间接归属；exempt = 显式声明与租户无关 */
+  tenant_mode: 'column' | 'filter' | 'exempt' | 'none'
+  tenant_via: string
+  coverage: number
+  desc: string
+}
+
+export interface Introspect {
+  ok: boolean
+  error?: string
+  hint?: string
+  tables: IntrospectTable[]
+  allowed_count?: number
+  total?: number
+}
+
+export async function fetchSchema(): Promise<Schema> {
+  const response = await fetch('/api/schema')
+  if (!response.ok) throw new Error(`/api/schema ${response.status}`)
+  return response.json()
+}
+
+export async function fetchSelfCheck(): Promise<SelfCheck> {
+  const response = await fetch('/api/selfcheck')
+  if (!response.ok) throw new Error(`/api/selfcheck ${response.status}`)
+  return response.json()
+}
+
+export async function fetchIntrospect(): Promise<Introspect> {
+  const response = await fetch('/api/introspect')
+  if (!response.ok) throw new Error(`/api/introspect ${response.status}`)
+  return response.json()
 }

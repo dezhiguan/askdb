@@ -46,16 +46,28 @@
 .task-row span, .task-row small { color: var(--muted); }
 .task-main strong { font-size: 9px; }
 .source-grid, .connector-grid, .tool-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
-.source-card, .tool-card, .integration-card { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(250,249,245,.84); box-shadow: var(--shadow); }
-.source-top { display: flex; justify-content: space-between; }
+.source-card, .tool-card, .integration-card { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(250,249,245,.86); box-shadow: var(--shadow); }
+.source-top { display: flex; align-items: flex-start; justify-content: space-between; }
 .source-top > i { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 7px; color: var(--green); background: var(--green-wash); font: normal 8px var(--mono); }
-.source-card h3, .tool-card h3 { margin: 13px 0 4px; font-family: var(--serif); font-size: 14px; }
+.source-card h3, .tool-card h3 { margin: 11px 0 3px; font-family: var(--serif); font-size: 14px; }
 .source-card p, .tool-card p, .integration-card p { color: var(--muted); font-size: 7px; line-height: 1.55; }
-.mini-metrics, .permission-grid, .trace-facts { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; margin: 12px 0; border: 1px solid var(--line); background: var(--line); }
-.mini-metrics > div, .permission-grid > div, .trace-facts > div { padding: 8px; background: var(--paper); }
-.mini-metrics span, .mini-metrics strong, .permission-grid span, .permission-grid strong, .trace-facts span, .trace-facts strong { display: block; font-size: 6px; }
-.mini-metrics span, .permission-grid span, .trace-facts span { color: var(--muted); }
-.mini-metrics strong, .permission-grid strong, .trace-facts strong { margin-top: 3px; font: 7px var(--mono); }
+.permission-grid, .trace-facts { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; margin: 12px 0; border: 1px solid var(--line); background: var(--line); }
+.permission-grid > div, .trace-facts > div { padding: 8px; background: var(--paper); }
+.permission-grid span, .permission-grid strong, .trace-facts span, .trace-facts strong { display: block; font-size: 6px; }
+.permission-grid span, .trace-facts span { color: var(--muted); }
+.permission-grid strong, .trace-facts strong { margin-top: 3px; font: 7px var(--mono); }
+
+/* 严格照原型：两列、各自独立的圆角块，不是联排表格 */
+.mini-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 12px 0; }
+.mini-metric { padding: 7px; border: 1px solid var(--line); border-radius: 5px; background: rgba(255,255,255,.48); }
+.mini-metric span { display: block; color: var(--muted); font-size: 6px; }
+.mini-metric strong { display: block; margin-top: 2px; font: 7px var(--mono); }
+.db-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; color: var(--green); background: var(--green-wash); font: 700 8px var(--mono); }
+.card-status { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font: 7px var(--mono); }
+.card-status.off { color: var(--amber); }
+.card-status.bad { color: var(--red); }
+.online { width: 6px; height: 6px; border-radius: 50%; background: var(--green-2); box-shadow: 0 0 0 3px rgba(44,179,110,.12); }
+.source-actions { display: flex; gap: 6px; }
 .policy-layout, .glossary-layout { display: grid; grid-template-columns: 260px minmax(0,1fr); gap: 14px; }
 .role-list > button, .term-list > button { width: 100%; display: flex; justify-content: space-between; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; }
 .role-list > button.active, .term-list > button.active { background: var(--green-wash); }
@@ -286,3 +298,63 @@
 }
 .cost-bars i { flex: 1; border-radius: 2px 2px 0 0; background: var(--green-2); }
 .cost-axis { display: flex; justify-content: space-between; margin-top: 4px; color: var(--muted); font: 6.5px var(--mono); }
+
+/* ---------------- 数据源（已接 /api/health · schema · introspect · selfcheck） ---------------- */
+
+/* 一个进程一份配置一个数据源，所以这里是一张整宽的卡而不是网格 */
+.page > .card { margin-bottom: 12px; padding: 14px; }
+.page > .card > h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 9px;
+  font-family: var(--serif);
+  font-size: 13px;
+}
+.section-note { color: var(--muted); font-size: 7px; font-weight: 400; font-family: var(--sans); }
+.notice-card p { color: var(--ink-2); font-size: 8px; line-height: 1.75; }
+.hint-warn { margin-top: 9px; color: var(--amber); font-size: 7.5px; }
+.dim { color: var(--muted); }
+
+.check-list { display: grid; gap: 1px; border: 1px solid var(--line); background: var(--line); }
+.check-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--paper);
+  font-size: 8px;
+}
+.check-dot {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  color: white;
+  background: var(--green-2);
+  font-size: 7px;
+}
+.check-dot.bad { background: var(--red); }
+.check-detail { color: var(--muted); font: 7px var(--mono); }
+
+.table-row { cursor: pointer; }
+.table-row:hover { background: var(--green-wash); }
+/* 未开放的表要列出来但明显弱化 —— 它们是"可以考虑开放"，不是"当前能查" */
+.table-row.muted { cursor: default; opacity: .62; }
+.table-row.muted:hover { background: transparent; }
+.row-caret { display: inline-block; width: 11px; color: var(--muted); }
+.table-detail > td { padding: 10px 12px 14px 24px; background: var(--paper-2); }
+.table-detail .status { margin-left: 6px; }
+
+/* 「添加数据源」给的是实际要做的三步，不是表单 */
+.add-steps { margin: 0; padding: 0 0 0 16px; display: grid; gap: 14px; }
+.add-steps li { font-size: 8px; }
+.add-steps li b { display: block; margin-bottom: 3px; font-size: 9px; }
+.add-steps li span { display: block; color: var(--muted); font-size: 7.5px; line-height: 1.7; }
+.add-steps code { padding: 1px 4px; border-radius: 3px; background: var(--paper-2); font: 7px var(--mono); }
+.add-steps .drawer-code { margin-top: 7px; }
+
+.source-detail { display: grid; gap: 12px; margin-top: 12px; }
+.mini-metrics.metrics-4 { grid-template-columns: repeat(4, 1fr); }

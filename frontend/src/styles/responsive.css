@@ -52,7 +52,7 @@
   .checkpoint-flow { overflow-x: auto; }
   table { min-width: 620px; }
   .stats { grid-template-columns: repeat(2,1fr) !important; }
-  .mini-metrics, .permission-grid { grid-template-columns: repeat(2,1fr); }
+  .permission-grid { grid-template-columns: repeat(2,1fr); }
   .topology { align-items: stretch; flex-direction: column; }
   .topology > div { width: 100%; }
   .topology > span { width: 1px; height: 24px; margin: 0 auto; }

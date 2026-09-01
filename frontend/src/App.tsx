@@ -34,7 +34,7 @@ function App() {
   const page = (() => {
     if (view === 'query') return <div className="page query-page"><PageHeader eyebrow="Phase 1 · Unified Query" title="查询工作台" description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。" action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>} /><QueryWorkspace source={source} setSource={setSource} onNavigate={setView} onClarify={() => setModal('clarification')} notify={notify} /></div>
     if (view === 'tasks') return <TasksPage onClarify={() => setModal('clarification')} notify={notify} />
-    if (view === 'sources') return <DataSourcesPage openModal={setModal} notify={notify} />
+    if (view === 'sources') return <DataSourcesPage health={health} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />
     if (view === 'glossary') return <GlossaryPage notify={notify} />
     if (view === 'audit') return <AuditPage />

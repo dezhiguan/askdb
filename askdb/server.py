@@ -224,7 +224,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "ok": db_ok and (bool(cfg.api_key()) or bool(cfg.llm.get("disabled"))),
             # 复现命令要带 -c：检查点库跟着配置走，配置不对就找不到 trace
             "config": cfg.path,
-            "datasource": {"ok": db_ok, "type": cfg.db_type, "detail": db_msg, "hint": db_hint},
+            "datasource": {
+                "ok": db_ok, "type": cfg.db_type, "detail": db_msg, "hint": db_hint,
+                # 口令来自哪个环境变量 —— 只给变量名，不给值。
+                # 界面要在数据源卡上交代凭证来源；写死一个 "VAULT" 是假的，
+                # 而 askdb 的真实答案就是"环境变量"或"这个库不需要口令"。
+                "credential": cfg.raw["datasource"].get("password_env") or "",
+            },
             "llm": {
                 "ok": bool(cfg.api_key()),
                 "model": cfg.llm["model"],
@@ -287,7 +293,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     def selfcheck() -> dict[str, Any]:
         with Executor(cfg) as ex:
             checks = ex.self_check()
-        return {"ok": all(c["ok"] for c in checks), "checks": checks}
+        latency = next((c["ms"] for c in checks if "ms" in c), None)
+        return {"ok": all(c["ok"] for c in checks), "checks": checks,
+                "latency_ms": latency}
 
     @app.get("/api/introspect")
     def introspect() -> dict[str, Any]:

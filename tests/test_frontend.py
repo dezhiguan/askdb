@@ -116,3 +116,33 @@ def test_step_names_cover_every_traced_node():
 
     missing = sorted(traced - known)
     assert not missing, f"这些节点在复放里会显示成原始 id：{missing}"
+
+
+SOURCES_PAGE = FRONTEND_SRC / "pages" / "DataSourcesPage.tsx"
+
+
+def test_sources_page_is_wired_to_real_endpoints():
+    src = SOURCES_PAGE.read_text(encoding="utf-8")
+    for fn in ("fetchSchema", "fetchIntrospect", "fetchSelfCheck"):
+        assert fn in src, f"数据源页没有调用 {fn}"
+
+    notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
+    assert "sources:" not in notices, "数据源页已接真实数据，MockNotice 里的条目要删掉"
+
+
+def test_no_credential_collecting_form_in_frontend():
+    """页面上不存在「新增数据源」这件事 —— 连接由配置文件指定，
+    §1.1：数据库连接本身即权限边界，页面能改连接等于能换掉整套护栏。
+
+    因此包里也不该留一个收数据库口令的表单等人接回去。
+    """
+    # 只钉数据库连接这一类。Langfuse 接入弹层里还有一个密钥字段，
+    # 那是观测后端的集成表单、且该页仍标着未接入 —— 不在这条规则的射程内。
+    markers = ("添加只读数据源", "vault://database", "数据库地址")
+    offenders = []
+    for path in FRONTEND_SRC.rglob("*.tsx"):
+        text = path.read_text(encoding="utf-8")
+        hit = [m for m in markers if m in text]
+        if hit:
+            offenders.append(f"{path.relative_to(ROOT)}: {hit}")
+    assert not offenders, f"前端出现了收数据库连接凭证的表单：{offenders}"

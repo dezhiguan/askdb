@@ -380,14 +380,16 @@ class Executor:
         """
         checks: list[dict[str, Any]] = []
 
-        def add(name: str, ok: bool, detail: str) -> None:
-            checks.append({"name": name, "ok": ok, "detail": detail})
+        def add(name: str, ok: bool, detail: str, **extra: Any) -> None:
+            checks.append({"name": name, "ok": ok, "detail": detail, **extra})
 
         t0 = time.perf_counter()
         try:
             self.connect()
-            add("网络可达与认证", True,
-                f"{self.cfg.db_type} · {int((time.perf_counter() - t0) * 1000)} ms")
+            # 连接耗时同时给结构化字段：界面要在数据源卡上单独显示「延迟」，
+            # 从 detail 字符串里正则抠数字迟早会随文案改动而悄悄失效
+            ms = int((time.perf_counter() - t0) * 1000)
+            add("网络可达与认证", True, f"{self.cfg.db_type} · {ms} ms", ms=ms)
         except DataSourceError as e:
             add("网络可达与认证", False, f"{e}｜{e.hint}")
             return checks

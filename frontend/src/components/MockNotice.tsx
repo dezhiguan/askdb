@@ -28,12 +28,6 @@ const NOTICES: Partial<Record<View, Notice>> = {
     backend: '尚无任务队列，/api/ask 目前是同步请求。'
       + 'LangGraph 中断与断点续跑（/api/resume）已上线，可作为任务状态机的底座。',
   },
-  sources: {
-    phase: '接后端：阶段 C',
-    backend: '当前一个进程一份配置一个数据源，没有多源注册表。'
-      + '真实的连接自检与表白名单在旧界面里可用。',
-    legacy: true,
-  },
   permissions: {
     phase: '接后端：阶段 D',
     backend: 'askdb 现在不设账号体系 —— 权限边界是数据库连接本身。'

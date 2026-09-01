@@ -37,6 +37,7 @@ npm run lint      # oxlint
 
 - 外壳顶栏（数据源、模型、租户、当前配置）→ `/api/health`
 - 审计中心（流水分页、检索、统计、判定链路复放、成本分布）→ `/api/audit`、`/api/audit/stats`、`/api/replay`
+- 数据源（连接状态、表白名单、字段与注释、连接自检、护栏阈值）→ `/api/schema`、`/api/introspect`、`/api/selfcheck`
 
 其余页面仍在样例数据上，每页顶部有 `MockNotice` 声明后端现状与接入阶段。
 

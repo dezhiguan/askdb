@@ -10,13 +10,6 @@ export function ModalLayer({ active, onClose, notify }: {
   const finish = (message: string) => { onClose(); notify(message) }
   return (
     <div className="modal-backdrop" onMouseDown={event => { if (event.currentTarget === event.target) onClose() }}>
-      {active === 'source' && <FormModal title="添加只读数据源" description="连接凭证将加密保存到平台密钥库，不会提供给模型。" onClose={onClose}>
-        <label>数据源名称<input defaultValue="新的只读数据源" /></label>
-        <div className="form-grid"><label>数据库类型<select><option>PostgreSQL</option><option>MySQL</option><option>ClickHouse</option></select></label><label>环境<select><option>测试环境</option><option>生产只读镜像</option></select></label></div>
-        <label>数据库地址<input placeholder="db.internal:5432" /></label>
-        <label>密码 / Vault 引用<input type="password" defaultValue="vault://database/readonly" /></label>
-        <div className="modal-actions"><button className="ghost" onClick={onClose}>取消</button><button className="secondary" onClick={() => notify('连接成功 · 只读账号和网络策略检查通过')}>测试连接</button><button className="primary" onClick={() => finish('数据源已保存 · 正在扫描白名单元数据')}>保存并扫描元数据</button></div>
-      </FormModal>}
       {active === 'clarification' && <ClarificationModal onClose={onClose} onFinish={() => finish('补充信息已写入任务状态 · 已从 INTERRUPT 节点恢复')} />}
       {active === 'connector' && <FormModal title="部署 Connector" description="选择目标网络后生成一次性部署命令。" onClose={onClose}>
         <label>节点名称<input defaultValue="connector-new-01" /></label><label>目标网络<select><option>企业测试网络</option><option>生产 VPC</option><option>物流数据域</option></select></label>
