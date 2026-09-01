@@ -94,3 +94,9 @@ observability:
 
 tables_file: ./config/tables.yaml
 metrics_file: ./config/metrics.yaml
+
+# 运行时添加只读数据源。开着的时候，服务端会按界面填入的地址主动建连 ——
+# askdb 不设账号体系，所以这等于把出站建连的能力交给任何能打开页面的人。
+# 本机开发实例开启；任何对外可达的实例必须显式关闭（见 config/public.yaml）。
+datasources:
+  allow_runtime_add: true

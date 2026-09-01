@@ -348,13 +348,65 @@
 .table-detail > td { padding: 10px 12px 14px 24px; background: var(--paper-2); }
 .table-detail .status { margin-left: 6px; }
 
-/* 「添加数据源」给的是实际要做的三步，不是表单 */
-.add-steps { margin: 0; padding: 0 0 0 16px; display: grid; gap: 14px; }
-.add-steps li { font-size: 8px; }
-.add-steps li b { display: block; margin-bottom: 3px; font-size: 9px; }
-.add-steps li span { display: block; color: var(--muted); font-size: 7.5px; line-height: 1.7; }
-.add-steps code { padding: 1px 4px; border-radius: 3px; background: var(--paper-2); font: 7px var(--mono); }
-.add-steps .drawer-code { margin-top: 7px; }
 
 .source-detail { display: grid; gap: 12px; margin-top: 12px; }
 .mini-metrics.metrics-4 { grid-template-columns: repeat(4, 1fr); }
+
+/* ---------------- 添加数据源 ---------------- */
+
+.source-modal { width: min(680px, calc(100vw - 24px)); }
+/* 深色头是原型的处理：这个弹层会写入可查询范围，视觉上要和普通表单区分开 */
+.modal-dark { background: var(--dark); color: white; border-bottom: 0; padding: 20px 22px; }
+.modal-dark h3 { margin: 0 0 5px; font-family: var(--serif); font-size: 20px; }
+.modal-dark p { margin: 0; color: #b8c7be; font-size: 8px; line-height: 1.6; }
+.modal-dark > button { color: white; }
+
+.source-modal .modal-body > label { margin-bottom: 12px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.cred-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cred-modes { display: inline-flex; gap: 3px; }
+.cred-modes button {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper-2);
+  color: var(--muted);
+  font-size: 6.5px;
+  cursor: pointer;
+}
+.cred-modes button.on { border-color: var(--green); color: var(--green); background: var(--green-wash); }
+.cred-modes button:disabled { opacity: .45; cursor: not-allowed; }
+.cred-note { margin: -4px 0 12px; color: var(--muted); font-size: 7px; line-height: 1.7; }
+
+.pick-list { display: grid; gap: 4px; max-height: 320px; overflow-y: auto; margin: 10px 0 12px; }
+.pick-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 9px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  text-align: left;
+  cursor: pointer;
+}
+.pick-row:hover { border-color: var(--green); }
+.pick-row.on { border-color: var(--green); background: var(--green-wash); }
+.pick-box {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--axis);
+  border-radius: 4px;
+  background: white;
+  color: white;
+  font-size: 8px;
+}
+.pick-row.on .pick-box { border-color: var(--green); background: var(--green); }
+.pick-name { font-size: 8px; }
+.pick-meta { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font: 7px var(--mono); }
+.pick-count { margin-right: auto; color: var(--muted); font-size: 7.5px; }
+.modal-actions { align-items: center; }

@@ -38,6 +38,8 @@ npm run lint      # oxlint
 - 外壳顶栏（数据源、模型、租户、当前配置）→ `/api/health`
 - 审计中心（流水分页、检索、统计、判定链路复放、成本分布）→ `/api/audit`、`/api/audit/stats`、`/api/replay`
 - 数据源（连接状态、表白名单、字段与注释、连接自检、护栏阈值）→ `/api/schema`、`/api/introspect`、`/api/selfcheck`
+- 运行时添加只读数据源（测试连接、扫描、勾选白名单、删除）→ `/api/sources`
+  默认关闭，由 `datasources.allow_runtime_add` 控制；对外实例必须保持关闭。
 - 执行追踪（最近执行、节点级 span、耗时分布、观测后端状态）→ 同上三个接口
 
 其余页面仍在样例数据上，每页顶部有 `MockNotice` 声明后端现状与接入阶段。

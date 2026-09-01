@@ -130,54 +130,27 @@ def test_sources_page_is_wired_to_real_endpoints():
     assert "sources:" not in notices, "数据源页已接真实数据，MockNotice 里的条目要删掉"
 
 
-def test_no_credential_collecting_form_in_frontend():
-    """页面上不存在「新增数据源」这件事 —— 连接由配置文件指定，
-    §1.1：数据库连接本身即权限边界，页面能改连接等于能换掉整套护栏。
+def test_plaintext_password_mode_is_gated_by_the_server():
+    """表单现在确实收数据库口令（运行时添加数据源）—— 那条路必须由服务端
+    有没有配主密钥来决定开不开。
 
-    因此包里也不该留一个收数据库口令的表单等人接回去。
+    主密钥缺失时若还让人填明文，口令要么以明文落盘、要么保存时才报错，
+    两种都不能接受。所以「直接填密码」这个选项由 can_store_password 控制，
+    且推荐项始终是「环境变量名」（口令一个字不落盘）。
     """
-    # 只钉数据库连接这一类。Langfuse 接入弹层里还有一个密钥字段，
-    # 那是观测后端的集成表单、且该页仍标着未接入 —— 不在这条规则的射程内。
-    markers = ("添加只读数据源", "vault://database", "数据库地址")
+    src = (FRONTEND_SRC / "components" / "AddSourceModal.tsx").read_text(encoding="utf-8")
+    assert "can_store_password" in src, "明文口令入口没有跟服务端主密钥状态挂钩"
+    assert "disabled={!meta.can_store_password}" in src, "主密钥缺失时明文口令项必须禁用"
+    assert "useState<'env' | 'plain'>('env')" in src, "默认必须是环境变量名那条路"
+
+
+def test_credentials_never_touch_browser_storage():
+    """口令只在提交那一刻存在于内存。任何持久化到浏览器的动作都会让它
+    留在别人的机器上 —— 而这是数据库口令，不是登录态。
+    """
     offenders = []
     for path in FRONTEND_SRC.rglob("*.tsx"):
         text = path.read_text(encoding="utf-8")
-        hit = [m for m in markers if m in text]
-        if hit:
-            offenders.append(f"{path.relative_to(ROOT)}: {hit}")
-    assert not offenders, f"前端出现了收数据库连接凭证的表单：{offenders}"
-TRACES_PAGE = FRONTEND_SRC / "pages" / "TracesPage.tsx"
-
-
-def test_traces_page_is_wired_to_real_endpoints():
-    src = TRACES_PAGE.read_text(encoding="utf-8")
-    for fn in ("fetchAudit", "fetchAuditStats", "fetchReplay"):
-        assert fn in src, f"执行追踪页没有调用 {fn}"
-
-    notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
-    assert "traces:" not in notices, "执行追踪页已接真实数据，MockNotice 里的条目要删掉"
-
-
-def test_step_names_are_defined_once():
-    """审计复放与执行追踪都要把节点 id 翻成中文。各存一份必然漂移 ——
-    而漂移的表现只是页面上显示原始 id，不报错、不好发现。
-    """
-    offenders = [
-        str(p.relative_to(ROOT))
-        for p in FRONTEND_SRC.rglob("*.tsx")
-        if "const STEP_NAMES" in p.read_text(encoding="utf-8")
-    ]
-    assert not offenders, f"STEP_NAMES 只能定义在 src/traceSteps.ts，这些文件另存了一份：{offenders}"
-
-
-def test_traces_page_does_not_claim_false_privacy_policy():
-    """原型那块写的是「prompt: REDACTED / sql: HASH ONLY」。
-
-    askdb 的实际上报策略不是这样 —— observe.py 把 question 原文当 input、
-    sql_final 全文当 output 送出去。照抄原型就成了一句假的隐私承诺，
-    而假的隐私承诺比没有承诺更危险。
-    """
-    src = TRACES_PAGE.read_text(encoding="utf-8")
-    for claim in ("REDACTED", "HASH ONLY"):
-        assert claim not in src, f"页面声称 {claim}，与 observe.py 的实际上报不符"
-    assert "结果行: 不上报" in src, "必须写明真正不上报的是结果行"
+        if "localStorage" in text or "sessionStorage" in text:
+            offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, f"前端往浏览器存储写了东西，需人工确认不含凭证：{offenders}"

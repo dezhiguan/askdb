@@ -7,15 +7,17 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import guard
+from . import sources as _sources
 from .config import Config, load
 from .executor import DataSourceError, Executor
 from .graph import ask as run_ask, jsonable, resume as run_resume
@@ -68,6 +70,9 @@ class _RateLimit:
 
 
 _REPLAY_RL = _RateLimit()
+# 新增/测试数据源会让服务端主动向外建连。开关之外再加一道限流 ——
+# 开关决定「能不能」，限流决定「能多快」，被拿去当端口扫描器的正是后者。
+_SOURCE_RL = _RateLimit(limit=10, window_s=60)
 
 
 def _paired_delta(base: list[dict], other: list[dict]) -> dict[str, Any] | None:
@@ -178,6 +183,23 @@ class AskRequest(BaseModel):
 class SqlRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=20000)
     org_id: int | None = None
+
+
+class SourceRequest(BaseModel):
+    """新增/测试数据源。**口令二选一**：password_env 给环境变量名（推荐，
+    口令不落盘），password 给明文（用主密钥加密后落盘）。"""
+
+    name: str = Field(default="", max_length=64)
+    type: str = Field(max_length=20)
+    dsn: str = Field(min_length=1, max_length=500)
+    env: str = Field(default="test", max_length=16)
+    upstream: str = Field(default="", max_length=200)
+    password_env: str = Field(default="", max_length=64)
+    password: str = Field(default="", max_length=200)
+
+
+class SourceTablesRequest(BaseModel):
+    tables: list[str] = Field(default_factory=list, max_length=200)
 
 
 class ResumeRequest(BaseModel):
@@ -344,6 +366,157 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             })
         return {"ok": True, "tables": out,
                 "allowed_count": sum(1 for t in out if t["allowed"]), "total": len(out)}
+
+    # ---------------------------------------------------------------- 数据源
+    #
+    # 启动配置里的那个源是**内置源**：它定义了本部署的护栏阈值、租户策略与
+    # 业务口径，永远存在、不可编辑、不可删除。以下接口管的是运行时添加的只读源。
+
+    def _sources_gate() -> None:
+        """写操作的准入。开关关闭时给 403 并说清原因 —— 这不是秘密，
+        界面需要照实解释为什么按钮是灰的（与 /api/replay 的 404 语义不同：
+        那里要防的是「记录是否存在」这一位信息泄露，这里没有这个问题）。"""
+        if not _sources.enabled(cfg):
+            raise HTTPException(
+                status_code=403,
+                detail="本实例未开启运行时添加数据源（datasources.allow_runtime_add）。"
+                       "服务端会按填入的地址主动建连，而 askdb 不设账号体系，"
+                       "所以对外实例一律关闭。",
+            )
+        if not _SOURCE_RL.allow():
+            raise HTTPException(status_code=429, detail="操作过于频繁，稍后再试")
+
+    def _builtin_card() -> dict[str, Any]:
+        return {
+            "id": "builtin",
+            "name": cfg.path,
+            "type": cfg.db_type,
+            "env": "builtin",
+            "host": _dsn_label(cfg.dsn, cfg.upstream) if cfg.db_type != "duckdb"
+                    else cfg.db_path.name,
+            "credential": cfg.raw["datasource"].get("password_env") or "",
+            "created_at": "",
+            "table_count": len(cfg.tables),
+            "builtin": True,
+        }
+
+    @app.get("/api/sources")
+    def sources_list() -> dict[str, Any]:
+        """列表恒可读；能不能新增由 can_add 告诉前端，而不是让它点了才知道。"""
+        return {
+            "can_add": _sources.enabled(cfg),
+            "supported_types": list(_sources.SUPPORTED_TYPES),
+            # 主密钥没配就只能用环境变量名那条路，前端据此决定表单里的默认项
+            "can_store_password": bool(os.environ.get("ASKDB_SECRET_KEY", "").strip()),
+            "items": [_builtin_card()] + [_sources.to_public(s) for s in _sources.list_sources(cfg)],
+        }
+
+    def _probe(src: "_sources.Source") -> dict[str, Any]:
+        """建连 + 自检 + 列表扫描。三件事一次做完 —— 分成三个接口就意味着
+        三次建连，而每一次都是一条出站连接。"""
+        derived = _sources.derive_config(cfg, src)
+        with Executor(derived) as ex:
+            checks = ex.self_check()
+            tables = ex.introspect()
+        return {
+            "ok": all(c["ok"] for c in checks),
+            "checks": checks,
+            "latency_ms": next((c["ms"] for c in checks if "ms" in c), None),
+            "tables": tables,
+        }
+
+    @app.post("/api/sources/test")
+    def sources_test(req: SourceRequest) -> JSONResponse:
+        """只连不存。表单上的「测试连接」。"""
+        _sources_gate()
+        try:
+            src = _sources.build(name=req.name or "（未命名）", type_=req.type, dsn=req.dsn,
+                                 env=req.env, upstream=req.upstream,
+                                 password_env=req.password_env, password=req.password)
+            return JSONResponse(_probe(src))
+        except _sources.SourceError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except DataSourceError as e:
+            # 连不上是预期内的结果，不是服务端错误 —— 如实把原因和处置建议给出去
+            return JSONResponse({"ok": False, "error": str(e), "hint": e.hint,
+                                 "checks": [], "latency_ms": None, "tables": []})
+
+    @app.post("/api/sources")
+    def sources_create(req: SourceRequest) -> JSONResponse:
+        """保存并扫描元数据。
+
+        **扫描出来的表一张都不开放。** 扫描只解决「看得见」，开放与否是单独
+        一步（PUT /tables）—— 白名单同时是安全边界与准确率边界，默认全开
+        等于把两条边界一起取消。
+        """
+        _sources_gate()
+        try:
+            src = _sources.build(name=req.name, type_=req.type, dsn=req.dsn,
+                                 env=req.env, upstream=req.upstream,
+                                 password_env=req.password_env, password=req.password)
+            probe = _probe(src)
+        except _sources.SourceError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except DataSourceError as e:
+            raise HTTPException(status_code=400, detail=f"{e}｜{e.hint}") from e
+
+        if not probe["ok"]:
+            failed = [c["name"] for c in probe["checks"] if not c["ok"]]
+            raise HTTPException(status_code=400,
+                                detail=f"连接自检未通过：{'、'.join(failed)}")
+        _sources.save_source(cfg, src)
+        return JSONResponse({"source": _sources.to_public(src), **probe}, status_code=201)
+
+    @app.get("/api/sources/{sid}/scan")
+    def sources_scan(sid: str) -> JSONResponse:
+        """重新扫描：列出全部表，并标出哪些已在白名单里。"""
+        _sources_gate()
+        src = _sources.get_source(cfg, sid)
+        if src is None:
+            raise HTTPException(status_code=404, detail="数据源不存在")
+        allowed = {t["name"] for t in src.tables}
+        try:
+            probe = _probe(src)
+        except DataSourceError as e:
+            raise HTTPException(status_code=400, detail=f"{e}｜{e.hint}") from e
+        for t in probe["tables"]:
+            t["allowed"] = t["name"] in allowed
+        return JSONResponse(probe)
+
+    @app.put("/api/sources/{sid}/tables")
+    def sources_set_tables(sid: str, req: SourceTablesRequest) -> JSONResponse:
+        """设置白名单。字段名与类型在这里落库 —— R-04 与 R-05 靠它判定。"""
+        _sources_gate()
+        src = _sources.get_source(cfg, sid)
+        if src is None:
+            raise HTTPException(status_code=404, detail="数据源不存在")
+        derived = _sources.derive_config(cfg, src)
+        try:
+            with Executor(derived) as ex:
+                existing = {t["name"] for t in ex.introspect()}
+                unknown = [n for n in req.tables if n not in existing]
+                if unknown:
+                    raise HTTPException(status_code=400,
+                                        detail=f"库里没有这些表：{'、'.join(unknown)}")
+                columns = ex.describe(req.tables)
+            src.tables = _sources.whitelist_from_scan(columns, req.tables)
+        except _sources.SourceError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        except DataSourceError as e:
+            raise HTTPException(status_code=400, detail=f"{e}｜{e.hint}") from e
+        _sources.save_source(cfg, src)
+        return JSONResponse(_sources.to_public(src))
+
+    @app.delete("/api/sources/{sid}")
+    def sources_delete(sid: str) -> JSONResponse:
+        _sources_gate()
+        try:
+            ok = _sources.delete_source(cfg, sid)
+        except _sources.SourceError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if not ok:
+            raise HTTPException(status_code=404, detail="数据源不存在")
+        return JSONResponse({"ok": True})
 
     @app.get("/api/eval")
     def evaluation() -> dict[str, Any]:
