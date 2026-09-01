@@ -1,10 +1,4 @@
-import type { DataSource, View } from '../types'
-
-export const sources: DataSource[] = [
-  { code: 'PG', shortName: '订单中心', name: '订单中心只读镜像', meta: 'PostgreSQL 15 · PROD-RO · 42 张表', status: 'online' },
-  { code: 'CK', shortName: '用户行为分析', name: '用户行为分析', meta: 'ClickHouse · PROD-RO · 18 张表', status: 'online' },
-  { code: 'MY', shortName: '仓储测试库', name: '仓储测试库', meta: 'MySQL 8 · 凭证未配置', status: 'setup' },
-]
+import type { View } from '../types'
 
 /* 导航分组。
  *
@@ -40,9 +34,3 @@ export const navGroups: { label: string; items: { view: View; icon: string; titl
   },
 ]
 
-export const suggestions = [
-  ['支付失败订单', '今天支付失败的订单有多少？', '统计今天失败订单数量和主要原因'],
-  ['高额退款排查', '昨天退款金额最高的5个订单', '查看 TOP 5 并自动脱敏用户字段'],
-  ['仓库积压情况', '上海仓还有多少订单没有发货？', '按仓库统计未发货订单'],
-  ['新客首单转化', '本周新客首单转化率是多少？', '使用已确认业务口径计算'],
-]

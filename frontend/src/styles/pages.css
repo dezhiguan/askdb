@@ -410,3 +410,104 @@
 .pick-meta { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font: 7px var(--mono); }
 .pick-count { margin-right: auto; color: var(--muted); font-size: 7.5px; }
 .modal-actions { align-items: center; }
+
+/* ---------------- 查询工作台（已接 /api/ask · /api/sql · /api/resume） ---------------- */
+
+.stage-source { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.stage-source .source-code {
+  width: 27px; height: 27px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 6px; color: var(--green); background: var(--green-wash);
+  font: 700 7px var(--mono);
+}
+.stage-source strong { display: block; font-size: 9px; }
+.stage-source small { display: block; margin-top: 1px; color: var(--muted); font-size: 7px; }
+.mode-tabs button:disabled { opacity: .45; cursor: not-allowed; }
+.composer textarea.mono { font-family: var(--mono); font-size: 8px; }
+.stage-error { margin: 0 13px 10px; }
+
+.result-shell { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.result-tabs { display: flex; gap: 2px; padding: 0 13px; border-bottom: 1px solid var(--line); }
+.result-tabs button {
+  position: relative;
+  padding: 9px 11px;
+  border: 0; border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none; color: var(--muted);
+  font-size: 8px; cursor: pointer;
+}
+.result-tabs button.active { color: var(--ink); border-bottom-color: var(--green); font-weight: 700; }
+.tab-dot {
+  display: inline-block; width: 5px; height: 5px; margin-left: 5px;
+  border-radius: 50%; background: var(--amber);
+}
+.pane { padding: 13px; overflow-y: auto; }
+
+.result-meta { margin-bottom: 9px; color: var(--muted); font-size: 7.5px; }
+.warn-chip {
+  margin-left: 6px; padding: 2px 6px; border-radius: 4px;
+  background: var(--amber-wash); color: #8d521b; font: 6.5px var(--mono);
+}
+.pane table { width: 100%; border-collapse: collapse; font-size: 8px; }
+.pane th, .pane td { padding: 7px 9px; border-bottom: 1px solid var(--line); text-align: left; }
+.pane th { color: var(--muted); font: 7px var(--mono); letter-spacing: .06em; }
+
+.notice { padding: 11px 13px; border-radius: 7px; border: 1px solid var(--line); }
+.notice.bad { border-color: #d4aaa3; background: var(--red-wash); }
+.notice.info { border-color: #b7c9d8; background: var(--blue-wash); }
+.notice .t { display: flex; align-items: center; gap: 7px; font-size: 9px; font-weight: 700; }
+.notice .why { margin-top: 6px; color: var(--ink-2); font-size: 7.5px; line-height: 1.7; }
+.notice .fix { margin-top: 8px; font-size: 7.5px; line-height: 1.7; }
+.rulecode { padding: 1px 5px; border-radius: 4px; background: var(--red); color: white; font: 6.5px var(--mono); }
+
+.sql-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 9px; }
+.sql-head .link-button { margin-left: auto; }
+.rewrites { margin-top: 10px; font-size: 7.5px; }
+.rewrites b { display: block; margin-bottom: 4px; }
+.rewrites ul { margin: 0; padding-left: 15px; color: var(--ink-2); line-height: 1.8; }
+.sql-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.sql-facts > div { padding: 7px; border: 1px solid var(--line); border-radius: 5px; }
+.sql-facts span { display: block; color: var(--muted); font-size: 6px; }
+.sql-facts code { display: block; margin-top: 2px; font: 7px var(--mono); word-break: break-all; }
+
+.chain-list { display: grid; gap: 1px; border: 1px solid var(--line); background: var(--line); }
+.chain-row {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) 90px auto;
+  gap: 9px; align-items: center;
+  padding: 8px 10px; background: var(--paper);
+}
+.chain-dot {
+  display: grid; place-items: center; width: 15px; height: 15px;
+  border-radius: 50%; color: white; background: var(--green-2); font-size: 7px;
+}
+.chain-row.bad .chain-dot { background: var(--red); }
+.chain-main b { font-size: 8px; }
+.chain-main small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
+.chain-bar { height: 4px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.chain-bar i { display: block; height: 100%; background: var(--green-2); }
+.chain-ms { color: var(--muted); font: 7px var(--mono); white-space: nowrap; }
+
+.hit-box { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 11px; font-size: 7.5px; }
+.hit-box b { color: var(--muted); font-weight: 400; margin-right: 3px; }
+.tag { padding: 2px 6px; border-radius: 4px; background: var(--paper-2); font: 7px var(--mono); }
+.tag.metric { background: var(--green-wash); color: var(--green); }
+
+/* 配额环。未启用配额时不画进度，画满环等于暗示"有上限且还剩很多" */
+.score-ring {
+  position: relative; display: grid; place-items: center;
+  width: 46px; height: 46px; flex: none; border-radius: 50%;
+  color: white; font: 700 13px var(--serif);
+  background: conic-gradient(var(--green-2) calc(var(--ratio, 1) * 360deg), rgba(255,255,255,.18) 0);
+}
+.score-ring::after {
+  content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--dark);
+}
+.score-ring > * , .score-ring { z-index: 0; }
+.score-ring { isolation: isolate; }
+.score-ring::before {
+  content: attr(title); position: absolute; opacity: 0; pointer-events: none;
+}
+.score-ring.low { background: conic-gradient(var(--amber) calc(var(--ratio, 1) * 360deg), rgba(255,255,255,.18) 0); }
+.score-ring.none { background: rgba(255,255,255,.14); }
+.ready-badge.wait { color: #8d521b; background: var(--amber-wash); }
+.ready-badge.bad { color: var(--red); background: var(--red-wash); }

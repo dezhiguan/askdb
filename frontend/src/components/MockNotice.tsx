@@ -17,12 +17,6 @@ interface Notice {
 }
 
 const NOTICES: Partial<Record<View, Notice>> = {
-  query: {
-    phase: '接后端：下一步',
-    backend: '问答链路后端已完整可用（护栏 R-01～R-17、干跑、只读执行、步骤级 trace）。'
-      + '本页尚未接上 /api/ask，输入框里的结果是样例数据。',
-    legacy: true,
-  },
   tasks: {
     phase: '接后端：阶段 E',
     backend: '尚无任务队列，/api/ask 目前是同步请求。'

@@ -154,3 +154,53 @@ def test_credentials_never_touch_browser_storage():
         if "localStorage" in text or "sessionStorage" in text:
             offenders.append(str(path.relative_to(ROOT)))
     assert not offenders, f"前端往浏览器存储写了东西，需人工确认不含凭证：{offenders}"
+
+
+QUERY_WORKSPACE = FRONTEND_SRC / "components" / "QueryWorkspace.tsx"
+RESULT_TABS = FRONTEND_SRC / "components" / "ResultTabs.tsx"
+TRUST_SIDEBAR = FRONTEND_SRC / "components" / "TrustSidebar.tsx"
+
+
+def test_query_workspace_is_wired_to_real_endpoints():
+    src = QUERY_WORKSPACE.read_text(encoding="utf-8")
+    for fn in ("askQuestion", "runSql"):
+        assert fn in src, f"查询工作台没有调用 {fn}"
+    assert "resumeTask" in RESULT_TABS.read_text(encoding="utf-8"), "断点续跑没有接上"
+
+    notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
+    assert "query:" not in notices, "查询工作台已接真实数据，MockNotice 里的条目要删掉"
+
+
+def test_rejection_codes_all_have_plain_language():
+    """只把规则号（R-03）甩给用户，等于把排查成本原样丢过去 —— 他不知道那是什么。
+
+    后端新增一种拦截而前端没跟上，页面会显示成"这次查询没能完成"加一串代码，
+    没有任何处置建议。这类漂移不报错，所以由测试盯住。
+    """
+    codes = set()
+    for path in (ROOT / "askdb").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        codes |= set(re.findall(r'rejected_by=?\s*=?\s*"([A-Z0-9_-]+)"', text))
+        codes |= set(re.findall(r'"rejected_by":\s*"([A-Z0-9_-]+)"', text))
+    assert codes, "没扫到任何拦截码，正则或代码结构变了"
+
+    src = RESULT_TABS.read_text(encoding="utf-8")
+    block = re.search(r"const RULES[^{]*\{(.*?)\n\}", src, re.S)
+    assert block, "ResultTabs 里找不到 RULES"
+    known = set(re.findall(r"^\s*'?([A-Z0-9_-]+)'?:", block.group(1), re.M))
+
+    missing = sorted(codes - known)
+    assert not missing, f"这些拦截码在结果页没有人话解释：{missing}"
+
+
+def test_no_fabricated_assurance_claims():
+    """原型右栏那套「可信度 96 / SSO · PRODUCT / PROD-RO / MASK · AUDIT / 90 DAYS」
+    在 askdb 里一条都不成立：没有账号体系、没有列级脱敏、没有数据期限策略，
+    更没有对答案可靠性的评分。
+
+    askdb 保证的是**过程可信**（危险操作可拦、结果附 SQL 可自验、判定可追溯），
+    不是**结果可信**。给一个分数等于替用户下了「这个答案有多可靠」的判断。
+    """
+    src = TRUST_SIDEBAR.read_text(encoding="utf-8")
+    for claim in ("PROD-RO", "SSO · PRODUCT", "MASK · AUDIT", "90 DAYS"):
+        assert claim not in src, f"右栏还在展示不成立的承诺：{claim}"

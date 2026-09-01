@@ -3,14 +3,13 @@ import { AppShell, Brand, PageHeader } from './components/AppShell'
 import { MockNotice } from './components/MockNotice'
 import { ModalLayer } from './components/Modals'
 import { QueryWorkspace } from './components/QueryWorkspace'
-import { sources } from './data/mockData'
 import { DataSourcesPage } from './pages/DataSourcesPage'
 import { AuditPage } from './pages/AuditPage'
 import { GlossaryPage, PermissionsPage } from './pages/GovernancePages'
 import { ConnectorsPage, DeveloperPage, RoadmapPage } from './pages/ScalePages'
 import { TasksPage } from './pages/TasksPage'
 import { TracesPage } from './pages/TracesPage'
-import type { DataSource, ModalName, View } from './types'
+import type { ModalName, View } from './types'
 import { useHealth } from './useHealth'
 import './styles/theme.css'
 import './styles/shell.css'
@@ -22,7 +21,6 @@ import './styles/responsive.css'
 function App() {
   const [entered, setEntered] = useState(false)
   const [view, setView] = useState<View>('query')
-  const [source, setSource] = useState<DataSource>(sources[0])
   const [modal, setModal] = useState<ModalName>(null)
   const [toast, setToast] = useState('')
   const health = useHealth()
@@ -33,7 +31,7 @@ function App() {
   }
 
   const page = (() => {
-    if (view === 'query') return <div className="page query-page"><PageHeader eyebrow="Phase 1 · Unified Query" title="查询工作台" description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。" action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>} /><QueryWorkspace source={source} setSource={setSource} onNavigate={setView} onClarify={() => setModal('clarification')} notify={notify} /></div>
+    if (view === 'query') return <div className="page query-page"><PageHeader eyebrow="Phase 1 · Unified Query" title="查询工作台" description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。" action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>} /><QueryWorkspace health={health} onNavigate={setView} /></div>
     if (view === 'tasks') return <TasksPage onClarify={() => setModal('clarification')} notify={notify} />
     if (view === 'sources') return <DataSourcesPage health={health} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />

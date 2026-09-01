@@ -1,100 +1,288 @@
-import { useState } from 'react'
-import type { ResultTab, View } from '../types'
+import { useEffect, useState } from 'react'
+import { resumeTask, type AskResult } from '../api'
+import { STEP_NAMES } from '../traceSteps'
+import type { ResultTab } from '../types'
 
-const sql = `-- policy: PROD_RO / max_rows: 100 / timeout: 15s
-SELECT failure_reason, COUNT(*) AS order_count
-FROM payment_orders
-WHERE status = 'FAILED'
-  AND created_at >= current_date
-GROUP BY failure_reason
-ORDER BY order_count DESC
-LIMIT 100;`
+/** 拦截规则的人话与处置建议。
+ *  只给规则号（R-03）等于把排查成本原样丢给用户 —— 他不知道那是什么。 */
+const RULES: Record<string, [string, string]> = {
+  'R-01': ['只能执行一条语句', '把多条语句拆开，一次问一件事。'],
+  'R-02': ['只允许查询，不允许改数据', 'askdb 是只读工具。要改数据请走正常的运维流程。'],
+  'R-03': ['用到了没有开放的表', '到「数据源」把这张表加进白名单。没开放的表模型看不见也查不到。'],
+  'R-04': ['用到了不存在的字段', '错误信息里已列出该表的真实字段名，照着改即可。'],
+  'R-05': ['不允许 SELECT *', '显式写出需要的列，避免把不该看的字段也带出来。'],
+  'R-06': ['不允许跨 schema / 跨库引用', '只查白名单内的表，不要带 schema 前缀。'],
+  'R-07': ['用到了被禁用的函数', '这些函数能读文件或访问外部资源，不在只读查询的范围内。'],
+  'R-08': ['出现了笛卡尔积', '补上 JOIN 条件，否则扫描量会失控。'],
+  'R-10': ['无法确定这条查询属于哪个租户', '换个写法，别用会掩盖表来源的构造。'],
+  'R-11': ['预计要扫描的数据量太大', '加上时间范围或更具体的筛选条件，把扫描量降下来。'],
+  'R-17': ['本次任务的累计成本已达上限', '拆成更小的问题重新提问。'],
+  QUOTA: ['今日调用配额已用完', '直查 SQL 不消耗 token，配额用尽后仍然可用。'],
+  INTERRUPTED: ['执行在中断点停止', '下面可以从断点继续，已完成的节点不会重跑。'],
+  EXEC: ['数据源出问题了', ''],
+  LLM: ['模型调用没成功', ''],
+  NO_SQL: ['这个问题用现有的表回答不了', '换个问法，或到「数据源」开放更多表。'],
+}
 
-const scenarios = {
-  input: ['信息缺失 → 用户补充', '缺少时间范围与统计口径，任务在生成 SQL 前暂停。', '查询发起人', 'GENERATE_SQL#04'],
-  approval: ['高风险 / 高成本 → 数据负责人审批', '预计扫描 2.8M 行、成本 87%，命中人工审批策略。', '数据负责人', 'QUERY#05'],
-  schema: ['Schema 漂移 → 开发者复核', '字段绑定结果与保存版本不一致。', '数据开发者', 'GENERATE_SQL#04'],
-  retry: ['连接器瞬时失败 → 自动重试', '只读副本连接超时，幂等查询按退避策略恢复。', '系统自动', 'QUERY#05'],
-} as const
-
-export function ResultTabs({ active, onChange, onNavigate, notify }: {
+export function ResultTabs({ result, active, onChange, onResumed }: {
+  result: AskResult
   active: ResultTab
   onChange: (tab: ResultTab) => void
-  onNavigate: (view: View) => void
-  notify: (message: string) => void
+  onResumed: (result: AskResult) => void
 }) {
-  const tabs: [ResultTab, string][] = [['result', '查询结果'], ['sql', '原生 SQL'], ['chain', '执行链路'], ['checkpoint', '人工介入 / 断点恢复 · 4']]
+  const interrupted = result.rejected_by === 'INTERRUPTED'
+  const tabs: [ResultTab, string][] = [
+    ['result', '查询结果'],
+    ['sql', '原生 SQL'],
+    ['chain', '执行链路'],
+    ['checkpoint', interrupted ? '断点恢复' : '本次判定'],
+  ]
+
   return (
-    <div className="result-area">
-      <div className="answer-card">
-        <div><strong>今天共有 18 笔支付失败订单</strong><p>相比昨日同期下降 14.3%。其中 11 笔为支付回调超时，5 笔为余额不足，2 笔为风控拒绝。</p></div>
-        <div className="answer-actions"><button onClick={() => onChange('sql')}>查看原生 SQL</button><button onClick={() => onNavigate('traces')}>查看执行链路</button></div>
-        <div className="evidence-strip">
-          {[
-            ['查询 ID', 'QRY-183108-7A2F'],
-            ['SQL SHA-256', '8ad2…91cf'],
-            ['数据快照', '2026-08-28 18:31'],
-            ['返回 / 扫描', '3 / 1,842 ROWS'],
-          ].map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
-        </div>
-      </div>
+    <div className="result-shell">
       <div className="result-tabs">
-        {tabs.map(([id, label]) => <button className={active === id ? 'active' : ''} key={id} onClick={() => onChange(id)}>{label}</button>)}
+        {tabs.map(([id, label]) => (
+          <button className={active === id ? 'active' : ''} key={id} onClick={() => onChange(id)}>
+            {label}
+            {id === 'checkpoint' && interrupted && <i className="tab-dot" />}
+          </button>
+        ))}
       </div>
-      {active === 'result' && <ResultTable />}
-      {active === 'sql' && <SqlPane notify={notify} />}
-      {active === 'chain' && <ExecutionChain onNavigate={onNavigate} />}
-      {active === 'checkpoint' && <CheckpointPane notify={notify} />}
+      {active === 'result' && <ResultPane result={result} />}
+      {active === 'sql' && <SqlPane result={result} />}
+      {active === 'chain' && <ChainPane result={result} />}
+      {active === 'checkpoint' && <CheckpointPane result={result} onResumed={onResumed} />}
     </div>
   )
 }
 
-function ResultTable() {
+function ResultPane({ result }: { result: AskResult }) {
+  if (!result.ok) {
+    const [title, fix] = RULES[result.rejected_by ?? ''] ?? ['这次查询没能完成', '']
+    return (
+      <div className="pane">
+        <div className="notice bad">
+          <div className="t">
+            {result.rejected_by && <span className="rulecode">{result.rejected_by}</span>}
+            {title}
+          </div>
+          {result.error && <div className="why">{result.error}</div>}
+          {(result.hint || fix) && <div className="fix"><b>下一步：</b>{result.hint || fix}</div>}
+        </div>
+      </div>
+    )
+  }
+
+  if (!result.row_count) {
+    return (
+      <div className="pane">
+        <div className="notice info">
+          <div className="t">◇ 结果为空</div>
+          <div className="why">SQL 正常执行了，只是没有符合条件的行 —— 这不是错误。</div>
+          <div className="fix">
+            <b>可能的原因：</b>时间范围内确实没有数据；筛选条件太严；
+            或当前租户（org_id = {result.org_id}）下没有这类记录。上面的 SQL 可以复制出来自己调。
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="table-scroll"><table><thead><tr><th>失败原因</th><th>订单数</th><th>占比</th><th>较昨日</th><th>示例用户</th></tr></thead>
-      <tbody>
-        <tr><td>支付回调超时</td><td className="good">11</td><td>61.1%</td><td>-8.3%</td><td><span className="mask">138****0281</span></td></tr>
-        <tr><td>余额不足</td><td className="good">5</td><td>27.8%</td><td>-20.0%</td><td><span className="mask">186****9270</span></td></tr>
-        <tr><td>风控拒绝</td><td className="good">2</td><td>11.1%</td><td>持平</td><td><span className="mask">139****4882</span></td></tr>
-      </tbody></table></div>
+    <div className="pane">
+      <div className="result-meta">
+        {result.row_count.toLocaleString()} 行
+        {result.truncated && <span className="warn-chip">已按行数上限截断 · R-13</span>}
+        {/* 不标数据时间的结果，隔天再看会被当成当前状态 */}
+        {result.as_of && <span> · 数据截至 {result.as_of}</span>}
+        <span> · 结果附带上方 SQL，可自行核对</span>
+      </div>
+      <div className="table-scroll">
+        <table>
+          <thead><tr>{result.columns?.map(c => <th key={c}>{c}</th>)}</tr></thead>
+          <tbody>
+            {result.rows?.map((row, i) => (
+              <tr key={i}>
+                {row.map((cell, j) => (
+                  <td key={j}>{cell === null ? <span className="dim">NULL</span> : String(cell)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 
-function SqlPane({ notify }: { notify: (message: string) => void }) {
-  const copy = async () => {
-    await navigator.clipboard?.writeText(sql).catch(() => undefined)
-    notify('原生 SQL 已复制')
-  }
-  return <div className="sql-pane"><div className="sql-toolbar"><span>PostgreSQL 15 · SHA-256: 8ad2…91cf · 未经格式改写</span><button onClick={copy}>复制原生 SQL</button></div><pre>{sql}</pre></div>
-}
+function SqlPane({ result }: { result: AskResult }) {
+  const [copied, setCopied] = useState(false)
+  // 连同它算的是哪条 SQL 一起存，渲染时比对 —— 换了 SQL 但摘要还没算出来时
+  // 宁可显示「—」，也不能把上一条的摘要挂在新 SQL 底下
+  const [digest, setDigest] = useState<{ sql: string; hex: string } | null>(null)
+  const sql = result.sql_final || result.sql_raw || ''
 
-function ExecutionChain({ onNavigate }: { onNavigate: (view: View) => void }) {
-  return <div><div className="mini-trace">{['身份与权限 · 12ms', '元数据检索 · 83ms', '模型生成 SQL · 740ms', 'SQL Guard · 18ms', '数据库查询 · 480ms', '结果解释 · 310ms'].map((step, index) => <span key={step}><strong>{step.split(' · ')[0]}</strong><small>{step.split(' · ')[1]}</small>{index < 5 && <i>→</i>}</span>)}</div><div className="align-right"><button className="secondary" onClick={() => onNavigate('traces')}>打开完整 Trace</button></div></div>
-}
+  useEffect(() => {
+    // SHA-256 是给「拿去别处复核」用的锚点。crypto.subtle 只在安全上下文可用，
+    // 取不到就如实留空，不要拿别的哈希冒充
+    if (!sql || !globalThis.crypto?.subtle) return
+    let alive = true
+    globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(sql))
+      .then(buf => {
+        if (!alive) return
+        const hex = [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
+        setDigest({ sql, hex })
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [sql])
 
-function CheckpointPane({ notify }: { notify: (message: string) => void }) {
-  const [scenario, setScenario] = useState<keyof typeof scenarios>('input')
-  const [state, setState] = useState<'WAITING' | 'RESUMING' | 'COMPLETED'>('WAITING')
-  const info = scenarios[scenario]
-  const resume = () => {
-    if (state === 'COMPLETED') { setState('WAITING'); return }
-    setState('RESUMING'); notify('正在重验权限与 Schema')
-    window.setTimeout(() => { setState('COMPLETED'); notify('断点恢复完成 · 已完成节点未重跑') }, 1200)
-  }
+  const hash = digest?.sql === sql ? digest.hex : ''
+
+  if (!sql) return <div className="pane"><p className="drawer-note">这次没有产出 SQL。</p></div>
+
+  const executed = result.ok
   return (
-    <div className="checkpoint-console">
-      <aside>
-        <strong>选择中断场景</strong>
-        {(Object.keys(scenarios) as (keyof typeof scenarios)[]).map(key => <button className={scenario === key ? 'active' : ''} key={key} onClick={() => { setScenario(key); setState('WAITING') }}>{scenarios[key][0].split(' → ')[0]}</button>)}
-        <small>仅在检查点持久化最小状态；续跑不会重做已完成节点。</small>
-      </aside>
-      <section>
-        <div className="checkpoint-head"><div><strong>{info[0]}</strong><p>{info[1]}</p></div><span className={`state ${state.toLowerCase()}`}>{state}</span></div>
-        <div className="checkpoint-facts"><div><span>责任角色</span><code>{info[2]}</code></div><div><span>精确恢复节点</span><code>{info[3]}</code></div><div><span>CHECKPOINT</span><code>意图 + AuthZ + 候选表</code></div></div>
-        <div className="checkpoint-flow">{['理解问题', '权限校验', '人工检查点', '生成 / 护栏', '只读查询', '结果解释'].map((label, index) => <div className={state === 'COMPLETED' || index < 2 ? 'done' : index === 2 ? 'paused' : ''} key={label}><i>{index + 1}</i><strong>{label}</strong><small>{state === 'COMPLETED' || index < 2 ? 'DONE' : index === 2 ? state : 'PENDING'}</small></div>)}</div>
-        <div className="resume-proof"><div><strong>恢复前强制重验 · 不是盲目续跑</strong><small>权限令牌 / 数据范围 + Schema v42 / 字段映射</small></div><span>✓ 权限 · ✓ Schema</span></div>
-        <div className="checkpoint-footer"><small>{state === 'COMPLETED' ? `已从 ${info[3]} 完成续跑` : '已完成节点将沿用 checkpoint，不会重新执行'}</small><button onClick={resume}>{state === 'COMPLETED' ? '重置' : state === 'RESUMING' ? '恢复中…' : '确认并续跑'}</button></div>
-      </section>
+    <div className="pane">
+      <div className="sql-head">
+        <b>
+          {executed ? '最终 SQL（实际执行的就是这条）'
+            : result.sql_final ? '改写后的 SQL（未执行）' : '模型产出（未执行）'}
+        </b>
+        <span className={`status ${executed ? '' : 'bad'}`}>
+          {executed ? '护栏通过 · 只读执行'
+            : result.rejected_by ? `已拦截 · ${result.rejected_by}` : '未执行'}
+        </span>
+        <button className="link-button" onClick={() => {
+          navigator.clipboard?.writeText(sql)
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1400)
+        }}>{copied ? '已复制' : '复制'}</button>
+      </div>
+      <pre className="drawer-code">{sql}</pre>
+
+      {!!result.rewrites?.length && (
+        <div className="rewrites">
+          <b>护栏改写</b>
+          <ul>{result.rewrites.map(r => <li key={r}>{r}</li>)}</ul>
+        </div>
+      )}
+      {!!result.sql_raw && result.sql_raw !== result.sql_final && (
+        <details>
+          <summary>模型原始 SQL（改写前）</summary>
+          <pre className="drawer-code">{result.sql_raw}</pre>
+        </details>
+      )}
+      <div className="sql-facts">
+        <div><span>TRACE ID</span><code>{result.trace_id}</code></div>
+        <div><span>SQL SHA-256</span><code>{hash ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : '—'}</code></div>
+      </div>
+    </div>
+  )
+}
+
+function ChainPane({ result }: { result: AskResult }) {
+  const steps = result.steps ?? []
+  if (!steps.length) return <div className="pane"><p className="drawer-note">这条记录没有步骤明细。</p></div>
+
+  const total = steps.reduce((sum, s) => sum + (s.ms || 0), 0) || 1
+  return (
+    <div className="pane">
+      <div className="result-meta">
+        {result.step_count ?? 1} 步 · {result.attempts ?? 1} 轮 · {result.elapsed_ms ?? 0} ms ·
+        {' '}{result.tok_in ?? 0}+{result.tok_out ?? 0} tok · ¥{(result.cost_cny ?? 0).toFixed(4)}
+      </div>
+      <div className="chain-list">
+        {steps.map((step, i) => (
+          <div className={`chain-row ${step.status !== 'ok' ? 'bad' : ''}`} key={`${step.step}-${i}`}>
+            <span className="chain-dot">{step.status === 'ok' ? '✓' : step.status === 'blocked' ? '✕' : '!'}</span>
+            <span className="chain-main">
+              <b>{STEP_NAMES[step.step] ?? step.step}</b>
+              {step.note && <small>{step.note}</small>}
+            </span>
+            <span className="chain-bar"><i style={{ width: `${Math.max(2, (step.ms || 0) / total * 100)}%` }} /></span>
+            <span className="chain-ms">
+              {step.ms} ms{step.tok_in ? ` · ${step.tok_in}+${step.tok_out} tok` : ''}
+            </span>
+          </div>
+        ))}
+      </div>
+      {!!result.tables_hit?.length && (
+        <div className="hit-box">
+          <b>命中</b>
+          {result.tables_hit.map(t => <span className="tag" key={t}>{t}</span>)}
+          {result.metrics_hit?.map(m => <span className="tag metric" key={m}>口径 {m}</span>)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 中断时是续跑面板；正常完成时展示这次判定的事实，不留空页签。 */
+function CheckpointPane({ result, onResumed }: {
+  result: AskResult
+  onResumed: (result: AskResult) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const interrupted = result.rejected_by === 'INTERRUPTED'
+  const thread = result.thread_id || result.trace_id
+
+  const resume = async () => {
+    setBusy(true); setError('')
+    try {
+      const value = await resumeTask(thread)
+      if (value === null) {
+        setError('这条任务已经跑完或不存在，无法续跑。')
+        return
+      }
+      onResumed(value)
+    } catch (e) {
+      setError(String((e as Error).message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!interrupted) {
+    return (
+      <div className="pane">
+        <div className="policy-grid">
+          <div><span>检查点线程</span><strong className="mono">{thread}</strong></div>
+          <div><span>执行轮次</span><strong>{result.attempts ?? 1}</strong></div>
+          <div><span>是否多步</span><strong>{result.multi_step ? '多步' : '单步'}</strong></div>
+          <div><span>提前收敛</span><strong>{result.converged_early || '—'}</strong></div>
+        </div>
+        <p className="drawer-note">
+          每次提问的检查点都会落盘，跨进程重启存活。本次正常完成，没有可续跑的断点。
+          判定链路可在审计中心按 trace 复放。
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="pane">
+      <div className="notice bad">
+        <div className="t"><span className="rulecode">INTERRUPTED</span>执行在中断点停止</div>
+        {result.error && <div className="why">{result.error}</div>}
+        <div className="fix">
+          <b>下一步：</b>从断点继续。已完成的节点直接沿用，不会重新执行；
+          预算计数一并恢复，续跑不会绕过成本上限。
+        </div>
+      </div>
+      <div className="policy-grid">
+        <div><span>检查点线程</span><strong className="mono">{thread}</strong></div>
+        <div><span>已执行轮次</span><strong>{result.attempts ?? 1}</strong></div>
+        <div><span>已花费</span><strong>¥{(result.cost_cny ?? 0).toFixed(4)}</strong></div>
+        <div><span>已用 token</span><strong>{(result.tok_in ?? 0) + (result.tok_out ?? 0)}</strong></div>
+      </div>
+      {error && <div className="audit-error">{error}</div>}
+      <div className="modal-actions">
+        <button className="primary" disabled={busy} onClick={resume}>
+          {busy ? '续跑中…' : '从断点继续'}
+        </button>
+      </div>
     </div>
   )
 }

@@ -28,6 +28,14 @@ export interface Health {
     tables: string[]
   }
   guard: { max_rows: number; max_retry: number; timeout_ms: number; max_scan_rows: number; daily_quota: number }
+  quota: {
+    limit: number
+    used: number
+    /** 未启用配额时为 null */
+    remaining: number | null
+    backend: string
+    multi_replica_safe: boolean
+  }
 }
 
 export async function fetchHealth(): Promise<Health> {
@@ -350,3 +358,75 @@ export const setSourceTables = (id: string, tables: string[]) =>
 
 export const deleteSource = (id: string) =>
   post<{ ok: boolean }>(`/api/sources/${id}`, {}, 'DELETE')
+
+/* ---------------- 查询 ---------------- */
+
+export interface Step {
+  step: string
+  ms: number
+  status: string
+  note?: string
+  tok_in?: number
+  tok_out?: number
+}
+
+/** /api/ask 与 /api/sql 的返回。字段与 graph.AskResult 一一对应。
+ *  直查模式（/api/sql）不经模型，只回填其中一部分，缺的字段按可选处理。 */
+export interface AskResult {
+  ok: boolean
+  question: string
+  trace_id: string
+  org_id: number
+
+  sql_raw?: string
+  sql_final?: string
+  reasoning?: string
+  rules_fired?: string[]
+  /** 护栏做过的改写（注入租户谓词、补 LIMIT、展开 SELECT *） */
+  rewrites?: string[]
+
+  columns?: string[]
+  rows?: (string | number | boolean | null)[][]
+  row_count?: number
+  /** 触发 R-13 行数上限被截断 */
+  truncated?: boolean
+  /** 数据时间。不标时间的结果隔天再看会被当成当前状态 */
+  as_of?: string
+
+  rejected_by?: string | null
+  error?: string
+  hint?: string
+
+  tables_hit?: string[]
+  metrics_hit?: string[]
+  attempts?: number
+  step_count?: number
+  multi_step?: boolean
+  converged_early?: string
+  steps?: Step[]
+  /** 检查点线程。中断后靠它续跑；普通提问等于 trace_id */
+  thread_id?: string
+  elapsed_ms?: number
+  tok_in?: number
+  tok_out?: number
+  cost_cny?: number
+}
+
+export const askQuestion = (question: string, orgId?: number) =>
+  post<AskResult>('/api/ask', { question, org_id: orgId ?? null })
+
+export const runSql = (sql: string, orgId?: number) =>
+  post<AskResult>('/api/sql', { sql, org_id: orgId ?? null })
+
+/** 从断点续跑。thread_id 非法/不存在/已跑完一律 404 —— 不提供未完成任务的枚举入口。 */
+export async function resumeTask(threadId: string): Promise<AskResult | null> {
+  const response = await fetch('/api/resume', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ thread_id: threadId }),
+  })
+  if (response.status === 404) return null
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(data?.detail || `/api/resume ${response.status}`)
+  return data
+}

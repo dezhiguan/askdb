@@ -17,10 +17,3 @@ export type ResultTab = 'result' | 'sql' | 'chain' | 'checkpoint'
 // 更不该留一个收数据库口令的表单在包里等人接回去。
 export type ModalName = 'clarification' | 'connector' | 'langfuse' | null
 
-export interface DataSource {
-  code: string
-  shortName: string
-  name: string
-  meta: string
-  status: 'online' | 'setup'
-}
