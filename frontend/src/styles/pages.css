@@ -155,3 +155,134 @@
 .clarify-preview small { color: var(--muted); font-size: 6px; }
 .toast { position: fixed; z-index: 120; right: 18px; bottom: 18px; max-width: 360px; padding: 10px 13px; border-radius: 7px; color: white; background: var(--dark); box-shadow: 0 12px 35px rgba(0,0,0,.2); font-size: 8px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .2s; }
 .toast.show { opacity: 1; transform: translateY(0); }
+
+/* ---------------- 审计中心（已接 /api/audit） ---------------- */
+
+.audit-error {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid #d4aaa3;
+  border-radius: 7px;
+  background: var(--red-wash);
+  color: var(--red);
+  font-size: 8px;
+}
+
+.stats.stats-6 { grid-template-columns: repeat(6, 1fr); }
+/* 成本那格可点开分布，做成按钮而不是给 div 挂 onClick —— 键盘能聚焦、读屏能念 */
+.stats .stat-clickable {
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(250,249,245,.78);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s, transform .15s;
+}
+.stats .stat-clickable:hover { border-color: var(--green); transform: translateY(-1px); }
+.stats .stat-clickable span, .stats .stat-clickable strong, .stats .stat-clickable small { display: block; }
+.stats .stat-clickable span { color: var(--muted); font-size: 7px; }
+.stats .stat-clickable strong { margin: 4px 0; font: 18px var(--serif); color: var(--green); }
+.stats .stat-clickable small { color: var(--green); font-size: 6px; }
+
+.audit-table { width: 100%; border-collapse: collapse; font-size: 8px; }
+.audit-table th, .audit-table td { padding: 8px 9px; border-bottom: 1px solid var(--line); text-align: left; }
+.audit-table th { color: var(--muted); font: 7px var(--mono); font-weight: 700; letter-spacing: .08em; }
+.audit-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.audit-table tr:last-child td { border-bottom: 0; }
+.audit-question { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.audit-empty { color: var(--muted); text-align: center; padding: 18px 0; }
+.status.bad { color: var(--red); background: var(--red-wash); }
+
+.link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--green);
+  font-size: 8px;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+.link-button:hover { text-decoration: underline; }
+/* 不可用的入口保持可见但明确失效，并靠 title 说清原因 ——
+   直接藏起来会让人反复找，点了才 404 更糟 */
+.link-disabled { color: var(--muted); font-size: 8px; cursor: not-allowed; }
+
+.audit-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 7.5px;
+}
+.audit-pager button { margin-left: 6px; }
+.audit-pager button:disabled { opacity: .4; cursor: not-allowed; }
+
+/* 抽屉 */
+.drawer-scrim { position: fixed; inset: 0; z-index: 65; background: rgba(16,35,26,.28); }
+.audit-drawer { display: flex; flex-direction: column; width: 520px; overflow: hidden; }
+.audit-drawer .drawer-body { flex: 1; overflow-y: auto; padding-right: 4px; }
+.audit-drawer h4 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 16px 0 7px;
+  font-size: 9px;
+}
+.drawer-note { margin: 6px 0; color: var(--muted); font-size: 7.5px; line-height: 1.7; }
+.drawer-code {
+  margin: 6px 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper-2);
+  font: 7.5px var(--mono);
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.replay-question { margin: 0 0 4px; font-size: 10px; font-weight: 700; }
+.replay-step {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: start;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+}
+.replay-step b { font-size: 8px; }
+.replay-step small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
+.replay-dot {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  color: white;
+  background: var(--green-2);
+  font-size: 7px;
+}
+.replay-dot.bad { background: var(--red); }
+.replay-dot.neutral { background: var(--muted); }
+.replay-ms { color: var(--muted); font: 7px var(--mono); white-space: nowrap; }
+
+.drawer-table { width: 100%; border-collapse: collapse; font-size: 7.5px; }
+.drawer-table th, .drawer-table td { padding: 5px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+.drawer-table th { color: var(--muted); font: 6.5px var(--mono); letter-spacing: .08em; }
+.drawer-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.cost-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 76px;
+  margin-top: 10px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper-2);
+}
+.cost-bars i { flex: 1; border-radius: 2px 2px 0 0; background: var(--green-2); }
+.cost-axis { display: flex; justify-content: space-between; margin-top: 4px; color: var(--muted); font: 6.5px var(--mono); }

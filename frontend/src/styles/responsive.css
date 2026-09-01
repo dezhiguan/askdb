@@ -67,3 +67,11 @@
   .login-form { padding: 30px 22px; }
   .audit-drawer { width: min(430px,100vw); }
 }
+
+@media (max-width: 1180px) {
+  .stats.stats-6 { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 900px) {
+  .stats.stats-6 { grid-template-columns: repeat(2, 1fr) !important; }
+  .audit-drawer { width: min(520px, 100vw); }
+}

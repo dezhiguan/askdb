@@ -81,3 +81,38 @@ def test_no_dangerous_html_injection():
         if "dangerouslySetInnerHTML" in p.read_text(encoding="utf-8")
     ]
     assert not offenders, f"用了 dangerouslySetInnerHTML，绕过 React 转义：{offenders}"
+
+
+AUDIT_PAGE = FRONTEND_SRC / "pages" / "AuditPage.tsx"
+
+
+def test_audit_page_is_wired_to_real_endpoints():
+    """审计页已接后端。接完必须同时撤掉样例数据声明 ——
+    留着会让真实数据顶着一条「本页不是真实数据」的横幅，比漏加更误导。
+    """
+    src = AUDIT_PAGE.read_text(encoding="utf-8")
+    for fn in ("fetchAudit", "fetchAuditStats", "fetchReplay"):
+        assert fn in src, f"审计页没有调用 {fn}"
+
+    notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
+    assert "audit:" not in notices, "审计页已接真实数据，MockNotice 里的条目要删掉"
+
+
+def test_step_names_cover_every_traced_node():
+    """后端加了新节点、前端没跟上，复放里就会显示 `assess` 这种原始 id。
+
+    这类漂移没有任何报错，只是看着眼生 —— 实际已经发生过：旧页面漏了
+    assess / plan / quota / interrupted 四个。
+    """
+    traced = set()
+    for path in (ROOT / "askdb").glob("*.py"):
+        traced |= set(re.findall(r'tracer\.add\("([a-z_]+)"', path.read_text(encoding="utf-8")))
+    assert traced, "没扫到任何 tracer.add，正则或代码结构变了"
+
+    src = AUDIT_PAGE.read_text(encoding="utf-8")
+    block = re.search(r"const STEP_NAMES[^{]*\{(.*?)\n\}", src, re.S)
+    assert block, "AuditPage 里找不到 STEP_NAMES"
+    known = set(re.findall(r"^\s*([a-z_]+):", block.group(1), re.M))
+
+    missing = sorted(traced - known)
+    assert not missing, f"这些节点在复放里会显示成原始 id：{missing}"

@@ -50,12 +50,6 @@ const NOTICES: Partial<Record<View, Notice>> = {
       + '本页尚未接上 /api/replay。',
     legacy: true,
   },
-  audit: {
-    phase: '接后端：下一步',
-    backend: '审计接口 /api/audit 与 /api/audit/stats 已上线，一次调用一条记录、拦截也留痕。'
-      + '本页尚未接上，表格是样例数据。',
-    legacy: true,
-  },
   connectors: {
     phase: '接后端：阶段 F',
     backend: '尚无分布式数据面，当前进程直连单一数据源。这一项需要真实的多 VPC 环境才谈得上验证。',
