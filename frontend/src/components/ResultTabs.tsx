@@ -24,6 +24,87 @@ const RULES: Record<string, [string, string]> = {
   NO_SQL: ['这个问题用现有的表回答不了', '换个问法，或到「数据源」开放更多表。'],
 }
 
+/** SQL 的 SHA-256。连同它算的是哪条 SQL 一起存，渲染时比对 ——
+ *  换了 SQL 但摘要还没算出来时宁可显示「—」，也不能把上一条的摘要挂在新 SQL 底下。
+ *  crypto.subtle 只在安全上下文可用，取不到就如实留空，不拿别的哈希冒充。 */
+function useSqlDigest(sql: string): string {
+  const [digest, setDigest] = useState<{ sql: string; hex: string } | null>(null)
+
+  useEffect(() => {
+    if (!sql || !globalThis.crypto?.subtle) return
+    let alive = true
+    globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(sql))
+      .then(buf => {
+        if (!alive) return
+        setDigest({ sql, hex: [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('') })
+      })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [sql])
+
+  return digest?.sql === sql ? digest.hex : ''
+}
+
+/** 结论卡。
+ *
+ *  原型这里是一句自然语言结论（"今天共有 18 笔支付失败订单，相比昨日同期
+ *  下降 14.3%"）。askdb **不产出结论散文** —— 它返回行，附带 SQL 让人自验。
+ *  那句对比更是设计稿的虚构：后端没有任何同比口径。
+ *
+ *  所以结论只说数据本身说得出的话：单值结果直接把那个值念出来（它就是答案），
+ *  多行结果如实说返回了多少行。副标题用模型对自己所写 SQL 的说明，没有就不显示。
+ */
+function AnswerCard({ result, onGoTab }: {
+  result: AskResult
+  onGoTab: (tab: ResultTab) => void
+}) {
+  const sql = result.sql_final || result.sql_raw || ''
+  const hash = useSqlDigest(sql)
+
+  const single = result.row_count === 1 && result.columns?.length === 1 && result.rows?.[0]?.[0] != null
+  const headline = single
+    ? `${result.columns![0]}：${fmtValue(result.rows![0][0])}`
+    : `查询返回 ${(result.row_count ?? 0).toLocaleString()} 行`
+
+  return (
+    <div className="answer-card">
+      <div className="answer-top">
+        <div>
+          <h3>{headline}</h3>
+          {result.reasoning && <p>{result.reasoning}</p>}
+        </div>
+        <div className="answer-actions">
+          <button className="ghost" onClick={() => onGoTab('sql')}>查看原生 SQL</button>
+          <button className="ghost" onClick={() => onGoTab('chain')}>查看执行链路</button>
+        </div>
+      </div>
+      <div className="answer-facts">
+        <div><span>查询 ID</span><strong>{result.trace_id}</strong></div>
+        <div><span>SQL SHA-256</span><strong>{hash ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : '—'}</strong></div>
+        <div><span>数据快照</span><strong>{result.as_of ? fmtStamp(result.as_of) : '—'}</strong></div>
+        <div>
+          <span>返回 / 扫描</span>
+          <strong>
+            {(result.row_count ?? 0).toLocaleString()} / {result.explain_rows == null
+              ? '—' : result.explain_rows.toLocaleString()} ROWS
+          </strong>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function fmtValue(v: string | number | boolean | null): string {
+  return typeof v === 'number' ? v.toLocaleString() : String(v)
+}
+
+function fmtStamp(ts: string): string {
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ts
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
 export function ResultTabs({ result, active, onChange, onResumed }: {
   result: AskResult
   active: ResultTab
@@ -35,11 +116,13 @@ export function ResultTabs({ result, active, onChange, onResumed }: {
     ['result', '查询结果'],
     ['sql', '原生 SQL'],
     ['chain', '执行链路'],
-    ['checkpoint', interrupted ? '断点恢复' : '本次判定'],
+    ['checkpoint', '人工介入 / 断点恢复'],
   ]
 
   return (
     <div className="result-shell">
+      {/* 被拦下时不出结论卡：那时候该看的是拦截原因，不是"返回 0 行" */}
+      {result.ok && <AnswerCard result={result} onGoTab={onChange} />}
       <div className="result-tabs">
         {tabs.map(([id, label]) => (
           <button className={active === id ? 'active' : ''} key={id} onClick={() => onChange(id)}>
@@ -104,7 +187,9 @@ function ResultPane({ result }: { result: AskResult }) {
             {result.rows?.map((row, i) => (
               <tr key={i}>
                 {row.map((cell, j) => (
-                  <td key={j}>{cell === null ? <span className="dim">NULL</span> : String(cell)}</td>
+                  <td key={j} className={typeof cell === 'number' ? 'num-cell' : ''}>
+                    {cell === null ? <span className="dim">NULL</span> : fmtValue(cell)}
+                  </td>
                 ))}
               </tr>
             ))}
@@ -117,27 +202,8 @@ function ResultPane({ result }: { result: AskResult }) {
 
 function SqlPane({ result }: { result: AskResult }) {
   const [copied, setCopied] = useState(false)
-  // 连同它算的是哪条 SQL 一起存，渲染时比对 —— 换了 SQL 但摘要还没算出来时
-  // 宁可显示「—」，也不能把上一条的摘要挂在新 SQL 底下
-  const [digest, setDigest] = useState<{ sql: string; hex: string } | null>(null)
   const sql = result.sql_final || result.sql_raw || ''
-
-  useEffect(() => {
-    // SHA-256 是给「拿去别处复核」用的锚点。crypto.subtle 只在安全上下文可用，
-    // 取不到就如实留空，不要拿别的哈希冒充
-    if (!sql || !globalThis.crypto?.subtle) return
-    let alive = true
-    globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(sql))
-      .then(buf => {
-        if (!alive) return
-        const hex = [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
-        setDigest({ sql, hex })
-      })
-      .catch(() => {})
-    return () => { alive = false }
-  }, [sql])
-
-  const hash = digest?.sql === sql ? digest.hex : ''
+  const hash = useSqlDigest(sql)
 
   if (!sql) return <div className="pane"><p className="drawer-note">这次没有产出 SQL。</p></div>
 

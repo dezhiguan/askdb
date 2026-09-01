@@ -392,6 +392,9 @@ export interface AskResult {
   truncated?: boolean
   /** 数据时间。不标时间的结果隔天再看会被当成当前状态 */
   as_of?: string
+  /** EXPLAIN 估算的扫描行数。返回 3 行是从多少行里筛出来的 —— 判断这条查询
+   *  贵不贵、结果可不可信的关键一维 */
+  explain_rows?: number | null
 
   rejected_by?: string | null
   error?: string

@@ -128,6 +128,10 @@ class AskResult:
     row_count: int = 0
     truncated: bool = False
     as_of: str = ""
+    # EXPLAIN 估算的扫描行数（R-11 的判定依据）。原来只进审计不出接口，
+    # 界面因此说不出"返回 3 行是从多少行里筛出来的" —— 而这正是判断
+    # 一条查询贵不贵、结果可不可信的关键一维
+    explain_rows: int | None = None
 
     rejected_by: str | None = None
     error: str = ""
@@ -747,7 +751,7 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
         rewrites=list(out.get("rewrites") or []),
         columns=out.get("columns", []), rows=out.get("rows", []),
         row_count=out.get("row_count", 0), truncated=out.get("truncated", False),
-        as_of=out.get("as_of", ""),
+        as_of=out.get("as_of", ""), explain_rows=out.get("explain_rows"),
         rejected_by=out.get("rejected_by"), error=out.get("error") or "",
         hint=out.get("error_hint", ""),
         tables_hit=out.get("tables_hit", []), metrics_hit=out.get("metrics_hit", []),

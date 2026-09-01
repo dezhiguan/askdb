@@ -1055,7 +1055,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 0E-20 这种科学计数法，看的人认不出那是 0
             "rows": [[jsonable(v) for v in r] for r in res.rows],
             "row_count": res.row_count, "truncated": res.truncated,
-            "as_of": res.as_of,
+            "as_of": res.as_of, "explain_rows": ep.est_rows,
             "elapsed_ms": res.elapsed_ms, "attempts": 1, "org_id": org,
             "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,
             "trace_id": trace_id,

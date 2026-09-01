@@ -282,3 +282,24 @@ def test_no_undefined_css_variables():
 
     missing = sorted(used - defined - inline)
     assert not missing, f"用到了主题里没有的 CSS 变量，这些声明会静默失效：{missing}"
+
+
+def test_answer_card_states_only_what_the_data_says():
+    """原型的结论卡写的是一句自然语言结论（"今天共有 18 笔支付失败订单，
+    相比昨日同期下降 14.3%"）。askdb **不产出结论散文** —— 它返回行，
+    附带 SQL 让人自验；那句同比更是设计稿的虚构，后端没有任何同比口径。
+
+    所以结论行只能由结果本身推出来：单值念值、多行报行数。
+    这条测试挡的是"照着原型把那句话抄进来"。
+    """
+    src = _code_only(RESULT_TABS)
+    for invented in ("相比昨日", "同比", "较昨日", "环比"):
+        assert invented not in src, f"结论卡出现了后端算不出来的口径：{invented}"
+    assert "result.row_count === 1" in src, "单值结果应当直接把值念出来"
+
+
+def test_evidence_strip_fields_come_from_the_response():
+    """四格事实条的每一格都要有真实来源，不能留装饰位。"""
+    src = _code_only(RESULT_TABS)
+    for field in ("result.trace_id", "result.as_of", "result.explain_rows", "useSqlDigest"):
+        assert field in src, f"事实条缺少真实来源：{field}"
