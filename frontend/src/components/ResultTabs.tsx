@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { resumeTask, type AskResult } from '../api'
 import { STEP_NAMES } from '../traceSteps'
 import type { ResultTab } from '../types'
@@ -105,9 +105,11 @@ function fmtStamp(ts: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-export function ResultTabs({ result, active, onChange, onResumed }: {
+export function ResultTabs({ result, active, dialect, onChange, onResumed }: {
   result: AskResult
   active: ResultTab
+  /** 当前数据源的方言，SQL 页签的 meta 行要如实标出来 */
+  dialect: string
   onChange: (tab: ResultTab) => void
   onResumed: (result: AskResult) => void
 }) {
@@ -132,7 +134,7 @@ export function ResultTabs({ result, active, onChange, onResumed }: {
         ))}
       </div>
       {active === 'result' && <ResultPane result={result} />}
-      {active === 'sql' && <SqlPane result={result} />}
+      {active === 'sql' && <SqlPane result={result} dialect={dialect} />}
       {active === 'chain' && <ChainPane result={result} />}
       {active === 'checkpoint' && <CheckpointPane result={result} onResumed={onResumed} />}
     </div>
@@ -200,49 +202,89 @@ function ResultPane({ result }: { result: AskResult }) {
   )
 }
 
-function SqlPane({ result }: { result: AskResult }) {
+const SQL_KEYWORDS = new Set([
+  'select', 'from', 'where', 'group', 'by', 'order', 'having', 'limit', 'offset',
+  'join', 'inner', 'left', 'right', 'full', 'outer', 'on', 'as', 'and', 'or', 'not',
+  'in', 'is', 'null', 'case', 'when', 'then', 'else', 'end', 'with', 'union', 'all',
+  'distinct', 'count', 'sum', 'avg', 'min', 'max', 'asc', 'desc', 'filter', 'over',
+  'partition', 'cast', 'between', 'like', 'ilike', 'exists', 'coalesce',
+])
+
+/** 把 SQL 切成可着色的片段。
+ *
+ *  刻意不用 dangerouslySetInnerHTML —— SQL 里带着数据库对象名，
+ *  拼进 innerHTML 就是把转义责任交给自己，而 React 默认转义本来就是对的。
+ *  切片渲染成元素，多几行代码换掉一整类注入面。
+ */
+function tokenizeSql(sql: string) {
+  const out: { text: string; cls: string }[] = []
+  // 注释 / 字符串 / 词，三类分别成段，其余原样
+  const re = /(--[^\n]*|'(?:[^']|'')*'|[A-Za-z_][A-Za-z0-9_]*)/g
+  let last = 0
+  for (let m = re.exec(sql); m; m = re.exec(sql)) {
+    if (m.index > last) out.push({ text: sql.slice(last, m.index), cls: '' })
+    const t = m[0]
+    const cls = t.startsWith('--') ? 'comment'
+      : t.startsWith("'") ? 'str'
+      : SQL_KEYWORDS.has(t.toLowerCase()) ? 'kw' : ''
+    out.push({ text: t, cls })
+    last = m.index + t.length
+  }
+  if (last < sql.length) out.push({ text: sql.slice(last), cls: '' })
+  return out
+}
+
+function SqlPane({ result, dialect }: { result: AskResult; dialect: string }) {
   const [copied, setCopied] = useState(false)
   const sql = result.sql_final || result.sql_raw || ''
   const hash = useSqlDigest(sql)
 
   if (!sql) return <div className="pane"><p className="drawer-note">这次没有产出 SQL。</p></div>
 
-  const executed = result.ok
+  const rewrites = result.rewrites ?? []
   return (
     <div className="pane">
-      <div className="sql-head">
-        <b>
-          {executed ? '最终 SQL（实际执行的就是这条）'
-            : result.sql_final ? '改写后的 SQL（未执行）' : '模型产出（未执行）'}
-        </b>
-        <span className={`status ${executed ? '' : 'bad'}`}>
-          {executed ? '护栏通过 · 只读执行'
-            : result.rejected_by ? `已拦截 · ${result.rejected_by}` : '未执行'}
+      <div className="sql-toolbar">
+        <span>
+          方言：{dialect || '—'} · SHA-256: {hash ? `${hash.slice(0, 4)}…${hash.slice(-4)}` : '—'} ·{' '}
+          {/* 原型这行写死「未经格式改写」。askdb 的最终 SQL 恰恰是被护栏改写过的
+              （注入租户谓词、补 LIMIT、展开 SELECT *），照抄就是撒谎 */}
+          {rewrites.length ? `已按护栏改写 ${rewrites.length} 处` : '未经改写'}
         </span>
-        <button className="link-button" onClick={() => {
+        <button onClick={() => {
           navigator.clipboard?.writeText(sql)
           setCopied(true)
-          window.setTimeout(() => setCopied(false), 1400)
-        }}>{copied ? '已复制' : '复制'}</button>
+          window.setTimeout(() => setCopied(false), 1200)
+        }}>{copied ? '已复制' : '复制原生 SQL'}</button>
       </div>
-      <pre className="drawer-code">{sql}</pre>
+      <pre className="sql-code">
+        {tokenizeSql(sql).map((tok, i) =>
+          tok.cls ? <span className={tok.cls} key={i}>{tok.text}</span> : tok.text)}
+      </pre>
 
-      {!!result.rewrites?.length && (
+      <div className="sql-status">
+        <span className={`status ${result.ok ? '' : 'bad'}`}>
+          {result.ok ? '护栏通过 · 只读执行'
+            : result.rejected_by ? `已拦截 · ${result.rejected_by}` : '未执行'}
+        </span>
+        <span className="drawer-note">
+          {result.ok ? '实际执行的就是这条。复制出去核对，哈希应当一致。'
+            : '这条没有执行。'}
+        </span>
+      </div>
+
+      {rewrites.length > 0 && (
         <div className="rewrites">
           <b>护栏改写</b>
-          <ul>{result.rewrites.map(r => <li key={r}>{r}</li>)}</ul>
+          <ul>{rewrites.map(r => <li key={r}>{r}</li>)}</ul>
         </div>
       )}
       {!!result.sql_raw && result.sql_raw !== result.sql_final && (
         <details>
           <summary>模型原始 SQL（改写前）</summary>
-          <pre className="drawer-code">{result.sql_raw}</pre>
+          <pre className="sql-code plain">{result.sql_raw}</pre>
         </details>
       )}
-      <div className="sql-facts">
-        <div><span>TRACE ID</span><code>{result.trace_id}</code></div>
-        <div><span>SQL SHA-256</span><code>{hash ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : '—'}</code></div>
-      </div>
     </div>
   )
 }
@@ -254,6 +296,19 @@ function ChainPane({ result }: { result: AskResult }) {
   const total = steps.reduce((sum, s) => sum + (s.ms || 0), 0) || 1
   return (
     <div className="pane">
+      {/* 原型顶部那条横向节点链。它给的是"这次经过了哪几段、各多久"的全貌，
+          下面的明细列表给的是每段具体做了什么 —— 两者都要，缺一个都得靠猜 */}
+      <div className="mini-trace">
+        {steps.map((step, i) => (
+          <Fragment key={`${step.step}-${i}`}>
+            {i > 0 && <i className="mini-trace-arrow">→</i>}
+            <div className={`mini-trace-node ${step.status !== 'ok' ? 'bad' : ''}`}>
+              <strong>{STEP_NAMES[step.step] ?? step.step}</strong>
+              <small>{step.ms}ms</small>
+            </div>
+          </Fragment>
+        ))}
+      </div>
       <div className="result-meta">
         {result.step_count ?? 1} 步 · {result.attempts ?? 1} 轮 · {result.elapsed_ms ?? 0} ms ·
         {' '}{result.tok_in ?? 0}+{result.tok_out ?? 0} tok · ¥{(result.cost_cny ?? 0).toFixed(4)}

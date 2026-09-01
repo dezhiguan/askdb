@@ -65,6 +65,7 @@ export function QueryWorkspace({ health, onNavigate }: {
           + (schema ? ` · 开放 ${schema.tables.length} 张表` : '')
         : '',
       tables: schema?.tables.length ?? 1,
+      dialect: DIALECT[ready?.datasource.type ?? ''] ?? ready?.datasource.type ?? '',
     },
     ...sources.filter(c => !c.builtin).map(c => ({
       id: c.id,
@@ -72,6 +73,7 @@ export function QueryWorkspace({ health, onNavigate }: {
       name: c.name,
       meta: `${c.type} · ${c.host || '—'} · 开放 ${c.table_count} 张表`,
       tables: c.table_count,
+      dialect: DIALECT[c.type] ?? c.type,
     })),
   ]
   const current = options.find(o => o.id === sourceId) ?? options[0]
@@ -147,7 +149,8 @@ export function QueryWorkspace({ health, onNavigate }: {
         {error && <div className="audit-error stage-error">{error}</div>}
 
         {result
-          ? <ResultTabs result={result} active={tab} onChange={setTab} onResumed={setResult} />
+          ? <ResultTabs result={result} active={tab} dialect={current.dialect}
+                        onChange={setTab} onResumed={setResult} />
           : <Welcome mode={mode} schema={schema} usable={usable} onPick={setQuestion} />}
       </section>
 
@@ -157,6 +160,7 @@ export function QueryWorkspace({ health, onNavigate }: {
 }
 
 const MARK: Record<string, string> = { duckdb: 'DK', postgresql: 'PG' }
+const DIALECT: Record<string, string> = { duckdb: 'DuckDB', postgresql: 'PostgreSQL' }
 
 /** 示例问题按**当前库的白名单和口径**生成，不写死。
  *  写死的示例换个数据源就全是查不出结果的废话，还会让人以为库里有这些表。 */
@@ -217,6 +221,8 @@ interface SourceOption {
   meta: string
   /** 开放表数。0 张的源查不出任何东西 —— 与其让人查完撞 R-03，不如直接禁选 */
   tables: number
+  /** SQL 方言。切了源方言就变了，SQL 页签要如实标 */
+  dialect: string
 }
 
 function SourceSelector({ open, onToggle, onPick, current, options }: {

@@ -92,10 +92,12 @@ def test_backend_access_goes_through_api_layer():
 
 
 def test_no_dangerous_html_injection():
+    # 走 _code_only：注释里为了写清"刻意不用 dangerouslySetInnerHTML"
+    # 而提到这个词，不该被当成违规命中 —— 这已经是第三次被自己的说明绊倒
     offenders = [
         str(p.relative_to(ROOT))
         for p in FRONTEND_SRC.rglob("*.tsx")
-        if "dangerouslySetInnerHTML" in p.read_text(encoding="utf-8")
+        if "dangerouslySetInnerHTML" in _code_only(p)
     ]
     assert not offenders, f"用了 dangerouslySetInnerHTML，绕过 React 转义：{offenders}"
 
@@ -303,3 +305,23 @@ def test_evidence_strip_fields_come_from_the_response():
     src = _code_only(RESULT_TABS)
     for field in ("result.trace_id", "result.as_of", "result.explain_rows", "useSqlDigest"):
         assert field in src, f"事实条缺少真实来源：{field}"
+
+
+def test_sql_is_highlighted_without_raw_html():
+    """SQL 里带着数据库对象名。拼进 innerHTML 就是把转义责任交给自己，
+    而 React 默认转义本来就是对的 —— 高亮走分词渲染成元素，
+    多几行代码换掉一整类注入面。
+    """
+    src = _code_only(RESULT_TABS)
+    assert "tokenizeSql" in src, "SQL 高亮没有走分词"
+    assert "dangerouslySetInnerHTML" not in src
+
+
+def test_sql_toolbar_does_not_claim_the_sql_is_unmodified():
+    """原型那行写死「未经格式改写」。askdb 的最终 SQL 恰恰是被护栏改写过的
+    （注入租户谓词、补 LIMIT、展开 SELECT *）—— 照抄就是撒谎，
+    而这条 SQL 是让人拿去自验的，说错了整套自验就失效。
+    """
+    src = _code_only(RESULT_TABS)
+    assert "已按护栏改写" in src, "改写过的 SQL 必须如实标注"
+    assert "result.rewrites" in src, "改写标注要由真实的 rewrites 决定"

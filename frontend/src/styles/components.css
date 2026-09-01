@@ -103,3 +103,25 @@
 .answer-facts strong { display: block; margin-top: 2px; font: 7px var(--mono); word-break: break-all; }
 /* 数值列绿色加粗 —— 照原型，让"多少"这一维在表里一眼可见 */
 .pane td.num-cell { color: var(--green); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* ---------------- 原生 SQL（照原型：.sql-toolbar / .sql-code） ---------------- */
+.sql-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border: 1px solid var(--line); border-bottom: 0; border-radius: 7px 7px 0 0; background: var(--paper-2); }
+.sql-toolbar span { color: var(--muted); font: 7px var(--mono); }
+.sql-toolbar button { flex: none; padding: 4px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--green); background: white; font-size: 7px; cursor: pointer; }
+.sql-toolbar button:hover { border-color: var(--green); }
+.sql-code { margin: 0; padding: 13px; border-radius: 0 0 7px 7px; color: #dbe8df; background: var(--dark); font: 8px/1.65 var(--mono); white-space: pre-wrap; word-break: break-word; overflow-x: auto; }
+.sql-code .kw { color: #73dfa2; }
+.sql-code .comment { color: #718b7c; }
+.sql-code .str { color: #efb873; }
+.sql-code.plain { margin-top: 6px; border-radius: 7px; }
+.sql-status { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+.sql-status .drawer-note { margin: 0; }
+
+/* ---------------- 执行链路顶部节点链（照原型：.mini-trace） ---------------- */
+.mini-trace { display: flex; align-items: center; margin-bottom: 11px; padding: 12px 9px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.48); overflow-x: auto; }
+.mini-trace-node { min-width: 0; flex: 1; padding: 7px 4px; border: 1px solid #bed0c3; border-radius: 5px; background: var(--green-wash); text-align: center; }
+.mini-trace-node.bad { border-color: #d4aaa3; background: var(--red-wash); }
+.mini-trace-node strong { display: block; font-size: 7px; white-space: nowrap; }
+.mini-trace-node small { display: block; margin-top: 2px; color: var(--green); font: 6px var(--mono); }
+.mini-trace-node.bad small { color: var(--red); }
+.mini-trace-arrow { width: 14px; flex: none; color: var(--muted); text-align: center; font: 8px var(--mono); font-style: normal; }
