@@ -54,6 +54,8 @@ export interface AuditItem {
   kind: string
   thread_id: string | null
   org_id: number | null
+  /** 这条调用出自谁的可见范围。老记录没有该字段，后端如实给「（未记录）」 */
+  role: string
   question: string | null
   rejected_by: string | null
   attempts: number | null

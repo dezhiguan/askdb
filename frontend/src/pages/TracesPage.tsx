@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import {
   fetchAudit, fetchAuditStats, fetchReplay, tracingLink,
-  type AuditItem, type AuditStats, type Replay, type ReplayResult,
+  type AuditItem, type AuditStats, type ReplayResult,
 } from '../api'
 import { PageHeader } from '../components/AppShell'
 import { KIND_NAMES, STEP_NAMES, STEP_TYPE } from '../traceSteps'
@@ -94,7 +94,7 @@ export function TracesPage() {
         </section>
 
         <section className="card trace-detail">
-          <TraceDetail replay={currentReplay} traceId={selected} replayOn={!!stats?.replay_api} />
+          <TraceDetail item={items?.find(i => i.trace_id === selected) ?? null} replay={currentReplay} replayOn={!!stats?.replay_api} />
         </section>
       </div>
 
@@ -172,104 +172,136 @@ function StatTiles({ stats }: { stats: AuditStats | null }) {
   )
 }
 
-function TraceDetail({ replay, traceId, replayOn }: {
+function TraceDetail({ item, replay, replayOn }: {
+  item: AuditItem | null
   replay: ReplayResult | null
-  traceId: string | null
   replayOn: boolean
 }) {
-  if (!traceId) return <p className="drawer-note">左侧选一条调用查看节点明细。</p>
+  if (!item) return <p className="trace-empty">左侧选一条调用查看节点明细。</p>
 
-  // 连真实数据源的实例默认关闭回放。这里要说清楚，而不是让人以为页面坏了
-  if (!replayOn) {
-    return (
-      <>
-        <p className="drawer-note">
-          判定链路回放未开启（<span className="mono">observability.replay_api</span>），
-          取不到节点级明细。连真实数据源的实例默认关闭这一项。
-        </p>
-        <pre className="drawer-code">askdb replay {traceId}</pre>
-      </>
-    )
-  }
-  if (!replay) return <p className="drawer-note">读取中…</p>
-  if (replay.status === 'rate_limited') {
-    return <p className="drawer-note">回放接口被限流了，稍等一分钟再试。每次回放都要遍历检查点库。</p>
-  }
-  if (replay.status === 'not_found') {
-    return <p className="drawer-note">取不到这条记录：回放开关未开启，或记录不存在。两种情况接口都返回 404，不做区分。</p>
-  }
-
-  const d: Replay = replay.data
-  const steps = d.steps ?? []
-  const outcome = d.rejected_by
-    ? (d.rejected_by === 'INTERRUPTED' ? 'INTERRUPTED' : `BLOCKED · ${d.rejected_by}`)
-    : 'SUCCESS'
+  const d = replay?.status === 'ok' ? replay.data : null
+  const outcome = item.ok
+    ? 'SUCCESS'
+    : item.rejected_by === 'INTERRUPTED' ? 'INTERRUPTED' : `BLOCKED · ${item.rejected_by}`
 
   return (
     <>
-      <div className="trace-title">
+      {/* 标题与事实网格只用审计流水里的字段 —— 回放关着时照样完整，
+          不会出现右半屏一片空白 */}
+      <div className="trace-detail-head">
         <div>
-          <h3>{d.question || `（${KIND_NAMES[d.kind] ?? d.kind}）`}</h3>
-          <p>{d.trace_id} · {outcome} · {d.multi_step ? 'MULTI-STEP' : 'ONE-SHOT'}</p>
+          <h3>{item.question || `（${KIND_NAMES[item.kind] ?? item.kind}）`}</h3>
+          <p>{item.trace_id} · {outcome} · {item.multi_step ? 'MULTI-STEP' : 'ONE-SHOT'}</p>
         </div>
-        <span className={`status ${d.rejected_by ? 'bad' : ''}`}>{KIND_NAMES[d.kind] ?? d.kind}</span>
+        <span className={`status ${item.ok ? '' : 'bad'}`}>{KIND_NAMES[item.kind] ?? item.kind}</span>
       </div>
 
       <div className="trace-facts">
-        <div><span>总耗时</span><strong>{secs(d.elapsed_ms)}</strong></div>
-        <div><span>轮次</span><strong>{d.attempts ?? '—'}</strong></div>
-        <div><span>Token</span><strong>{(d.tok_in ?? 0)}+{(d.tok_out ?? 0)}</strong></div>
-        <div><span>成本</span><strong>¥{d.cost_cny ?? 0}</strong></div>
-        <div><span>命中表</span><strong>{d.tables_hit?.join(' · ') || '—'}</strong></div>
-        <div><span>命中口径</span><strong>{d.metrics_hit?.join(' · ') || '—'}</strong></div>
-        <div><span>返回行</span><strong>{d.rows_returned ?? '—'}</strong></div>
-        <div><span>命中规则</span><strong>{d.rules_fired?.join(' · ') || '—'}</strong></div>
+        <div className="trace-fact"><span>总耗时</span><strong>{secs(item.elapsed_ms)}</strong></div>
+        <div className="trace-fact"><span>角色</span><strong>{item.role || '—'}</strong></div>
+        <div className="trace-fact"><span>轮次</span><strong>{item.attempts ?? '—'}</strong></div>
+        <div className="trace-fact"><span>返回行</span><strong>{item.rows_returned ?? '—'}</strong></div>
+        <div className="trace-fact"><span>成本</span><strong>¥{item.cost_cny ?? 0}</strong></div>
+        {d && <>
+          <div className="trace-fact"><span>Token</span><strong>{(d.tok_in ?? 0)}+{(d.tok_out ?? 0)}</strong></div>
+          <div className="trace-fact"><span>步数</span><strong>{d.step_count ?? '—'}</strong></div>
+          <div className="trace-fact"><span>命中表</span><strong>{d.tables_hit?.join(' · ') || '—'}</strong></div>
+          <div className="trace-fact"><span>命中口径</span><strong>{d.metrics_hit?.join(' · ') || '—'}</strong></div>
+          <div className="trace-fact"><span>命中规则</span><strong>{d.rules_fired?.join(' · ') || '—'}</strong></div>
+        </>}
       </div>
 
-      {steps.length > 0 && (
-        <div className="trace-flow">
-          {steps.map((step, i) => (
-            <span key={`${step.step}-${i}`} className={step.status === 'ok' ? '' : 'bad'}>
+      <TraceNodes item={item} replay={replay} replayOn={replayOn} />
+    </>
+  )
+}
+
+/** 链路条与 Span 明细。这两段的数据只有回放接口给得出来，
+ *  所以降级说明放在这里 —— 而不是把整个详情区换成一句话。 */
+function TraceNodes({ item, replay, replayOn }: {
+  item: AuditItem
+  replay: ReplayResult | null
+  replayOn: boolean
+}) {
+  if (!replayOn) {
+    return (
+      <div className="trace-degraded">
+        <strong>节点级明细需要开启判定链路回放</strong>
+        <p>
+          本实例未开启 <span className="mono">observability.replay_api</span> ——
+          连真实数据源的实例默认关闭这一项，因为回放会返回 SQL 全文。
+          上面的耗时、角色、轮次、成本取自审计流水，不受此开关影响。
+        </p>
+        <pre className="drawer-code">askdb replay {item.trace_id}</pre>
+      </div>
+    )
+  }
+  if (!replay) return <div className="trace-degraded"><p>读取中…</p></div>
+  if (replay.status === 'rate_limited') {
+    return (
+      <div className="trace-degraded">
+        <strong>回放接口被限流</strong>
+        <p>每次回放都要遍历检查点库，它有独立限流，稍等一分钟再试。</p>
+      </div>
+    )
+  }
+  if (replay.status === 'not_found') {
+    return (
+      <div className="trace-degraded">
+        <strong>取不到这条记录</strong>
+        <p>回放开关未开启，或记录不存在 —— 两种情况接口都返回 404，不做区分。</p>
+      </div>
+    )
+  }
+
+  const steps = replay.data.steps ?? []
+  if (steps.length === 0) {
+    return (
+      <div className="trace-degraded">
+        <strong>该记录没有步骤明细</strong>
+        <p>早于步骤级 trace 落地的调用会是这样；新调用都带完整节点链。</p>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <div className="trace-flow">
+        {steps.map((step, i) => (
+          <Fragment key={`${step.step}-${i}`}>
+            <div className={`trace-node ${(STEP_TYPE[step.step] ?? '').toLowerCase()} ${step.status === 'ok' ? '' : 'bad'}`}>
               <strong>{STEP_NAMES[step.step] ?? step.step}</strong>
               <small>{step.ms} ms</small>
-              {i < steps.length - 1 && <i>→</i>}
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="table-scroll">
-        <table className="audit-table">
-          <thead>
-            <tr><th>类型</th><th>节点</th><th>说明</th><th className="num">耗时</th><th className="num">Token</th><th>状态</th></tr>
-          </thead>
-          <tbody>
-            {steps.map((step, i) => (
-              <tr key={`${step.step}-${i}`}>
-                <td><span className={`span-type ${(STEP_TYPE[step.step] ?? 'sys').toLowerCase()}`}>{STEP_TYPE[step.step] ?? 'SYS'}</span></td>
-                <td>{STEP_NAMES[step.step] ?? step.step}</td>
-                <td className="audit-question" title={step.note ?? ''}>{step.note || <span className="dim">—</span>}</td>
-                <td className="num">{step.ms} ms</td>
-                <td className="num">{step.tok_in ? `${step.tok_in}+${step.tok_out}` : <span className="dim">—</span>}</td>
-                <td>
-                  <span className={`status ${step.status === 'ok' ? '' : 'bad'}`}>
-                    {step.status.toUpperCase()}
-                  </span>
-                </td>
-              </tr>
-            ))}
-            {steps.length === 0 && (
-              <tr><td colSpan={6} className="audit-empty">该记录没有步骤明细</td></tr>
-            )}
-          </tbody>
-        </table>
+            </div>
+            {i < steps.length - 1 && <i className="trace-arrow">→</i>}
+          </Fragment>
+        ))}
       </div>
 
-      {d.snapshots.length > 0 && (
-        <p className="drawer-note">
-          该调用另有 {d.snapshots.length} 份检查点快照，可在审计中心的「复放」里逐轮查看。
-        </p>
-      )}
+      <div className="span-table">
+        <div className="span-table-title">
+          <strong>Span 明细</strong><span>按执行顺序</span>
+        </div>
+        <div className="table-scroll">
+          <table className="audit-table">
+            <thead>
+              <tr><th>类型</th><th>节点</th><th>说明</th><th className="num">耗时</th><th className="num">Token</th><th>状态</th></tr>
+            </thead>
+            <tbody>
+              {steps.map((step, i) => (
+                <tr key={`${step.step}-${i}`}>
+                  <td><span className={`span-type ${(STEP_TYPE[step.step] ?? 'sys').toLowerCase()}`}>{STEP_TYPE[step.step] ?? 'SYS'}</span></td>
+                  <td>{STEP_NAMES[step.step] ?? step.step}</td>
+                  <td className="audit-question" title={step.note ?? ''}>{step.note || <span className="dim">—</span>}</td>
+                  <td className="num">{step.ms} ms</td>
+                  <td className="num">{step.tok_in ? `${step.tok_in}+${step.tok_out}` : <span className="dim">—</span>}</td>
+                  <td><span className={`status ${step.status === 'ok' ? '' : 'bad'}`}>{step.status.toUpperCase()}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </>
   )
 }

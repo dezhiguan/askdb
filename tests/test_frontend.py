@@ -325,3 +325,23 @@ def test_sql_toolbar_does_not_claim_the_sql_is_unmodified():
     src = _code_only(RESULT_TABS)
     assert "已按护栏改写" in src, "改写过的 SQL 必须如实标注"
     assert "result.rewrites" in src, "改写标注要由真实的 rewrites 决定"
+def test_trace_detail_does_not_depend_on_replay_for_the_basics():
+    """执行追踪的详情区：标题与事实网格必须只用审计流水里的字段。
+
+    回放（observability.replay_api）在连真实数据源的实例上**默认关闭** ——
+    那才是常态。一旦把整个详情区做成"取不到回放就只显示一句话"，
+    右半屏就是一片空白，看起来像页面坏了；而耗时、角色、轮次、成本
+    这些字段流水里本来就有，不该跟着一起消失。
+    """
+    src = _code_only(FRONTEND_SRC / "pages" / "TracesPage.tsx")
+
+    head = src[src.index("function TraceDetail("):src.index("function TraceNodes(")]
+    for field in ("item.elapsed_ms", "item.attempts", "item.cost_cny", "item.trace_id"):
+        assert field in head, f"详情区标题/事实网格没有用 {field}，可能又挂到回放上了"
+
+    # 钉的是「不能因为取不到回放就提前 return」，而不是「不许出现 replayOn」——
+    # 它作为参数往下传给链路条那一段是正常的
+    for early in ("if (!replayOn)", "if (!replay)", "if (!replay "):
+        assert early not in head, f"标题/事实网格前有基于回放的提前返回（{early}），整块会被一起吞掉"
+    assert "if (!replayOn)" in src[src.index("function TraceNodes("):], \
+        "链路条那一段没有处理回放未开启的情况"
