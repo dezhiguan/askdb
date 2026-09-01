@@ -81,6 +81,19 @@ spec:
             - secretRef:
                 name: askdb-llm
                 optional: false
+            # 登录与一键体验的会话签名密钥（ASKDB_SESSION_SECRET）。
+            # optional: true 是权衡后的选择：设成必需的话，忘了建这个 Secret
+            # 会让 Pod 卡在 CreateContainerConfigError、rollout 超时，整站停更；
+            # 而登录只是这套部署的一项能力，不该有这么大的爆炸半径。
+            # 代价是缺失时**静默降级** —— 服务照常起、页面照常开，只是
+            # auth.enabled() 恒为 false，前端连登录入口都不显示。
+            # 因此冒烟里钉了一条 /api/auth/me 的 enabled 断言来兜（见 ci-cd.yml）。
+            #
+            # 多副本必须共用同一把：票是无状态签名，两个副本各拿各的密钥，
+            # 表现是"刷新几次就掉线"—— 负载轮到另一个副本时验签失败。
+            - secretRef:
+                name: askdb-auth
+                optional: true
             # 配额计数用的共享 Redis（复用数据机上那套，带口令）。
             # optional: true 是有意的 —— 没建这个 Secret 时退回本地文件计数，
             # 单副本下依然正确，不至于因为少建一个 Secret 就起不来。

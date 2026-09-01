@@ -14,6 +14,13 @@
 部署链路与换壳前一致。改完前端必须 `npm run build` 并把产物一起提交，
 否则线上看到的还是上一次的界面。
 
+漏了这一步不会有任何报错 —— 单测绿、镜像绿、rollout 绿、`/api/health` 绿。
+所以 CI 里有一道 `frontend` 关卡自己重新构建一遍并逐字节比对，对不上就红，
+`build-and-push` 依赖它通过（见 `.github/workflows/ci-cd.yml`）。
+本地构建请用 `npm ci` 而不是 `npm install`：后者会按 semver 升依赖，
+产出的 bundle 与 CI 不一致，那道关卡就会红在与你的改动无关的地方。
+部署侧的完整说明见 `deploy/README.md` 的「前端」一节。
+
 ## 本地开发
 
 ```bash

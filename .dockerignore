@@ -1,8 +1,9 @@
 # 构建上下文瘦身。镜像只需要 askdb/（含已构建的 web/）、config/、data/、evals/results。
 # 前端工程本身不进镜像：产物由 npm run build 写进 askdb/web/ 并随代码提交。
-frontend/node_modules
-frontend/dist
-frontend/.vite
+# 整个 frontend/ 都不进构建上下文：Dockerfile 一个字节都用不到它，
+# 而 node_modules 动辄上万个文件，逐条排除迟早漏一个。产物在 askdb/web/，
+# 由 COPY askdb ./askdb 带进镜像，与这条无关。
+frontend
 .venv
 .git
 .chroma

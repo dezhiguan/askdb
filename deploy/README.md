@@ -3,8 +3,13 @@
 | | |
 |---|---|
 | **拟制日期** | 2026-08-13 |
-| **版本** | V1.0 |
+| **版本** | V1.1（2026-09-02 修订） |
 | **目标** | 与 CareerMate 同机（Server 3 的 k3s），经 Server 2 的 nginx 以 `askdb.ragforge.net` 对外 |
+
+| 版本 | 日期 | 修订内容 |
+|---|---|---|
+| V1.0 | 2026-08-13 | 首版：证书、DNS、k8s、入口、冒烟 |
+| V1.1 | 2026-09-02 | 独立前端工程上线的配套：会话密钥 Secret、前端发布链路与 CI 关卡、静态资源缓存与 gzip、验证一节按线上现状纠偏 |
 
 ---
 
@@ -26,7 +31,11 @@ askdb **不设账号体系** —— 设计文档 §1.1 写明"数据库连接本
    | 便宜的模型 | `deepseek-v4-flash`，约 ¥0.0009 / 次 | 单价 |
    | 每日配额 | `daily_quota: 500`，**按模型调用次数计** | 总量 |
    | 共享计数 | 计数存 Redis（`ASKDB_REDIS_URL`） | 多副本各算各的 |
-   | 入口限流 | nginx 对 `/api/ask` 限 6r/min per IP | 短时间刷光当天额度 |
+   | 入口限流 | nginx 对**其余接口**限 5r/s（突发 10） | 脚本刷直查链路 |
+
+   > 2026-08-25 起 `/api/ask` **不再做每 IP 限流**（运营决定，只保留应用层
+   > 每日配额）。上表最后一行因此只覆盖直查等接口 —— 别再按"6r/min per IP"
+   > 去核，`deploy/nginx-askdb.conf` 里那个 location 已经没有 `limit_req` 了。
 
    配额扣在 `LlmClient` 里，一次调用扣一次 —— **不是一次提问扣一次**。
    一次提问会调好几次模型（多步规划每步一次生成 + 一次评估，反思重试再各来
@@ -102,7 +111,21 @@ kubectl -n askdb create secret generic askdb-langsmith \
   --from-literal=LANGSMITH_TRACING=true \
   --from-literal=LANGSMITH_API_KEY=lsv2_... \
   --from-literal=LANGSMITH_PROJECT=askdb-prod
+
+# 登录与一键体验的会话签名密钥（**独立前端的登录能力依赖它**，2026-09-02 新增）。
+# 缺了不会报错：服务照常起、页面照常开，只是登录整体关闭、前端连入口都不显示
+# （askdb/auth.py 的 enabled() = 配置里开 且 这把密钥在）。冒烟里有断言兜住。
+# 两个副本必须共用同一把：票是无状态签名，各拿各的密钥表现为"刷新几次就掉线"。
+kubectl -n askdb create secret generic askdb-auth \
+  --from-literal=ASKDB_SESSION_SECRET="$(python -m askdb.cli session-secret | cut -d= -f2)"
 ```
+
+另有两把**有意不配**的密钥，别顺手补上：
+
+| 环境变量 | 不配的后果 | 为什么不配 |
+|---|---|---|
+| `ASKDB_ADMIN_TOKEN` | 角色成员的写入整体关闭（fail-closed），页面显示只读 | 对外实例没有可信调用方，开了等于谁都能改成员名单 |
+| `ASKDB_SECRET_KEY` | 运行时添加数据源时不接受明文口令，只能填环境变量名 | 口令一个字不落盘，这正是这个实例该有的姿态 |
 
 建完用 `curl -s https://askdb.ragforge.net/api/health | jq .quota` 确认
 `backend` 是 `redis`、`multi_replica_safe` 是 `true`。若显示 `file`，说明
@@ -121,13 +144,60 @@ Secret 没生效 —— 此时**不要**把 replicas 调大于 1，配额会变�
 镜像 tag 用 commit sha 而非 `latest`：出问题时能确切知道线上跑的是哪次提交，
 回滚也只是把 tag 改回去。
 
+### 前端（跟着应用一起走，但有一步是手动的）
+
+界面是 `frontend/` 下的独立工程（React + Vite），**构建产物入 git**：
+`npm run build` 直接写到 `askdb/web/`，由 FastAPI 托管。镜像里没有 node
+（`Dockerfile` 只 `COPY askdb ./askdb`），所以线上跑的就是仓库里那份产物。
+
+改完前端必须自己构建并把产物一起提交：
+
+```bash
+cd frontend
+npm ci          # 用 ci 不用 install：install 会按 semver 升依赖，产物跟着变
+npm run build   # → ../askdb/web/{index.html,assets/*}
+cd .. && git add frontend askdb/web
+```
+
+**忘了这一步的后果是"看不见"的**：单测绿、镜像构建绿、rollout 绿、
+`/api/health` 绿，只有界面停在上一版。因此 CI 里有一道 `frontend` 关卡
+（`.github/workflows/ci-cd.yml`）——它自己重新构建一遍，产物与仓库里的
+对不上就直接红，且 `build-and-push` 依赖它通过。冒烟侧另有一条：
+真去取一遍首页引用的每个 `/assets/*`，挡住"接口全绿但页面白屏"。
+
+> 产物已验证可复现：同一份 `package-lock.json` 在干净目录 `npm ci` 后
+> 构建，文件名 hash 与内容逐字节一致。所以那道关卡红了就是真忘了构建，
+> 不是工具链抖动。
+
 ### 入口（手动一次）
 
 `deploy/nginx-askdb.conf` 的内容要**合并进 rag-forge 仓库的 `nginx.conf`**，
 不要单独在服务器上放文件 —— Server 2 的入口配置由 rag-forge 的 CI 统一推送，
 单放的文件下次部署就被覆盖了。
 
-合并后推 rag-forge 的 main，其 CI 检测到 `nginx.conf` 变化会自动推送并 reload。
+合并后推 rag-forge 的 main，其 CI 检测到 `nginx.conf` 变化会自动推送并
+`docker compose up -d --force-recreate`。
+
+> ⚠️ **那条流水线不跑 `nginx -t`**，而这份 `nginx.conf` 是三个站点共用的
+> （ragforge.net / careerforge.cn / askdb.ragforge.net）。askdb 这一段写错一个
+> 分号，nginx 起不来，三个站点一起挂。合并后、推 main 前，务必先在 Server 2 上
+> 验一遍语法：
+>
+> ```bash
+> # 在 Server 2 的 /opt/rag-forge 下，用候选配置起一个一次性容器验语法，
+> # 不碰正在服务的那个
+> docker run --rm \
+>   -v /opt/rag-forge/nginx.conf:/etc/nginx/conf.d/default.conf:ro \
+>   -v /data/ssl:/etc/nginx/ssl:ro \
+>   nginx:alpine nginx -t
+> ```
+
+本次前端上线带来的两处入口改动（见 `deploy/nginx-askdb.conf`）：
+
+| 改动 | 为什么 |
+|---|---|
+| `gzip on` + `gzip_proxied any` | 冷加载 290KB JS + 53KB CSS → 88KB + 11KB。**`gzip_proxied` 少不得**：它默认 off，而 askdb 的响应全部来自 `proxy_pass`，只写 `gzip on` 一个字节都不会压 |
+| `location ^~ /assets/` 长缓存 | 产物文件名带内容 hash，改一版就是新文件名，可以放心 `immutable` 缓存一年；`index.html` 由后端发 `no-store`，永远拿得到最新引用 |
 
 ---
 
@@ -137,7 +207,34 @@ Secret 没生效 —— 此时**不要**把 replicas 调大于 1，配额会变�
 curl -s https://askdb.ragforge.net/api/health | python3 -m json.tool
 ```
 
-应看到 `datasource.type = duckdb`、`llm.disabled = true`。
+应看到 `datasource.type = duckdb`（对外实例只能连样例库）、
+`guard.daily_quota = 500`、`quota.backend = redis` 且 `multi_replica_safe = true`。
+
+> `llm.disabled` 现在是 `false` —— 实例已接模型，成本由"便宜的模型 + 每日配额 +
+> 共享计数"三层兜住，不再靠"不接模型"。旧版本这里写的是 `disabled = true`，
+> 按那句话去核会误判成配置坏了。
+
+界面与前端产物（**接口全绿而页面白屏是最容易漏的一种故障**）：
+
+```bash
+BASE=https://askdb.ragforge.net
+# 首页应是 200 + text/html，并引用带 hash 的 /assets/*
+curl -s "${BASE}/" | grep -o '/assets/[^"]\+'
+# 逐个取一遍，都应是 200、非空、content-type 正确
+for R in $(curl -s "${BASE}/" | grep -o '/assets/[^"]\+' | sort -u); do
+  curl -s -o /dev/null -w "${R} → %{http_code} %{content_type} %{size_download}B\n" "${BASE}${R}"
+done
+```
+
+登录能力（依赖 `askdb-auth` Secret，缺了会静默关闭）：
+
+```bash
+curl -s https://askdb.ragforge.net/api/auth/me | python3 -m json.tool
+```
+
+应看到 `enabled: true`、`required: false`（匿名可用，登录不是门）、
+`demo_accounts` 非空、`scope.tables` 非空。若 `enabled` 是 `false`，
+去建 `askdb-auth`（见上文），不是代码问题。
 
 护栏是否生效：
 
@@ -150,11 +247,15 @@ curl -s -X POST https://askdb.ragforge.net/api/sql \
 应返回 `200` + `ok: false` + `rejected_by: "R-02"` —— **护栏拒绝不是 5xx**，
 这是接口的既定约定（见 `server.py` 开头）。
 
-内省与自检端点应被 nginx 挡在外面：
+内省与自检端点（2026-08-25 运营决定**放开**，与 ask 的每 IP 限流一起）：
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' https://askdb.ragforge.net/api/introspect   # 期望 404
+curl -s -o /dev/null -w '%{http_code}\n' https://askdb.ragforge.net/api/introspect   # 期望 200
 ```
+
+> 旧版本这里写的是"应被 nginx 挡在外面，期望 404"。放开之后那句话就反了 ——
+> 冒烟里对应的断言也已经改成钉住 200（哪天又变回 404，说明入口被回滚，
+> 需要有人知道）。
 
 ---
 
@@ -172,10 +273,13 @@ nginx 侧回滚：还原 rag-forge 仓库的 `nginx.conf` 并重推。
 
 ## 运维要点
 
-- **审计日志**在容器内 `/app/data/audit-public.jsonl`，随容器重建丢失。
-  开放实例上这是可接受的 —— 那里没有真实数据，留痕只为观察用量。
-  真要留存就挂个卷。
-- **限流**在 nginx 层（5 r/s，突发 10）。askdb 自身没有限流能力，
-  因为它原本假设访问者是可信的。
+- **审计日志**在容器内 `/app/var/audit-public.jsonl`，已挂 hostPath
+  `/opt/askdb/var`，**重建不丢**。位置很关键：每日配额靠数当天的审计条数实现，
+  日志一丢配额就归零，等于形同虚设。（早期版本写在 `/app/data`、随容器重建丢失，
+  那是挂卷之前的状态。）
+- **限流**分三层：nginx 5r/s 突发 10（`/api/ask` 除外，见上）；应用侧对
+  出站建连 10 次/分、登录失败 10 次/分（`server.py` 的 `_SOURCE_RL` /
+  `_LOGIN_RL`，**进程内计数**，两副本实际是两倍）；以及每日模型调用配额 500
+  （走 Redis 共享计数，副本间是准的）。
 - **资源**：requests 50m CPU / 192Mi，limits 500m / 512Mi。
   样例库 5MB 级，DuckDB 常驻内存很小。

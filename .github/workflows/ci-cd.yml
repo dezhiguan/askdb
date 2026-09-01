@@ -53,11 +53,65 @@ jobs:
         # pyproject 里也配了 pythonpath，两层都兜住。
         run: python -m pytest -q
 
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本按 vite 的 engines 取（^20.19.0 || >=22.12.0）。写 22 而不是 20：
+      # 20 已进维护期，setup-node 解析出的补丁号会随时间漂，而下面那条
+      # 漂移守卫拿构建产物逐字节比对，工具链越稳越好。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # 必须是 ci 不是 install：install 会按 semver 把依赖升上去，产出的
+      # bundle 与本地不一致，守卫就会红在与本次改动无关的版本差异上。
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      # build 里含 tsc -b —— 类型错误应该红在这里，而不是等到线上白屏。
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+      # 构建产物入 git，镜像里没有 node（见 Dockerfile / frontend/README）。
+      # 于是"改了 src 却忘了 npm run build"这件事全链路无声：单测绿、镜像绿、
+      # rollout 绿、/api/health 绿，只有界面停在上一版。这一关是唯一能挡住它的。
+      #
+      # 前提是构建可复现。已验证：同一份 lock 在干净目录 npm ci 后重建，
+      # 文件名 hash 与内容逐字节一致（macOS 上验的）。vite 8 的打包器是原生的
+      # rolldown + lightningcss，**跨平台一致性没有在 linux 上实测过** ——
+      # 如果这一关红在与本次改动无关的地方（本地明明刚 build 过），先怀疑
+      # 跨平台产物差异，把比对退化成"index.html 引用的文件名一致"再看。
+      - name: Build output must match what is committed
+        run: |
+          if ! git diff --exit-code -- askdb/web; then
+            echo "::error::askdb/web 与 frontend/src 不一致 —— 本地执行 cd frontend && npm run build，并把产物一起提交"
+            exit 1
+          fi
+          # 新产生的文件是未跟踪状态，git diff 看不见，得单独查一次
+          UNTRACKED="$(git ls-files --others --exclude-standard -- askdb/web)"
+          if [[ -n "${UNTRACKED}" ]]; then
+            echo "::error::构建产生了未提交的新产物：${UNTRACKED}"
+            exit 1
+          fi
+
   build-and-push:
     name: build-and-push
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [test]
+    # 前端也是准入条件：产物过期等于界面没上线，而它不会让任何别的关变红
+    needs: [test, frontend]
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     # 不设 job outputs：GitHub **不会把含 secret 的 output 传给下游 job**
     # （直接变空，不是打码成 ***）。镜像名由 ACR_REGISTRY 拼出，必然含 secret，
@@ -195,6 +249,63 @@ jobs:
           # 每日配额必须设置且不得放得太宽，否则被脚本刷爆
           q = d["guard"].get("daily_quota")
           assert isinstance(q, int) and 0 < q <= 500, f"对外实例的每日配额异常：{q}"
+          PY
+
+      - name: Page and its assets are actually served
+        env:
+          BASE: ${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}
+        run: |
+          # 接口全绿而页面白屏，是这套部署最可能的失败形态：产物没提交、
+          # 静态目录没挂上、入口把 /assets 漏了 —— 三种都没有一种会让
+          # /api/health 变红。冒烟必须真去取一遍页面引用的每个资源。
+          set -euo pipefail
+          BASE="${BASE%/}"
+          IFS='|' read -r CODE CTYPE <<<"$(curl --silent --show-error --max-time 20 \
+            --retry 6 --retry-delay 5 -o /tmp/index.html -w '%{http_code}|%{content_type}' "${BASE}/")"
+          # 状态码要单独看：出错页往往也是 text/html，只比对类型会把 500 放过去
+          [[ "${CODE}" == "200" ]] || { echo "::error::首页返回 ${CODE}"; exit 1; }
+          [[ "${CTYPE}" == *text/html* ]] || { echo "::error::首页 content-type 不对：${CTYPE}"; exit 1; }
+
+          REFS="$(grep -o '/assets/[^"]\+' /tmp/index.html | sort -u)"
+          [[ -n "${REFS}" ]] || { echo "::error::页面没有引用任何 /assets 资源 —— 线上跑的多半不是构建产物"; exit 1; }
+
+          for REF in ${REFS}; do
+            # 用 | 分隔而不是空格：content_type 自带 "; charset=utf-8"，
+            # 按空格切会把字段错位，size 变成一段文本，比对时静默走偏
+            IFS='|' read -r CODE CTYPE SIZE <<<"$(curl -s -o /dev/null --max-time 30 \
+              -w '%{http_code}|%{content_type}|%{size_download}' "${BASE}${REF}")"
+            echo "${REF} → ${CODE} ${CTYPE} ${SIZE}B"
+            [[ "${CODE}" == "200" && "${SIZE}" -gt 0 ]] || { echo "::error::${REF} 取不到（${CODE}）"; exit 1; }
+            case "${REF}" in
+              *.js)  [[ "${CTYPE}" == *javascript* ]] || { echo "::error::${REF} 的 content-type 不对：${CTYPE}"; exit 1; };;
+              *.css) [[ "${CTYPE}" == *css* ]]        || { echo "::error::${REF} 的 content-type 不对：${CTYPE}"; exit 1; };;
+            esac
+          done
+
+      - name: Login capability is wired up
+        env:
+          BASE: ${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}
+        run: |
+          # 登录要同时满足两条：配置里 auth.enabled 为真，**且**进程里有
+          # ASKDB_SESSION_SECRET（askdb/auth.py 的 enabled()）。密钥来自 k8s Secret
+          # askdb-auth，manifest 里是 optional —— 忘了建，服务照常起、页面照常开，
+          # 只是登录整体关闭、前端连入口都不显示。又一次"全绿但功能没上线"。
+          set -euo pipefail
+          BASE="${BASE%/}"
+          CODE="$(curl -s -o /tmp/me.json --max-time 20 -w '%{http_code}' "${BASE}/api/auth/me")"
+          if [[ "${CODE}" != "200" ]]; then
+            echo "::error::/api/auth/me 返回 ${CODE} —— 线上镜像里还没有登录能力"; exit 1
+          fi
+          python3 - /tmp/me.json <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          assert d["enabled"] is True, f"登录未启用 —— 多半是没建 askdb-auth Secret：{d}"
+          assert d["required"] is False, f"对外实例不该把登录设成门：{d}"
+          assert d["demo_accounts"], f"一键体验账号为空，登录面板会是死的：{d}"
+          # 匿名也该有能查的表，否则未登录的访客一进来就撞 403
+          assert d["scope"]["tables"], f"匿名角色一张表都看不到：{d}"
+          print("登录已就绪，一键体验账号：",
+                ", ".join(a["username"] for a in d["demo_accounts"]))
           PY
 
       - name: Guardrail still blocks writes
