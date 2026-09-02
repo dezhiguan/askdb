@@ -75,6 +75,7 @@ llm:
     api_key_env: DASHSCOPE_API_KEY
 
 observability:
+  replay_api: true    # 本机开发：判定链路可回放
   audit_log: ./data/audit-ragforge.jsonl
   checkpoint_db: ./data/checkpoints-ragforge.sqlite
   # 口径是**模型调用次数**，不是提问数：一次提问会调好几次模型
@@ -84,3 +85,56 @@ observability:
 
 tables_file: ./config/ragforge-tables.yaml
 metrics_file: ./config/ragforge-metrics.yaml
+
+# ---------------------------------------------------------------------------
+# 本机开发：把登录、角色、身份、回放一并打开
+#
+# 这几段原本只配在 public.yaml，导致本地跑起来看不到登录与角色收窄 ——
+# 「本地没有的功能」和「本地没配的功能」长得一模一样，已经因此误判过一次。
+# 开发配置就该能跑通全部功能。
+# ---------------------------------------------------------------------------
+
+# 收窄语义：有效表 = 实例白名单 ∩ 这里列的表，行上限取小。只能收窄不能放宽。
+role_policies:
+  ANONYMOUS:
+    tables: [organizations, knowledge_bases]
+    max_rows: 20
+  QA:
+    tables: [organizations, knowledge_bases, documents]
+    max_rows: 50
+  PRODUCT:
+    # 不含 model_usage_daily：token 与成本是内部经营数据
+    tables: [organizations, knowledge_bases, documents, retrieval_logs]
+    max_rows: 100
+  DATA_OWNER:
+    tables: [organizations, knowledge_bases, documents, retrieval_logs, model_usage_daily]
+    max_rows: 200
+
+auth:
+  enabled: true
+  required: false          # 匿名可用，登录只放宽可见范围
+  cookie_secure: false     # 本地 http 调试
+  accounts:
+    - username: product
+      display_name: 产品角色
+      roles: [PRODUCT]
+      demo: true
+      note: 看业务数据，不看 token 与成本
+      password_hash: "scrypt$16384$8$1$BXRPaoFjVz+u5NN5hPIZ0w==$m8kDCduTe+hR4xMIEAR8R8WPQJmfdG2vY6EFwEFsSGc="
+    - username: qa
+      display_name: 测试角色
+      roles: [QA]
+      demo: true
+      note: 可见表更少、返回行上限更低
+      password_hash: "scrypt$16384$8$1$eLDdXb9uFjW/CfrHBgfQGg==$rq3O/fMjtndHe6sevcR7obmmWYYq/zi2MbPmY30brAU="
+    - username: owner
+      display_name: 数据负责人
+      roles: [DATA_OWNER]
+      demo: true
+      note: 实例白名单内全部可见
+      password_hash: "scrypt$16384$8$1$39p9hx2CGTD3qLeQFcsSQQ==$w5wEOTvqtU/64iFbEG3Cda6D28Ck0jAOJd8tnPD+8dQ="
+
+identity:
+  # 连接串走 ASKDB_IDENTITY_DSN（见 .env），不写进仓库
+  enabled: true
+  password_env: ASKDB_IDENTITY_PG_PASSWORD
