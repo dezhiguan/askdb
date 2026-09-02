@@ -380,3 +380,29 @@ def test_eval_exposes_failure_traces_and_replay_config(client):
 def test_health_reports_config_path(client):
     """提问页的复现命令要带 -c，配置路径得从 health 拿。"""
     assert "config" in client.get("/api/health").json()
+
+
+def test_schema_endpoint_is_scoped_to_the_caller(cfg, monkeypatch):
+    """/api/schema 必须按角色收窄。
+
+    用未收窄的配置，会让人看到自己查不了的表连同全部字段 —— 实测 public.yaml
+    下匿名角色只能查 knowledge_bases / orgs，这个接口却把 documents 与
+    model_usage 的字段一起吐出来。既是信息泄露，也会让业务口径页列出一批
+    用了就被 R-03 拦的口径。
+    """
+    from pathlib import Path
+
+    from askdb.config import load
+
+    root = Path(__file__).resolve().parent.parent
+    public = load(root / "config" / "public.yaml")
+    monkeypatch.setattr(server, "load", lambda _p: public)
+    c = TestClient(server.create_app("ignored.yaml"))
+
+    seen = {t["name"] for t in c.get("/api/schema").json()["tables"]}
+    allowed = set(public.raw["role_policies"]["ANONYMOUS"]["tables"])
+    assert seen <= allowed, f"匿名看到了不可查的表：{sorted(seen - allowed)}"
+
+    # 口径引用的表不可见时整条摘掉，否则模型会照它写出被 R-03 拦下的 SQL
+    for m in c.get("/api/schema").json()["metrics"]:
+        assert set(m["scope"]) <= seen, f"口径「{m['name']}」引用了不可见的表"

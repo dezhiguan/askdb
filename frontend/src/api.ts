@@ -218,6 +218,9 @@ export interface SchemaMetric {
   scope: string[]
   definition: string
   note: string
+  owner: string
+  /** expr 直接进 SELECT 列表，predicate 进 WHERE —— 用法不同，页面要分清 */
+  kind: 'expr' | 'predicate' | ''
 }
 
 export interface Schema {

@@ -16,13 +16,9 @@ interface Notice {
   legacy?: boolean
 }
 
-const NOTICES: Partial<Record<View, Notice>> = {
-  glossary: {
-    phase: '接后端：阶段 B',
-    backend: '业务口径已经在跑：定义在 config/*-metrics.yaml，命中后强制注入提示词并参与召回，'
-      + '只是还没有页面。本页等 schema registry 落地后接线。',
-  },
-}
+// 现在是空的：剩下的页要么已接真实后端，要么已经移除。
+// 机制留着 —— 下一个页面接后端之前先在这里加一条，比"先上线再补声明"安全。
+const NOTICES: Partial<Record<View, Notice>> = {}
 
 export function MockNotice({ view }: { view: View }) {
   const notice = NOTICES[view]

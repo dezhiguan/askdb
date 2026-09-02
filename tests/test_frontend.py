@@ -387,3 +387,24 @@ def test_tasks_page_is_wired_and_states_what_a_task_is():
 
     notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
     assert "tasks:" not in notices, "任务中心已接真实数据，MockNotice 里的条目要删掉"
+GLOSSARY_PAGE = FRONTEND_SRC / "pages" / "GlossaryPage.tsx"
+
+
+def test_glossary_page_is_wired_to_real_endpoints():
+    src = GLOSSARY_PAGE.read_text(encoding="utf-8")
+    assert "fetchSchema" in src, "业务口径页没有调用 fetchSchema"
+
+    notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
+    assert "glossary:" not in notices, "业务口径页已接真实数据，MockNotice 里的条目要删掉"
+
+
+def test_glossary_invents_no_governance_metadata():
+    """原型的口径详情写着「VERIFIED METRIC · FINANCE · v3.2 · 已认证 · 更新时间」。
+
+    askdb 的口径模型里只有 name / aliases / scope / expr|predicate / note / owner ——
+    域、版本、认证状态、更新时间四样都不存在。写上去会让人以为背后有一套
+    评审流程，而据此判断"这条口径可不可信"正是这页存在的意义。
+    """
+    src = _code_only(GLOSSARY_PAGE)
+    for invented in ("已认证", "VERIFIED", "v3.2", "更新时间", "当前版本"):
+        assert invented not in src, f"业务口径页出现了后端没有的治理元数据：{invented}"

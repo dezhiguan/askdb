@@ -511,3 +511,7 @@
 .tasks-empty span { display: block; margin: 5px auto 0; max-width: 46ch; color: var(--muted); font-size: 7.5px; line-height: 1.7; }
 
 .tasks-foot { display: flex; gap: 7px; padding: 11px 0 0; }
+/* 口径命中词做成标签，em 默认斜体在中文里很丑 */
+.rule-row small .tag { display: inline-block; margin: 3px 3px 0 0; font-style: normal; }
+.definition .sql-code { margin: 10px 0; }
+.term-list > button > span { min-width: 0; }

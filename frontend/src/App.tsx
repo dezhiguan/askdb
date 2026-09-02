@@ -6,7 +6,7 @@ import { ModalLayer } from './components/Modals'
 import { QueryWorkspace } from './components/QueryWorkspace'
 import { DataSourcesPage } from './pages/DataSourcesPage'
 import { AuditPage } from './pages/AuditPage'
-import { GlossaryPage } from './pages/GovernancePages'
+import { GlossaryPage } from './pages/GlossaryPage'
 import { PermissionsPage } from './pages/PermissionsPage'
 import { TasksPage } from './pages/TasksPage'
 import { TracesPage } from './pages/TracesPage'
@@ -45,7 +45,7 @@ function App() {
     if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} />
     if (view === 'sources') return <DataSourcesPage health={health} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />
-    if (view === 'glossary') return <GlossaryPage notify={notify} />
+    if (view === 'glossary') return <GlossaryPage onNavigate={setView} />
     if (view === 'audit') return <AuditPage />
     if (view === 'traces') return <TracesPage />
     return <AuditPage />
