@@ -235,15 +235,17 @@ def test_permissions_page_is_wired_to_real_endpoints():
     assert "permissions:" not in notices, "身份与权限页已接真实数据，MockNotice 里的条目要删掉"
 
 
-def test_permissions_page_states_roles_are_not_enforced_yet():
-    """成员名单是真的，但角色还不参与执行判定 —— 两件事必须分开说清楚。
+def test_permissions_page_does_not_claim_roles_are_inert():
+    """角色已真正参与执行判定：server 的 _scoped 走 _auth.roles_of →
+    _identity.for_roles，按角色收窄本次查询可见的表与行上限。
 
-    不写明，就会有人以为把某人加进「测试」角色就限制住他能查什么了；
-    实际上 askdb 还没接入登录，请求上没有任何身份，护栏仍按实例配置
-    对所有调用一视同仁。这种误解直接关系到有没有人敢把生产库接上来。
+    页面早先有一条"角色目前不参与执行判定 / 尚未接入登录"的横幅，那是登录
+    与收窄落地之前的状态。功能上线后它就说反了 —— 会让人以为把某人加进角色
+    没有任何效果。这条测试钉住"过期声明不得回潮"，防止有人日后又抄回来。
     """
     src = PERMISSIONS_PAGE.read_text(encoding="utf-8")
-    assert "角色目前不参与执行判定" in src
+    for stale in ("不参与执行判定", "尚未接入登录", "对所有调用一视同仁"):
+        assert stale not in src, f"页面还留着过期声明：{stale}"
 
 
 def test_admin_token_never_persisted_in_browser_storage():

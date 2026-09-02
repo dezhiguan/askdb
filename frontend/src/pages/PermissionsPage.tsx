@@ -82,21 +82,6 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
 
       {error && <div className="audit-error">读取失败：{error}</div>}
 
-      {/* 数据是真的，但角色还没有参与执行判定 —— 这两件事必须分开说清楚，
-          否则会有人以为把某人加进「测试」就限制住他了 */}
-      <div className="mock-notice">
-        <span className="mock-tag">尚未生效</span>
-        <div className="mock-copy">
-          <strong>角色成员是真实数据，但角色目前不参与执行判定。</strong>
-          <small>
-            askdb 尚未接入登录，请求上没有任何身份可依据；护栏（R-01～R-17）与表白名单
-            仍按实例的配置文件生效，对所有调用一视同仁。把某人加入「测试」角色，
-            此刻并不会限制他能查什么 —— 角色真正收敛权限要等登录接入与多数据源落地。
-          </small>
-        </div>
-        <div className="mock-side"><span className="mock-phase">生效：阶段 C / D</span></div>
-      </div>
-
       {data && !data.enabled && (
         <section className="card notice-card">
           <h3>本实例未启用身份与权限</h3>
