@@ -803,8 +803,28 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             raise HTTPException(status_code=404, detail="成员不存在")
         return {"ok": True}
 
+    @app.get("/api/tasks")
+    def tasks(request: Request) -> dict[str, Any]:
+        """当前账号名下尚可续跑的任务。
+
+        **必须登录**，且只列自己的。中断恢复设计 §4.2 原本禁止一切未完成
+        任务的枚举，理由是当时没有账号体系；登录接入后按发起人收窄的列表
+        不再是枚举入口，但匿名依旧什么都不给 —— 那正是 §4.2 要挡的情形。
+        """
+        username = _current_user(request)
+        if not username:
+            raise HTTPException(
+                status_code=401,
+                detail="任务列表需要登录。中断的任务带着发起人问过的问题原文，"
+                       "匿名实例不提供未完成任务的枚举入口。",
+            )
+        from .audit import resumable
+
+        items = resumable(cfg.audit_log, username)
+        return {"items": items, "user": username}
+
     @app.post("/api/resume")
-    def resume_task(req: ResumeRequest) -> JSONResponse:
+    def resume_task(req: ResumeRequest, request: Request) -> JSONResponse:
         """从断点续跑一次中断的提问（中断恢复设计 V1.1）。
 
         只接受调用方自己持有的 thread_id；格式非法、不存在、已跑完
@@ -814,7 +834,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         not_found = JSONResponse({"error": "not found"}, status_code=404)
         if not _TRACE_ID_RE.fullmatch(req.thread_id or ""):
             return not_found
-        r = run_resume(req.thread_id, cfg)
+        # 归属校验：有主的任务只能由发起人续跑。
+        # 匿名发起的任务保持原语义（凭 thread_id 续跑）—— 那是登录之前的行为，
+        # 不因为加了账号就把老任务锁死。
+        from .audit import read_records
+
+        owner = ""
+        for rec in read_records(cfg.audit_log):
+            if (rec.get("thread_id") or rec.get("trace_id")) == req.thread_id:
+                owner = rec.get("user") or ""
+                break
+        if owner and owner != (_current_user(request) or ""):
+            return not_found          # 与"不存在"同一响应，不暴露任务是否存在
+
+        scoped = _scoped(request)
+        r = run_resume(req.thread_id, scoped)
         if r is None:
             return not_found
         return JSONResponse(r.to_dict())
@@ -841,7 +875,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         username = _current_user(request)
         if not username:
             return _identity.for_role(base, _identity.ANONYMOUS)
-        return _identity.for_roles(base, _auth.roles_of(cfg, username))
+        return _identity.for_roles(base, _auth.roles_of(cfg, username), user=username)
 
     def _require_login(request: Request) -> None:
         if _auth.required(cfg) and not _current_user(request):
@@ -988,7 +1022,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             write_audit(scoped.audit_log, {
                 "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
                 "model": None,
-                "org_id": org, "role": scoped.role, "question": "（直查模式）",
+                "org_id": org, "role": scoped.role, "user": scoped.user,
+                "question": "（直查模式）",
                 "source": scoped.source_id or "builtin",
                 "source_name": scoped.source_name or scoped.path,
                 "tables_hit": [], "metrics_hit": [],

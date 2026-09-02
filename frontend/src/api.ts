@@ -424,7 +424,8 @@ export const askQuestion = (question: string, source = '', orgId?: number) =>
 export const runSql = (sql: string, source = '', orgId?: number) =>
   post<AskResult>('/api/sql', { sql, source, org_id: orgId ?? null })
 
-/** 从断点续跑。thread_id 非法/不存在/已跑完一律 404 —— 不提供未完成任务的枚举入口。 */
+/** 从断点续跑。thread_id 非法/不存在/已跑完/不属于当前账号，一律 404 且响应一致。
+ *  枚举入口只对**已登录用户**开放，且只列自己的（见 /api/tasks）。 */
 export async function resumeTask(threadId: string): Promise<AskResult | null> {
   const response = await fetch('/api/resume', {
     method: 'POST',
@@ -560,4 +561,36 @@ export function enterDemo(username: string): Promise<void> {
 
 export function logout(): Promise<void> {
   return authPost('/api/auth/logout', {})
+}
+
+/* ---------------- 任务（可续跑的中断调用） ---------------- */
+
+export interface Task {
+  thread_id: string
+  trace_id: string
+  ts: string
+  first_ts: string
+  question: string | null
+  kind: string
+  role: string
+  user: string
+  /** 这条线程上已经跑过几次（首次 + 每次续跑各算一次） */
+  attempts_on_thread: number
+  elapsed_ms: number
+  cost_cny: number | null
+}
+
+export type TasksResult =
+  | { status: 'ok'; items: Task[]; user: string }
+  /** 未登录。任务里带着发起人问过的问题原文，匿名不给枚举入口。 */
+  | { status: 'need_login'; detail: string }
+
+export async function fetchTasks(): Promise<TasksResult> {
+  const response = await fetch('/api/tasks')
+  if (response.status === 401) {
+    return { status: 'need_login', detail: (await response.json().catch(() => ({}))).detail || '需要登录' }
+  }
+  if (!response.ok) throw new Error(`/api/tasks ${response.status}`)
+  const body = await response.json()
+  return { status: 'ok', items: body.items, user: body.user }
 }

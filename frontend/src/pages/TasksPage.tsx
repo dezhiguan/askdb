@@ -1,19 +1,150 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { fetchTasks, resumeTask, type Task, type TasksResult } from '../api'
 import { PageHeader } from '../components/AppShell'
+import type { View } from '../types'
 
-export function TasksPage({ onClarify, notify }: { onClarify: () => void; notify: (message: string) => void }) {
-  const [approved, setApproved] = useState(false)
-  const tasks = [
-    ['?', '查询退款金额', 'TASK-0831 · 林晓 · 刚刚', '缺少条件', '3 项', '等待补充'],
-    ['04', '昨日高额退款订单排查', 'TASK-0827 · 林晓 · 17:42', '预计扫描', '82K', approved ? '已完成' : '等待确认'],
-    ['▶', '近七天物流超时趋势', 'TASK-0819 · 周琪 · 17:36', '当前节点', 'QUERY', '执行中'],
-    ['✓', '新客首单转化率', 'TASK-0808 · 陈晨 · 16:05', '耗时', '2.3S', '已完成'],
-    ['!', '批量导出用户支付记录', 'TASK-0796 · 王凯 · 15:48', '原因', 'PII', '已拦截'],
-  ]
-  return <div className="page"><PageHeader eyebrow="Phase 1 · Governed Tasks" title="任务中心" description="需要确认、耗时较长或包含复杂分析步骤的查询会自动升级为任务。" action={<button className="primary" onClick={() => notify('已创建空白任务草稿 · 上下文独立')}>＋ 创建任务</button>} />
-    <div className="stats">{[['运行中','3','均在安全阈值内'],['待处理','3','1 补充信息 · 2 审批'],['今日完成','28','成功率 96.7%'],['已拦截','4','越权或写入意图']].map(stat => <div key={stat[0]}><span>{stat[0]}</span><strong>{stat[1]}</strong><small>{stat[2]}</small></div>)}</div>
-    <section className="card"><div className="card-head"><div><strong>查询任务</strong><p>每个任务拥有独立状态、执行轨迹和审计记录。</p></div><button className="ghost">全部状态⌄</button></div><div className="table-scroll">
-      {tasks.map((task, index) => <div className="task-row" key={task[1]}><i className={index === 0 || index === 4 ? 'warn' : ''}>{task[0]}</i><div className="task-main"><strong>{task[1]}</strong><small>{task[2]}</small></div><div><span>{task[3]}</span><strong>{task[4]}</strong></div><span className={`status ${index === 0 || index === 1 || index === 4 ? 'wait' : ''}`}>{task[5]}</span><button className={index === 4 ? 'danger' : index > 1 ? 'ghost' : 'primary'} onClick={() => { if (index === 0) onClarify(); else if (index === 1) { setApproved(true); notify('任务已从审批节点恢复并执行完成') } else notify('任务详情已打开（样例数据，未接后端）') }}>{index === 0 ? '补充信息' : index === 1 ? approved ? '查看结果' : '批准执行' : index === 4 ? '查看原因' : '查看轨迹'}</button></div>)}
-    </div></section>
-  </div>
+function fmtTime(ts: string): string {
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return ts
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+export function TasksPage({ onNavigate, notify }: {
+  onNavigate: (view: View) => void
+  notify: (message: string) => void
+}) {
+  const [result, setResult] = useState<TasksResult | null>(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState('')
+
+  const load = useCallback(() => {
+    fetchTasks()
+      .then(setResult)
+      .catch(e => setError(String(e.message || e)))
+  }, [])
+
+  useEffect(load, [load])
+
+  const resume = async (task: Task) => {
+    setBusy(task.thread_id)
+    try {
+      const r = await resumeTask(task.thread_id)
+      if (!r) {
+        notify('这个任务已经跑完，或不属于当前账号')
+      } else if (r.ok) {
+        notify(`已从断点续跑完成 · 新 trace ${r.trace_id}`)
+      } else {
+        notify(`续跑仍未完成：${r.rejected_by ?? ''} ${r.error ?? ''}`.trim())
+      }
+      load()
+    } catch (e) {
+      notify(String((e as Error).message || e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  return (
+    <div className="page">
+      <PageHeader
+        eyebrow="Phase 1 · Governed Tasks"
+        title="任务中心"
+        description="中断的调用会留下可续跑的现场：判定链路存进检查点，从断点继续而不是从头重来。"
+      />
+
+      {error && <div className="audit-error">读取任务失败：{error}</div>}
+
+      {/* 这一段是这页最要紧的东西：askdb 的「任务」到底是什么。
+          原型讲的是"缺少时间范围，任务在生成 SQL 前暂停，补充输入后继续"——
+          那是产品化的澄清流程，askdb 没有。这里的中断是**故障恢复**：
+          进程挂了、递归超限、检查点库出问题，执行停在节点边界。
+          把两者混为一谈，会让人以为能靠它做审批与人工介入。 */}
+      <section className="card notice-card">
+        <h3>这里的「任务」指什么</h3>
+        <p>
+          askdb 的提问是<b>同步执行</b>的，没有任务队列。会出现在这一页的，是
+          <b>执行中断后留下可续跑现场</b>的调用 —— 进程故障、递归超限、检查点库异常
+          都会让执行停在某个节点边界，此时判定现场已存入检查点，可以从断点继续，
+          已完成的节点不会重跑。
+        </p>
+        <p>
+          续跑写<b>新的 trace_id</b>，但线程不变，两条记录经 <span className="mono">thread_id</span> 关联，
+          审计里能看出这是第几次执行；续跑另计一次每日配额。
+        </p>
+        <p className="hint-warn">
+          原型里「信息缺失 → 用户补充 → 从暂停节点继续」的澄清流程、以及高风险查询的
+          审批流，askdb 都还没有。它们需要先把提问异步化，属于后续阶段。
+        </p>
+      </section>
+
+      {result?.status === 'need_login' && (
+        <section className="card notice-card">
+          <h3>任务列表需要登录</h3>
+          <p>{result.detail}</p>
+          <p>
+            这不是懒得做匿名支持：中断的任务里带着发起人问过的问题原文，
+            列出来就等于任何人都能看到、并续跑别人的任务。
+            所以列表只对已登录用户开放，且<b>只列自己发起的</b>。
+          </p>
+        </section>
+      )}
+
+      {result?.status === 'ok' && (
+        <section className="card table-scroll">
+          <h3>
+            可续跑任务
+            <span className="section-note">
+              账号 {result.user} · {result.items.length} 个
+            </span>
+          </h3>
+          <table className="audit-table">
+            <thead>
+              <tr>
+                <th>问题</th><th>线程</th><th>首次发起</th><th>最近中断</th>
+                <th className="num">已执行</th><th />
+              </tr>
+            </thead>
+            <tbody>
+              {result.items.map(task => (
+                <tr key={task.thread_id}>
+                  <td className="audit-question" title={task.question ?? ''}>
+                    {task.question || <span className="dim">（无问题文本）</span>}
+                  </td>
+                  <td className="mono">{task.thread_id}</td>
+                  <td className="mono dim">{fmtTime(task.first_ts)}</td>
+                  <td className="mono dim">{fmtTime(task.ts)}</td>
+                  <td className="num">{task.attempts_on_thread} 次</td>
+                  <td>
+                    <button
+                      className="primary"
+                      disabled={busy === task.thread_id}
+                      onClick={() => resume(task)}
+                    >
+                      {busy === task.thread_id ? '续跑中…' : '从断点续跑'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {result.items.length === 0 && (
+                <tr><td colSpan={6} className="tasks-empty">
+                  <strong>当前没有可续跑的任务。</strong>
+                  <span>
+                    这是正常状态 —— 中断来自故障，不是常规流程。
+                    调用一旦正常收尾（成功、被护栏拦下、或续跑完成），就不会留在这里。
+                  </span>
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+          <div className="tasks-foot">
+            <button className="ghost" onClick={load}>刷新</button>
+            <button className="ghost" onClick={() => onNavigate('traces')}>去执行追踪看节点明细</button>
+          </div>
+        </section>
+      )}
+
+      {!result && !error && <section className="card notice-card"><p>读取中…</p></section>}
+    </div>
+  )
 }

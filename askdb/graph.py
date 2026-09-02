@@ -649,6 +649,7 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         # 结果出自谁的可见范围 —— 少了它，同一个问题在不同角色下拿到不同行数，
         # 事后无从解释
         "role": cfg.role or "ANONYMOUS",
+        "user": cfg.user or "",
         # 打的哪个库。多源之后少了它，同一条 SQL 在不同数据源上的结果
         # 事后完全对不上账
         "source": cfg.source_id or "builtin",

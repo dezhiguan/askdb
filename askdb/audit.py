@@ -21,7 +21,7 @@ from typing import Any
 # 出现在流水列表里的字段。白名单式：新加字段须显式列入，
 # 避免未来往审计记录里塞了敏感字段后被列表接口顺手带出去。
 SUMMARY_FIELDS = (
-    "trace_id", "ts", "kind", "thread_id", "org_id", "role", "question", "rejected_by",
+    "trace_id", "ts", "kind", "thread_id", "org_id", "role", "user", "question", "rejected_by",
     "attempts", "rows_returned", "elapsed_ms", "cost_cny",
     "step_count", "multi_step", "source", "source_name",
 )
@@ -30,7 +30,7 @@ SUMMARY_FIELDS = (
 # rows / schema_prompt 两个字段在设计上**绝不出接口** —— 用白名单而不是
 # 黑名单：漏给一个无害字段是体验问题，漏挡一个敏感字段是事故。
 REPLAY_FIELDS = (
-    "trace_id", "ts", "kind", "thread_id", "org_id", "role", "question",
+    "trace_id", "ts", "kind", "thread_id", "org_id", "role", "user", "question",
     "tables_hit", "metrics_hit", "sql_raw", "sql_final",
     "rules_fired", "rejected_by", "attempts", "explain_rows",
     "step_count", "multi_step", "converged_early", "rows_returned",
@@ -64,6 +64,7 @@ def _summary(rec: dict[str, Any]) -> dict[str, Any]:
     s["kind"] = rec.get("kind", "ask")
     # 角色是后加的字段，老记录没有 —— 如实标"未记录"，别默认成 ANONYMOUS
     s["role"] = rec.get("role") or "（未记录）"
+    s["user"] = rec.get("user") or ""
     s["ok"] = not rec.get("rejected_by")
     return s
 
@@ -91,6 +92,48 @@ def list_audits(
         "total": len(recs), "page": page, "page_size": page_size,
         "items": [_summary(r) for r in recs[start:start + page_size]],
     }
+
+
+def resumable(path: Path, user: str) -> list[dict[str, Any]]:
+    """某个账号名下**尚可续跑**的任务。
+
+    askdb 没有任务表，任务这个概念完全落在审计流水与检查点上：
+    一次调用中断（rejected_by=INTERRUPTED）就留下一条待续跑的线程，
+    /api/resume 按 thread_id 从断点继续，续跑写新的 trace 但 thread 不变。
+    所以"这条线程还开着吗"= 它最后一条记录是不是仍为中断。
+
+    **必须按账号收窄。** 中断恢复设计 §4.2 原本禁止一切未完成任务的枚举，
+    理由是当时没有账号体系 —— 列出来就等于任何人都能看到并续跑别人的
+    任务，而任务里带着别人问过的问题原文。登录接入后前提变了：
+    按发起人收窄的列表不是枚举入口。但**匿名一律不给**，那正是 §4.2
+    要挡的情形，传空账号直接返回空。
+    """
+    if not user:
+        return []
+
+    threads: dict[str, list[dict[str, Any]]] = {}
+    for rec in read_records(path):
+        tid = rec.get("thread_id") or rec.get("trace_id")
+        if tid:
+            threads.setdefault(str(tid), []).append(rec)
+
+    out: list[dict[str, Any]] = []
+    for tid, recs in threads.items():
+        last = recs[-1]
+        if last.get("rejected_by") != "INTERRUPTED":
+            continue                       # 线程已收尾（成功、被拦、或已续跑完）
+        # 归属看这条线程的**第一条**记录：续跑会写新 trace，但发起人不变
+        if (recs[0].get("user") or "") != user:
+            continue
+        item = _summary(last)
+        item["thread_id"] = tid
+        item["attempts_on_thread"] = len(recs)
+        item["first_ts"] = recs[0].get("ts", "")
+        item["question"] = recs[0].get("question") or last.get("question") or ""
+        out.append(item)
+
+    out.sort(key=lambda r: str(r.get("ts", "")), reverse=True)
+    return out
 
 
 def get_audit(path: Path, trace_id: str) -> dict[str, Any] | None:

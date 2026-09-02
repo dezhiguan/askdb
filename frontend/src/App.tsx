@@ -8,7 +8,6 @@ import { DataSourcesPage } from './pages/DataSourcesPage'
 import { AuditPage } from './pages/AuditPage'
 import { GlossaryPage } from './pages/GovernancePages'
 import { PermissionsPage } from './pages/PermissionsPage'
-import { ConnectorsPage, DeveloperPage, RoadmapPage } from './pages/ScalePages'
 import { TasksPage } from './pages/TasksPage'
 import { TracesPage } from './pages/TracesPage'
 import type { ModalName, View } from './types'
@@ -43,15 +42,13 @@ function App() {
 
   const page = (() => {
     if (view === 'query') return <div className="page query-page"><PageHeader eyebrow="Phase 1 · Unified Query" title="查询工作台" description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。" action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>} /><QueryWorkspace health={health} onNavigate={setView} /></div>
-    if (view === 'tasks') return <TasksPage onClarify={() => setModal('clarification')} notify={notify} />
+    if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} />
     if (view === 'sources') return <DataSourcesPage health={health} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />
     if (view === 'glossary') return <GlossaryPage notify={notify} />
     if (view === 'audit') return <AuditPage />
     if (view === 'traces') return <TracesPage />
-    if (view === 'connectors') return <ConnectorsPage openModal={setModal} />
-    if (view === 'developer') return <DeveloperPage notify={notify} />
-    return <RoadmapPage notify={notify} />
+    return <AuditPage />
   })()
 
   return (

@@ -11,11 +11,6 @@ export function ModalLayer({ active, onClose, notify }: {
   return (
     <div className="modal-backdrop" onMouseDown={event => { if (event.currentTarget === event.target) onClose() }}>
       {active === 'clarification' && <ClarificationModal onClose={onClose} onFinish={() => finish('补充信息已写入任务状态 · 已从 INTERRUPT 节点恢复')} />}
-      {active === 'connector' && <FormModal title="部署 Connector" description="选择目标网络后生成一次性部署命令。" onClose={onClose}>
-        <label>节点名称<input defaultValue="connector-new-01" /></label><label>目标网络<select><option>企业测试网络</option><option>生产 VPC</option><option>物流数据域</option></select></label>
-        <div className="code-line"><code>docker run askdb/connector:1.4.2 --enroll enroll_••••</code></div>
-        <div className="modal-actions"><button className="ghost" onClick={onClose}>稍后部署</button><button className="primary" onClick={() => finish('Connector 心跳正常 · mTLS 通道已建立')}>我已部署，检查心跳</button></div>
-      </FormModal>}
       {active === 'langfuse' && <FormModal title="接入 Langfuse" description="配置可观测平台；敏感内容默认不上报。" onClose={onClose}>
         <label>Langfuse Host<input defaultValue="https://langfuse.company.internal" /></label>
         <div className="form-grid"><label>Public Key<input defaultValue="pk-lf-••••••" /></label><label>Secret Key / Vault<input type="password" defaultValue="vault://observability/langfuse" /></label></div>

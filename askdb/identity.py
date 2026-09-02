@@ -155,12 +155,12 @@ def combine(policies: list[Policy]) -> Policy:
     return Policy(tables=tables, max_rows=max_rows)
 
 
-def for_roles(cfg: Config, role_codes: list[str]) -> Config:
+def for_roles(cfg: Config, role_codes: list[str], user: str = "") -> Config:
     """取一组角色叠加后的配置。登录用户走这条。"""
     if not role_codes:
-        return for_role(cfg, ANONYMOUS)
+        return dataclasses.replace(for_role(cfg, ANONYMOUS), user=user)
     combined = combine([policy_for(cfg, code) for code in role_codes])
-    return narrow(cfg, combined, "+".join(sorted(role_codes)))
+    return dataclasses.replace(narrow(cfg, combined, "+".join(sorted(role_codes))), user=user)
 
 
 def narrow(cfg: Config, policy: Policy, role_code: str = ANONYMOUS) -> Config:

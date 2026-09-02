@@ -24,13 +24,5 @@ export const navGroups: { label: string; items: { view: View; icon: string; titl
       { view: 'audit', icon: 'AU', title: '审计中心', subtitle: '调用流水与复放' },
     ],
   },
-  {
-    label: 'Scale',
-    items: [
-      { view: 'connectors', icon: 'CN', title: 'Connector 节点', subtitle: '跨网络数据接入' },
-      { view: 'developer', icon: '>_', title: '开发者工具', subtitle: 'CLI · IDE · API' },
-      { view: 'roadmap', icon: 'RM', title: '产品落地路线', subtitle: '分阶段能力规划' },
-    ],
-  },
 ]
 

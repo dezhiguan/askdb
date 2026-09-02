@@ -345,3 +345,45 @@ def test_trace_detail_does_not_depend_on_replay_for_the_basics():
         assert early not in head, f"标题/事实网格前有基于回放的提前返回（{early}），整块会被一起吞掉"
     assert "if (!replayOn)" in src[src.index("function TraceNodes("):], \
         "链路条那一段没有处理回放未开启的情况"
+
+
+def test_removed_pages_leave_no_dangling_references():
+    """Connector 节点 / 开发者工具 / 产品落地路线 已移除（2026-09-02）。
+
+    删页面最容易留下的是**引用残渣**：导航里还有条目但组件没了（点了白屏）、
+    View 类型里还留着值（写错也不报错）、CSS 里一堆没人用的规则（下次改样式
+    的人以为还在用）。这条把三类残渣一起挡住。
+    """
+    names = ("ConnectorsPage", "DeveloperPage", "RoadmapPage")
+    values = ("'connectors'", "'developer'", "'roadmap'")
+
+    offenders = []
+    for path in list(FRONTEND_SRC.rglob("*.tsx")) + list(FRONTEND_SRC.rglob("*.ts")):
+        text = _code_only(path)
+        hit = [n for n in names + values if n in text]
+        if hit:
+            offenders.append(f"{path.relative_to(ROOT)}: {hit}")
+    assert not offenders, f"已删页面仍被引用：{offenders}"
+
+    css = "\n".join(p.read_text(encoding="utf-8") for p in (FRONTEND_SRC / "styles").glob("*.css"))
+    for cls in (".connector-card", ".tool-card", ".roadmap", ".phase-detail", ".code-line"):
+        assert cls not in css, f"{cls} 只服务已删页面，样式该一并清掉"
+
+
+def test_tasks_page_is_wired_and_states_what_a_task_is():
+    """任务中心已接 /api/tasks。
+
+    这页最容易造成误解：原型讲的是「缺少时间范围 → 任务暂停 → 补充输入后继续」，
+    那是产品化的澄清流程；askdb 的中断是**故障恢复**（进程挂了、递归超限、
+    检查点异常）。混为一谈会让人以为能靠它做人工介入与审批 ——
+    所以页面必须写明「没有任务队列」和「审批流还没有」。
+    """
+    src = _code_only(FRONTEND_SRC / "pages" / "TasksPage.tsx")
+    assert "fetchTasks" in src and "resumeTask" in src
+
+    text = (FRONTEND_SRC / "pages" / "TasksPage.tsx").read_text(encoding="utf-8")
+    assert "没有任务队列" in text, "必须写明提问是同步执行、没有队列"
+    assert "审批" in text, "必须写明审批流尚未实现"
+
+    notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
+    assert "tasks:" not in notices, "任务中心已接真实数据，MockNotice 里的条目要删掉"
