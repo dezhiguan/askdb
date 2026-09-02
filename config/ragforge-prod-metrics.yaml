@@ -18,6 +18,7 @@ metrics:
     aliases: [文档数量, 已入库文档, 入库量, 完成数]
     scope: [documents]
     expr: "COUNT(*) FILTER (WHERE parse_status = 'COMPLETED')"
+    naive: "COUNT(*)"
     note: >-
       口径为 COMPLETED 的数量，不是全部行数。
       **绝不可用 knowledge_bases.doc_count 代替** —— 那是缓存字段，实测已漂移：
@@ -62,6 +63,7 @@ metrics:
     aliases: [知识库数, 库数量, 有几个知识库, 在用的知识库]
     scope: [knowledge_bases]
     expr: "COUNT(*) FILTER (WHERE status = 'active')"
+    naive: "COUNT(*)"
     note: >-
       已删除（status = 'deleted'）的库仍留在表中做软删除，不计入。
       schema 里没有任何线索表明这一点，凭直觉写 COUNT(*) 会多算。
@@ -106,6 +108,10 @@ metrics:
     aliases: [调用失败率, 模型失败比例, 接口失败率]
     scope: [model_usage_daily]
     expr: "SUM(fail_count) * 1.0 / NULLIF(SUM(call_count), 0)"
+    naive: "AVG(fail_count * 1.0 / NULLIF(call_count, 0))"
+    grain: >-
+      先对分子分母各自 SUM 再相除，一次得出一个数。
+      按天/按模型分组会退化成等权平均，小流量日与高峰日权重相同。
     note: >-
       分子分母都要先 SUM 再相除。
       **不可写成 AVG(fail_count / call_count)** —— 那是按天等权平均，
@@ -117,6 +123,10 @@ metrics:
     aliases: [每天花多少钱, 平均日成本, 日均花费]
     scope: [model_usage_daily]
     expr: "SUM(cost) / NULLIF(COUNT(DISTINCT stat_date), 0)"
+    naive: "SUM(cost) / NULLIF(COUNT(*), 0)"
+    grain: >-
+      全期一个数。**不得再按模型或用途分组** —— 那会把分母从"全期有记录的天数"
+      变成"该分组有记录的天数"，两个数都合法、都跑得出来、护栏一条都不会触发。
     note: >-
       分母是**有记录的天数**，不是行数 —— 一天里每个模型每种用途各占一行，
       直接用 COUNT(*) 做分母会把日均成本算小到三分之一以下。

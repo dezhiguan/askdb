@@ -515,3 +515,53 @@
 .rule-row small .tag { display: inline-block; margin: 3px 3px 0 0; font-style: normal; }
 .definition .sql-code { margin: 10px 0; }
 .term-list > button > span { min-width: 0; }
+
+/* ---------------- 新建指标 ---------------- */
+
+.btn-new-metric {
+  padding: 8px 13px;
+  border: 0;
+  border-radius: 8px;
+  color: white;
+  background: #065f46;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #1d4ed8, 0 6px 15px rgba(6, 95, 70, .22);
+  font-size: 8px;
+  font-weight: 700;
+  transition: .18s ease;
+}
+.btn-new-metric:hover {
+  transform: translateY(-1px);
+  background: #054a38;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #2563eb, 0 8px 18px rgba(6, 95, 70, .28);
+}
+
+.metric-modal { width: min(640px, calc(100vw - 24px)); }
+.metric-modal .metric-def {
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  font: 8px var(--mono);
+  resize: vertical;
+}
+.metric-scope { margin: 10px 0 12px; }
+.metric-scope .field-label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 7px; }
+.scope-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.scope-chip {
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  background: var(--paper);
+  color: var(--ink-2);
+  font: 7px var(--mono);
+  cursor: pointer;
+}
+.scope-chip.on { border-color: var(--green); color: var(--green); background: var(--green-wash); }
+.grain-note { margin: 12px 0; }
+.grain-note .t { font-size: 8.5px; }
+.grain-note .why { font-size: 7.5px; }
+.term-list b.degenerate { color: var(--amber); font: 6.5px var(--mono); }
+.definition .num-cell { color: var(--green); font-family: var(--mono); }
+.notice.bad .num-cell { color: var(--red); }

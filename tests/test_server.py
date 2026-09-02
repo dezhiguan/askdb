@@ -406,3 +406,37 @@ def test_schema_endpoint_is_scoped_to_the_caller(cfg, monkeypatch):
     # 口径引用的表不可见时整条摘掉，否则模型会照它写出被 R-03 拦下的 SQL
     for m in c.get("/api/schema").json()["metrics"]:
         assert set(m["scope"]) <= seen, f"口径「{m['name']}」引用了不可见的表"
+
+
+def test_metrics_check_reports_discrimination(client):
+    """口径的区分度必须能按真实数据自动算。
+
+    口径写错不报错、不越权 —— 语法正确、表在白名单里、租户谓词照样注入，
+    护栏 R-01～R-17 一条都不触发，只是答案错了。它守的是护栏原理上守不到的
+    那一层，那么它自己就必须有别的方式被检验。
+
+    区分度为 0 的口径（两种写法结果相同）当前检验不出模型有没有真的用它，
+    也不该拿来出评测题 —— 模型完全无视口径也能答对。
+    """
+    d = client.get("/api/metrics/check").json()
+    assert d["checked_at"]
+    assert d["items"], "一条口径都没核对到"
+
+    by_name = {i["name"]: i for i in d["items"]}
+    doc = by_name.get("文档数")
+    assert doc and doc["status"] == "ok", doc
+    # COUNT(*) FILTER (status='COMPLETED') 与 COUNT(*) 必须算出不同的数，
+    # 否则这条口径在当前数据上是退化的
+    assert doc["differs"] is True
+    assert doc["value"] != doc["naive"]
+
+
+def test_metrics_check_skips_what_it_cannot_compare(client, cfg):
+    """没声明 naive 的表达式口径无从对照 —— 如实跳过并说明，不猜一个基线出来。"""
+    from askdb.config import Metric
+
+    cfg.metrics = [Metric(name="无对照", aliases=[], scope=["documents"],
+                          expr="COUNT(*)")]
+    items = client.get("/api/metrics/check").json()["items"]
+    assert items[0]["status"] == "skipped"
+    assert "naive" in items[0]["detail"]

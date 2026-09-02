@@ -221,6 +221,27 @@ export interface SchemaMetric {
   owner: string
   /** expr 直接进 SELECT 列表，predicate 进 WHERE —— 用法不同，页面要分清 */
   kind: 'expr' | 'predicate' | ''
+  /** 这条表达式只在什么聚合语境下成立。expr 是片段注入，
+   *  保证得了表达式本身，保证不了它被放进什么查询里 */
+  grain: string
+}
+
+/** 一条口径的区分度核对结果。
+ *  status=ok 时 value/naive 才有值；differs=false 说明这条口径当前
+ *  检验不出模型有没有真的用它。 */
+export interface MetricCheck {
+  name: string
+  status: 'ok' | 'skipped' | 'blocked' | 'error' | ''
+  detail: string
+  value?: string | number | boolean | null
+  naive?: string | number | boolean | null
+  differs?: boolean
+}
+
+export async function checkMetrics(): Promise<{ checked_at: string; items: MetricCheck[] }> {
+  const response = await fetch('/api/metrics/check')
+  if (!response.ok) throw new Error(`/api/metrics/check ${response.status}`)
+  return response.json()
 }
 
 export interface Schema {

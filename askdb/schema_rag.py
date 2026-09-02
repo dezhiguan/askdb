@@ -60,6 +60,10 @@ def metric_doc(m: Metric) -> str:
         head += f"（同义：{'、'.join(m.aliases)}）"
     body = m.expr or m.predicate or ""
     out = f"{head}\n  必须使用此定义，不得自行构造：{body}"
+    # 粒度是硬约束，语气要比"说明"更重 —— 它管的不是表达式对不对，
+    # 而是这个表达式能不能被放进别的聚合语境
+    if m.grain:
+        out += f"\n  聚合粒度（同样不得违反）：{m.grain}"
     if m.note:
         out += f"\n  说明：{m.note}"
     return out

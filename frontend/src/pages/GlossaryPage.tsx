@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
-import { fetchSchema, type Schema, type SchemaMetric } from '../api'
+import { useEffect, useMemo, useState } from 'react'
+import { checkMetrics, fetchSchema, type MetricCheck, type Schema, type SchemaMetric } from '../api'
+import { MetricConfigHelp } from '../components/MetricConfigHelp'
 import { PageHeader } from '../components/AppShell'
 import type { View } from '../types'
 
@@ -8,7 +9,10 @@ const KIND_LABEL: Record<string, string> = {
   predicate: '谓词 · 进 WHERE',
 }
 
-export function GlossaryPage({ onNavigate }: { onNavigate: (view: View) => void }) {
+export function GlossaryPage({ onNavigate, notify }: {
+  onNavigate: (view: View) => void
+  notify: (message: string) => void
+}) {
   const [schema, setSchema] = useState<Schema | null>(null)
   const [error, setError] = useState('')
   const [picked, setPicked] = useState('')
@@ -23,9 +27,28 @@ export function GlossaryPage({ onNavigate }: { onNavigate: (view: View) => void 
   }, [])
 
   const metrics = schema?.metrics ?? []
-  // 三五条数据，直接算 —— useMemo 依赖的是每次渲染都新建的数组，
-  // 缓存不了任何东西，只会多一条 lint 噪音
+  const tableNames = useMemo(
+    () => (schema?.tables ?? []).map(t => t.name),
+    [schema?.tables],
+  )
   const current = metrics.find(m => m.name === picked) ?? metrics[0]
+
+  // 区分度：按定义算 vs 凭直觉算差多少。按需跑 —— 每条口径一次库查询
+  const [checks, setChecks] = useState<Record<string, MetricCheck>>({})
+  const [checking, setChecking] = useState(false)
+
+  const runCheck = async () => {
+    setChecking(true)
+    try {
+      const r = await checkMetrics()
+      setChecks(Object.fromEntries(r.items.map(i => [i.name, i])))
+      notify(`已按当前数据核对 ${r.items.length} 条口径的区分度`)
+    } catch (e) {
+      setError(String((e as Error).message || e))
+    } finally {
+      setChecking(false)
+    }
+  }
 
   return (
     <div className="page">
@@ -33,7 +56,14 @@ export function GlossaryPage({ onNavigate }: { onNavigate: (view: View) => void 
         eyebrow="Phase 2 · Business Semantics"
         title="业务口径"
         description="统一指标定义，让模型与人用同一种业务语言。口径写不下来，模型就只能猜，而猜错时输出仍然看起来合理。"
-        action={<button className="primary" onClick={() => setShowAdd(true)}>＋ 新建指标</button>}
+        action={
+          <div className="card-actions">
+            <button className="secondary" disabled={checking || !metrics.length} onClick={runCheck}>
+              {checking ? '核对中…' : '核对区分度'}
+            </button>
+            <button className="ghost" onClick={() => setShowAdd(true)}>如何新增</button>
+          </div>
+        }
       />
 
       {error && <div className="audit-error">读取业务口径失败：{error}</div>}
@@ -63,22 +93,27 @@ export function GlossaryPage({ onNavigate }: { onNavigate: (view: View) => void 
                   <strong>{m.name}</strong>
                   <small>{m.scope.join('、') || '未声明来源表'} · {KIND_LABEL[m.kind] ?? '未定义'}</small>
                 </span>
-                <b>{m.aliases.length}</b>
+                {checks[m.name]?.status === 'ok' && !checks[m.name].differs
+                  ? <b className="degenerate" title="两种写法结果相同，当前检验不出模型是否真的用了它">退化</b>
+                  : <b>{m.aliases.length}</b>}
               </button>
             ))}
           </aside>
 
-          {current && <MetricDetail metric={current} onNavigate={onNavigate} />}
+          {current && <MetricDetail metric={current} check={checks[current.name]} onNavigate={onNavigate} />}
         </div>
       )}
 
-      {showAdd && <AddMetricModal onClose={() => setShowAdd(false)} />}
+      {showAdd && (
+        <MetricConfigHelp tables={tableNames} onClose={() => setShowAdd(false)} />
+      )}
     </div>
   )
 }
 
-function MetricDetail({ metric, onNavigate }: {
+function MetricDetail({ metric, check, onNavigate }: {
   metric: SchemaMetric
+  check?: MetricCheck
   onNavigate: (view: View) => void
 }) {
   return (
@@ -91,6 +126,17 @@ function MetricDetail({ metric, onNavigate }: {
       <p>{metric.note || '这条口径没有写说明。'}</p>
 
       <pre className="sql-code">{metric.definition || '（未定义）'}</pre>
+
+      {/* 粒度是硬约束，单独一块 —— 它管的不是表达式对不对，
+          而是这个表达式能不能被放进别的聚合语境 */}
+      {metric.grain && (
+        <div className="notice info grain-note">
+          <div className="t">聚合粒度</div>
+          <div className="why">{metric.grain}</div>
+        </div>
+      )}
+
+      <Discrimination check={check} />
 
       <div className="permission-grid">
         <div><span>负责人</span><strong>{metric.owner || '未指定'}</strong></div>
@@ -127,67 +173,52 @@ function MetricDetail({ metric, onNavigate }: {
   )
 }
 
-/** 新建指标不是一个表单。
- *
- *  口径直接决定模型怎么写 SQL —— 写错不会报错，只会让答案"看起来合理"。
- *  它和表白名单一样跟着配置文件走，改动应当经过评审并留在版本库里，
- *  而不是在页面上点几下就生效、事后谁也说不清是谁改的。
- */
-function AddMetricModal({ onClose }: { onClose: () => void }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
 
+
+/** 区分度：按定义算 vs 凭直觉算差多少。
+ *
+ *  这是这页唯一无法靠翻配置文件替代的东西 —— 口径写错不报错、不越权，
+ *  护栏 R-01～R-17 一条都不会触发，那么它自己就必须有别的方式被检验。
+ *  两种写法结果相同的口径当前检验不出模型有没有真的用它，也不该拿来出评测题。
+ */
+function Discrimination({ check }: { check?: MetricCheck }) {
+  if (!check) {
+    return (
+      <p className="drawer-note">
+        区分度未核对。点右上角「核对区分度」按当前数据实算一次 ——
+        每条口径一次库查询。
+      </p>
+    )
+  }
+
+  if (check.status !== 'ok') {
+    return (
+      <div className={`notice ${check.status === 'blocked' ? 'bad' : 'info'} grain-note`}>
+        <div className="t">区分度：{check.status === 'skipped' ? '无法核对' : '核对失败'}</div>
+        <div className="why">{check.detail}</div>
+      </div>
+    )
+  }
+
+  const same = !check.differs
   return (
-    <div className="modal-backdrop" onMouseDown={e => { if (e.currentTarget === e.target) onClose() }}>
-      <div className="modal">
-        <header className="modal-dark">
-          <div>
-            <h3>新建指标</h3>
-            <p>口径跟着配置文件走，页面不参与 —— 下面是实际要做的事。</p>
-          </div>
-          <button onClick={onClose} aria-label="关闭">×</button>
-        </header>
-        <div className="modal-body">
-          <p className="drawer-note">
-            口径直接决定模型怎么写 SQL。写错不会报错，只会让答案<b>看起来合理</b> ——
-            所以它和表白名单一样属于要评审、要留痕、要能回滚的东西，
-            不该在页面上点几下就生效。
-          </p>
-          <ol className="add-steps">
-            <li>
-              <b>在配置里加一条</b>
-              <span>
-                改这份实例的 <code>*-metrics.yaml</code>。
-                <code>expr</code> 直接进 SELECT 列表，<code>predicate</code> 进 WHERE，二选一。
-              </span>
-              <pre className="sql-code">{`- name: 文档数
-  aliases: [文档数量, 已入库文档]
-  scope: [documents]
-  expr: "COUNT(*) FILTER (WHERE status = 'COMPLETED')"
-  owner: 平台组
-  note: 口径为 COMPLETED 的数量，不是全部行数`}</pre>
-            </li>
-            <li>
-              <b>把同义词写全</b>
-              <span>
-                命中靠的就是 name 与 aliases。漏一个说法，模型就会绕过这条定义
-                自行构造 —— 而那正是"结果看起来合理但口径不对"的来源。
-              </span>
-            </li>
-            <li>
-              <b>重启这份配置的进程</b>
-              <span>口径在启动时加载并做一致性校验：scope 引用了白名单之外的表会直接拒绝启动。</span>
-              <pre className="sql-code">python -m askdb.cli serve -c config/你的配置.yaml</pre>
-            </li>
-          </ol>
-          <div className="modal-actions">
-            <button className="primary" onClick={onClose}>知道了</button>
-          </div>
-        </div>
+    <div className={`notice ${same ? 'bad' : 'info'} grain-note`}>
+      <div className="t">区分度：{same ? '当前退化' : '有效'}</div>
+      <div className="why">
+        按口径算 <b className="num-cell">{fmt(check.value)}</b>
+        ，凭直觉算 <b className="num-cell">{fmt(check.naive)}</b>。
+        {same
+          ? ' 两种写法结果相同 —— 这条口径当前检验不出模型有没有真的用它，也不该拿来出评测题。'
+          : ' 差异真实存在，模型不用这条定义就会答错。'}
       </div>
     </div>
   )
+}
+
+function fmt(v: MetricCheck['value']): string {
+  if (v == null) return '—'
+  if (typeof v === 'number') {
+    return Number.isInteger(v) ? v.toLocaleString() : v.toPrecision(4)
+  }
+  return String(v)
 }

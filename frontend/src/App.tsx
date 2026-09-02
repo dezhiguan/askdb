@@ -45,7 +45,7 @@ function App() {
     if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} />
     if (view === 'sources') return <DataSourcesPage health={health} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />
-    if (view === 'glossary') return <GlossaryPage onNavigate={setView} />
+    if (view === 'glossary') return <GlossaryPage onNavigate={setView} notify={notify} />
     if (view === 'audit') return <AuditPage />
     if (view === 'traces') return <TracesPage />
     return <AuditPage />

@@ -24,7 +24,7 @@ from .config import Config, load
 from .executor import DataSourceError, Executor
 from .graph import ask as run_ask, jsonable, resume as run_resume
 from .quota import build_quota
-from .trace import observability_status as _obs_status
+from .trace import now_iso as _now_iso, observability_status as _obs_status
 
 
 def _quota_view(cfg: Config) -> dict[str, Any]:
@@ -338,11 +338,76 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                  "definition": m.expr or m.predicate or "", "note": m.note,
                  # 口径写错会让模型给出"看起来合理"的错答案，找谁核对是刚需
                  "owner": m.owner,
+                 # 粒度是硬约束，页面要单独显眼地展示 —— 它管的不是表达式对不对，
+                 # 而是这个表达式能不能被放进别的聚合语境
+                 "grain": m.grain,
                  # 表达式直接进 SELECT 列表，谓词进 WHERE —— 用法不同，页面要分清
                  "kind": "expr" if m.expr else "predicate" if m.predicate else ""}
                 for m in cfg.metrics
             ],
         }
+
+    @app.get("/api/metrics/check")
+    def metrics_check(request: Request) -> dict[str, Any]:
+        """逐条核对业务口径的**区分度**：按定义算 vs 凭直觉算，差多少。
+
+        为什么这件事必须能自动跑：口径写错不报错、不越权，护栏 R-01～R-17
+        一条都不会触发 —— 两种写法都语法正确、表在白名单里、租户谓词照样注入。
+        它守的是护栏原理上守不到的那一层，那么它自己就必须有别的方式被检验。
+
+        区分度为 0 的口径（两种写法结果相同）当前**检验不出模型有没有真的用它**，
+        也不该拿来出评测题 —— 模型完全无视口径也能答对。这件事原来靠人工在
+        配置注释里标注（"⚠ 当前退化：库中无 PENDING 文档"），现在按真实数据算。
+
+        SQL 走**同一套护栏**再执行：口径的 SQL 自己都过不了护栏，本身就是要报的事。
+        """
+        cfg = _scoped(request)
+        out: list[dict[str, Any]] = []
+
+        with Executor(cfg) as ex:
+            for m in cfg.metrics:
+                row: dict[str, Any] = {"name": m.name, "status": "", "detail": ""}
+
+                # 跨表口径要 JOIN，拼不出通用的对照查询 —— 如实跳过，不猜
+                if len(m.scope) != 1:
+                    row.update(status="skipped",
+                               detail=f"涉及 {len(m.scope)} 张表，无法自动构造对照查询")
+                    out.append(row)
+                    continue
+
+                table = m.scope[0]
+                if m.predicate:
+                    metric_sql = f"COUNT(*) FILTER (WHERE {m.predicate})"
+                    naive_sql = "COUNT(*)"
+                elif m.expr and m.naive:
+                    metric_sql, naive_sql = m.expr, m.naive
+                else:
+                    row.update(status="skipped",
+                               detail="未声明 naive（凭直觉写法），无从对照")
+                    out.append(row)
+                    continue
+
+                sql = f"SELECT {metric_sql} AS a, {naive_sql} AS b FROM {table}"
+                g = guard.check(sql, cfg, org_id=cfg.default_org, dialect=cfg.dialect)
+                if not g.ok:
+                    row.update(status="blocked", detail=f"{g.rejected_by} {g.reason}")
+                    out.append(row)
+                    continue
+                try:
+                    res = ex.run(g.sql)
+                except DataSourceError as e:
+                    row.update(status="error", detail=str(e))
+                    out.append(row)
+                    continue
+
+                a, b = (jsonable(v) for v in res.rows[0]) if res.rows else (None, None)
+                row.update(status="ok", value=a, naive=b,
+                           differs=a != b,
+                           detail="两种写法结果相同 —— 当前检验不出模型是否真的用了这条口径"
+                                  if a == b else "")
+                out.append(row)
+
+        return {"checked_at": _now_iso(), "items": out}
 
     @app.get("/api/selfcheck")
     def selfcheck() -> dict[str, Any]:

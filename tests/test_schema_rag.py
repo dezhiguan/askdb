@@ -165,3 +165,25 @@ def test_fingerprint_changes_with_schema(cfg):
     before = _fingerprint(cfg)
     cfg.tables["documents"].desc += "（改过）"
     assert _fingerprint(cfg) != before
+
+
+def test_grain_enters_the_prompt_as_a_hard_constraint(cfg):
+    """粒度必须进提示词，而且语气要比「说明」更重。
+
+    expr 是**片段注入**：口径保证了表达式本身，保证不了它被放进什么查询里。
+    「日均成本」= SUM(cost)/COUNT(DISTINCT stat_date)，模型若再 GROUP BY model，
+    分母就从"全期天数"变成"该模型有记录的天数" —— 两个数都合法、都跑得出来、
+    护栏一条都不会触发。粒度只写在 note 里等于指望模型自己读懂。
+    """
+    from askdb.config import Metric
+    from askdb.schema_rag import metric_doc
+
+    m = Metric(name="日均成本", aliases=["日均花费"], scope=["model_usage_daily"],
+               expr="SUM(cost) / NULLIF(COUNT(DISTINCT stat_date), 0)",
+               grain="全期一个数，不得再按模型或用途分组",
+               note="分母是有记录的天数")
+    doc = metric_doc(m)
+    assert "不得再按模型或用途分组" in doc
+    assert "聚合粒度" in doc
+    # 没写粒度的口径不该凭空多出一行
+    assert "聚合粒度" not in metric_doc(Metric(name="x", aliases=[], scope=[], expr="COUNT(*)"))

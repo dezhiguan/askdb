@@ -56,6 +56,17 @@ class Metric:
     predicate: str | None = None
     note: str = ""
     owner: str = ""
+    # 这条表达式只在什么聚合语境下成立。
+    #
+    # expr 是**片段注入**：口径保证了表达式本身，保证不了它被放进什么查询里。
+    # 「日均成本」= SUM(cost)/COUNT(DISTINCT stat_date)，模型若再 GROUP BY model，
+    # 分母就从"全期天数"变成"该模型有记录的天数"，两个数都合法、都跑得出来、
+    # 护栏一条都不会触发。粒度必须显式写下来并进提示词，否则它只活在 note 的
+    # 自然语言里，靠模型自己读懂。
+    grain: str = ""
+    # 与之对照的"凭直觉写法"。用来算区分度：两种写法结果相同的口径，
+    # 当前检验不出模型有没有真的用它 —— 这件事原来靠人工在配置里写注释标注。
+    naive: str = ""
 
     def matches(self, question: str) -> bool:
         return any(k and k in question for k in [self.name, *self.aliases])

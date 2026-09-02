@@ -408,3 +408,25 @@ def test_glossary_invents_no_governance_metadata():
     src = _code_only(GLOSSARY_PAGE)
     for invented in ("已认证", "VERIFIED", "v3.2", "更新时间", "当前版本"):
         assert invented not in src, f"业务口径页出现了后端没有的治理元数据：{invented}"
+
+
+def test_glossary_has_no_fake_metric_editor():
+    """页面上「提交后仅加入本地列表」的新建表单必须不存在。
+
+    它不调后端、刷新即消失、对真实查询零影响，却和真实口径进同一个列表、
+    同一个详情页。用户填完 SQL 定义与同义词，得到一句"已加入"，很容易以为
+    配好了 —— 而下一次查询仍然按模型自己的理解算，正是这个功能要防的那件事。
+    制造"我已经定义了口径"的错觉，比没有这个按钮危险。
+    """
+    src = _code_only(GLOSSARY_PAGE)
+    assert "localMetrics" not in src, "口径页仍在往本地数组塞假指标"
+    assert not (FRONTEND_SRC / "components" / "AddMetricModal.tsx").exists(), \
+        "假的新建指标表单还在"
+
+
+def test_glossary_surfaces_discrimination():
+    """区分度是这页唯一无法靠翻配置文件替代的东西 —— 口径写错不报错、
+    不越权，护栏一条都不触发，它自己必须有别的方式被检验。"""
+    src = _code_only(GLOSSARY_PAGE)
+    assert "checkMetrics" in src, "没有接区分度核对接口"
+    assert "metric.grain" in src, "粒度没有在详情里展示"

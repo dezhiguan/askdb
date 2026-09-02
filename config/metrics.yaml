@@ -9,6 +9,7 @@ metrics:
     aliases: [文档数量, 已入库文档, 完成数, 入库量]
     scope: [documents]
     expr: "COUNT(*) FILTER (WHERE status = 'COMPLETED')"
+    naive: "COUNT(*)"
     note: 口径为 COMPLETED 的数量，不是全部行数
     owner: 平台组
 
@@ -23,5 +24,6 @@ metrics:
     aliases: [失败比例, 处理失败率]
     scope: [documents]
     expr: "COUNT(*) FILTER (WHERE status = 'FAILED') * 1.0 / NULLIF(COUNT(*), 0)"
+    naive: "COUNT(*) FILTER (WHERE status = 'FAILED') * 1.0 / NULLIF(COUNT(*) FILTER (WHERE status != 'PENDING'), 0)"
     note: 分母为该范围内全部文档，不排除 PENDING
     owner: 平台组
