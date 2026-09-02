@@ -518,3 +518,7 @@
 .score-ring.none { background: rgba(255,255,255,.14); }
 .ready-badge.wait { color: #8d521b; background: var(--amber-wash); }
 .ready-badge.bad { color: var(--red); background: var(--red-wash); }
+/* 口径命中词做成标签，em 默认斜体在中文里很丑 */
+.rule-row small .tag { display: inline-block; margin: 3px 3px 0 0; font-style: normal; }
+.definition .sql-code { margin: 10px 0; }
+.term-list > button > span { min-width: 0; }

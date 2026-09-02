@@ -309,7 +309,15 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         }
 
     @app.get("/api/schema")
-    def schema() -> dict[str, Any]:
+    def schema(request: Request) -> dict[str, Any]:
+        """当前调用方**眼里的** schema。
+
+        必须按角色收窄。用未收窄的 cfg 会让人看到自己查不了的表连同字段 ——
+        实测：public.yaml 下匿名角色只能查 knowledge_bases / orgs，
+        这个接口却把 documents、model_usage 的全部字段一起吐出来。
+        既是信息泄露，也让业务口径页列出一批用了就被 R-03 拦的口径。
+        """
+        cfg = _scoped(request)
         return {
             "tables": [
                 {
@@ -327,7 +335,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             ],
             "metrics": [
                 {"name": m.name, "aliases": m.aliases, "scope": m.scope,
-                 "definition": m.expr or m.predicate or "", "note": m.note}
+                 "definition": m.expr or m.predicate or "", "note": m.note,
+                 # 口径写错会让模型给出"看起来合理"的错答案，找谁核对是刚需
+                 "owner": m.owner,
+                 # 表达式直接进 SELECT 列表，谓词进 WHERE —— 用法不同，页面要分清
+                 "kind": "expr" if m.expr else "predicate" if m.predicate else ""}
                 for m in cfg.metrics
             ],
         }
