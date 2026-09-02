@@ -27,7 +27,9 @@ data/audit*.jsonl
 data/checkpoints*.sqlite
 data/checkpoints*.sqlite-shm
 data/checkpoints*.sqlite-wal
-data/audit-quota.json
+# 通配而不是精确名：配额文件也按数据源命名（audit-ragforge-quota.json、
+# audit-ragforge-prod-quota.json…），只写 audit-quota.json 会漏掉这些变体。
+data/audit*quota.json
 # 同一批产物在 var/ 下也有一份，而且**那才是线上真正在写的位置** ——
 # 对外实例的 audit_log 指向 var/（k8s 在此挂持久卷，见 public.yaml 的说明）。
 # 上面那几条只覆盖了 data/，日志搬家时规则没跟着搬，于是同一次泄露又发生了一遍：
