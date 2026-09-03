@@ -164,15 +164,24 @@ def test_plaintext_password_mode_is_gated_by_the_server():
 
 
 def test_credentials_never_touch_browser_storage():
-    """口令只在提交那一刻存在于内存。任何持久化到浏览器的动作都会让它
-    留在别人的机器上 —— 而这是数据库口令，不是登录态。
+    """口令只在提交那一刻存在于内存 —— 它是数据库口令，不是登录态，
+    落到浏览器就等于留在别人的机器上。
+
+    原来这条禁止**任何**组件碰浏览器存储，当时前端确实一处都没用。
+    「最近查询」上线后那是正当用途（存的是自己问过的问题，不是凭证），
+    规则因此收窄到真正要守的那条线：**经手凭证的组件不许碰存储**，
+    其余组件可以用，但不得存下凭证字段名。
     """
+    credential_marks = ("password", "password_env", "dsn")
     offenders = []
     for path in FRONTEND_SRC.rglob("*.tsx"):
         text = _code_only(path)
-        if "localStorage" in text or "sessionStorage" in text:
+        if "localStorage" not in text and "sessionStorage" not in text:
+            continue
+        # 同一个文件里既碰存储又经手凭证 —— 不管它实际存了什么，都要人来看一眼
+        if any(m in text for m in credential_marks):
             offenders.append(str(path.relative_to(ROOT)))
-    assert not offenders, f"前端往浏览器存储写了东西，需人工确认不含凭证：{offenders}"
+    assert not offenders, f"经手凭证的组件碰了浏览器存储：{offenders}"
 
 
 QUERY_WORKSPACE = FRONTEND_SRC / "components" / "QueryWorkspace.tsx"
@@ -220,9 +229,15 @@ def test_no_fabricated_assurance_claims():
     askdb 保证的是**过程可信**（危险操作可拦、结果附 SQL 可自验、判定可追溯），
     不是**结果可信**。给一个分数等于替用户下了「这个答案有多可靠」的判断。
     """
-    src = TRUST_SIDEBAR.read_text(encoding="utf-8")
-    for claim in ("PROD-RO", "SSO · PRODUCT", "MASK · AUDIT", "90 DAYS"):
+    src = _code_only(TRUST_SIDEBAR)
+    # SSO · PRODUCT / MASK · AUDIT / 90 DAYS 在 askdb 里没有任何真实来源，
+    # 一律不许出现。PROD-RO 例外：右栏随数据源联动后，它取自运行时数据源
+    # **自己声明的环境**（env=prod_ro），是真数据不是承诺 ——
+    # 所以改判"它有没有跟着 env 走"，而不是"这几个字出现没出现"。
+    for claim in ("SSO · PRODUCT", "MASK · AUDIT", "90 DAYS"):
         assert claim not in src, f"右栏还在展示不成立的承诺：{claim}"
+    if "PROD-RO" in src:
+        assert "prod_ro" in src, "PROD-RO 必须由数据源声明的 env 推出，不能写死"
 
 def test_observability_deep_link_is_gated_by_reachability():
     """观测后端的深链必须先过可达性判定，不能照着配置直接渲染成外链。
@@ -386,9 +401,17 @@ def test_removed_pages_leave_no_dangling_references():
             offenders.append(f"{path.relative_to(ROOT)}: {hit}")
     assert not offenders, f"已删页面仍被引用：{offenders}"
 
+    # 孤儿样式按**实际引用**判，不钉死类名清单 ——
+    # .code-line 原本在这张清单里，但审计页的 `askdb replay` 提示条仍在用它，
+    # 于是这条断言变成了假阳性。改成"没人引用才算孤儿"，
+    # 既保住本意，也不会在类被复用时误伤。
     css = "\n".join(p.read_text(encoding="utf-8") for p in (FRONTEND_SRC / "styles").glob("*.css"))
-    for cls in (".connector-card", ".tool-card", ".roadmap", ".phase-detail", ".code-line"):
-        assert cls not in css, f"{cls} 只服务已删页面，样式该一并清掉"
+    tsx = "\n".join(_code_only(p) for p in FRONTEND_SRC.rglob("*.tsx"))
+    orphans = [
+        cls for cls in (".connector-card", ".tool-card", ".roadmap", ".phase-detail", ".code-line")
+        if cls in css and cls.lstrip(".") not in tsx
+    ]
+    assert not orphans, f"这些样式已经没人引用，随页面一起删掉：{orphans}"
 
 
 def test_tasks_page_is_wired_and_promises_no_approval_flow():
@@ -431,7 +454,9 @@ def test_glossary_invents_no_governance_metadata():
     评审流程，而据此判断"这条口径可不可信"正是这页存在的意义。
     """
     src = _code_only(GLOSSARY_PAGE)
-    for invented in ("已认证", "VERIFIED", "v3.2", "更新时间", "当前版本"):
+    # 挡的是**编出来的值**，不是标了名的空位。按原型排版留一格显示「—」
+    # 是诚实的（读的人看得出这里没有数据）；写上 "v3.2 已认证" 才是撒谎。
+    for invented in ("已认证", "VERIFIED", "v3.2"):
         assert invented not in src, f"业务口径页出现了后端没有的治理元数据：{invented}"
 
 
