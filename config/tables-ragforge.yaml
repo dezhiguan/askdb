@@ -1,0 +1,107 @@
+# 表白名单与字段语义注释 —— 本机 ragforge 库
+#
+# 拟制日期 2026-09-03
+#
+# 这份文件的质量约等于项目的准确率（技术设计说明书 §3.2.2）。
+# 白名单同时是安全边界与准确率边界：未列出的表，模型看不到，也查不到。
+#
+# 与 tables.yaml（样例库）的关系：样例库是照着 ragforge 的形状捏的，
+# 但两边字段并不一致 —— 真实 documents 没有 org_id、状态列叫 parse_status
+# 而不是 status。照搬样例那份会得到一份"看着对、跑起来报列不存在"的配置。
+#
+# 只列出 askdb_ro 角色真正被授予 SELECT 的 5 张表。库里另有 20 张表，
+# 元数据扫描看得见（走系统目录），但该角色读不了 —— 不要往这里加。
+
+tables:
+  - name: knowledge_bases
+    desc: 知识库，一行 = 一个知识库
+    aliases: [知识库, 库, kb]
+    columns:
+      id:              { type: BIGINT,    desc: 知识库 ID }
+      org_id:          { type: BIGINT,    desc: 组织 ID, tenant: true }
+      name:            { type: VARCHAR,   desc: 知识库名称 }
+      description:     { type: TEXT,      desc: 知识库描述 }
+      embedding_model: { type: VARCHAR,   desc: 该库使用的向量模型 }
+      doc_count:       { type: INTEGER,   desc: "文档数缓存计数器，会与实际漂移；以 documents 实际统计为准" }
+      chunk_count:     { type: INTEGER,   desc: 分块数缓存计数器，同样可能漂移 }
+      status:          { type: VARCHAR,   desc: 知识库状态 }
+      kb_type:         { type: VARCHAR,   desc: 知识库类型 }
+      visibility:      { type: VARCHAR,   desc: 可见性 }
+      owner_user_id:   { type: BIGINT,    desc: 创建者用户 ID }
+      created_at:      { type: TIMESTAMP, desc: 创建时间 }
+      updated_at:      { type: TIMESTAMP, desc: 最后更新时间 }
+
+  - name: documents
+    desc: 文档主表，一行 = 一个入库文件
+    aliases: [文档, 文件, 资料]
+    # 这张表没有 org_id，归属靠所属知识库间接确定。
+    # 库里的 RLS 策略也是同一条语义（kb_id IN 该组织的知识库），两边保持一致。
+    tenant_filter: "{ref}.kb_id IN (SELECT id FROM knowledge_bases WHERE org_id = {ctx})"
+    columns:
+      id:            { type: BIGINT,    desc: 文档 ID }
+      kb_id:         { type: BIGINT,    desc: 所属知识库 ID，关联 knowledge_bases.id }
+      filename:      { type: VARCHAR,   desc: 原始文件名 }
+      file_type:     { type: VARCHAR,   desc: 文件类型 }
+      file_size:     { type: BIGINT,    desc: 文件字节数 }
+      parse_status:  { type: VARCHAR,   desc: "解析状态。注意：「文档数」口径为 COMPLETED 的数量，不是全部行数",
+                       enum: [PENDING, PROCESSING, COMPLETED, FAILED] }
+      chunk_count:   { type: INTEGER,   desc: 该文档切出的分块数 }
+      error_msg:     { type: TEXT,      desc: 失败原因，仅 parse_status=FAILED 时非空 }
+      ingest_source: { type: VARCHAR,   desc: 入库来源 }
+      external_id:   { type: VARCHAR,   desc: 外部系统的文档标识，采集器按它做增量 }
+      version:       { type: INTEGER,   desc: 文档版本号 }
+      created_at:    { type: TIMESTAMP, desc: 入库时间 }
+      updated_at:    { type: TIMESTAMP, desc: 最后状态变更时间（不是内容更新时间） }
+
+  - name: organizations
+    desc: 组织（租户）
+    aliases: [组织, 租户, 企业]
+    # 这张表本身就是租户维表，id 即租户 ID
+    tenant_filter: "{ref}.id = {ctx}"
+    columns:
+      id:                 { type: BIGINT,    desc: 组织 ID }
+      slug:               { type: VARCHAR,   desc: 组织 slug（唯一标识） }
+      name:               { type: VARCHAR,   desc: 组织名称 }
+      type:               { type: VARCHAR,   desc: 组织类型 }
+      created_by_user_id: { type: BIGINT,    desc: 创建者用户 ID }
+      created_at:         { type: TIMESTAMP, desc: 创建时间 }
+      updated_at:         { type: TIMESTAMP, desc: 最后更新时间 }
+
+  - name: model_usage_daily
+    desc: 模型调用与 token 计量，一行 = 某组织某模型某用途在某天的汇总
+    aliases: [token, 成本, 用量, 调用量, 模型用量]
+    # 注意它是**按天汇总**的，不是一次调用一行 —— 问"调用了多少次"要看 call_count，
+    # 不是 COUNT(*)。
+    columns:
+      id:               { type: BIGINT,    desc: 记录 ID }
+      org_id:           { type: BIGINT,    desc: 组织 ID, tenant: true }
+      model_code:       { type: VARCHAR,   desc: 模型名 }
+      purpose:          { type: VARCHAR,   desc: 链路用途/阶段 }
+      stat_date:        { type: DATE,      desc: 统计日期 }
+      call_count:       { type: BIGINT,    desc: 当天调用次数 }
+      input_tokens:     { type: BIGINT,    desc: 输入 token 数 }
+      output_tokens:    { type: BIGINT,    desc: 输出 token 数 }
+      cost:             { type: NUMERIC,   desc: 按当期单价折算的成本（元） }
+      success_count:    { type: BIGINT,    desc: 成功次数 }
+      fail_count:       { type: BIGINT,    desc: 失败次数 }
+      total_latency_ms: { type: BIGINT,    desc: 当天累计耗时（毫秒），求平均要除以 call_count }
+      updated_at:       { type: TIMESTAMP, desc: 最后汇总时间 }
+
+  - name: retrieval_logs
+    desc: 检索日志，一行 = 一次检索请求
+    aliases: [检索日志, 检索记录, 查询日志]
+    columns:
+      id:                { type: BIGINT,    desc: 日志 ID }
+      org_id:            { type: BIGINT,    desc: 组织 ID, tenant: true }
+      query:             { type: TEXT,      desc: 用户原始检索词 }
+      rewritten_queries: { type: TEXT,      desc: 改写后的检索词 }
+      strategy:          { type: VARCHAR,   desc: 检索策略, enum: [vector, keyword, hybrid, full] }
+      kb_ids:            { type: VARCHAR,   desc: 本次检索命中的知识库 ID 列表（逗号分隔的字符串，不是数组） }
+      top_k:             { type: INTEGER,   desc: 请求的召回条数 }
+      result_count:      { type: INTEGER,   desc: 实际返回条数 }
+      latency_ms:        { type: INTEGER,   desc: 本次检索耗时（毫秒） }
+      avg_rerank_score:  { type: NUMERIC,   desc: 重排平均分 }
+      status:            { type: VARCHAR,   desc: 本次检索的结果状态 }
+      user_id:           { type: BIGINT,    desc: 发起用户 ID }
+      trace_id:          { type: VARCHAR,   desc: 链路追踪 ID }
+      created_at:        { type: TIMESTAMP, desc: 检索时间 }

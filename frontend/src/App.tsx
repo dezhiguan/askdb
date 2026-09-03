@@ -43,7 +43,7 @@ function App() {
   }
 
   const page = (() => {
-    if (view === 'query') return <div className="page query-page"><PageHeader eyebrow="Phase 1 · Unified Query" title="查询 Agent" description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。" action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>} /><QueryWorkspace health={health} sources={sources} onNavigate={setView} /></div>
+    if (view === 'query') return <div className="page query-page"><PageHeader title="查询 Agent" description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。" action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>} /><QueryWorkspace health={health} sources={sources} onNavigate={setView} /></div>
     if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} />
     if (view === 'sources') return <DataSourcesPage health={health} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />

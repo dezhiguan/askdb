@@ -53,7 +53,6 @@ export function GlossaryPage({ onNavigate, notify }: {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Phase 2 · Business Semantics"
         title="业务口径"
         description="统一指标定义，让模型与人用同一种业务语言。口径写不下来，模型就只能猜，而猜错时输出仍然看起来合理。"
         action={

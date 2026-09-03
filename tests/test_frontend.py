@@ -223,6 +223,25 @@ def test_no_fabricated_assurance_claims():
     src = TRUST_SIDEBAR.read_text(encoding="utf-8")
     for claim in ("PROD-RO", "SSO · PRODUCT", "MASK · AUDIT", "90 DAYS"):
         assert claim not in src, f"右栏还在展示不成立的承诺：{claim}"
+
+def test_observability_deep_link_is_gated_by_reachability():
+    """观测后端的深链必须先过可达性判定，不能照着配置直接渲染成外链。
+
+    自托管的 Langfuse 只在内网活着，对外实例上 tracing.url 就是
+    `http://localhost:3000` —— 那是给部署方挂了 SSH 隧道之后用的。直接当外链
+    给出去，访客点下去打的是**他自己机器的 3000 端口**；而 3000 是 Next.js /
+    Grafana 这类的默认端口，运气不好会打开他本机碰巧在跑的东西。
+    比"点了没反应"更糟，而且不报任何错。
+    """
+    src = _code_only(FRONTEND_SRC / "api.ts")
+    assert "export function tracingReachable" in src, "缺少可达性判定"
+
+    block = re.search(r"export function tracingLink[\s\S]*?\n\}", src)
+    assert block, "api.ts 里找不到 tracingLink"
+    assert "tracingReachable" in block.group(0), (
+        "tracingLink 没有过可达性判定 —— 内网地址会被当成外链给访客"
+    )
+
 PERMISSIONS_PAGE = FRONTEND_SRC / "pages" / "PermissionsPage.tsx"
 
 

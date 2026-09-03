@@ -17,6 +17,8 @@ export interface Health {
     hint: string
     /** 口令所在的环境变量名（不含值）。空串 = 这个库不需要口令 */
     credential: string
+    /** 配置里是否声明了默认数据源。false 时 ok 仍为 true —— 没配不是故障 */
+    configured: boolean
   }
   llm: { ok: boolean; model: string; env: string; disabled: boolean }
   tenant: {
@@ -184,9 +186,38 @@ export async function fetchReplay(traceId: string): Promise<ReplayResult> {
   return { status: 'ok', data: await response.json() }
 }
 
-/** 观测后端里这条 trace 的深链。未接入时返回 null —— 由调用方渲染禁用态。 */
+/**
+ * 观测后端的地址是否对**当前访问者**可达。
+ *
+ * 自托管的 Langfuse 只在内网活着，公开实例上这个字段就是
+ * `http://localhost:3000` —— 那是给部署方挂了 SSH 隧道之后用的。
+ * 直接渲染成外链的话，访客点下去打的是**他自己机器的 3000 端口**，
+ * 而 3000 是 Next.js / Grafana 这类的默认端口，运气不好会打开他本机
+ * 碰巧在跑的东西。比"没反应"更糟。
+ *
+ * 判据只看 host：localhost / 环回 / 私网段一律视为访客不可达。
+ */
+export function tracingReachable(tracing: Tracing): boolean {
+  const raw = tracing.url || tracing.host
+  if (!raw) return false
+  let host: string
+  try {
+    host = new URL(raw).hostname
+  } catch {
+    return false                       // 连 URL 都解析不了，更不该当链接给出去
+  }
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return false
+  // RFC1918 私网段：10/8、172.16-31/12、192.168/16
+  if (/^10\./.test(host)) return false
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false
+  if (/^192\.168\./.test(host)) return false
+  return true
+}
+
+/** 观测后端里这条 trace 的深链。未接入**或访客不可达**时返回 null —— 由调用方渲染禁用态。 */
 export function tracingLink(tracing: Tracing, traceId: string): string | null {
   if (!tracing.enabled || !tracing.backend) return null
+  if (!tracingReachable(tracing)) return null
   const base = tracing.url || tracing.host
   if (tracing.backend === 'langfuse') {
     return `${base}/project/${tracing.project}/traces/${traceId}`
@@ -311,6 +342,8 @@ export interface SourceCard {
   created_at: string
   table_count: number
   builtin: boolean
+  /** 仅内置源有意义：删除会改配置文件，需开关允许且已有别的源接手 */
+  deletable?: boolean
 }
 
 export interface SourceList {

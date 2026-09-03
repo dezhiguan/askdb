@@ -48,7 +48,6 @@ export function TasksPage({ onNavigate, notify }: {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Phase 1 · Governed Tasks"
         title="任务中心"
         description="中断的调用会留下可续跑的现场：判定链路存进检查点，从断点继续而不是从头重来。"
       />

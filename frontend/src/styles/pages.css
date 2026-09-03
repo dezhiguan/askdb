@@ -46,11 +46,11 @@
 .task-row span, .task-row small { color: var(--muted); }
 .task-main strong { font-size: 9px; }
 .source-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
-.source-card, .integration-card { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(250,249,245,.86); box-shadow: var(--shadow); }
+.source-card { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(250,249,245,.86); box-shadow: var(--shadow); }
 .source-top { display: flex; align-items: flex-start; justify-content: space-between; }
 .source-top > i { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 7px; color: var(--green); background: var(--green-wash); font: normal 8px var(--mono); }
 .source-card h3 { margin: 11px 0 3px; font-family: var(--serif); font-size: 14px; }
-.source-card p, .integration-card p { color: var(--muted); font-size: 7px; line-height: 1.55; }
+.source-card p { color: var(--muted); font-size: 7px; line-height: 1.55; }
 .permission-grid, .trace-facts { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; margin: 12px 0; border: 1px solid var(--line); background: var(--line); }
 .permission-grid > div, .trace-facts > div { padding: 8px; background: var(--paper); }
 .permission-grid span, .permission-grid strong, .trace-facts span, .trace-facts strong { display: block; font-size: 6px; }
@@ -108,10 +108,6 @@
 .trace-title p { color: var(--muted); font: 6px var(--mono); }
 .span-type { padding: 3px 5px; border-radius: 4px; color: var(--green); background: var(--green-wash); }
 .span-type.model { color: var(--blue); background: var(--blue-wash); }
-.observe-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
-.integration-card { display: grid; grid-template-columns: 1fr auto; }
-.attribute-list { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
-.attribute-list code { padding: 4px; border-radius: 4px; background: var(--paper-2); font-size: 6px; }
 .topology { display: flex; align-items: center; justify-content: center; margin-bottom: 16px; padding: 20px; border: 1px solid var(--line); border-radius: 9px; background: var(--paper); }
 .topology > div { width: 180px; text-align: center; }
 .topology > div i, .topology > div strong, .topology > div small { display: block; }

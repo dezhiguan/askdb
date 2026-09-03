@@ -75,7 +75,6 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Phase 2 · Identity & Access"
         title="身份与权限"
         description="角色定义与成员名单。认证交给企业网关，askdb 只负责「谁属于哪个角色」以及角色的数据边界含义。"
       />

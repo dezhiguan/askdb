@@ -166,15 +166,30 @@ def _dsn_label(dsn: str, upstream: str = "") -> str:
     声明了 upstream 就显示 upstream：经隧道连接时 dsn 里是本地转发端口，
     照搬会让人以为数据来自本机。隧道端点作为补充信息附在后面，
     排查连接问题时还用得上。
+
+    但 upstream 与实际连接端点相同时**不写"经隧道"** —— 本机直连也可以声明
+    upstream（当作出处标注用），这时候括号里那句是纯粹的假话，
+    会让人去查一条根本不存在的隧道。
     """
     parts = dict(
         kv.split("=", 1) for kv in dsn.split() if "=" in kv and not kv.startswith("password=")
     )
     db = parts.get("dbname", "?")
     local = f"{parts.get('host', '?')}:{parts.get('port', '5432')}"
+    if upstream and _same_endpoint(upstream, local, db):
+        return f"{db} @ {upstream}"
     if upstream:
         return f"{db} @ {upstream}（经隧道 {local}）"
     return f"{db} @ {local}"
+
+
+def _same_endpoint(upstream: str, local: str, db: str) -> bool:
+    """upstream 与实际连接端点是不是同一处。
+
+    upstream 允许写成 host:port 或 host:port/dbname 两种形式，
+    库名那截不参与比较 —— 它不是端点的一部分。
+    """
+    return upstream.strip().rstrip("/").removesuffix(f"/{db}") == local
 
 
 class LoginRequest(BaseModel):
@@ -254,13 +269,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     def health() -> dict[str, Any]:
         """页面启动时调一次，决定要不要显示配置横幅。"""
         db_ok, db_msg, db_hint = True, "", ""
-        try:
-            with Executor(cfg) as ex:
-                ex.connect()
-            db_msg = (cfg.db_path.name if cfg.db_type == "duckdb"
-                      else _dsn_label(cfg.dsn, cfg.upstream))
-        except DataSourceError as e:
-            db_ok, db_msg, db_hint = False, str(e), e.hint
+        if not cfg.has_default_source:
+            # 没配默认数据源是**预期状态**，不是故障：这套部署只用运行时源。
+            # 报成 ok=false，页面会一直挂着红条，看的人以为服务坏了。
+            db_msg = "未配置默认数据源"
+            db_hint = "在「数据源」页选择一个已添加的数据源发起查询"
+        else:
+            try:
+                with Executor(cfg) as ex:
+                    ex.connect()
+                db_msg = (cfg.db_path.name if cfg.db_type == "duckdb"
+                          else _dsn_label(cfg.dsn, cfg.upstream))
+            except DataSourceError as e:
+                db_ok, db_msg, db_hint = False, str(e), e.hint
         return {
             # 有意不接模型的实例（对外开放配置），没配密钥是**预期状态**，
             # 不能算不健康 —— 否则 health 顶层恒报 false，看的人以为服务坏了。
@@ -269,10 +290,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "config": cfg.path,
             "datasource": {
                 "ok": db_ok, "type": cfg.db_type, "detail": db_msg, "hint": db_hint,
+                # 「连不上」与「压根没配」是两件事，前端要分开渲染
+                "configured": cfg.has_default_source,
                 # 口令来自哪个环境变量 —— 只给变量名，不给值。
                 # 界面要在数据源卡上交代凭证来源；写死一个 "VAULT" 是假的，
                 # 而 askdb 的真实答案就是"环境变量"或"这个库不需要口令"。
-                "credential": cfg.raw["datasource"].get("password_env") or "",
+                "credential": cfg.raw.get("datasource", {}).get("password_env") or "",
             },
             "llm": {
                 "ok": bool(cfg.api_key()),
@@ -484,7 +507,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         if not _SOURCE_RL.allow():
             raise HTTPException(status_code=429, detail="操作过于频繁，稍后再试")
 
-    def _builtin_card() -> dict[str, Any]:
+    def _builtin_card() -> dict[str, Any] | None:
+        """配置里没有默认数据源时返回 None —— 列表里不该出现一张空卡。"""
+        if not cfg.has_default_source:
+            return None
         return {
             "id": "builtin",
             "name": cfg.path,
@@ -496,6 +522,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "created_at": "",
             "table_count": len(cfg.tables),
             "builtin": True,
+            # 删得动才给按钮：删除会改配置文件，同样受 allow_runtime_add 约束；
+            # 且必须先有别的源接手，否则删完这台实例查不了任何东西。
+            "deletable": _sources.enabled(cfg) and bool(_sources.list_sources(cfg)),
         }
 
     @app.get("/api/sources")
@@ -506,7 +535,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "supported_types": list(_sources.SUPPORTED_TYPES),
             # 主密钥没配就只能用环境变量名那条路，前端据此决定表单里的默认项
             "can_store_password": bool(os.environ.get("ASKDB_SECRET_KEY", "").strip()),
-            "items": [_builtin_card()] + [_sources.to_public(s) for s in _sources.list_sources(cfg)],
+            "items": ([c] if (c := _builtin_card()) else [])
+                     + [_sources.to_public(s) for s in _sources.list_sources(cfg)],
         }
 
     def _probe(src: "_sources.Source") -> dict[str, Any]:
@@ -608,6 +638,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     @app.delete("/api/sources/{sid}")
     def sources_delete(sid: str) -> JSONResponse:
         _sources_gate()
+        if sid == "builtin":
+            # 删的是配置文件里的那一段，不是 var/sources 下的记录 ——
+            # 走同一个开关：能在页面上加源的实例，才谈得上在页面上删源。
+            if not cfg.has_default_source:
+                raise HTTPException(status_code=404, detail="本实例没有默认数据源")
+            if not _sources.list_sources(cfg):
+                raise HTTPException(
+                    status_code=400,
+                    detail="删除默认数据源前，至少要先添加一个可用的数据源 —— "
+                           "一个源都不剩的实例查不了任何东西。",
+                )
+            _sources.drop_default_source(cfg)
+            return JSONResponse({"ok": True})
         try:
             ok = _sources.delete_source(cfg, sid)
         except _sources.SourceError as e:
@@ -1057,6 +1100,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """
         sid = (source or "").strip()
         if not sid or sid == "builtin":
+            if not cfg.has_default_source:
+                raise HTTPException(
+                    status_code=400,
+                    detail="本实例未配置默认数据源，查询必须指定数据源。"
+                           "到「数据源」页选一个已添加的源再发起。",
+                )
             return cfg
         src = _sources.get_source(cfg, sid)
         if src is None:

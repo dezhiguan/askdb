@@ -11,8 +11,10 @@ from pathlib import Path
 
 import pytest
 
+import yaml
+
 import data.seed as seed
-from askdb.config import load
+from askdb.config import Metric, load, parse_tables
 from askdb.executor import Executor
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -24,6 +26,10 @@ SMALL_KBS = [
     (12, 65, "历史归档库", 200, 0.35, 3),
     (40, 66, "合作方文档", 150, 0.03, 1),
 ]
+
+
+def _yaml_of(path: Path) -> dict:
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="session")
@@ -50,7 +56,17 @@ def cfg(sample_db: Path, tmp_path: Path):
     """
     c = load(ROOT / "config" / "askdb.yaml")
     c.raw = copy.deepcopy(c.raw)
-    c.raw["datasource"]["path"] = str(sample_db)
+    # 数据源、白名单、租户策略全部在这里钉死，**不继承开发配置**。
+    # 开发配置是会被改的（换库、换白名单、换默认租户都合法），
+    # 用例跟着它漂就会在别人改配置那天集体假失败 —— 出现过一次，别再来第二次。
+    c.raw["datasource"] = {"type": "duckdb", "path": str(sample_db), "read_only": True}
+    c.raw["tenant"] = {**c.raw["tenant"], "column": "org_id",
+                       "default_ctx": 65, "mode": "predicate"}
+    c.tables = parse_tables(_yaml_of(ROOT / "config" / "tables.yaml")["tables"])
+    c.metrics = [Metric(**m) for m in _yaml_of(ROOT / "config" / "metrics.yaml")["metrics"]]
+    # 回放开关同理钉死：它在开发配置里是会被打开的，而多条用例断言的是
+    # "关着时 health/stats 怎么说" —— 跟着开发配置漂就会集体变红。
+    c.raw["observability"] = {**c.raw["observability"], "replay_api": False}
     c.raw["observability"]["audit_log"] = str(tmp_path / "audit.jsonl")
     c.raw["observability"]["checkpoint_db"] = str(tmp_path / "checkpoints.sqlite")
     # 身份库是外部 PostgreSQL，和审计日志同属「跨用例累积的外部状态」，

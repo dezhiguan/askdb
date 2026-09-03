@@ -59,11 +59,23 @@ def test_loads_real_project_config():
 
 
 def test_column_metadata_is_parsed():
-    cfg = load(ROOT / "config" / "askdb.yaml")
-    status = cfg.tables["documents"].columns["status"]
+    """列元数据（enum / tenant / 间接归属）能被解析出来。
+
+    读固定的 config/tables.yaml，不读开发配置指向的那份 —— 开发配置换一份
+    白名单是合法操作，而这条用例考的是解析器，不是当下连着哪个库。
+    """
+    import yaml
+
+    from askdb.config import parse_tables
+
+    spec = yaml.safe_load((ROOT / "config" / "tables.yaml").read_text(encoding="utf-8"))
+    tables = parse_tables(spec["tables"])
+    status = tables["documents"].columns["status"]
     assert "COMPLETED" in status.enum
-    assert cfg.tables["documents"].tenant_column == "org_id"
-    assert cfg.tables["orgs"].tenant_column is None
+    assert tables["documents"].tenant_column == "org_id"
+    # orgs 自己就是租户维表，靠 tenant_filter 而不是租户列交代归属
+    assert tables["orgs"].tenant_column is None
+    assert tables["orgs"].tenant_filter
 
 
 def test_api_key_absent_returns_none(monkeypatch):

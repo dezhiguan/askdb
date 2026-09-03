@@ -96,12 +96,31 @@ class Config:
 
     # --- 常用快捷访问 ---
     @property
+    def has_default_source(self) -> bool:
+        """配置里是否声明了默认数据源。
+
+        `datasource:` 段是可选的：一套只用运行时数据源的部署，不该被逼着
+        在配置里先写一个用不上的库。没有它时，不带数据源的查询直接被拒 ——
+        而不是悄悄落到某个"碰巧还在配置里"的库上。
+        """
+        return bool(self.raw.get("datasource"))
+
+    def _ds(self) -> dict[str, Any]:
+        if not self.has_default_source:
+            raise ValueError(
+                "本实例未配置默认数据源（config 里没有 datasource 段）。"
+                "发起查询时必须显式指定数据源。"
+            )
+        return self.raw["datasource"]
+
+    @property
     def db_path(self) -> Path:
-        return (self.root / self.raw["datasource"]["path"]).resolve()
+        return (self.root / self._ds()["path"]).resolve()
 
     @property
     def db_type(self) -> str:
-        return self.raw["datasource"]["type"]
+        """未配置默认数据源时返回空串 —— 调用方据此判断有没有库可连。"""
+        return str(self.raw.get("datasource", {}).get("type", ""))
 
     @property
     def upstream(self) -> str:
@@ -113,14 +132,14 @@ class Config:
         就是说清"这组数字到底出自哪个库"。
         配置里显式声明，不做猜测。
         """
-        return str(self.raw["datasource"].get("upstream", "") or "").strip()
+        return str(self.raw.get("datasource", {}).get("upstream", "") or "").strip()
 
     @property
     def dsn(self) -> str:
         """PostgreSQL 连接串。密码只走环境变量，不落配置文件。"""
         import os
 
-        ds = self.raw["datasource"]
+        ds = self.raw.get("datasource", {})
         base = str(ds.get("dsn", ""))
         env = ds.get("password_env")
         pwd = os.environ.get(env) if env else None
@@ -131,6 +150,10 @@ class Config:
     @property
     def dialect(self) -> str:
         """sqlglot 方言名 —— 与数据源类型对应，改写后的 SQL 才能正确回写。"""
+        # 没有默认数据源就没有方言可言 —— 交给 _ds() 报那句能看懂的话，
+        # 而不是让调用方吃一个裸 KeyError('')。
+        if not self.has_default_source:
+            self._ds()
         return {"duckdb": "duckdb", "postgresql": "postgres"}[self.db_type]
 
     @property
@@ -224,23 +247,23 @@ def _load_dotenv(root: Path) -> None:
             os.environ[key] = val
 
 
-def load(config_path: str | Path = "config/askdb.yaml") -> Config:
-    cfg_path = Path(config_path).resolve()
-    root = cfg_path.parent.parent
-    _load_dotenv(root)
-    raw = _load_yaml(cfg_path)
+def parse_tables(spec: list[dict[str, Any]]) -> dict[str, Table]:
+    """把白名单 YAML 的表段解析成 Table。
 
+    单独拎出来是给"换一份白名单"的调用方用的（测试固件就得这么干）——
+    否则只能整份配置重新 load，白名单就被迫跟着开发配置一起漂。
+    """
     tables: dict[str, Table] = {}
-    for t in _load_yaml(root / raw["tables_file"])["tables"]:
+    for t in spec:
         cols = {
             name: Column(
                 name=name,
-                type=spec.get("type", ""),
-                desc=spec.get("desc", ""),
-                enum=spec.get("enum", []) or [],
-                tenant=bool(spec.get("tenant", False)),
+                type=col.get("type", ""),
+                desc=col.get("desc", ""),
+                enum=col.get("enum", []) or [],
+                tenant=bool(col.get("tenant", False)),
             )
-            for name, spec in t["columns"].items()
+            for name, col in t["columns"].items()
         }
         tables[t["name"]] = Table(
             name=t["name"], desc=t.get("desc", ""), aliases=t.get("aliases", []) or [],
@@ -248,6 +271,16 @@ def load(config_path: str | Path = "config/askdb.yaml") -> Config:
             tenant_filter=t.get("tenant_filter"),
             tenant_exempt=bool(t.get("tenant_exempt", False)),
         )
+    return tables
+
+
+def load(config_path: str | Path = "config/askdb.yaml") -> Config:
+    cfg_path = Path(config_path).resolve()
+    root = cfg_path.parent.parent
+    _load_dotenv(root)
+    raw = _load_yaml(cfg_path)
+
+    tables = parse_tables(_load_yaml(root / raw["tables_file"])["tables"])
 
     metrics = [Metric(**m) for m in (_load_yaml(root / raw["metrics_file"])["metrics"] or [])]
 
@@ -309,7 +342,9 @@ def _validate(cfg: Config) -> None:
         if not (m.expr or m.predicate):
             errs.append(f"口径「{m.name}」既没有 expr 也没有 predicate")
 
-    if cfg.raw["tenant"]["mode"] in ("rls", "rls_and_predicate") and cfg.db_type != "postgresql":
+    if (cfg.has_default_source
+            and cfg.raw["tenant"]["mode"] in ("rls", "rls_and_predicate")
+            and cfg.db_type != "postgresql"):
         errs.append(f"tenant.mode={cfg.raw['tenant']['mode']} 需要 PostgreSQL，当前是 {cfg.db_type}")
 
     if errs:

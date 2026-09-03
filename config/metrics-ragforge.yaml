@@ -1,0 +1,49 @@
+# 业务口径 —— 本机 ragforge 库（技术设计说明书 §3.3）
+#
+# 拟制日期 2026-09-03
+#
+# 未显式定义时，模型只能猜测，且猜错时输出仍然"看起来合理"。
+# 命中 name 或 aliases 时，口径定义随 schema 一并注入提示词，
+# 并约束模型必须使用给定表达式，不得自行构造。
+#
+# 与 metrics.yaml（样例库）的差别：真实 documents 的状态列是 parse_status，
+# 不是 status；样例那份直接搬过来会在 SQL 层报列不存在。
+
+metrics:
+  - name: 文档数
+    aliases: [文档数量, 已入库文档, 完成数, 入库量]
+    scope: [documents]
+    expr: "COUNT(*) FILTER (WHERE parse_status = 'COMPLETED')"
+    naive: "COUNT(*)"
+    note: 口径为 COMPLETED 的数量，不是全部行数
+    owner: 平台组
+
+  - name: 卡住的文档
+    aliases: [卡住, 卡在处理中, 处理中不动, 堆积的文档, 卡住的任务]
+    scope: [documents]
+    predicate: "parse_status = 'PROCESSING' AND updated_at < now() - INTERVAL '1 hour'"
+    note: 处理中且超过 1 小时状态未变更
+    owner: 平台组
+
+  - name: 失败率
+    aliases: [失败比例, 处理失败率]
+    scope: [documents]
+    expr: "COUNT(*) FILTER (WHERE parse_status = 'FAILED') * 1.0 / NULLIF(COUNT(*), 0)"
+    naive: "COUNT(*) FILTER (WHERE parse_status = 'FAILED') * 1.0 / NULLIF(COUNT(*) FILTER (WHERE parse_status != 'PENDING'), 0)"
+    note: 分母为该范围内全部文档，不排除 PENDING
+    owner: 平台组
+
+  - name: 模型调用次数
+    aliases: [调用次数, 调用量, 请求数]
+    scope: [model_usage_daily]
+    expr: "SUM(call_count)"
+    naive: "COUNT(*)"
+    note: 该表按天汇总，一行不等于一次调用，必须对 call_count 求和
+    owner: 平台组
+
+  - name: 平均检索耗时
+    aliases: [检索耗时, 检索延迟, 平均延迟]
+    scope: [retrieval_logs]
+    expr: "AVG(latency_ms)"
+    note: 单位毫秒，按检索请求算术平均
+    owner: 平台组

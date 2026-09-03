@@ -72,6 +72,21 @@ function WorkspaceContext({ health, source }: { health: HealthState; source: Sou
   }
 
   const { datasource, config } = health.health
+
+  // 没配默认数据源：既不是"正常连着"也不是"连不上"，说成任何一种都是假话。
+  // 这时候唯一诚实的表述是"还没选源"，并把人指向数据源页。
+  if (!datasource.configured) {
+    return (
+      <div className="workspace-context">
+        <span>当前空间 /</span>
+        <div className="context-chip" title={datasource.hint || undefined}>
+          <i className="idle-dot" />未设默认源
+        </div>
+        <div className="context-chip hide-mobile">按查询选源</div>
+      </div>
+    )
+  }
+
   return (
     <div className="workspace-context">
       <span>当前空间 /</span>
@@ -186,15 +201,14 @@ export function Brand({ subtitle = 'ASKDB' }: { subtitle?: string }) {
   )
 }
 
-export function PageHeader({ eyebrow, title, description, action }: {
-  eyebrow: string
+export function PageHeader({ title, description, action }: {
   title: string
   description: string
   action?: React.ReactNode
 }) {
   return (
     <div className="page-head">
-      <div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>
+      <div><h1>{title}</h1><p>{description}</p></div>
       {action}
     </div>
   )

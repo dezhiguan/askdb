@@ -47,6 +47,23 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
     return () => { alive = false }
   }, [reload])
 
+  const removeBuiltin = async () => {
+    // 这一条删的是配置文件里的 datasource 段，后果和删一条运行时源完全不同：
+    // 删完之后不带数据源的查询会被直接拒绝。确认文案必须把这句说出来。
+    if (!window.confirm(
+      '删除默认数据源？\n\n'
+      + `会从 ${ready?.config ?? '配置文件'} 里移除 datasource 段。`
+      + '此后不指定数据源的查询将被拒绝，需要在本页选择一个已添加的数据源。\n\n'
+      + '配置文件里的其他段（护栏、租户策略、业务口径）不受影响。'
+    )) return
+    try {
+      await deleteSource('builtin')
+      setReload(n => n + 1)
+    } catch (e) {
+      setError(String((e as Error).message || e))
+    }
+  }
+
   const removeSource = async (card: SourceCard) => {
     if (!window.confirm(`删除数据源「${card.name}」？白名单一并删除，历史审计记录不受影响。`)) return
     try {
@@ -82,10 +99,14 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
   const ready = health.status === 'ready' ? health.health : null
   const ds = ready?.datasource
 
+  // 内置卡的去留以 /api/sources 为准，不看 health —— health 只在页面加载时取一次，
+  // 删完之后它还会说"有默认源"，卡片就会赖在那儿不走。
+  const builtinCard = sources?.items.find(item => item.builtin) ?? null
+  const showBuiltin = sources ? !!builtinCard : true
+
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Phase 1 · Readonly Data"
         title="数据源管理"
         description="只连测试库与生产只读镜像，连接由配置文件指定。表白名单同时是安全边界与准确率边界。"
         action={
@@ -102,8 +123,10 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
 
       {error && <div className="audit-error">读取数据源信息失败：{error}</div>}
 
-      {/* 一个进程一份配置一个数据源，所以网格里只会有一张卡 */}
+      {/* 配置里的默认数据源最多一个，所以内置卡最多一张；它可以被删掉，
+          删掉之后本页只剩运行时数据源 */}
       <div className="source-grid">
+        {showBuiltin && (
         <article className="source-card">
           <div className="source-top">
             <i className="db-icon">
@@ -147,8 +170,17 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
             <button className="ghost" onClick={() => setShowConfig(v => !v)}>
               {showConfig ? '收起配置' : '配置'}
             </button>
+            <button
+              className="ghost"
+              disabled={!builtinCard?.deletable}
+              title={builtinCard?.deletable ? undefined
+                : '删除默认数据源会改写配置文件：需要开启 datasources.allow_runtime_add，'
+                  + '且至少已添加一个别的数据源接手'}
+              onClick={removeBuiltin}
+            >删除</button>
           </div>
         </article>
+        )}
 
         {sources?.items.filter(item => !item.builtin).map(card => (
           <article className="source-card" key={card.id}>
@@ -177,11 +209,16 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
       {showConfig && (
         <div className="source-detail">
           <section className="card notice-card">
-            <h3>为什么这里不能改连接</h3>
+            <h3>为什么这里只能删、不能改</h3>
             <p>
               askdb 不设账号体系，<b>数据库连接本身即权限边界</b>。表白名单、租户隔离、业务口径
               都是跟着这份连接配的 —— 页面若能改连接，等于任何打开页面的人都能把这套护栏整体换掉。
-              换数据源请换配置文件后重启。
+              所以这张卡只提供删除：删掉是<b>把默认源撤掉</b>，护栏范围只会收窄不会放宽；
+              而改连接会让同一套护栏落到另一个库上。要换默认源，仍然是改配置文件后重启。
+            </p>
+            <p>
+              删除同样受 <span className="mono">datasources.allow_runtime_add</span> 约束，
+              且必须先有别的数据源接手 —— 一个源都不剩的实例查不了任何东西。
             </p>
             <pre className="drawer-code">python -m askdb.cli serve -c config/askdb.yaml</pre>
           </section>

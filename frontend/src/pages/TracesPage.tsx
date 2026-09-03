@@ -54,7 +54,6 @@ export function TracesPage() {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Phase 2 · Agent Observability"
         title="执行追踪"
         description="按调用查看它经过的节点、每段耗时与 token。链路数据与审计记录同源，按 trace_id 一一对应。"
         action={link
@@ -96,47 +95,6 @@ export function TracesPage() {
         <section className="card trace-detail">
           <TraceDetail item={items?.find(i => i.trace_id === selected) ?? null} replay={currentReplay} replayOn={!!stats?.replay_api} />
         </section>
-      </div>
-
-      <div className="observe-grid">
-        <article className="integration-card">
-          <div>
-            <h3>观测后端</h3>
-            <p>
-              与审计记录同源上报：一次调用完成后按同一条记录送一次 trace，观测面与审计面天然一致。
-              trace id 复用本地 trace_id，两边可按 id 深链互跳。异步批送，观测失联不反噬主链路。
-            </p>
-          </div>
-          <span className={`status ${tracing?.enabled ? '' : 'wait'}`}>
-            {tracing?.enabled
-              ? `${tracing.backend === 'langfuse' ? 'LANGFUSE' : 'LANGSMITH'} · ${tracing.project}`
-              : 'NOT CONNECTED'}
-          </span>
-          <div className="attribute-list">
-            {['trace_id', 'org_id', 'kind', 'rejected_by', 'attempts', 'cost_cny', 'tables_hit']
-              .map(field => <code key={field}>{field}</code>)}
-          </div>
-        </article>
-
-        {/* 原型这块承诺提示词被抹掉、SQL 只送哈希。askdb 的实际策略不是这样：
-            observe.py 把问题原文当 input、SQL 全文当 output 送出去。
-            照抄就成了一句假的隐私承诺，而假承诺比没有承诺更危险。 */}
-        <article className="integration-card">
-          <div>
-            <h3>上报数据边界</h3>
-            <p>
-              上报的是步骤元数据、SQL 文本与 token 计量。<b>结果行与注入提示词不上报</b> ——
-              这两项同样不出 <span className="mono">/api/replay</span>（字段白名单，回放接口设计说明 §4.2）。
-            </p>
-          </div>
-          <span className="status">元数据 + SQL 文本</span>
-          <div className="attribute-list">
-            <code>question: 原文上报</code>
-            <code>sql: 全文上报</code>
-            <code>结果行: 不上报</code>
-            <code>schema 提示词: 不上报</code>
-          </div>
-        </article>
       </div>
     </div>
   )

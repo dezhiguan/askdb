@@ -46,7 +46,6 @@
 .query-page { padding-top: 16px; }
 .query-page .page-head { align-items: center; margin-bottom: 10px; }
 .query-page .page-head h1 { font-size: 21px; }
-.query-page .page-head .eyebrow { margin-bottom: 3px; }
 .query-page .page-head p { margin-top: 2px; }
 @keyframes pageIn { from { opacity: 0; transform: translateY(4px); } }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }

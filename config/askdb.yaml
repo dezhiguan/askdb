@@ -1,15 +1,15 @@
 # askdb 主配置 —— 对应技术设计说明书 V1.1 附录 A
 # 拟制日期 2026-08-11
 
-datasource:
-  type: duckdb                       # duckdb | postgresql
-  path: ./data/sample.duckdb
-  read_only: true                    # DuckDB 以只读模式打开，写操作在引擎层即被拒绝
-
 tenant:
   column: org_id
-  default_ctx: 65                    # P0 由 CLI --org 覆盖；后续由调用方上下文传入
-  mode: predicate                    # predicate | rls | rls_and_predicate（rls 需 PostgreSQL）
+  # 2026-09-03 换库后改为 2。库里 443 个知识库中有 427 个 org_id 为 NULL，
+  # 任何租户都看不到它们 —— 这是对的（无归属数据不该被任一租户读到），
+  # 但也意味着换默认租户前要先确认该组织确实有数据，否则页面正常、结果恒空。
+  default_ctx: 2                     # P0 由 CLI --org 覆盖；后续由调用方上下文传入
+  # ragforge 库已对 askdb_ro 建好按 app.org_id 过滤的 RLS 策略，
+  # 与 executor.py 注入的 session 变量同名 —— 库侧兜底 + 谓词双保险。
+  mode: rls_and_predicate            # predicate | rls | rls_and_predicate（rls 需 PostgreSQL）
   on_unresolved: reject              # 无法确定租户归属时拒绝，不放行
 
 guard:
@@ -43,10 +43,13 @@ planner:
   on_cap_reached: converge           # converge | fail —— 触顶后收敛作答并标注，不静默返回
 
 schema_rag:
-  mode: keyword                    # keyword（P0）| all | vector（P1）
+  # 运行时添加的数据源（/api/sources）无法携带表 desc/aliases，keyword 打分对中文
+  # 问题会全部得 0 分，退化成"恒定返回白名单前 top_k 张表"，表现为静默答错。
+  # 本机测试实例改走全量注入：32 张表整体约 3178 token，成本可接受。
+  mode: all                        # keyword（P0）| all | vector（P1）
   top_k: 3
   max_k: 5
-  token_budget: 1500
+  token_budget: 4000
   # 以下仅 mode: vector 生效
   embedding_model: text-embedding-v4
   min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求
@@ -86,14 +89,23 @@ llm:
 observability:
   audit_log: ./data/audit.jsonl
   checkpoint_db: ./data/checkpoints.sqlite   # 失败样本原样复现，供 P3 评测归因
+  # 判定链路回放（设计说明 §5.2）。开着才有节点级明细：每一步的耗时、token、
+  # 护栏改写了什么、最终执行的是哪条 SQL。
+  #
+  # 默认关是因为**回放会返回 SQL 全文**，而 SQL 里带着表名列名与筛选条件。
+  # 这份配置现在连的是本机 ragforge 真实库，开启前提是它只监听 127.0.0.1、
+  # 只有本机能访问 —— 换到任何对外可达的实例上，这一项要重新掂量。
+  # （结果行与注入提示词仍不出接口：那是 audit.REPLAY_FIELDS 的字段白名单挡的，
+  #  与这颗开关无关。）
+  replay_api: true
   # 每日**模型调用**上限（不是提问数），防循环调用导致成本失控。
   # 内置样例库这份配置同时用于跑评测：一轮六组消融就是 240 次调用，
   # 再加盲测集，500 会在中途触顶把剩余题目判为 QUOTA 失败、污染成绩。
   # 生产配置（ragforge*.yaml）仍按 100～200 从严。
   daily_quota: 3000
 
-tables_file: ./config/tables.yaml
-metrics_file: ./config/metrics.yaml
+tables_file: ./config/tables-ragforge.yaml
+metrics_file: ./config/metrics-ragforge.yaml
 
 # 运行时添加只读数据源。开着的时候，服务端会按界面填入的地址主动建连 ——
 # askdb 不设账号体系，所以这等于把出站建连的能力交给任何能打开页面的人。

@@ -313,6 +313,12 @@ def test_datasource_label_shows_real_host_not_tunnel(cfg):
     # 密码永远不出现
     assert "secret" not in server._dsn_label(dsn + " password=secret", "8.163.30.216:5432")
 
+    # upstream 指的就是当前连接端点（本机直连也可以声明它当出处标注）时，
+    # 不能写"经隧道" —— 那会让人去查一条不存在的隧道。库名那截不参与比较。
+    direct = "host=127.0.0.1 port=5432 dbname=ragforge user=askdb_ro"
+    assert server._dsn_label(direct, "127.0.0.1:5432") == "ragforge @ 127.0.0.1:5432"
+    assert server._dsn_label(direct, "127.0.0.1:5432/ragforge") == "ragforge @ 127.0.0.1:5432/ragforge"
+
 
 def test_eval_reports_paired_deltas_not_just_absolutes(client):
     """消融图画的是相对基线的**配对增量**，不是绝对准确率。

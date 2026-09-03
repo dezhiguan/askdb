@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  fetchAudit, fetchAuditStats, fetchReplay, tracingLink,
+  fetchAudit, fetchAuditStats, fetchReplay, tracingLink, tracingReachable,
   type AuditItem, type AuditList, type AuditStats, type Replay, type ReplayResult,
 } from '../api'
 import { PageHeader } from '../components/AppShell'
@@ -75,7 +75,6 @@ export function AuditPage() {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="Phase 2 · Full Traceability"
         title="审计中心"
         description="一次调用一条记录，被护栏拦截的同样留痕。列表不含 SQL 文本，判定细节走复放。"
       />
@@ -161,11 +160,25 @@ function StatTiles({ stats, onOpenCost }: { stats: AuditStats | null; onOpenCost
       </div>
       <div>
         <span>调用链观测</span>
-        <strong>{tracing.enabled ? `${tracing.backend === 'langfuse' ? 'Langfuse' : 'LangSmith'} 已接入` : '未接入'}</strong>
+        <strong>{tracing.enabled
+          ? `${tracing.backend === 'langfuse' ? 'Langfuse' : 'LangSmith'} 已接入${tracingReachable(tracing) ? '' : '（仅内网可查看）'}`
+          : '未接入'}</strong>
         <small>{tracing.enabled ? `项目 ${tracing.project}` : '配置 LANGFUSE_* 或 LANGSMITH_* 后启用'}</small>
       </div>
     </div>
   )
+}
+
+/** 观测列为什么点不了 —— 三种原因说清楚，别都甩一句"未接入"。 */
+function observeHint(item: AuditItem, stats: AuditStats | null): string {
+  if (item.kind === 'sql') return '直查不经模型，没有 run 树'
+  if (!stats || !stats.tracing.enabled) return '调用链观测未接入'
+  if (!tracingReachable(stats.tracing)) {
+    // 自托管实例只在内网活着。站内的「复放」是同一条链路的权威来源，
+    // 不是降级替代 —— 本地 trace 才是复放依据，观测后端只是旁路。
+    return '观测后端仅内网可达；这条链路请用左侧「复放」查看'
+  }
+  return '调用链观测未接入'
 }
 
 function AuditRow({ item, stats, onReplay }: {
@@ -196,8 +209,7 @@ function AuditRow({ item, stats, onReplay }: {
                title={`在项目 ${stats?.tracing.project} 内按 trace_id 过滤`}>
               {stats?.tracing.backend === 'langfuse' ? 'Langfuse' : 'LangSmith'} ↗
             </a>
-          : <span className="link-disabled"
-                  title={item.kind === 'sql' ? '直查不经模型，没有 run 树' : '调用链观测未接入'}>—</span>}
+          : <span className="link-disabled" title={observeHint(item, stats)}>—</span>}
       </td>
     </tr>
   )

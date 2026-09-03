@@ -1,8 +1,11 @@
 """运行时数据源注册表。
 
 启动配置里的那个数据源是**内置源**：它定义了这套部署的护栏阈值、租户策略与
-业务口径，永远存在、不可编辑、不可删除。本模块管的是在它之外、由界面在运行
-时添加的只读数据源。
+业务口径。本模块管的是在它之外、由界面在运行时添加的只读数据源。
+
+内置源不可编辑，但**可以删除**（`drop_default_source`）—— 一套只用运行时数据源
+的部署，不该被逼着在配置里留一个用不上的库。删除受与新增同一个开关约束，
+且必须先有别的数据源可用：删到一个源都不剩，等于把实例变砖。
 
 三条纪律，都是被"页面能改连接"这件事本身逼出来的：
 
@@ -158,6 +161,40 @@ def save_source(cfg: Config, src: Source) -> None:
     _path(cfg, src.id).write_text(
         yaml.safe_dump(src.__dict__, allow_unicode=True, sort_keys=False),
         encoding="utf-8")
+
+
+def drop_default_source(cfg: Config) -> None:
+    """把配置文件里的 `datasource:` 段整段删掉，并同步内存里的这份配置。
+
+    直接改文本而不是 yaml.safe_dump 回写：这份配置里每一段都带着解释性注释，
+    dump 一次全没了 —— 配置文件的注释就是这套部署的决策记录，
+    删一个数据源不该顺手把它烧掉。
+
+    删除范围是「datasource: 行 + 其下所有缩进行」，紧贴在它上面的注释块
+    （中间不隔空行的连续 # 行）一并带走 —— 那些注释讲的就是这个数据源，
+    留着会变成指向不存在配置的说明。
+    """
+    path = (cfg.root / cfg.path) if not Path(cfg.path).is_absolute() else Path(cfg.path)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("datasource:")), None)
+    if start is None:
+        cfg.raw.pop("datasource", None)
+        return
+
+    end = start + 1
+    while end < len(lines) and (not lines[end].strip() or lines[end][:1] in (" ", "\t")):
+        end += 1
+    # 尾随空行留一个就够，多的收掉，免得删几次配置文件就散成一片空白
+    while end < len(lines) and not lines[end].strip():
+        end += 1
+
+    while start > 0 and lines[start - 1].lstrip().startswith("#"):
+        start -= 1
+
+    rest = lines[:start] + lines[end:]
+    path.write_text("".join(rest), encoding="utf-8")
+    cfg.raw.pop("datasource", None)
 
 
 def delete_source(cfg: Config, sid: str) -> bool:

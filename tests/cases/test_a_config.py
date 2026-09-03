@@ -21,7 +21,11 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 def _write_cfg(tmp: Path, sample_db: Path, mutate=None, tables=None, metrics=None) -> Path:
     """按基线配置生成一份可改坏的副本，用于校验用例。"""
     raw = yaml.safe_load((ROOT / "config" / "askdb.yaml").read_text(encoding="utf-8"))
-    raw["datasource"]["path"] = str(sample_db)
+    # 整段替换而不是只改 path：开发配置的 datasource 段是会变的（换库、
+    # 甚至整段删掉都合法），校验用例的基线必须自己钉死。
+    raw["datasource"] = {"type": "duckdb", "path": str(sample_db), "read_only": True}
+    raw["tenant"] = {**raw["tenant"], "column": "org_id",
+                     "default_ctx": 65, "mode": "predicate"}
     raw["observability"]["audit_log"] = str(tmp / "a.jsonl")
     raw["observability"]["checkpoint_db"] = str(tmp / "c.sqlite")
 
