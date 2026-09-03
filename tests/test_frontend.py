@@ -372,23 +372,27 @@ def test_removed_pages_leave_no_dangling_references():
         assert cls not in css, f"{cls} 只服务已删页面，样式该一并清掉"
 
 
-def test_tasks_page_is_wired_and_states_what_a_task_is():
+def test_tasks_page_is_wired_and_promises_no_approval_flow():
     """任务中心已接 /api/tasks。
 
-    这页最容易造成误解：原型讲的是「缺少时间范围 → 任务暂停 → 补充输入后继续」，
-    那是产品化的澄清流程；askdb 的中断是**故障恢复**（进程挂了、递归超限、
-    检查点异常）。混为一谈会让人以为能靠它做人工介入与审批 ——
-    所以页面必须写明「没有任务队列」和「审批流还没有」。
+    这页原本有一张说明卡写明「没有任务队列」「审批流还没有」，2026-09-03 按
+    @guandezhi 决定移除。断言跟着改，但**守的东西不变**：原型讲的是
+    「缺少时间范围 → 任务暂停 → 补充输入后继续」，那是产品化的澄清流程；
+    askdb 的中断是故障恢复（进程挂了、递归超限、检查点异常）。混为一谈会让人
+    以为能靠它做人工介入与审批。
+
+    说明卡没了之后，唯一还会暗示审批的地方是左导航副标题 —— 守在那里。
     """
     src = _code_only(FRONTEND_SRC / "pages" / "TasksPage.tsx")
     assert "fetchTasks" in src and "resumeTask" in src
 
-    text = (FRONTEND_SRC / "pages" / "TasksPage.tsx").read_text(encoding="utf-8")
-    assert "没有任务队列" in text, "必须写明提问是同步执行、没有队列"
-    assert "审批" in text, "必须写明审批流尚未实现"
+    nav = _code_only(FRONTEND_SRC / "data" / "mockData.ts")
+    assert "审批" not in nav, "askdb 没有审批流，导航不该这么承诺"
 
     notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
     assert "tasks:" not in notices, "任务中心已接真实数据，MockNotice 里的条目要删掉"
+
+
 GLOSSARY_PAGE = FRONTEND_SRC / "pages" / "GlossaryPage.tsx"
 
 
