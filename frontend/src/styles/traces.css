@@ -23,7 +23,7 @@
 .traces-page .stats .stat small { display: block; margin-top: 3px; color: var(--green); font-size: 7px; }
 
 /* ---------- 两栏：原型 275px + 11px ---------- */
-.traces-page .trace-layout { grid-template-columns: 275px minmax(0, 1fr); gap: 11px; }
+.traces-page .trace-layout { grid-template-columns: 300px minmax(0, 1fr); gap: 11px; }
 
 /* ---------- 左栏最近执行：原型 .trace-item / .trace-status ---------- */
 .trace-list { padding: 6px; }
@@ -33,7 +33,7 @@
   grid-template-columns: 20px 1fr auto;
   gap: 7px;
   align-items: center;
-  padding: 9px 8px;
+  padding: 9px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -56,9 +56,13 @@
 .trace-list .trace-item strong { display: block; font-size: 8px; }
 .trace-list .trace-item small { display: block; margin-top: 2px; color: var(--muted); font-size: 6px; }
 .trace-list .trace-item code { color: var(--green); font: 6px var(--mono); }
-/* 真实问题长度不可控，原型那四条是挑过的；截断而不是把 code 挤出卡片 */
+/* 真实问题长度不可控，原型那四条是挑过的；截断而不是把 code 挤出卡片。
+   min-width:0 是关键：网格的 1fr 轨道默认不会收到 min-content 以下，
+   少了它，nowrap 的长问句会把整行顶出卡片，右边的短码被推到看不见。 */
+.trace-list .trace-item > span { min-width: 0; }
 .trace-list .trace-item strong,
 .trace-list .trace-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trace-list .trace-item code { flex: none; white-space: nowrap; }
 .trace-list .audit-empty { padding: 14px 8px; }
 
 /* ---------- 顶部动作 ---------- */
@@ -185,28 +189,6 @@
 .trace-degraded .drawer-code { margin-top: 10px; }
 .trace-empty { padding: 20px 13px; color: var(--muted); font-size: 8px; }
 
-/* ---------- 底部两张集成卡：原型 .observe-grid ---------- */
-.observe-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 10px; margin-top: 11px; }
-.integration-card {
-  padding: 13px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(250, 249, 245, .86);
-  box-shadow: var(--shadow);
-}
-.integration-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-.integration-card h3 { margin: 0; font-family: var(--serif); font-size: 13px; }
-.integration-card p { margin: 5px 0 10px; color: var(--muted); font-size: 7px; line-height: 1.55; }
-.attribute-list { display: flex; flex-wrap: wrap; gap: 5px; }
-.attribute-list code {
-  padding: 4px 5px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  color: var(--ink-2);
-  background: white;
-  font: 6px var(--mono);
-}
 
 @media (max-width: 900px) {
-  .observe-grid { grid-template-columns: minmax(0, 1fr); }
 }

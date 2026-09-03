@@ -1,3 +1,4 @@
+import { PageHeader } from '../components/AppShell'
 import { Fragment, useEffect, useState } from 'react'
 import {
   fetchAudit, fetchAuditStats, fetchReplay, tracingLink,
@@ -79,38 +80,37 @@ export function TracesPage({ onNavigate, onOpenModal }: {
   return (
     <div className="page traces-page">
       {/* 通用 PageHeader 没有 eyebrow 位，这里按原型直接写出 .page-head */}
-      <div className="page-head">
-        <div>
-          <div className="eyebrow">Phase 2 · Agent Observability</div>
-          <h1>智能体执行追踪</h1>
-          <p>查看每次查询经过的模型、工具、策略和数据库节点，为 Langfuse/OpenTelemetry 预留统一 Trace 结构。</p>
-        </div>
-        <div className="card-actions">
-          <button className="ghost" onClick={goTasks}>← 返回任务中心</button>
-          <button
-            className="ghost"
-            disabled={!currentItem}
-            title={currentItem ? '导出当前 trace 的 OTLP/JSON' : '先选一条调用'}
-            onClick={() => currentItem && exportOtel(currentItem, currentReplay)}
-          >
-            导出 OpenTelemetry
-          </button>
-          {/* 观测后端已接入时，这颗按钮就是真正有用的那件事：跳到后端看这条 trace。
-              没接入才回到原型的「接入 Langfuse」。 */}
-          {link
-            ? <a className="primary" href={link} target="_blank" rel="noopener noreferrer">
-                在 {tracing?.backend === 'langfuse' ? 'Langfuse' : 'LangSmith'} 打开 ↗
-              </a>
-            : <button
-                className="primary"
-                disabled={!onOpenModal}
-                title={onOpenModal ? undefined : '接入向导由应用外壳挂载，当前实例未启用'}
-                onClick={() => onOpenModal?.('langfuse')}
-              >
-                接入 Langfuse
-              </button>}
-        </div>
-      </div>
+      <PageHeader
+        title="智能体执行追踪"
+        description="查看每次查询经过的模型、工具、策略和数据库节点，为 Langfuse/OpenTelemetry 预留统一 Trace 结构。"
+        action={
+          <div className="card-actions">
+            <button className="ghost" onClick={goTasks}>← 返回任务中心</button>
+            <button
+              className="ghost"
+              disabled={!currentItem}
+              title={currentItem ? '导出当前 trace 的 OTLP/JSON' : '先选一条调用'}
+              onClick={() => currentItem && exportOtel(currentItem, currentReplay)}
+            >
+              导出 OpenTelemetry
+            </button>
+            {/* 观测后端已接入时，这颗按钮就是真正有用的那件事：跳到后端看这条 trace。
+                没接入才回到原型的「接入 Langfuse」。 */}
+            {link
+              ? <a className="primary" href={link} target="_blank" rel="noopener noreferrer">
+                  在 {tracing?.backend === 'langfuse' ? 'Langfuse' : 'LangSmith'} 打开 ↗
+                </a>
+              : <button
+                  className="primary"
+                  disabled={!onOpenModal}
+                  title={onOpenModal ? undefined : '接入向导由应用外壳挂载，当前实例未启用'}
+                  onClick={() => onOpenModal?.('langfuse')}
+                >
+                  接入 Langfuse
+                </button>}
+          </div>
+        }
+      />
 
       {error && <div className="audit-error">读取追踪数据失败：{error}</div>}
 
@@ -149,7 +149,6 @@ export function TracesPage({ onNavigate, onOpenModal }: {
         </div>
       </div>
 
-      <ObserveGrid stats={stats} />
     </div>
   )
 }
@@ -327,47 +326,6 @@ function TraceNodes({ item, replay, replayOn }: {
         </div>
       </div>
     </>
-  )
-}
-
-/** 原型底部的两张集成卡。左卡的「已接入 / 未接入」按 /api/audit/stats 的 tracing 如实显示，
- *  右卡的隐私口径按 replay_api 开关如实显示 —— 这两句话写死就是在替部署方担保。 */
-function ObserveGrid({ stats }: { stats: AuditStats | null }) {
-  const tracing = stats?.tracing
-  const connected = !!tracing?.enabled
-  const backend = tracing?.backend === 'langsmith' ? 'LangSmith' : 'Langfuse'
-  const replayOn = !!stats?.replay_api
-
-  return (
-    <div className="observe-grid">
-      <div className="integration-card">
-        <div className="integration-top">
-          <div>
-            <h3>{backend} 集成预留</h3>
-            <p>Agent Harness 统一产生 Trace/Span；后期接入 {backend} 时不需要改动业务节点。</p>
-          </div>
-          <span className={`status ${connected ? '' : 'wait'}`}>{connected ? 'CONNECTED' : 'NOT CONNECTED'}</span>
-        </div>
-        <div className="attribute-list">
-          <code>trace_id</code><code>role</code><code>thread_id</code><code>kind</code>
-          <code>tables_hit</code><code>rules_fired</code><code>rejected_by</code><code>elapsed_ms</code>
-        </div>
-      </div>
-      <div className="integration-card">
-        <div className="integration-top">
-          <div>
-            <h3>隐私上报策略</h3>
-            <p>默认只发送元数据和统计量；原始 Prompt、SQL 和查询结果保持关闭。</p>
-          </div>
-          <span className={`status ${replayOn ? 'wait' : ''}`}>{replayOn ? 'REPLAY OPEN' : 'SAFE DEFAULT'}</span>
-        </div>
-        <div className="attribute-list">
-          <code>prompt: REDACTED</code>
-          <code>sql: {replayOn ? 'REPLAY API' : 'OFF'}</code>
-          <code>result: OFF</code>
-        </div>
-      </div>
-    </div>
   )
 }
 

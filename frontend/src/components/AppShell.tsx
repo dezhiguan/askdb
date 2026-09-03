@@ -206,20 +206,14 @@ export function Brand({ subtitle = 'ASKDB' }: { subtitle?: string }) {
   )
 }
 
-export function PageHeader({ eyebrow, title, description, action }: {
-  /** 原型每页标题上方都有一条阶段/能力标（如 "Phase 2 · Full Traceability"） */
-  eyebrow?: string
+export function PageHeader({ title, description, action }: {
   title: string
   description: string
   action?: React.ReactNode
 }) {
   return (
     <div className="page-head">
-      <div>
-        {eyebrow && <div className="eyebrow">{eyebrow}</div>}
-        <h1>{title}</h1>
-        <p>{description}</p>
-      </div>
+      <div><h1>{title}</h1><p>{description}</p></div>
       {action}
     </div>
   )

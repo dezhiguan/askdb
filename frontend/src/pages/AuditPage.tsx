@@ -1,3 +1,4 @@
+import { PageHeader } from '../components/AppShell'
 import { useEffect, useMemo, useState } from 'react'
 import {
   fetchAudit, fetchAuditStats, fetchReplay, tracingLink, tracingReachable,
@@ -96,20 +97,23 @@ export function AuditPage() {
 
   return (
     <div className="page">
-      <div className="page-head">
-        <div>
-          <div className="eyebrow">Phase 2 · Full Traceability</div>
-          <h1>审计中心</h1>
-          <p>追踪谁在什么时间，以什么权限提出了什么问题，最终执行了哪条 SQL。</p>
-        </div>
-        <button className="ghost" onClick={exportReport} disabled={!list || list.items.length === 0}>
-          导出审计报告
-        </button>
-      </div>
+      <PageHeader
+        title="审计中心"
+        description="追踪谁在什么时间，以什么权限提出了什么问题，最终执行了哪条 SQL。"
+        action={
+          <div className="card-actions">
+            {/* 成本分布原来挂在统计卡上，那一排撤掉后入口挪到这里 —— 抽屉本身是真功能 */}
+            <button className="ghost" onClick={() => setDrawer({ mode: 'cost' })}>成本分布</button>
+            <button className="ghost" onClick={exportReport} disabled={!list || list.items.length === 0}>
+              导出审计报告
+            </button>
+          </div>
+        }
+      />
 
       {error && <div className="audit-error">读取审计数据失败：{error}</div>}
 
-      <StatTiles stats={stats} onOpenCost={() => setDrawer({ mode: 'cost' })} />
+      <StatTiles stats={stats} />
 
       <div className="audit-filters">
         <input
@@ -136,7 +140,7 @@ export function AuditPage() {
         <table className="audit-table">
           <thead>
             <tr>
-              <th>时间</th><th>trace</th><th>用户</th><th>角色</th><th>自然语言问题</th>
+              <th>时间</th><th>trace</th><th>用户 / 角色</th><th>自然语言问题</th>
               <th>数据源</th><th>策略结果</th>
               <th className="num">耗时</th><th className="num">成本</th><th>复放</th><th>观测</th>
             </tr>
@@ -146,9 +150,9 @@ export function AuditPage() {
               <AuditRow key={item.trace_id + item.ts} item={item} stats={stats} onReplay={openReplay} />
             ))}
             {list && list.items.length === 0 && !loading && (
-              <tr><td colSpan={11} className="audit-empty">没有匹配的记录</td></tr>
+              <tr><td colSpan={10} className="audit-empty">没有匹配的记录</td></tr>
             )}
-            {!list && loading && <tr><td colSpan={11} className="audit-empty">读取中…</td></tr>}
+            {!list && loading && <tr><td colSpan={10} className="audit-empty">读取中…</td></tr>}
           </tbody>
         </table>
       </section>
@@ -180,10 +184,9 @@ function todayVsYesterday(stats: AuditStats): { today: number; delta: string } {
   return { today, delta: `较昨日 ${ratio >= 0 ? '+' : ''}${ratio}%` }
 }
 
-function StatTiles({ stats, onOpenCost }: { stats: AuditStats | null; onOpenCost: () => void }) {
+function StatTiles({ stats }: { stats: AuditStats | null }) {
   if (!stats) return <div className="stats"><div className="stat"><span>读取中…</span></div></div>
 
-  const tracing = stats.tracing
   const { today, delta } = todayVsYesterday(stats)
   const passed = stats.calls - stats.blocked
   const passRate = stats.calls > 0 ? `通过率 ${(passed / stats.calls * 100).toFixed(1)}%` : DASH
@@ -202,26 +205,6 @@ function StatTiles({ stats, onOpenCost }: { stats: AuditStats | null; onOpenCost
       <div className="stat">
         <span>安全拦截</span><strong>{stats.blocked}</strong>
         <small>拦截率 {pct(stats.block_rate)} · 近 {stats.days} 天</small>
-      </div>
-
-      <div className="stat">
-        <span>具备步骤级 trace</span><strong>{pct(stats.trace_complete)}</strong>
-        <small>按记录如实计算</small>
-      </div>
-      <button type="button" className="stat stat-clickable" onClick={onOpenCost}>
-        <span>近 {stats.days} 天成本</span><strong>¥{stats.cost_cny}</strong>
-        <small>点开看按日与按类分布 ↗</small>
-      </button>
-      <div className="stat">
-        <span>判定链路回放</span><strong>{stats.replay_api ? '已开启' : '已关闭'}</strong>
-        <small>observability.replay_api</small>
-      </div>
-      <div className="stat">
-        <span>调用链观测</span>
-        <strong>{tracing.enabled
-          ? `${tracing.backend === 'langfuse' ? 'Langfuse' : 'LangSmith'} 已接入${tracingReachable(tracing) ? '' : '（仅内网可查看）'}`
-          : '未接入'}</strong>
-        <small>{tracing.enabled ? `项目 ${tracing.project}` : '配置 LANGFUSE_* 或 LANGSMITH_* 后启用'}</small>
       </div>
     </div>
   )
@@ -261,9 +244,11 @@ function AuditRow({ item, stats, onReplay }: {
     >
       <td className="mono">{fmtTime(item.ts)}</td>
       <td className="mono">{item.trace_id}</td>
-      {/* 审计记录里没有调用者账号，只有可见范围（角色） */}
-      <td className="audit-na" title="审计记录未落调用者账号">{DASH}</td>
-      <td>{item.role || DASH}</td>
+      {/* 原型是「林晓 / 产品」一格。审计记录里没有调用者账号，只有可见范围（角色），
+          所以账号位恒为 —，等后端落库再填 */}
+      <td title="审计记录未落调用者账号，仅记录生效角色">
+        <span className="audit-na">{DASH}</span> / {item.role || DASH}
+      </td>
       <td className="audit-question" title={item.question ?? ''}>{item.question}</td>
       {/* 单实例单数据源，逐条记录里不存数据源名 */}
       <td className="audit-na" title="审计记录未按条落数据源">{DASH}</td>

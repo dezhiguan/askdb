@@ -1,3 +1,4 @@
+import { PageHeader } from '../components/AppShell'
 import { useEffect, useState } from 'react'
 import {
   addMember, fetchMembers, fetchRoles, removeMember,
@@ -109,17 +110,13 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
 
   return (
     <div className="page">
-      {/* 原型的 page-head 带 eyebrow，AppShell 的 PageHeader 没有这个槽位，
-          且 AppShell 不在本次改动范围内，因此这里直接照原型写结构。 */}
-      <div className="page-head">
-        <div>
-          <div className="eyebrow">Phase 2 · Identity &amp; Access</div>
-          <h1>身份与权限中心</h1>
-          <p>企业 SSO 提供身份，RBAC 定义角色，ABAC 根据环境和数据属性动态收敛权限。</p>
-        </div>
-        {/* 企业目录同步尚未接入，这个按钮做它当下唯一能诚实做的事：重读角色与成员 */}
-        <button className="primary" onClick={syncOrg}>同步企业组织</button>
-      </div>
+      {/* 「同步企业组织」：企业目录同步尚未接入，这个按钮做它当下唯一能诚实做的事
+          —— 重读角色与成员 */}
+      <PageHeader
+        title="身份与权限中心"
+        description="企业 SSO 提供身份，RBAC 定义角色，ABAC 根据环境和数据属性动态收敛权限。"
+        action={<button className="primary" onClick={syncOrg}>同步企业组织</button>}
+      />
 
       {error && <div className="audit-error">读取失败：{error}</div>}
 

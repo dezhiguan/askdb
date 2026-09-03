@@ -1,3 +1,4 @@
+import { PageHeader } from '../components/AppShell'
 import { useEffect, useMemo, useState } from 'react'
 import { checkMetrics, fetchSchema, type MetricCheck, type Schema, type SchemaMetric } from '../api'
 import { MetricConfigHelp } from '../components/MetricConfigHelp'
@@ -64,19 +65,18 @@ export function GlossaryPage({ onNavigate, notify }: {
 
   return (
     <div className="page glossary-page">
-      <div className="page-head">
-        <div>
-          <div className="eyebrow">Phase 2 · Business Semantics</div>
-          <h1>业务口径中心</h1>
-          <p>统一指标定义，让模型、开发、测试和产品使用同一种业务语言。</p>
-        </div>
-        <div className="card-actions">
-          <button className="secondary" disabled={checking || !metrics.length} onClick={runCheck}>
-            {checking ? '核对中…' : '核对区分度'}
-          </button>
-          <button className="primary" onClick={() => setShowAdd(true)}>＋ 新建指标</button>
-        </div>
-      </div>
+      <PageHeader
+        title="业务口径中心"
+        description="统一指标定义，让模型、开发、测试和产品使用同一种业务语言。"
+        action={
+          <div className="card-actions">
+            <button className="secondary" disabled={checking || !metrics.length} onClick={runCheck}>
+              {checking ? '核对中…' : '核对区分度'}
+            </button>
+            <button className="primary" onClick={() => setShowAdd(true)}>＋ 新建指标</button>
+          </div>
+        }
+      />
 
       {error && <div className="audit-error">读取业务口径失败：{error}</div>}
 

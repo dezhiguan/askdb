@@ -156,20 +156,6 @@
 }
 
 /* 成本那格可点开分布，做成按钮而不是给 div 挂 onClick —— 键盘能聚焦、读屏能念 */
-.stats .stat-clickable {
-  padding: 13px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(250,249,245,.78);
-  text-align: left;
-  cursor: pointer;
-  transition: border-color .15s, transform .15s;
-}
-.stats .stat-clickable:hover { border-color: var(--green); transform: translateY(-1px); }
-.stats .stat-clickable span, .stats .stat-clickable strong, .stats .stat-clickable small { display: block; }
-.stats .stat-clickable span { color: var(--muted); font-size: 7px; }
-.stats .stat-clickable strong { margin: 4px 0; font: 18px var(--serif); color: var(--green); }
-.stats .stat-clickable small { color: var(--green); font-size: 6px; }
 
 .audit-table { width: 100%; border-collapse: collapse; font-size: 8px; }
 .audit-table th, .audit-table td { padding: 8px 9px; border-bottom: 1px solid var(--line); text-align: left; }

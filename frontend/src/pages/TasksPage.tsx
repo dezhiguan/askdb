@@ -1,3 +1,4 @@
+import { PageHeader } from '../components/AppShell'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   askQuestion,
@@ -204,14 +205,13 @@ export function TasksPage({ onNavigate, notify }: {
 
   return (
     <div className="page tasks-page">
-      <div className="page-head">
-        <div>
-          <div className="eyebrow">Phase 1 · Governed Tasks</div>
-          <h1>任务中心</h1>
-          <p>需要确认、耗时较长或包含复杂分析步骤的查询会自动升级为任务。</p>
-        </div>
-        <button className="primary" onClick={() => setModal({ kind: 'create' })}>＋ 创建任务</button>
-      </div>
+      <PageHeader
+        title="任务中心"
+        description="需要确认、耗时较长或包含复杂分析步骤的查询会自动升级为任务。"
+        action={
+          <button className="primary" onClick={() => setModal({ kind: 'create' })}>＋ 创建任务</button>
+        }
+      />
 
       <div className="stats">
         {/* 后端只记录线程的终态，没有「正在跑」这一维，不拿数字凑 */}

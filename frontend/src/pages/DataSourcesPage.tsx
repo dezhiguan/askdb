@@ -1,3 +1,4 @@
+import { PageHeader } from '../components/AppShell'
 import { useEffect, useMemo, useState } from 'react'
 import {
   deleteSource, fetchIntrospect, fetchSchema, fetchSelfCheck, fetchSources, scanSource,
@@ -131,21 +132,20 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
   return (
     <div className="page">
       {/* 通用 PageHeader 没有 eyebrow 位，这里按原型直接写出 .page-head */}
-      <div className="page-head">
-        <div>
-          <div className="eyebrow">Phase 1 · Readonly Data</div>
-          <h1>数据源管理</h1>
-          <p>只连接测试库和生产只读镜像，凭证由服务端托管，不下发浏览器也不进入提示词。</p>
-        </div>
-        <button
-          className="primary"
-          disabled={!sources?.can_add}
-          title={sources && !sources.can_add
-            ? '本实例未开启运行时添加数据源：服务端会按填入的地址主动建连，而 askdb 不设账号体系，对外实例一律关闭'
-            : undefined}
-          onClick={() => setShowAdd(true)}
-        >＋ 添加数据源</button>
-      </div>
+      <PageHeader
+        title="数据源管理"
+        description="只连接测试库和生产只读镜像，凭证由服务端托管，不下发浏览器也不进入提示词。"
+        action={
+          <button
+            className="primary"
+            disabled={!sources?.can_add}
+            title={sources && !sources.can_add
+              ? '本实例未开启运行时添加数据源：服务端会按填入的地址主动建连，而 askdb 不设账号体系，对外实例一律关闭'
+              : undefined}
+            onClick={() => setShowAdd(true)}
+          >＋ 添加数据源</button>
+        }
+      />
 
       {error && <div className="audit-error">{error}</div>}
 
