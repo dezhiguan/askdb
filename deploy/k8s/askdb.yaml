@@ -81,6 +81,17 @@ spec:
             - secretRef:
                 name: askdb-llm
                 optional: false
+            # 数据库口令（ASKDB_PROD_PG_PASSWORD）。
+            #
+            # 2026-09-03 起对外实例直连 ragforge 生产主库，不再跑样例库。
+            # optional: false 是有意与上面几个相反：缺了它 Pod 会卡在
+            # CreateContainerConfigError、rollout 超时 —— 那正是想要的。
+            # 设成 optional 的话，Secret 漏建时服务照常起、库连不上，
+            # 站点变成一个每次查询都报错的空壳，而错误指向数据源不可用，
+            # 排查方向完全跑偏。连不上库的实例本来就不该起来。
+            - secretRef:
+                name: askdb-db
+                optional: false
             # 登录与一键体验的会话签名密钥（ASKDB_SESSION_SECRET）。
             # optional: true 是权衡后的选择：设成必需的话，忘了建这个 Secret
             # 会让 Pod 卡在 CreateContainerConfigError、rollout 超时，整站停更；

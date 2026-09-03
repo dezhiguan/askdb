@@ -35,6 +35,8 @@ guard:
 planner:
   # 多步是兜底路径不是默认路径。默认关闭 —— 首轮消融显示成本 +109%
   # 而多跳准确率未提升，按 §6.3 的规则回退为开关。
+  # 2026-09-03 本机复测：C 组 14 条多跳全部被判「单步可答」，multi_step 一次未触发，
+  # 每问白付一次模型调用 +4.5s。关回 false。
   enabled: false
   max_steps: 3                       # R-16 总步数上限
   max_carry_rows: 50                 # R-15 中间结果规模上限，超限即收敛
@@ -49,7 +51,7 @@ schema_rag:
   mode: all                        # keyword（P0）| all | vector（P1）
   top_k: 3
   max_k: 5
-  token_budget: 4000
+  token_budget: 12000
   # 以下仅 mode: vector 生效
   embedding_model: text-embedding-v4
   min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求

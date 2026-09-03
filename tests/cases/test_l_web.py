@@ -69,11 +69,15 @@ def test_l11_page_shows_which_config_is_loaded():
 def test_public_instance_config_is_safe():
     """对外开放实例的安全与成本边界，任何一条被改掉都不该悄悄上线。
 
-    askdb 不设账号体系（§1.1：数据库连接本身即权限边界），开放实例
-    无法区分调用方 —— 所以只能靠配置本身自保：
+    2026-09-03 前提变了：这个实例原来连合成样例库，"泄露不了真实数据"是
+    整套安全论证的地基。按 @guandezhi 决定改为直连 ragforge 生产主库之后，
+    那条地基没了，断言必须跟着换 —— **不是放宽，是换到新的边界上**。
 
-      · 数据边界：连的是合成样例库，泄露不了真实数据
-      · 成本边界：每日配额 + 便宜模型（接了模型 = 任何人都能花部署方的钱）
+    现在挡在公网与真实数据之间的只剩三样，这条测试逐条钉住：
+      1. 必须登录（auth.required）—— 至少让调用方在审计里有名有姓
+      2. 只读连接 + 租户隔离（应用层谓词 + 库侧 RLS 双层）
+      3. 回放关闭 —— 它会返回 SQL 全文，等于把库结构透给任何登录用户
+    加上原有的成本边界：每日配额 + 单价不高于开发配置。
     """
     from askdb.config import load
 
@@ -81,8 +85,17 @@ def test_public_instance_config_is_safe():
     dev = load(ROOT / "config" / "askdb.yaml")
 
     # ---- 数据边界 ----
-    assert c.db_type == "duckdb", "对外实例只能连合成样例库"
-    assert c.db_path.name == "sample.duckdb"
+    # 连的是真实库，所以每一层都必须在
+    assert c.raw["auth"]["required"] is True, "连真实库的对外实例必须强制登录"
+    assert c.tenant_enabled, "租户隔离不能关"
+    assert c.raw["tenant"]["mode"] == "rls_and_predicate", \
+        "对外实例要双层隔离：应用层被绕过时库侧 RLS 仍在"
+    assert c.raw["tenant"]["on_unresolved"] == "reject", "定不出租户归属时必须拒绝，不能放行"
+    assert c.raw["observability"]["replay_api"] is False, \
+        "回放会返回 SQL 全文，连真实库时必须关"
+    # 口令只走环境变量，任何形式的明文都不该出现在仓库里
+    assert c.raw["datasource"].get("password_env"), "数据库口令必须走环境变量"
+    assert "password=" not in c.raw["datasource"].get("dsn", ""), "连接串里不得写明文口令"
 
     # ---- 成本边界 ----
     assert 0 < c.daily_quota <= 500, f"每日配额必须设置且不得过宽：{c.daily_quota}"

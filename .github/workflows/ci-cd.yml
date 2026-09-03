@@ -300,10 +300,10 @@ jobs:
           import json, sys
           d = json.load(open(sys.argv[1]))
           assert d["enabled"] is True, f"登录未启用 —— 多半是没建 askdb-auth Secret：{d}"
-          assert d["required"] is False, f"对外实例不该把登录设成门：{d}"
+          # 2026-09-03 起对外实例直连生产主库，登录**必须**是门 ——
+          # 库里是真数据，至少要让调用方在审计里有名有姓
+          assert d["required"] is True, f"连真实库的实例必须强制登录：{d}"
           assert d["demo_accounts"], f"一键体验账号为空，登录面板会是死的：{d}"
-          # 匿名也该有能查的表，否则未登录的访客一进来就撞 403
-          assert d["scope"]["tables"], f"匿名角色一张表都看不到：{d}"
           print("登录已就绪，一键体验账号：",
                 ", ".join(a["username"] for a in d["demo_accounts"]))
           PY
@@ -311,7 +311,12 @@ jobs:
       - name: Guardrail still blocks writes
         run: |
           BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
-          BODY="$(curl --fail --silent --show-error --max-time 15 -X POST "${BASE}/api/sql" \
+          # required: true 之后匿名直查会拿 401，冒烟必须先拿会话票。
+          # 用一键体验账号：它只跳过认证不跳过授权，走的是与口令登录同一条路径。
+          curl --fail --silent --show-error --max-time 20 -c /tmp/ck.txt \
+            -X POST "${BASE}/api/auth/demo" \
+            -H 'Content-Type: application/json' -d '{"username":"owner"}' >/dev/null
+          BODY="$(curl --fail --silent --show-error --max-time 15 -b /tmp/ck.txt -X POST "${BASE}/api/sql" \
             -H 'Content-Type: application/json' -d '{"sql":"DELETE FROM documents"}')"
           python3 - <<'PY' "${BODY}"
           import json, sys
@@ -333,7 +338,10 @@ jobs:
           # 正确拦掉。那不是故障，是这条断言写在收窄之前。换一张匿名看得见的表，
           # "默认租户下确实查得到数据"这个本意一点没变。
           BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
-          BODY="$(curl --fail --silent --show-error --max-time 15 -X POST "${BASE}/api/sql" \
+          curl --fail --silent --show-error --max-time 20 -c /tmp/ck2.txt \
+            -X POST "${BASE}/api/auth/demo" \
+            -H 'Content-Type: application/json' -d '{"username":"owner"}' >/dev/null
+          BODY="$(curl --fail --silent --show-error --max-time 15 -b /tmp/ck2.txt -X POST "${BASE}/api/sql" \
             -H 'Content-Type: application/json' -d '{"sql":"SELECT COUNT(1) AS c FROM knowledge_bases"}')"
           python3 - <<'PY' "${BODY}"
           import json, sys

@@ -198,9 +198,16 @@ def test_login_disabled_without_secret(acfg, monkeypatch):
 
 # ---------- 演示实例的配置意图 ----------
 
-def test_public_instance_keeps_anonymous_access():
-    """对外演示实例**有意**不强制登录：这个站要给人看的是护栏与审计，
-    而登录页是访客流失最大的一处。改成强制登录前先想清楚这一条。
+def test_anonymous_access_only_survives_on_a_synthetic_database():
+    """匿名可查与"连的是什么库"必须绑在一起判，不能各自漂。
+
+    这条原来断言 required 恒为 false，理由是：站里要给人看的是护栏与审计，
+    登录页是访客流失最大的一处。那个理由成立的前提是**库里是合成数据**。
+    2026-09-03 对外实例改连 ragforge 生产主库，前提没了。
+
+    所以不是把断言翻个面，而是把规则写进去：连真实库就必须强制登录。
+    将来若有人把某个实例改回样例库，匿名可查会自动重新变得合法 ——
+    规则跟着事实走，不用再改一次测试。
     """
     from pathlib import Path
 
@@ -208,7 +215,16 @@ def test_public_instance_keeps_anonymous_access():
 
     root = Path(__file__).resolve().parent.parent
     c = load(root / "config" / "public.yaml")
-    assert (c.raw.get("auth") or {}).get("required") is False
+    required = bool((c.raw.get("auth") or {}).get("required"))
+
+    synthetic = c.db_type == "duckdb" and c.raw["datasource"].get("path", "").endswith("sample.duckdb")
+    if synthetic:
+        assert not required, "连合成样例库时不必强制登录 —— 登录页会白挡掉访客"
+    else:
+        assert required, (
+            f"这个实例连的是真实库（{c.db_type}），必须强制登录 —— "
+            f"库里是真数据，至少要让调用方在审计里有名有姓"
+        )
 
 
 def test_public_instance_stores_no_plaintext_password():

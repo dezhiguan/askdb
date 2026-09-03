@@ -20,8 +20,11 @@ COPY askdb/__init__.py ./askdb/
 # `import uvicorn` —— 前面每一关都是绿的，最难查的那种。
 # 带 [redis]：每日配额的共享计数走 Redis。没装的话不会构建失败，
 # 而是运行期第一次调模型时才抛"未安装 redis 包"——同样是最难查的那种。
-# 不装 postgres：该实例连的是本地样例库，用不到 PG 驱动。
-RUN pip install --no-cache-dir ".[web,redis]"
+# 带 [postgres]：2026-09-03 起对外实例直连 ragforge 生产主库，不再跑样例库。
+# 这一项漏掉的表现与上面两项同类且更隐蔽 —— 镜像照常构建、Pod 照常起、
+# 页面照常开，只在第一次查询时报"缺少 PostgreSQL 驱动"，
+# 而错误落在数据源那一侧，很容易被当成库或网络的问题去查。
+RUN pip install --no-cache-dir ".[web,redis,postgres]"
 
 COPY askdb ./askdb
 COPY config ./config

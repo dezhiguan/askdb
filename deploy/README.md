@@ -81,12 +81,22 @@ nginx 跑在 `ragforge-nginx` 容器里（`docker-compose-ingress.yml`），
 | `CAREERMATE_INGRESS_HOST` | 跳板机，默认 `8.163.63.222`（已有） |
 | `ACR_REGISTRY` / `ACR_USERNAME` / `ACR_PASSWORD` | 镜像仓库（已有） |
 
-**askdb 不需要任何新的 GitHub secret** —— 它不连数据库，登机与推镜像都复用上表。
+**askdb 不需要任何新的 GitHub secret** —— 登机与推镜像都复用上表。
+（2026-09-03 起对外实例直连 ragforge 生产主库，但库口令走 k8s Secret，不经 GitHub。）
 
 模型密钥与 Redis 地址走 **k8s Secret**，由运维一次性创建，不经过 GitHub：
 
 ```bash
 # 模型密钥（必需，缺了 Pod 起不来）
+# 数据库口令。**必需** —— manifest 里是 optional: false，缺了 Pod 会卡在
+# CreateContainerConfigError。这是有意的：连不上库的实例本来就不该起来，
+# 设成 optional 会让它照常起、每次查询报"数据源不可用"，排查方向完全跑偏。
+#
+# 走**内网**地址：实测 Server 3 的 pod 到 8.163.30.216:5432（公网）超时，
+# 到 172.25.90.183:5432（同 VPC）通。
+kubectl -n askdb create secret generic askdb-db \
+  --from-literal=ASKDB_PROD_PG_PASSWORD='<askdb_ro 的口令>'
+
 kubectl -n askdb create secret generic askdb-llm \
   --from-literal=DEEPSEEK_API_KEY=... \
   --from-literal=DASHSCOPE_API_KEY=...

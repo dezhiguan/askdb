@@ -31,19 +31,35 @@
 # **不要用 --host 0.0.0.0 直接暴露公网。**前面必须有反向代理承担 HTTPS
 # 与限流，见 deploy/README.md。
 
+# 2026-09-03 按 @guandezhi 决定：云上实例直连 ragforge 生产主库，不再跑样例库。
+#
+# 这条改动推翻了本文件开头那段前提 —— 原来"即使完全开放也没有数据可泄露"，
+# 靠的是连着合成库。现在库里是真数据，挡在公网与它之间的只剩三样：
+#   1. 必须登录（auth.required: true，同日一并改）
+#   2. 只读连接 + 护栏 R-01～R-17
+#   3. org_id = 316 的租户谓词 + 库侧 RLS
+# 少任何一条，这个实例就不该对外可达。
+#
+# 口令只走环境变量，云上由 k8s Secret 注入（见 deploy/k8s/askdb.yaml）。
 datasource:
-  type: duckdb
-  path: ./data/sample.duckdb
-  read_only: true
+  type: postgresql
+  # 走**内网**地址。实测：Server 3 的 pod 到 8.163.30.216:5432（公网）超时，
+  # 到 172.25.90.183:5432（同 VPC 内网）通 —— 写公网地址推上去站点会直接挂，
+  # 而症状是"数据源不可用"，很容易被当成库的问题去查。
+  dsn: "host=172.25.90.183 port=5432 dbname=ragforge user=askdb_ro"
+  password_env: ASKDB_PROD_PG_PASSWORD
+  # 出处栏显示这台机器对外的身份 —— 内网 IP 对读的人没有意义，
+  # 而"这组数字出自哪个库"正是这一栏存在的全部理由。
+  upstream: "8.163.30.216:5432"
 
 tenant:
   column: org_id
-  # 2026-08-25 按运营要求默认 316。2026-08-28 补上了对应的样例数据 ——
-  # 在此之前样例库只有 org 65/66/67，默认租户下任何查询都恒返回 0 行。
-  # 改默认租户时务必确认 data/seed.py 里该组织有数据，否则页面看着正常、
-  # 结果永远为空，且不报任何错（护栏照常注入谓词，只是匹配不到行）。
+  # 职场数据分享组织。改默认租户前务必确认该组织在库里确实有数据，
+  # 否则页面看着正常、结果永远为空，且不报任何错（护栏照常注入谓词，只是匹配不到行）。
   default_ctx: 316
-  mode: predicate                    # DuckDB 无 RLS，只有应用层改写这一层
+  # 换成真实 PostgreSQL 后可以上双层：应用层 AST 改写 + 库侧 RLS。
+  # 对外实例尤其需要库侧兜底 —— 应用层若被绕过，RLS 仍在。
+  mode: rls_and_predicate
   on_unresolved: reject
 
 guard:
@@ -111,9 +127,15 @@ observability:
   # 往它上面挂卷会把样例库遮掉。var 单独挂卷，用于持久化审计日志。
   audit_log: ./var/audit-public.jsonl
   checkpoint_db: ./var/checkpoints-public.sqlite
-  # 判定链路回放接口（设计说明 §5.2）：对外实例连的是合成样例库，
-  # 且字段白名单已挡住结果行，可以开。连真实数据源的配置保持默认关。
-  replay_api: true
+  # 判定链路回放接口（设计说明 §5.2）。
+  #
+  # 2026-09-03 由 true 改回 false：它原来开着的**唯一理由**是"连的是合成样例库"，
+  # 换成生产主库后那句话不成立了 —— 回放会返回 SQL 全文，而 SQL 里带着
+  # 表名、列名与筛选条件，等于把库结构透给任何登录用户。
+  # 字段白名单只挡住了结果行与注入提示词，挡不住 SQL 本身。
+  #
+  # 排查线上问题走命令行：askdb replay <trace_id> -c config/public.yaml
+  replay_api: false
   # 每日**模型调用**上限（不是提问数）。一次提问会调好几次模型：
   # 多步规划每步一次生成 + 一次评估，反思重试再各来一次。按提问计会低估几倍。
   # 按 ¥0.0009/次算，500 次 ≈ ¥0.45/天 ≈ ¥13.5/月。
@@ -131,8 +153,8 @@ observability:
     # 直查 SQL 链路不调模型、不过配额，Redis 挂了它照常可用。
     on_backend_error: block
 
-tables_file: ./config/tables.yaml
-metrics_file: ./config/metrics.yaml
+tables_file: ./config/ragforge-prod-tables.yaml
+metrics_file: ./config/ragforge-prod-metrics.yaml
 
 # 2026-09-01 按 @guandezhi 决定放开。
 #
@@ -155,19 +177,23 @@ datasources:
 # 匿名也是一个普通角色，不是绕过分支。它拿到的是最窄的一档：能体验查数，
 # 但看不到文档明细与成本数据 —— 登录之后的差别因此是看得见的。
 # ---------------------------------------------------------------------------
+# 2026-09-03 表名跟着换库对齐：生产库里是 organizations / model_usage_daily，
+# 样例库里是 orgs / model_usage。收窄取的是交集，写错的名字**静默失效** ——
+# 改库前 DATA_OWNER 会莫名看不到成本表，而且不报任何错。
 role_policies:
   ANONYMOUS:
-    tables: [knowledge_bases, orgs]
+    tables: [knowledge_bases, organizations]
     max_rows: 20
   QA:
-    tables: [knowledge_bases, orgs, documents]
+    tables: [knowledge_bases, organizations, documents]
     max_rows: 50
   PRODUCT:
-    # 不含 model_usage：token 与成本是内部经营数据，产品角色看业务不看账
-    tables: [knowledge_bases, orgs, documents]
+    # 不含 model_usage_daily：token 与成本是内部经营数据，产品角色看业务不看账
+    tables: [knowledge_bases, organizations, documents]
     max_rows: 100
   DATA_OWNER:
-    tables: [knowledge_bases, orgs, documents, model_usage]
+    # 实例白名单内全部可见
+    tables: [knowledge_bases, organizations, documents, retrieval_logs, model_usage_daily]
     max_rows: 200
   # SYS_ADMIN 不在这里 —— 它的"无数据权限"是内置默认，写在配置里反而像可改的
 
@@ -188,7 +214,12 @@ role_policies:
 # ---------------------------------------------------------------------------
 auth:
   enabled: true
-  required: false
+  # 2026-09-03 由 false 改为 true。
+  #
+  # 连样例库时匿名可查是有意的：登录页是访客流失最大的一处，而那个实例
+  # 要给人看的是护栏与审计，不是登录框。换成生产主库后这个权衡反过来了 ——
+  # 库里是真数据，至少要让调用方在审计里有名有姓。
+  required: true
   cookie_secure: true            # 入口强制 HTTPS
   accounts:
     - username: product
