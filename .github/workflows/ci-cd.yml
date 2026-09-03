@@ -242,9 +242,16 @@ jobs:
           import json, sys
           d = json.loads(sys.argv[1])
           assert d["datasource"]["ok"], d
-          # 对外实例必须连样例库、必须不接模型 —— 这两条是安全边界，
-          # 配置一旦被改错，冒烟就该红
-          assert d["datasource"]["type"] == "duckdb", f"对外实例只能连样例库：{d['datasource']}"
+          # 2026-09-03 起对外实例直连 ragforge 生产主库，"只能连样例库"这条
+          # 安全边界没了 —— 断言不是删掉，是换到接替它的那几条上。
+          #
+          # 库里是真数据，所以下面三条一条都不能松：
+          assert d["datasource"]["type"] == "postgresql", f"数据源被改回样例库或改错了：{d['datasource']}"
+          assert d["tenant"]["enabled"], f"租户隔离被关了：{d['tenant']}"
+          assert d["tenant"]["mode"] == "rls_and_predicate", \
+              f"对外实例要双层隔离，应用层被绕过时库侧 RLS 仍在：{d['tenant']}"
+          # 口令必须走环境变量 —— 连接串里出现明文就是把口令写进了仓库
+          assert d["datasource"].get("credential"), f"数据库口令没走环境变量：{d['datasource']}"
           # 接了模型，所以不再断言 disabled；改为钉住**成本护栏**：
           # 每日配额必须设置且不得放得太宽，否则被脚本刷爆
           q = d["guard"].get("daily_quota")
