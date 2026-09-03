@@ -326,15 +326,21 @@ jobs:
           # 查什么都是 0 行 —— 而且全链路不报错（护栏照常注入租户谓词，
           # 只是匹配不到行），冒烟一路全绿，三天后才由人肉发现。
           # 这里钉住"默认租户下确实查得到数据"，不再依赖有人去点页面。
+          #
+          # 查的是 knowledge_bases 而不是 documents：角色收窄上线后，**匿名**
+          # 拿到的是最窄的一档（public.yaml 的 role_policies.ANONYMOUS 只给
+          # knowledge_bases + orgs），冒烟不带 cookie，查 documents 会被 R-03
+          # 正确拦掉。那不是故障，是这条断言写在收窄之前。换一张匿名看得见的表，
+          # "默认租户下确实查得到数据"这个本意一点没变。
           BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
           BODY="$(curl --fail --silent --show-error --max-time 15 -X POST "${BASE}/api/sql" \
-            -H 'Content-Type: application/json' -d '{"sql":"SELECT COUNT(1) AS c FROM documents"}')"
+            -H 'Content-Type: application/json' -d '{"sql":"SELECT COUNT(1) AS c FROM knowledge_bases"}')"
           python3 - <<'PY' "${BODY}"
           import json, sys
           d = json.loads(sys.argv[1])
           assert d["ok"] is True, d
           n = d["rows"][0][0]
-          assert n > 0, f"默认租户 org_id={d['org_id']} 下文档数为 0 —— 页面等于查不到任何数据"
+          assert n > 0, f"默认租户 org_id={d['org_id']} 下一条数据都没有 —— 页面等于查不到任何东西"
           PY
 
       - name: Introspection endpoints are open (2026-08-25 运营决定)
