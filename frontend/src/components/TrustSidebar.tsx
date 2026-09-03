@@ -9,8 +9,11 @@ import type { HealthState } from '../useHealth'
  *  不是**结果可信**。给一个分数等于替用户下了"这个答案有多可靠"的判断。
  *  环里换成今日剩余配额：真实、可对账，而且对外实例上它就是能不能再问的答案。
  */
-export function TrustSidebar({ health, result, onResultTab, onNavigate }: {
+export function TrustSidebar({ health, source, result, onResultTab, onNavigate }: {
   health: HealthState
+  /** 工作台当前选中的数据源。切源时「本次执行策略」要跟着变 —— 护栏与
+   *  租户是实例级、切源不变（原型亦如此），真正随源变的只有数据源身份这一项。 */
+  source?: { name: string; dialect: string }
   result: AskResult | null
   onResultTab: (tab: ResultTab) => void
   onNavigate: (view: View) => void
@@ -41,7 +44,7 @@ export function TrustSidebar({ health, result, onResultTab, onNavigate }: {
           <span className={`ready-badge ${admission.tone}`}>{admission.label}</span>
         </div>
         <div className="assurance-grid">
-          <div><span>数据源</span><strong>{ready ? ready.datasource.type : '—'}</strong></div>
+          <div><span>数据源</span><strong>{source?.dialect || (ready ? ready.datasource.type : '—')}</strong></div>
           <div>
             <span>租户上下文</span>
             <strong>{ready ? (ready.tenant.enabled ? `${ready.tenant.column}=${ready.tenant.org_id}` : '单租户') : '—'}</strong>
@@ -56,7 +59,7 @@ export function TrustSidebar({ health, result, onResultTab, onNavigate }: {
           <button onClick={() => onNavigate('sources')}>查看数据源 →</button>
         </div>
         <div className="policy-grid">
-          <div><span>数据源</span><strong>{ready?.datasource.detail ?? '—'}</strong></div>
+          <div><span>数据源 / 环境</span><strong>{source ? `${source.name} · 只读` : (ready?.datasource.detail ?? '—')}</strong></div>
           <div>
             <span>租户隔离</span>
             <strong>{ready ? (ready.tenant.enabled ? ready.tenant.mode : '未启用') : '—'}</strong>

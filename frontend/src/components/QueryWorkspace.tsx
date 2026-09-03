@@ -154,7 +154,7 @@ export function QueryWorkspace({ health, sources, onNavigate }: {
           : <Welcome mode={mode} schema={schema} usable={usable} onPick={setQuestion} />}
       </section>
 
-      <TrustSidebar health={health} result={result} onResultTab={setTab} onNavigate={onNavigate} />
+      <TrustSidebar health={health} source={current} result={result} onResultTab={setTab} onNavigate={onNavigate} />
     </div>
   )
 }

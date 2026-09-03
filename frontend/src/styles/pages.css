@@ -1,7 +1,6 @@
 .trust-sidebar { min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
 .assurance-card, .side-card { border: 1px solid var(--line); border-radius: 9px; background: rgba(250,249,245,.88); box-shadow: 0 10px 28px rgba(19,35,26,.05); overflow: hidden; }
 .assurance-hero { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 11px; padding: 12px; color: white; background: var(--dark); }
-.score-ring { width: 43px; height: 43px; display: grid; place-items: center; border: 3px solid var(--green-2); border-right-color: rgba(255,255,255,.15); border-radius: 50%; font: 700 11px var(--mono); }
 .assurance-hero strong, .assurance-hero small { display: block; }
 .assurance-hero strong { font-size: 10px; }
 .assurance-hero small { margin-top: 3px; color: #a9bbb0; font-size: 7px; }
@@ -474,15 +473,16 @@
 .tag { padding: 2px 6px; border-radius: 4px; background: var(--paper-2); font: 7px var(--mono); }
 .tag.metric { background: var(--green-wash); color: var(--green); }
 
-/* 配额环。未启用配额时不画进度，画满环等于暗示"有上限且还剩很多" */
+/* 配额环。未启用配额时不画进度，画满环等于暗示"有上限且还剩很多"。
+   尺寸与字体对齐原型（43px、mono 11px）；conic 填充是配额比例，保留。 */
 .score-ring {
   position: relative; display: grid; place-items: center;
-  width: 46px; height: 46px; flex: none; border-radius: 50%;
-  color: white; font: 700 13px var(--serif);
+  width: 43px; height: 43px; flex: none; border-radius: 50%;
+  color: white; font: 700 11px var(--mono);
   background: conic-gradient(var(--green-2) calc(var(--ratio, 1) * 360deg), rgba(255,255,255,.18) 0);
 }
 .score-ring::after {
-  content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--dark);
+  content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--dark);
 }
 .score-ring > * , .score-ring { z-index: 0; }
 .score-ring { isolation: isolate; }
