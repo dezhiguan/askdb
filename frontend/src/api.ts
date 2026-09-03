@@ -602,6 +602,12 @@ export interface Task {
   attempts_on_thread: number
   elapsed_ms: number
   cost_cny: number | null
+  /** 线程当前状态，看它最后一条记录：
+   *  interrupted=现场还在检查点里 / rejected=被护栏拦下 / done=正常收尾 */
+  status: 'interrupted' | 'rejected' | 'done'
+  /** 只有 interrupted 的线程能续跑。列表列全部线程，续跑入口只对它们开放 ——
+   *  给已收尾的线程也挂一个续跑按钮，点了必然失败 */
+  resumable: boolean
 }
 
 export type TasksResult =

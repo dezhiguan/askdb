@@ -102,7 +102,7 @@ export function TasksPage({ onNavigate, notify }: {
             <thead>
               <tr>
                 <th>问题</th><th>线程</th><th>首次发起</th><th>最近中断</th>
-                <th className="num">已执行</th><th />
+                <th className="num">已执行</th><th>状态</th><th />
               </tr>
             </thead>
             <tbody>
@@ -115,23 +115,30 @@ export function TasksPage({ onNavigate, notify }: {
                   <td className="mono dim">{fmtTime(task.first_ts)}</td>
                   <td className="mono dim">{fmtTime(task.ts)}</td>
                   <td className="num">{task.attempts_on_thread} 次</td>
+                  <td><span className={`status ${STATUS_TONE[task.status]}`}>{STATUS_LABEL[task.status]}</span></td>
                   <td>
-                    <button
-                      className="primary"
-                      disabled={busy === task.thread_id}
-                      onClick={() => resume(task)}
-                    >
-                      {busy === task.thread_id ? '续跑中…' : '从断点续跑'}
-                    </button>
+                    {/* 只有中断的线程才有断点可续。给已收尾的线程也挂按钮，
+                        点了必然 404 —— 那不是"暂时不可用"，是这条路根本不存在 */}
+                    {task.resumable ? (
+                      <button
+                        className="primary"
+                        disabled={busy === task.thread_id}
+                        onClick={() => resume(task)}
+                      >
+                        {busy === task.thread_id ? '续跑中…' : '从断点续跑'}
+                      </button>
+                    ) : (
+                      <span className="dim" title="这条线程已经收尾，没有可续的断点">—</span>
+                    )}
                   </td>
                 </tr>
               ))}
               {result.items.length === 0 && (
-                <tr><td colSpan={6} className="tasks-empty">
-                  <strong>当前没有可续跑的任务。</strong>
+                <tr><td colSpan={7} className="tasks-empty">
+                  <strong>这个账号名下还没有执行记录。</strong>
                   <span>
-                    这是正常状态 —— 中断来自故障，不是常规流程。
-                    调用一旦正常收尾（成功、被护栏拦下、或续跑完成），就不会留在这里。
+                    任务由提问产生 —— 登录后到查询工作台问一次，这里就会出现对应的线程。
+                    历史记录若是匿名发起的，不会归到任何账号名下。
                   </span>
                 </td></tr>
               )}
@@ -147,4 +154,17 @@ export function TasksPage({ onNavigate, notify }: {
       {!result && !error && <section className="card notice-card"><p>读取中…</p></section>}
     </div>
   )
+}
+
+
+const STATUS_LABEL: Record<string, string> = {
+  interrupted: '中断 · 可续跑',
+  rejected: '被护栏拦下',
+  done: '已完成',
+}
+
+const STATUS_TONE: Record<string, string> = {
+  interrupted: 'wait',
+  rejected: 'bad',
+  done: '',
 }

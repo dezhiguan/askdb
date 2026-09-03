@@ -94,13 +94,30 @@ def list_audits(
     }
 
 
-def resumable(path: Path, user: str) -> list[dict[str, Any]]:
-    """某个账号名下**尚可续跑**的任务。
+def _thread_status(last: dict[str, Any]) -> str:
+    """一条线程现在处于什么状态 —— 看它**最后一条**记录。
+
+    续跑写新 trace 但 thread 不变，所以线程的当前状态永远由最后一条决定；
+    归属才看第一条（见 tasks 的说明）。
+    """
+    if last.get("rejected_by") == "INTERRUPTED":
+        return "interrupted"              # 现场还在检查点里，可续跑
+    if last.get("rejected_by"):
+        return "rejected"                 # 被护栏拦下，已收尾
+    return "done"
+
+
+def tasks(path: Path, user: str) -> list[dict[str, Any]]:
+    """某个账号名下的**全部执行线程**，新的在前。
 
     askdb 没有任务表，任务这个概念完全落在审计流水与检查点上：
-    一次调用中断（rejected_by=INTERRUPTED）就留下一条待续跑的线程，
-    /api/resume 按 thread_id 从断点继续，续跑写新的 trace 但 thread 不变。
-    所以"这条线程还开着吗"= 它最后一条记录是不是仍为中断。
+    一次提问开一条线程（thread_id），续跑写新 trace 但线程不变。
+    所以"我有哪些任务" = 按 thread_id 聚合我发起过的审计记录。
+
+    这里列全部而不是只列中断的：中断只在异常逃出执行图时才发生
+    （进程故障、递归超限、检查点库异常），是故障态不是常规流程。
+    只列中断等于这一页正常情况下永远是空的 —— 实际就是这么空了。
+    可续跑的那些由 ``resumable`` 字段标出来，续跑入口只对它们开放。
 
     **必须按账号收窄。** 中断恢复设计 §4.2 原本禁止一切未完成任务的枚举，
     理由是当时没有账号体系 —— 列出来就等于任何人都能看到并续跑别人的
@@ -119,21 +136,30 @@ def resumable(path: Path, user: str) -> list[dict[str, Any]]:
 
     out: list[dict[str, Any]] = []
     for tid, recs in threads.items():
-        last = recs[-1]
-        if last.get("rejected_by") != "INTERRUPTED":
-            continue                       # 线程已收尾（成功、被拦、或已续跑完）
-        # 归属看这条线程的**第一条**记录：续跑会写新 trace，但发起人不变
+        # 归属看这条线程的**第一条**记录：续跑会写新 trace，但发起人不变。
+        # 按最后一条判会让"谁续跑谁就成了主人"。
         if (recs[0].get("user") or "") != user:
             continue
+        last = recs[-1]
         item = _summary(last)
         item["thread_id"] = tid
         item["attempts_on_thread"] = len(recs)
         item["first_ts"] = recs[0].get("ts", "")
         item["question"] = recs[0].get("question") or last.get("question") or ""
+        item["status"] = _thread_status(last)
+        item["resumable"] = item["status"] == "interrupted"
         out.append(item)
 
     out.sort(key=lambda r: str(r.get("ts", "")), reverse=True)
     return out
+
+
+def resumable(path: Path, user: str) -> list[dict[str, Any]]:
+    """某个账号名下**尚可续跑**的任务 —— tasks() 里状态仍为中断的那些。
+
+    /api/resume 按 thread_id 从断点继续。归属与匿名的约束同 tasks()。
+    """
+    return [t for t in tasks(path, user) if t["resumable"]]
 
 
 def get_audit(path: Path, trace_id: str) -> dict[str, Any] | None:

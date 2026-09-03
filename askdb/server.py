@@ -808,9 +808,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     # 认证不在这里：谁是谁交给 auth-gateway（它已有 JWKS、token-exchange、
     # 应用级 membership）。本组接口只管"谁属于哪个角色"这一件事。
     #
-    # 登录尚未接入，写接口因此**没有任何请求方身份可依据**。在那之前用一把
-    # 部署方持有的管理员令牌兜底，并且 fail-closed：没配 ASKDB_ADMIN_TOKEN
-    # 就整体拒绝写入。缺了这道闸，任何能访问页面的人都能给自己加角色。
+    # askdb 的登录是固定体验账号，不携带网关身份；而成员写接口要按网关
+    # auth_user_id 授权，auth-gateway 对接尚未落地，写接口因此**没有可依据的
+    # 请求方身份**。在那之前用一把部署方持有的管理员令牌兜底，并且 fail-closed：
+    # 没配 ASKDB_ADMIN_TOKEN 就整体拒绝写入。缺了这道闸，任何能访问页面的人
+    # 都能给自己加角色。
     def _require_admin(token: str | None) -> None:
         import secrets
 
@@ -882,7 +884,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
     @app.get("/api/tasks")
     def tasks(request: Request) -> dict[str, Any]:
-        """当前账号名下尚可续跑的任务。
+        """当前账号名下的**全部执行线程**，新的在前。
+
+        列全部而不是只列中断的：中断只在异常逃出执行图时才发生（进程故障、
+        递归超限、检查点库异常），是故障态不是常规流程 —— 只列中断等于这一页
+        正常情况下永远是空的。可续跑的那些由 resumable 字段标出来，
+        续跑入口只对它们开放。
 
         **必须登录**，且只列自己的。中断恢复设计 §4.2 原本禁止一切未完成
         任务的枚举，理由是当时没有账号体系；登录接入后按发起人收窄的列表
@@ -895,9 +902,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 detail="任务列表需要登录。中断的任务带着发起人问过的问题原文，"
                        "匿名实例不提供未完成任务的枚举入口。",
             )
-        from .audit import resumable
+        from .audit import tasks as _tasks
 
-        items = resumable(cfg.audit_log, username)
+        items = _tasks(cfg.audit_log, username)
         return {"items": items, "user": username}
 
     @app.post("/api/resume")
