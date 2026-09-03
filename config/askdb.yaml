@@ -125,3 +125,48 @@ identity:
   # 不会报错 —— 身份不是跑通 askdb 的必要条件。
   enabled: true
   password_env: ASKDB_IDENTITY_PG_PASSWORD
+
+# ---------------------------------------------------------------------------
+# 登录（本机开发）
+#
+# required: false —— 匿名可用，登录是**可选的能力展示，不是门**。
+# 这份配置的用途是看护栏、审计与角色收窄，拦在登录页前面等于把要看的东西挡住。
+#
+# **本文件里的账号只开一键体验，不设口令。**
+# password_hash 留空 = 口令登录一律失败（verify_password 解析不出格式即返回
+# False，空口令与任意口令都拒），所以不存在"空密码能登进去"这条路。
+# demo: true 只跳过认证，不跳过授权 —— 体验账号拿到的仍是它自己角色的收窄配置，
+# 与口令登录完全同一条路径。要口令登录就用 `askdb hash-password` 生成哈希填进来。
+#
+# 会话是无状态签名票，密钥走 ASKDB_SESSION_SECRET（`askdb session-secret` 生成）。
+# 没配这个环境变量则登录整体关闭 —— fail-closed 是有意的：自动生成随机密钥会让
+# 每个副本各签各的，表现是"刷新几次就掉线"，比登不上更难查。
+# ---------------------------------------------------------------------------
+auth:
+  enabled: true
+  required: false
+  cookie_secure: false             # 本机 http 调试，置 true 会导致 cookie 发不出去
+  accounts:
+    - username: product
+      display_name: 产品角色
+      roles: [PRODUCT]
+      demo: true
+      note: 看业务数据，不看 token 与成本
+    - username: qa
+      display_name: 测试角色
+      roles: [QA]
+      demo: true
+      note: 可见表更少、返回行上限更低
+    - username: owner
+      display_name: 数据负责人
+      roles: [DATA_OWNER]
+      demo: true
+      note: 实例白名单内全部可见
+
+# 这份配置**有意不写 role_policies**。
+#
+# 它是本机开发与测试用的配置：不额外收窄时，每个角色看到的就是实例白名单本身，
+# 与"没有角色"完全一致 —— 接入角色不会悄悄改变现有行为。
+# 一旦在这里收窄，匿名就只剩两张表，测试与日常调试全部要先登录才能查 documents。
+# 要看角色收窄的效果，用 config/public.yaml 或 config/ragforge.yaml，
+# 那两份是给人看能力的配置，收窄本身就是要展示的东西。
