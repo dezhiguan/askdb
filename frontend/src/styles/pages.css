@@ -1,15 +1,6 @@
 .trust-sidebar { min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
-.assurance-card, .side-card { border: 1px solid var(--line); border-radius: 9px; background: rgba(250,249,245,.88); box-shadow: 0 10px 28px rgba(19,35,26,.05); overflow: hidden; }
-.assurance-hero { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 11px; padding: 12px; color: white; background: var(--dark); }
-.assurance-hero strong, .assurance-hero small { display: block; }
-.assurance-hero strong { font-size: 10px; }
-.assurance-hero small { margin-top: 3px; color: #a9bbb0; font-size: 7px; }
-.ready-badge { padding: 4px 6px; border: 1px solid rgba(82,218,143,.28); border-radius: 99px; color: #6ae5a1; background: rgba(44,179,110,.08); font: 6px var(--mono); }
-.assurance-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--line); }
-.assurance-grid > div { padding: 8px; background: var(--paper); }
-.assurance-grid span, .assurance-grid strong { display: block; }
-.assurance-grid span { color: var(--muted); font-size: 6px; }
-.assurance-grid strong { margin-top: 3px; color: var(--green); font: 7px var(--mono); white-space: nowrap; }
+/* .assurance-* / .ready-badge 现在统一由 proto-query.css 按原型定义（那里是 flex，
+   这里是旧的 44px 三列 grid）。留两份只会在下次改样式时改错文件。 */
 .side-head { display: flex; justify-content: space-between; align-items: center; padding: 9px 10px; border-bottom: 1px solid var(--line); }
 .side-head strong, .side-head small { display: block; }
 .side-head strong { font-size: 8px; }
@@ -57,10 +48,13 @@
 .source-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
 .source-card { padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: rgba(250,249,245,.86); box-shadow: var(--shadow); }
 .source-top { display: flex; align-items: flex-start; justify-content: space-between; }
-.source-top > i { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 7px; color: var(--green); background: var(--green-wash); font: normal 8px var(--mono); }
 .source-card h3 { margin: 11px 0 3px; font-family: var(--serif); font-size: 14px; }
 .source-card p { color: var(--muted); font-size: 7px; line-height: 1.55; }
-.permission-grid, .trace-facts { display: grid; grid-template-columns: repeat(4,1fr); gap: 1px; margin: 12px 0; border: 1px solid var(--line); background: var(--line); }
+/* 原型里这两块列数不同（权限四格 / 追踪六格），共用一条规则会互相拖累。
+   只留共有的格子排版，列数各自在 proto-permissions.css 与 traces.css 里定。 */
+.permission-grid, .trace-facts { display: grid; gap: 1px; background: var(--line); }
+.permission-grid { grid-template-columns: repeat(4,1fr); }
+.trace-facts { grid-template-columns: repeat(4,1fr); margin: 12px 0; border: 1px solid var(--line); }
 .permission-grid > div, .trace-facts > div { padding: 8px; background: var(--paper); }
 .permission-grid span, .permission-grid strong, .trace-facts span, .trace-facts strong { display: block; font-size: 6px; }
 .permission-grid span, .trace-facts span { color: var(--muted); }
@@ -78,14 +72,9 @@
 .online { width: 6px; height: 6px; border-radius: 50%; background: var(--green-2); box-shadow: 0 0 0 3px rgba(44,179,110,.12); }
 .source-actions { display: flex; gap: 6px; }
 .policy-layout, .glossary-layout { display: grid; grid-template-columns: 260px minmax(0,1fr); gap: 14px; }
-.role-list > button, .term-list > button { width: 100%; display: flex; justify-content: space-between; padding: 10px 12px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; }
-.role-list > button.active, .term-list > button.active { background: var(--green-wash); }
-.role-list strong, .role-list small, .term-list strong, .term-list small { display: block; font-size: 8px; }
-.role-list small, .term-list small { margin-top: 2px; color: var(--muted); font-size: 6px; }
-.role-list b { color: var(--green); font: 7px var(--mono); }
-.permission-detail, .definition { padding: 18px; }
-.permission-detail h2, .definition h2 { margin-bottom: 6px; }
-.permission-detail > p, .definition > p { color: var(--muted); font-size: 8px; line-height: 1.65; }
+.definition { padding: 18px; }
+.definition h2 { margin-bottom: 6px; }
+.definition > p { color: var(--muted); font-size: 8px; line-height: 1.65; }
 .rule-row { display: grid; grid-template-columns: 28px 1fr auto; gap: 9px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); }
 .rule-row > span { color: var(--green); font: 7px var(--mono); }
 .rule-row strong, .rule-row small { display: block; font-size: 8px; }
@@ -94,8 +83,6 @@
 .toggle i { display: block; width: 12px; height: 12px; border-radius: 50%; background: white; transition: .2s; }
 .toggle.on { background: var(--green); }
 .toggle.on i { transform: translateX(12px); }
-.term-list > input { width: calc(100% - 20px); margin: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: white; font-size: 8px; }
-.definition pre { padding: 12px; border-radius: 6px; color: #dbe8df; background: var(--dark); font-size: 8px; }
 .audit-filters { display: flex; gap: 7px; margin-bottom: 12px; }
 .audit-filters input { flex: 1; }
 .audit-filters input, .audit-filters select { padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); font-size: 8px; }
@@ -168,7 +155,6 @@
   font-size: 8px;
 }
 
-.stats.stats-6 { grid-template-columns: repeat(6, 1fr); }
 /* 成本那格可点开分布，做成按钮而不是给 div 挂 onClick —— 键盘能聚焦、读屏能念 */
 .stats .stat-clickable {
   padding: 13px;
@@ -407,16 +393,7 @@
 .modal-actions { align-items: center; }
 
 /* ---------------- 查询工作台（已接 /api/ask · /api/sql · /api/resume） ---------------- */
-
-.stage-source { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.stage-source .source-code {
-  width: 27px; height: 27px; flex: none;
-  display: grid; place-items: center;
-  border-radius: 6px; color: var(--green); background: var(--green-wash);
-  font: 700 7px var(--mono);
-}
-.stage-source strong { display: block; font-size: 9px; }
-.stage-source small { display: block; margin-top: 1px; color: var(--muted); font-size: 7px; }
+/* 数据源选择器的图标已按原型改名为 .source-db，样式见 proto-query.css */
 .mode-tabs button:disabled { opacity: .45; cursor: not-allowed; }
 .composer textarea.mono { font-family: var(--mono); font-size: 8px; }
 .stage-error { margin: 0 13px 10px; }
@@ -473,24 +450,7 @@
 .tag { padding: 2px 6px; border-radius: 4px; background: var(--paper-2); font: 7px var(--mono); }
 .tag.metric { background: var(--green-wash); color: var(--green); }
 
-/* 配额环。未启用配额时不画进度，画满环等于暗示"有上限且还剩很多"。
-   尺寸与字体对齐原型（43px、mono 11px）；conic 填充是配额比例，保留。 */
-.score-ring {
-  position: relative; display: grid; place-items: center;
-  width: 43px; height: 43px; flex: none; border-radius: 50%;
-  color: white; font: 700 11px var(--mono);
-  background: conic-gradient(var(--green-2) calc(var(--ratio, 1) * 360deg), rgba(255,255,255,.18) 0);
-}
-.score-ring::after {
-  content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--dark);
-}
-.score-ring > * , .score-ring { z-index: 0; }
-.score-ring { isolation: isolate; }
-.score-ring::before {
-  content: attr(title); position: absolute; opacity: 0; pointer-events: none;
-}
-.score-ring.low { background: conic-gradient(var(--amber) calc(var(--ratio, 1) * 360deg), rgba(255,255,255,.18) 0); }
-.score-ring.none { background: rgba(255,255,255,.14); }
+/* .score-ring 见 proto-query.css（照原型：3px 绿环，右侧一段留白）*/
 .ready-badge.wait { color: #8d521b; border-color: rgba(189,107,32,.30); background: var(--amber-wash); }
 .ready-badge.bad { color: var(--red); border-color: rgba(164,68,53,.30); background: var(--red-wash); }
 

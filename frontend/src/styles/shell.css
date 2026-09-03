@@ -20,11 +20,12 @@
 .avatar { width: 29px; height: 29px; display: grid; place-items: center; border-radius: 50%; color: white; background: var(--dark); font-family: var(--serif); font-size: 11px; }
 .user-copy { text-align: left; }
 .user-copy strong { display: block; font-size: 8px; }
-.user-copy small { display: block; color: var(--muted); font-size: 7px; }
+.user-copy small { display: block; margin-top: 1px; color: var(--muted); font-size: 7px; }
 .sidebar { padding: 15px 12px; border-right: 1px solid var(--line); background: rgba(228,225,215,.48); overflow-y: auto; }
-.quick-new { width: 100%; display: flex; justify-content: space-between; padding: 11px 12px; border: 0; border-radius: 7px; color: white; background: var(--dark); font-size: 10px; font-weight: 700; box-shadow: 0 7px 18px rgba(16,35,26,.15); }
+.quick-new { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 11px 12px; border: 0; border-radius: 7px; color: white; background: var(--dark); font-size: 10px; font-weight: 700; box-shadow: 0 7px 18px rgba(16,35,26,.15); transition: transform .18s, background .18s; }
+.quick-new:hover { transform: translateY(-1px); background: var(--dark-2); }
 .nav-label { margin: 20px 9px 7px; color: var(--muted); font: 700 7px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
-.nav-item { position: relative; width: 100%; display: flex; align-items: center; gap: 9px; padding: 8px 9px; border: 0; border-radius: 7px; background: transparent; text-align: left; }
+.nav-item { position: relative; width: 100%; display: flex; align-items: center; gap: 9px; padding: 8px 9px; border: 0; border-radius: 7px; background: transparent; text-align: left; font-size: 9px; transition: background .15s; }
 .nav-item:hover, .nav-item.active { background: rgba(255,255,255,.63); }
 .nav-item.active::before { content: ""; position: absolute; left: 0; width: 3px; height: 19px; border-radius: 3px; background: var(--green); }
 .nav-icon { width: 25px; height: 25px; display: grid; place-items: center; flex: none; border: 1px solid var(--line); border-radius: 5px; color: var(--green); background: rgba(255,255,255,.5); font: 700 7px var(--mono); }

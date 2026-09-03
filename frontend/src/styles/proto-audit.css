@@ -1,0 +1,104 @@
+/* audit 页对齐原型 trusted-data-agent-prototype.html 的样式。
+   基础原语在 theme.css / pages.css，本文件只放本页专属与差异覆盖。
+
+   选择器普遍带一层父级（.stats .stat 而不是 .stat），是因为 pages.css 里
+   的通用规则用了 `.stats > div` 这类「类 + 类型」选择器，权重比裸类高，
+   仅靠导入顺序压不住。 */
+
+/* ---------------- 统计卡（原型 .stats / .stat） ---------------- */
+
+.page > .stats { grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 14px; }
+
+.page > .stats .stat {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(250,249,245,.83);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+.page > .stats .stat span,
+.page > .stats .stat strong,
+.page > .stats .stat small { display: block; }
+.page > .stats .stat span { margin: 0; color: var(--muted); font-size: 7px; }
+.page > .stats .stat strong { margin: 6px 0 0; color: var(--ink); font: 20px var(--serif); }
+.page > .stats .stat small { margin: 3px 0 0; color: var(--green); font-size: 7px; }
+
+/* 成本那格可点开分布，做成按钮而不是给 div 挂 onClick —— 键盘能聚焦、读屏能念 */
+.page > .stats button.stat { transition: border-color .15s, transform .15s; }
+.page > .stats button.stat:hover { border-color: var(--green); transform: translateY(-1px); }
+.page > .stats button.stat strong { color: var(--green); }
+
+/* ---------------- 筛选栏（原型 .audit-filters） ---------------- */
+
+.audit-filters { display: flex; gap: 7px; margin-bottom: 10px; }
+.audit-filters input,
+.audit-filters select {
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--paper);
+  font-size: 8px;
+}
+.audit-filters input { flex: 1; }
+
+/* ---------------- 审计表（原型 .audit-row） ---------------- */
+
+.audit-row { cursor: pointer; }
+.audit-row:hover td { background: var(--green-wash); }
+/* 后端没落这项的格子：保留原型排版，但看得出来是占位而不是空值 */
+.audit-table .audit-na { color: var(--muted); }
+
+/* ---------------- 抽屉（原型 .drawer / .drawer-head / .timeline） ---------------- */
+
+.drawer.audit-drawer {
+  position: fixed;
+  top: 64px;                 /* 让出 app-shell 的顶栏，与原型同一口径 */
+  right: 0;
+  bottom: 0;
+  height: auto;
+  width: 390px;
+  padding: 18px;
+  border-left: 1px solid var(--line);
+  background: var(--paper);
+  box-shadow: -20px 0 50px rgba(17,31,23,.14);
+  transform: translateX(105%);
+  transition: transform .28s ease;
+}
+.drawer.audit-drawer.show { transform: translateX(0); }
+
+.drawer-head { display: flex; justify-content: space-between; margin-bottom: 4px; }
+.drawer-head h3 { margin: 0; font-family: var(--serif); font-size: 16px; }
+.drawer-close { padding: 0; border: 0; background: transparent; font-size: 17px; line-height: 1; cursor: pointer; }
+
+.timeline { margin-top: 16px; }
+.timeline-row { position: relative; padding: 0 0 15px 25px; border-left: 1px solid #bcc4be; }
+.timeline-row::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--green);
+}
+.timeline-row.bad::before { background: var(--red); }
+.timeline-row:last-child { border-left-color: transparent; }
+.timeline-row strong { display: block; font-size: 8px; }
+.timeline-row small { display: block; margin-top: 3px; color: var(--muted); font-size: 7px; line-height: 1.5; }
+
+/* 命令行提示条（原型 .code-line） */
+.code-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 9px;
+  border-radius: 6px;
+  color: #dbe7df;
+  background: var(--dark);
+  font: 7px var(--mono);
+}

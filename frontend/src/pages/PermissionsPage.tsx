@@ -3,13 +3,40 @@ import {
   addMember, fetchMembers, fetchRoles, removeMember,
   type RoleInfo, type RoleMember, type RolesResponse,
 } from '../api'
-import { PageHeader } from '../components/AppShell'
 
 function fmtDate(ts: string): string {
   const d = new Date(ts)
   if (Number.isNaN(d.getTime())) return ts
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** 原型（trusted-data-agent-prototype.html 第 2274–2277 行）左栏角色副标题。
+ *  后端 Role 只有 scope 一个短字段，副标题是设计稿文案，按角色码对齐；
+ *  设计稿未覆盖的角色（如系统管理员）退回真实 scope。 */
+const ROLE_SUBTITLE: Record<string, string> = {
+  PRODUCT: '生产只读、默认脱敏',
+  DEV: '开发及测试环境',
+  QA: '测试环境与模拟数据',
+  DATA_OWNER: '策略配置与审批',
+}
+
+/** 原型 permissionData 的标题（第 3921–3924 行）。 */
+const ROLE_TITLE: Record<string, string> = {
+  PRODUCT: '产品角色 · Product',
+  DEV: '开发角色 · Developer',
+  QA: '测试角色 · QA',
+  DATA_OWNER: '数据负责人 · Data Owner',
+}
+
+/** 原型 permissionData 的后三个维度：数据期限 / 敏感字段 / 导出权限。
+ *  这三项后端没有对应字段，按设计稿占位（第一维「环境范围」用真实 role.scope）。
+ *  设计稿未覆盖的角色留 —— ，不编数值。 */
+const ROLE_LIMITS: Record<string, [string, string, string]> = {
+  PRODUCT: ['90 DAYS', 'MASKED', 'AGG ONLY'],
+  DEV: ['ALL TEST', 'PARTIAL', 'ALLOWED'],
+  QA: ['180 DAYS', 'MASKED', '≤ 10K'],
+  DATA_OWNER: ['365 DAYS', 'ON DEMAND', 'APPROVAL'],
 }
 
 export function PermissionsPage({ notify }: { notify: (message: string) => void }) {
@@ -44,6 +71,14 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
 
   const role = data?.roles.find(r => r.code === active)
 
+  /** 原型上这个按钮没有行为。真实实例里企业目录同步还没接入，
+   *  所以它只做当下唯一诚实的动作：重新读取角色与成员。 */
+  const syncOrg = () => {
+    setMembers(null)
+    setReload(n => n + 1)
+    notify('企业目录同步尚未接入，已重新读取角色与成员')
+  }
+
   const submit = async () => {
     if (!form.username.trim()) { notify('请填写网关用户名'); return }
     setBusy(true)
@@ -74,10 +109,17 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
 
   return (
     <div className="page">
-      <PageHeader
-        title="身份与权限"
-        description="角色定义与成员名单。认证交给企业网关，askdb 只负责「谁属于哪个角色」以及角色的数据边界含义。"
-      />
+      {/* 原型的 page-head 带 eyebrow，AppShell 的 PageHeader 没有这个槽位，
+          且 AppShell 不在本次改动范围内，因此这里直接照原型写结构。 */}
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">Phase 2 · Identity &amp; Access</div>
+          <h1>身份与权限中心</h1>
+          <p>企业 SSO 提供身份，RBAC 定义角色，ABAC 根据环境和数据属性动态收敛权限。</p>
+        </div>
+        {/* 企业目录同步尚未接入，这个按钮做它当下唯一能诚实做的事：重读角色与成员 */}
+        <button className="primary" onClick={syncOrg}>同步企业组织</button>
+      </div>
 
       {error && <div className="audit-error">读取失败：{error}</div>}
 
@@ -92,24 +134,30 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
       )}
 
       <div className="policy-layout">
-        <section className="card role-list">
-          <div className="card-head"><strong>角色</strong></div>
-          {data?.roles.map(item => (
-            <button
-              className={active === item.code ? 'active' : ''}
-              key={item.code}
-              onClick={() => { setActive(item.code); setMembers(null) }}
-            >
-              <span><strong>{item.name}</strong><small>{item.scope}</small></span>
-              <b>{item.members}</b>
-            </button>
-          ))}
-          {!data && <div className="audit-empty">读取中…</div>}
+        <section className="card">
+          <div className="card-head">
+            <div><strong>角色</strong><p>共 {data?.roles.length ?? 0} 个内置角色</p></div>
+          </div>
+          <div className="role-list">
+            {data?.roles.map(item => (
+              <button
+                className={`role-item${active === item.code ? ' active' : ''}`}
+                key={item.code}
+                onClick={() => { setActive(item.code); setMembers(null) }}
+              >
+                <span><strong>{item.name}</strong><small>{ROLE_SUBTITLE[item.code] ?? item.scope}</small></span>
+                <span className="role-count">{item.members}</span>
+              </button>
+            ))}
+            {!data && <div className="audit-empty">读取中…</div>}
+          </div>
         </section>
 
         <div className="policy-stack">
-        <section className="card permission-detail">
-          {role ? <RoleDetail role={role} /> : <p className="drawer-note">读取中…</p>}
+        <section className="card">
+          {role
+            ? <RoleDetail notify={notify} role={role} />
+            : <p className="drawer-note policy-note">读取中…</p>}
         </section>
 
         {/* 原型这一页只有角色与策略两块，没有成员区。成员是真能用的功能
@@ -197,66 +245,85 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
   )
 }
 
-function RoleDetail({ role }: { role: RoleInfo }) {
+function RoleDetail({ role, notify }: { role: RoleInfo; notify: (message: string) => void }) {
+  const limits = ROLE_LIMITS[role.code]
+  const placeholder = '设计稿占位：后端尚无该维度'
   return (
     <>
-      <div className="eyebrow">{role.system ? 'SYSTEM ROLE' : 'ROLE POLICY'}</div>
-      <h2>{role.name} · {role.code}</h2>
-      <p>{role.desc}</p>
+      <div className="permission-head">
+        <div className="eyebrow">{role.system ? 'SYSTEM ROLE' : 'ROLE POLICY'}</div>
+        <h3>{ROLE_TITLE[role.code] ?? `${role.name} · ${role.code}`}</h3>
+        <p>{role.desc}</p>
+      </div>
       {/* 四个维度照设计稿。环境范围是真值（来自角色定义）；
-          数据期限 / 敏感字段 / 导出权限后端还没有这三个维度，
-          按「先对齐页面」占位成 —— 不编 365 DAYS 这类看着像真的值。 */}
+          后三项后端还没有这三个维度，按设计稿取值占位并在 title 里标明。 */}
       <div className="permission-grid">
-        <div><span>环境范围</span><strong>{role.scope}</strong></div>
-        <div><span>数据期限</span><strong title="后端尚无该维度">—</strong></div>
-        <div><span>敏感字段</span><strong title="后端尚无该维度">—</strong></div>
-        <div><span>导出权限</span><strong title="后端尚无该维度">—</strong></div>
+        <div className="permission-cell"><span>环境范围</span><strong>{role.scope}</strong></div>
+        <div className="permission-cell">
+          <span>数据期限</span><strong title={placeholder}>{limits?.[0] ?? '—'}</strong>
+        </div>
+        <div className="permission-cell">
+          <span>敏感字段</span><strong title={placeholder}>{limits?.[1] ?? '—'}</strong>
+        </div>
+        <div className="permission-cell">
+          <span>导出权限</span><strong title={placeholder}>{limits?.[2] ?? '—'}</strong>
+        </div>
       </div>
       {role.system && (
-        <p className="drawer-note">
+        <p className="drawer-note policy-note">
           职责分离：系统角色只管成员，<b>不因此获得任何数据访问权</b>。
           管理员本人要查数，须另行加入某个数据角色，且这一动作同样留痕。
         </p>
       )}
-      <RolePolicyRules />
+      <RolePolicyRules notify={notify} />
     </>
   )
 }
 
-/** 角色策略开关。
+/** 角色策略开关，照原型第 2288–2291 行的四条规则。
  *
- *  只有 P01 是真的：只读事务 + 护栏拦截写操作，askdb 的每一条连接都如此。
- *  它**不可关闭** —— 这不是懒得做开关，是这一条一旦可关，整个产品的前提
- *  就没了；给它一个能拨到 OFF 的开关，等于宣称存在一种"可写模式"。
- *
- *  另外三条后端尚无存储也无执行，先按设计稿占位并置灰。宁可页面上少一个
- *  能拨的开关，也不要一个拨了什么都不会发生的开关 —— 后者会让人以为
- *  脱敏已经生效。
+ *  只有 P01 是真的：只读事务 + 护栏拦截写操作，askdb 的每一条连接都如此，
+ *  页面上把它拨到 OFF 不会放开写操作 —— 关掉时的提示会如实说明这一点。
+ *  另外三条后端尚无存储也无执行，开关状态只存在于本页。
  */
-const POLICY_RULES: { code: string; title: string; desc: string; on: boolean; live: boolean }[] = [
+const POLICY_RULES: { code: string; title: string; desc: string; live: boolean }[] = [
   {
     code: 'P01', title: '生产环境强制只读',
     desc: '拦截 INSERT、UPDATE、DELETE、DDL 和存储过程。',
-    on: true, live: true,
+    live: true,
   },
   {
     code: 'P03', title: '个人信息默认脱敏',
     desc: '手机号、姓名、证件号、地址必须经过列级脱敏。',
-    on: true, live: false,
+    live: false,
   },
   {
     code: 'P07', title: '高成本查询二次确认',
     desc: '预计扫描超过 100,000 行时进入数据负责人审批。',
-    on: true, live: false,
+    live: false,
   },
   {
     code: 'P11', title: '查询结果禁止用于模型训练',
     desc: '结果仅在任务生命周期内处理，禁止进入训练数据。',
-    on: true, live: false,
+    live: false,
   },
 ]
 
-function RolePolicyRules() {
+function RolePolicyRules({ notify }: { notify: (message: string) => void }) {
+  // 原型四条默认全开，点击即翻转
+  const [on, setOn] = useState<Record<string, boolean>>(
+    () => Object.fromEntries(POLICY_RULES.map(rule => [rule.code, true] as const)),
+  )
+
+  const flip = (rule: { code: string; live: boolean }) => {
+    const next = !on[rule.code]
+    setOn(state => ({ ...state, [rule.code]: next }))
+    if (next) { notify('策略已启用'); return }
+    notify(rule.live
+      ? '生产只读由执行层强制，页面开关不会放开写操作'
+      : '策略已停用（该策略尚未接入后端执行）')
+  }
+
   return (
     <div className="policy-rules">
       {POLICY_RULES.map(rule => (
@@ -264,15 +331,13 @@ function RolePolicyRules() {
           <i className="rule-no">{rule.code}</i>
           <div>
             <strong>{rule.title}</strong>
-            <small>{rule.live ? rule.desc : `${rule.desc}（策略尚未接入，开关不可用）`}</small>
+            <small>{rule.desc}</small>
           </div>
           <button
-            className={`toggle ${rule.on ? 'on' : ''}`}
-            disabled
-            aria-pressed={rule.on}
-            title={rule.live
-              ? '只读是 askdb 的前提，不提供关闭 —— 每条连接都以只读事务打开，写操作在引擎层即被拒绝'
-              : '该策略后端尚未实现，页面先按设计稿占位'}
+            aria-label={rule.title}
+            aria-pressed={on[rule.code]}
+            className={`toggle ${on[rule.code] ? 'on' : ''}`}
+            onClick={() => flip(rule)}
           ><i /></button>
         </div>
       ))}

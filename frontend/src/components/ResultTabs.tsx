@@ -14,6 +14,8 @@ const RULES: Record<string, [string, string]> = {
   'R-06': ['不允许跨 schema / 跨库引用', '只查白名单内的表，不要带 schema 前缀。'],
   'R-07': ['用到了被禁用的函数', '这些函数能读文件或访问外部资源，不在只读查询的范围内。'],
   'R-08': ['出现了笛卡尔积', '补上 JOIN 条件，否则扫描量会失控。'],
+  'R-18': ['多个指标串在一条 JOIN 里，结果会被放大',
+           '一对多的表 JOIN 后行会相乘，COUNT/SUM/AVG 全部偏大。把每个指标拆成独立的子查询，或改用 COUNT(DISTINCT ...)。'],
   'R-10': ['无法确定这条查询属于哪个租户', '换个写法，别用会掩盖表来源的构造。'],
   'R-11': ['预计要扫描的数据量太大', '加上时间范围或更具体的筛选条件，把扫描量降下来。'],
   'R-17': ['本次任务的累计成本已达上限', '拆成更小的问题重新提问。'],
@@ -27,7 +29,7 @@ const RULES: Record<string, [string, string]> = {
 /** SQL 的 SHA-256。连同它算的是哪条 SQL 一起存，渲染时比对 ——
  *  换了 SQL 但摘要还没算出来时宁可显示「—」，也不能把上一条的摘要挂在新 SQL 底下。
  *  crypto.subtle 只在安全上下文可用，取不到就如实留空，不拿别的哈希冒充。 */
-function useSqlDigest(sql: string): string {
+export function useSqlDigest(sql: string): string {
   const [digest, setDigest] = useState<{ sql: string; hex: string } | null>(null)
 
   useEffect(() => {
@@ -70,19 +72,23 @@ function AnswerCard({ result, onGoTab }: {
     <div className="answer-card">
       <div className="answer-top">
         <div>
-          <h3>{headline}</h3>
+          <strong>{headline}</strong>
           {result.reasoning && <p>{result.reasoning}</p>}
         </div>
         <div className="answer-actions">
-          <button className="ghost" onClick={() => onGoTab('sql')}>查看原生 SQL</button>
-          <button className="ghost" onClick={() => onGoTab('chain')}>查看执行链路</button>
+          <button onClick={() => onGoTab('sql')}>查看原生 SQL</button>
+          <button className="open-trace" onClick={() => onGoTab('chain')}>查看执行链路</button>
         </div>
       </div>
-      <div className="answer-facts">
-        <div><span>查询 ID</span><strong>{result.trace_id}</strong></div>
-        <div><span>SQL SHA-256</span><strong>{hash ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : '—'}</strong></div>
-        <div><span>数据快照</span><strong>{result.as_of ? fmtStamp(result.as_of) : '—'}</strong></div>
-        <div>
+      <div className="evidence-strip">
+        <div className="evidence-item"><span>查询 ID</span><strong>{result.trace_id}</strong></div>
+        <div className="evidence-item">
+          <span>SQL SHA-256</span><strong>{hash ? `${hash.slice(0, 8)}…${hash.slice(-4)}` : '—'}</strong>
+        </div>
+        <div className="evidence-item">
+          <span>数据快照</span><strong>{result.as_of ? fmtStamp(result.as_of) : '—'}</strong>
+        </div>
+        <div className="evidence-item">
           <span>返回 / 扫描</span>
           <strong>
             {(result.row_count ?? 0).toLocaleString()} / {result.explain_rows == null
@@ -124,13 +130,16 @@ export function ResultTabs({ result, active, dialect, onChange, onResumed, onOpe
   ]
 
   return (
-    <div className="result-shell">
+    <div className="query-result show">
       {/* 被拦下时不出结论卡：那时候该看的是拦截原因，不是"返回 0 行" */}
       {result.ok && <AnswerCard result={result} onGoTab={onChange} />}
       <div className="result-tabs">
         {tabs.map(([id, label]) => (
-          <button className={active === id ? 'active' : ''} key={id} onClick={() => onChange(id)}>
+          <button className={`result-tab ${active === id ? 'active' : ''}`} key={id} onClick={() => onChange(id)}>
             {label}
+            {/* 照原型：断点页签后面挂中断路径条数。它是**路径数**不是待办数，
+                所以常态也在；真出现可续跑的断点时才加一个琥珀点。 */}
+            {id === 'checkpoint' && <span className="status wait tab-count">{SCENARIOS.length}</span>}
             {id === 'checkpoint' && interrupted && <i className="tab-dot" />}
           </button>
         ))}
@@ -147,7 +156,7 @@ function ResultPane({ result }: { result: AskResult }) {
   if (!result.ok) {
     const [title, fix] = RULES[result.rejected_by ?? ''] ?? ['这次查询没能完成', '']
     return (
-      <div className="pane">
+      <div className="result-pane active pane">
         <div className="notice bad">
           <div className="t">
             {result.rejected_by && <span className="rulecode">{result.rejected_by}</span>}
@@ -162,7 +171,7 @@ function ResultPane({ result }: { result: AskResult }) {
 
   if (!result.row_count) {
     return (
-      <div className="pane">
+      <div className="result-pane active pane">
         <div className="notice info">
           <div className="t">◇ 结果为空</div>
           <div className="why">SQL 正常执行了，只是没有符合条件的行 —— 这不是错误。</div>
@@ -176,7 +185,7 @@ function ResultPane({ result }: { result: AskResult }) {
   }
 
   return (
-    <div className="pane">
+    <div className="result-pane active pane">
       <div className="result-meta">
         {result.row_count.toLocaleString()} 行
         {result.truncated && <span className="warn-chip">已按行数上限截断 · R-13</span>}
@@ -241,11 +250,11 @@ function SqlPane({ result, dialect }: { result: AskResult; dialect: string }) {
   const sql = result.sql_final || result.sql_raw || ''
   const hash = useSqlDigest(sql)
 
-  if (!sql) return <div className="pane"><p className="drawer-note">这次没有产出 SQL。</p></div>
+  if (!sql) return <div className="result-pane active pane"><p className="drawer-note">这次没有产出 SQL。</p></div>
 
   const rewrites = result.rewrites ?? []
   return (
-    <div className="pane">
+    <div className="result-pane active pane">
       <div className="sql-toolbar">
         <span>
           方言：{dialect || '—'} · SHA-256: {hash ? `${hash.slice(0, 4)}…${hash.slice(-4)}` : '—'} ·{' '}
@@ -293,10 +302,10 @@ function SqlPane({ result, dialect }: { result: AskResult; dialect: string }) {
 
 function ChainPane({ result, onOpenTrace }: { result: AskResult; onOpenTrace: () => void }) {
   const steps = result.steps ?? []
-  if (!steps.length) return <div className="pane"><p className="drawer-note">这条记录没有步骤明细。</p></div>
+  if (!steps.length) return <div className="result-pane active pane"><p className="drawer-note">这条记录没有步骤明细。</p></div>
 
   return (
-    <div className="pane">
+    <div className="result-pane active pane">
       {/* 照原型：这一页只给"经过了哪几段、各多久"的全貌。
           逐步明细（每段做了什么、token、命中了哪些表）不在这里重画一遍 ——
           它在「执行追踪」页，按钮直达。同一份数据在一屏里出现两次，
@@ -386,7 +395,7 @@ function CheckpointPane({ result, onResumed }: {
   const state = interrupted ? 'WAITING' : result.ok ? 'COMPLETED' : 'STOPPED'
 
   return (
-    <div className="pane">
+    <div className="result-pane active pane lifecycle-pane">
       <div className="lifecycle-console">
         <aside className="scenario-rail" aria-label="中断场景">
           <div className="scenario-rail-head"><strong>选择中断场景</strong><span>4 PATHS</span></div>

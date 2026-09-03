@@ -3,7 +3,6 @@ import {
   fetchAudit, fetchAuditStats, fetchReplay, tracingLink, tracingReachable,
   type AuditItem, type AuditList, type AuditStats, type Replay, type ReplayResult,
 } from '../api'
-import { PageHeader } from '../components/AppShell'
 import { KIND_NAMES, STEP_NAMES } from '../traceSteps'
 
 
@@ -15,6 +14,9 @@ function fmtTime(ts: string): string {
 }
 
 const pct = (v: number | null | undefined) => (v == null ? '—' : `${Math.round(v * 100)}%`)
+
+/** 后端没有这个字段时统一占位，保持与原型一致的排版，不编造数值。 */
+const DASH = '—'
 
 type Drawer =
   | { mode: 'replay'; traceId: string; result: ReplayResult | null }
@@ -72,12 +74,38 @@ export function AuditPage() {
         : current)
   }
 
+  // 导出的是「当前这一屏、当前这组筛选」的真实审计行，不额外回源，
+  // 也不把 SQL 文本塞进来 —— 列表本来就不含 SQL，导出同样不含。
+  const exportReport = () => {
+    if (!list || list.items.length === 0) return
+    const head = ['时间', 'trace_id', '用户', '角色', '自然语言问题', '数据源', '策略结果', '耗时(s)', '成本(CNY)']
+    const cell = (v: string) => `"${v.replace(/"/g, '""')}"`
+    const rows = list.items.map(item => [
+      fmtTime(item.ts), item.trace_id, DASH, item.role || DASH, item.question ?? '',
+      DASH, guardText(item), (item.elapsed_ms / 1000).toFixed(1), String(item.cost_cny ?? 0),
+    ].map(cell).join(','))
+    const blob = new Blob(['﻿' + [head.map(cell).join(','), ...rows].join('\r\n')],
+      { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `askdb-audit-p${list.page}-${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="page">
-      <PageHeader
-        title="审计中心"
-        description="一次调用一条记录，被护栏拦截的同样留痕。列表不含 SQL 文本，判定细节走复放。"
-      />
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">Phase 2 · Full Traceability</div>
+          <h1>审计中心</h1>
+          <p>追踪谁在什么时间，以什么权限提出了什么问题，最终执行了哪条 SQL。</p>
+        </div>
+        <button className="ghost" onClick={exportReport} disabled={!list || list.items.length === 0}>
+          导出审计报告
+        </button>
+      </div>
 
       {error && <div className="audit-error">读取审计数据失败：{error}</div>}
 
@@ -87,7 +115,7 @@ export function AuditPage() {
         <input
           value={queryInput}
           onChange={event => setQueryInput(event.target.value)}
-          placeholder="按 trace_id 或问题关键词检索"
+          placeholder="搜索 trace ID 或自然语言问题…"
         />
         <select value={kind} onChange={event => { setKind(event.target.value); setPage(1) }}>
           <option value="">全部类型</option>
@@ -98,13 +126,18 @@ export function AuditPage() {
         <select value={pageSize} onChange={event => { setPageSize(Number(event.target.value)); setPage(1) }}>
           {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
         </select>
+        <button
+          className="secondary"
+          onClick={() => { setQuery(queryInput.trim()); setPage(1) }}
+        >筛选</button>
       </div>
 
       <section className="card table-scroll">
         <table className="audit-table">
           <thead>
             <tr>
-              <th>时间</th><th>trace</th><th>类型</th><th>问题</th><th>护栏</th>
+              <th>时间</th><th>trace</th><th>用户</th><th>角色</th><th>自然语言问题</th>
+              <th>数据源</th><th>策略结果</th>
               <th className="num">耗时</th><th className="num">成本</th><th>复放</th><th>观测</th>
             </tr>
           </thead>
@@ -113,9 +146,9 @@ export function AuditPage() {
               <AuditRow key={item.trace_id + item.ts} item={item} stats={stats} onReplay={openReplay} />
             ))}
             {list && list.items.length === 0 && !loading && (
-              <tr><td colSpan={9} className="audit-empty">没有匹配的记录</td></tr>
+              <tr><td colSpan={11} className="audit-empty">没有匹配的记录</td></tr>
             )}
-            {!list && loading && <tr><td colSpan={9} className="audit-empty">读取中…</td></tr>}
+            {!list && loading && <tr><td colSpan={11} className="audit-empty">读取中…</td></tr>}
           </tbody>
         </table>
       </section>
@@ -135,30 +168,55 @@ export function AuditPage() {
   )
 }
 
+/** 今日与昨日的调用量对比。窗口里不足两天、或昨天为 0 时不做除法，直接给占位。 */
+function todayVsYesterday(stats: AuditStats): { today: number; delta: string } {
+  const daily = stats.daily
+  if (daily.length === 0) return { today: 0, delta: DASH }
+  const today = daily[daily.length - 1].calls
+  if (daily.length < 2) return { today, delta: DASH }
+  const yesterday = daily[daily.length - 2].calls
+  if (yesterday === 0) return { today, delta: DASH }
+  const ratio = Math.round((today - yesterday) / yesterday * 100)
+  return { today, delta: `较昨日 ${ratio >= 0 ? '+' : ''}${ratio}%` }
+}
+
 function StatTiles({ stats, onOpenCost }: { stats: AuditStats | null; onOpenCost: () => void }) {
-  if (!stats) return <div className="stats stats-6"><div><span>读取中…</span></div></div>
+  if (!stats) return <div className="stats"><div className="stat"><span>读取中…</span></div></div>
 
   const tracing = stats.tracing
+  const { today, delta } = todayVsYesterday(stats)
+  const passed = stats.calls - stats.blocked
+  const passRate = stats.calls > 0 ? `通过率 ${(passed / stats.calls * 100).toFixed(1)}%` : DASH
+
   return (
-    <div className="stats stats-6">
-      <div><span>近 {stats.days} 天调用</span><strong>{stats.calls.toLocaleString()}</strong></div>
-      <div>
-        <span>护栏拦截</span><strong>{stats.blocked}</strong>
-        <small>拦截率 {pct(stats.block_rate)}</small>
+    <div className="stats">
+      <div className="stat"><span>今日查询</span><strong>{today.toLocaleString()}</strong><small>{delta}</small></div>
+      <div className="stat">
+        <span>策略通过</span><strong>{passed.toLocaleString()}</strong>
+        <small>{passRate} · 近 {stats.days} 天</small>
       </div>
-      <div>
+      {/* 人工审批环节后端尚未落库，按原型排版占位，不拿别的指标顶替 */}
+      <div className="stat" title="人工审批环节尚未接入，审计记录里没有这项">
+        <span>人工审批</span><strong>{DASH}</strong><small>平均 {DASH}</small>
+      </div>
+      <div className="stat">
+        <span>安全拦截</span><strong>{stats.blocked}</strong>
+        <small>拦截率 {pct(stats.block_rate)} · 近 {stats.days} 天</small>
+      </div>
+
+      <div className="stat">
         <span>具备步骤级 trace</span><strong>{pct(stats.trace_complete)}</strong>
         <small>按记录如实计算</small>
       </div>
-      <button type="button" className="stat-clickable" onClick={onOpenCost}>
+      <button type="button" className="stat stat-clickable" onClick={onOpenCost}>
         <span>近 {stats.days} 天成本</span><strong>¥{stats.cost_cny}</strong>
         <small>点开看按日与按类分布 ↗</small>
       </button>
-      <div>
+      <div className="stat">
         <span>判定链路回放</span><strong>{stats.replay_api ? '已开启' : '已关闭'}</strong>
         <small>observability.replay_api</small>
       </div>
-      <div>
+      <div className="stat">
         <span>调用链观测</span>
         <strong>{tracing.enabled
           ? `${tracing.backend === 'langfuse' ? 'Langfuse' : 'LangSmith'} 已接入${tracingReachable(tracing) ? '' : '（仅内网可查看）'}`
@@ -181,6 +239,12 @@ function observeHint(item: AuditItem, stats: AuditStats | null): string {
   return '调用链观测未接入'
 }
 
+function guardText(item: AuditItem): string {
+  if (item.ok) return '通过'
+  if (item.rejected_by === 'INTERRUPTED') return '中断 · 可续跑'
+  return `${item.rejected_by} 拦截`
+}
+
 function AuditRow({ item, stats, onReplay }: {
   item: AuditItem
   stats: AuditStats | null
@@ -190,26 +254,34 @@ function AuditRow({ item, stats, onReplay }: {
   const link = stats && item.kind !== 'sql' ? tracingLink(stats.tracing, item.trace_id) : null
 
   return (
-    <tr>
+    // 整行可点开判定链路复放（原型行为）；回放开关关着时行不可点，只当静态记录
+    <tr
+      className={replayOn ? 'audit-row' : undefined}
+      onClick={replayOn ? () => onReplay(item.trace_id) : undefined}
+    >
       <td className="mono">{fmtTime(item.ts)}</td>
       <td className="mono">{item.trace_id}</td>
-      <td>{KIND_NAMES[item.kind] ?? item.kind}</td>
+      {/* 审计记录里没有调用者账号，只有可见范围（角色） */}
+      <td className="audit-na" title="审计记录未落调用者账号">{DASH}</td>
+      <td>{item.role || DASH}</td>
       <td className="audit-question" title={item.question ?? ''}>{item.question}</td>
+      {/* 单实例单数据源，逐条记录里不存数据源名 */}
+      <td className="audit-na" title="审计记录未按条落数据源">{DASH}</td>
       <td><GuardBadge item={item} /></td>
       <td className="num">{(item.elapsed_ms / 1000).toFixed(1)}s</td>
       <td className="num">¥{item.cost_cny ?? 0}</td>
-      <td>
+      <td onClick={event => event.stopPropagation()}>
         {replayOn
           ? <button className="link-button" onClick={() => onReplay(item.trace_id)}>复放</button>
           : <span className="link-disabled" title="replay_api 未开启（连真实数据源的实例默认关闭）">复放</span>}
       </td>
-      <td>
+      <td onClick={event => event.stopPropagation()}>
         {link
           ? <a className="link-button" href={link} target="_blank" rel="noopener noreferrer"
                title={`在项目 ${stats?.tracing.project} 内按 trace_id 过滤`}>
               {stats?.tracing.backend === 'langfuse' ? 'Langfuse' : 'LangSmith'} ↗
             </a>
-          : <span className="link-disabled" title={observeHint(item, stats)}>—</span>}
+          : <span className="link-disabled" title={observeHint(item, stats)}>{DASH}</span>}
       </td>
     </tr>
   )
@@ -235,14 +307,14 @@ function AuditDrawer({ drawer, stats, onClose }: {
   return (
     <>
       <div className="drawer-scrim" onClick={onClose} />
-      <aside className="audit-drawer">
-        <header>
+      <aside className="drawer show audit-drawer">
+        <div className="drawer-head">
           <div>
-            <div className="eyebrow">{drawer.mode === 'cost' ? 'COST BREAKDOWN' : 'TRACE REPLAY'}</div>
-            <h3>{drawer.mode === 'cost' ? '成本与调用分布' : '判定链路复放'}</h3>
+            <div className="eyebrow">{drawer.mode === 'cost' ? 'COST BREAKDOWN' : `AUDIT-${drawer.traceId}`}</div>
+            <h3>{drawer.mode === 'cost' ? '成本与调用分布' : '查询审计详情'}</h3>
           </div>
-          <button onClick={onClose} aria-label="关闭">×</button>
-        </header>
+          <button className="drawer-close" onClick={onClose} aria-label="关闭">×</button>
+        </div>
         <div className="drawer-body">
           {drawer.mode === 'cost'
             ? <CostBreakdown stats={stats} />
@@ -264,7 +336,7 @@ function ReplayView({ traceId, result }: { traceId: string; result: ReplayResult
       <>
         <p className="drawer-note">取不到这条记录：回放开关未开启，或记录不存在。</p>
         <p className="drawer-note">两种情况接口都返回 404，不做区分 —— 区分本身就是信息泄露。</p>
-        <pre className="drawer-code">askdb replay {traceId}</pre>
+        <div className="code-line"><span>askdb replay {traceId}</span></div>
       </>
     )
   }
@@ -281,33 +353,32 @@ function ReplayView({ traceId, result }: { traceId: string; result: ReplayResult
 
       <h4>步骤链</h4>
       {d.steps && d.steps.length > 0
-        ? d.steps.map((step, i) => (
-            <div className="replay-step" key={`${step.step}-${i}`}>
-              <span className={`replay-dot ${step.status === 'ok' ? '' : 'bad'}`}>
-                {step.status === 'ok' ? '✓' : '✕'}
-              </span>
-              <span>
-                <b>{STEP_NAMES[step.step] ?? step.step}</b>
-                {step.note && <small>{step.note}</small>}
-              </span>
-              <span className="replay-ms">
-                {step.ms} ms{step.tok_in ? ` · ${step.tok_in}+${step.tok_out} tok` : ''}
-              </span>
-            </div>
-          ))
+        ? <div className="timeline">
+            {d.steps.map((step, i) => (
+              <div className={`timeline-row${step.status === 'ok' ? '' : ' bad'}`} key={`${step.step}-${i}`}>
+                <strong>
+                  {step.ms} ms · {STEP_NAMES[step.step] ?? step.step}
+                  {step.status === 'ok' ? '' : ' · 未通过'}
+                </strong>
+                <small>
+                  {step.note || '无补充说明'}
+                  {step.tok_in ? ` · ${step.tok_in}+${step.tok_out} tok` : ''}
+                </small>
+              </div>
+            ))}
+          </div>
         : <p className="drawer-note">该记录没有步骤明细</p>}
 
       {d.snapshots.length > 0 && <>
         <h4>检查点快照（{d.snapshots.length}）</h4>
-        {d.snapshots.map((snap, i) => (
-          <div className="replay-step" key={i}>
-            <span className="replay-dot neutral">{i + 1}</span>
-            <span>
-              <b>第 {(snap.attempt ?? 0) + 1} 轮{snap.next?.length ? ` · 下一节点 ${snap.next.join(',')}` : ' · 终态'}</b>
-              {snap.rejected_by && <small>拦截：{snap.rejected_by} {snap.error ?? ''}</small>}
-            </span>
-          </div>
-        ))}
+        <div className="timeline">
+          {d.snapshots.map((snap, i) => (
+            <div className={`timeline-row${snap.rejected_by ? ' bad' : ''}`} key={i}>
+              <strong>第 {(snap.attempt ?? 0) + 1} 轮{snap.next?.length ? ` · 下一节点 ${snap.next.join(',')}` : ' · 终态'}</strong>
+              <small>{snap.rejected_by ? `拦截：${snap.rejected_by} ${snap.error ?? ''}` : '无拦截'}</small>
+            </div>
+          ))}
+        </div>
       </>}
 
       {d.sql_final && <>

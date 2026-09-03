@@ -104,30 +104,10 @@
 .resume-message { min-width: 0; color: var(--muted); font: 5.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lifecycle-action { flex: none; min-width: 92px; padding: 6px 8px; border: 0; border-radius: 5px; color: white; background: var(--green); font-size: 6px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 10px rgba(11,97,57,.16); }
 .lifecycle-action:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
-.checkpoint-head, .checkpoint-footer { display: flex; justify-content: space-between; gap: 8px; }
-.checkpoint-head strong { font-size: 9px; }
-.checkpoint-head p { margin: 2px 0; color: var(--muted); font-size: 6px; }
+/* .state 是断点快照的状态徽章，仍在用 */
 .state { padding: 4px 7px; border-radius: 99px; color: var(--amber); background: var(--amber-wash); font: 700 6px var(--mono); }
 .state.resuming { color: var(--blue); background: var(--blue-wash); }
 .state.completed { color: var(--green); background: var(--green-wash); }
-.checkpoint-facts { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; margin: 8px 0; border: 1px solid var(--line); background: var(--line); }
-.checkpoint-facts div { padding: 6px; background: var(--paper); }
-.checkpoint-facts span, .checkpoint-facts code { display: block; font-size: 5px; }
-.checkpoint-facts span { color: var(--muted); }
-.checkpoint-facts code { margin-top: 2px; }
-.checkpoint-flow { display: flex; min-width: 520px; margin: 10px 0; }
-.checkpoint-flow > div { flex: 1; text-align: center; color: var(--muted); }
-.checkpoint-flow i { width: 18px; height: 18px; display: grid; place-items: center; margin: 0 auto 3px; border: 1px solid var(--line); border-radius: 50%; font: normal 5px var(--mono); }
-.checkpoint-flow .done i { color: white; background: var(--green); }
-.checkpoint-flow .paused i { color: white; background: var(--amber); }
-.checkpoint-flow strong, .checkpoint-flow small { display: block; font-size: 5px; }
-.resume-proof { display: flex; justify-content: space-between; gap: 8px; padding: 7px; border: 1px solid #b7cabc; border-radius: 6px; background: var(--green-wash); }
-.resume-proof strong, .resume-proof small { display: block; font-size: 6px; }
-.resume-proof small { color: var(--muted); }
-.resume-proof > span { color: var(--green); font: 6px var(--mono); }
-.checkpoint-footer { align-items: center; margin-top: 8px; }
-.checkpoint-footer small { color: var(--muted); font: 5px var(--mono); }
-.checkpoint-footer button { padding: 6px 9px; border: 0; border-radius: 5px; color: white; background: var(--green); font-size: 6px; font-weight: 800; }
 .source-menu > button em { color: var(--green); font: normal 6px var(--mono); }
 .source-menu > button.disabled em { color: var(--amber); }
 .source-menu > button.disabled { cursor: not-allowed; }

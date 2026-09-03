@@ -4,12 +4,9 @@
  * 按页拆开就不会互相冲突。
  */
 
-.permission-detail { padding: 14px; }
 .policy-stack { display: grid; gap: 12px; align-content: start; min-width: 0; }
 .member-card { padding: 14px; }
 .member-card .member-head { margin-top: 0; }
-.permission-detail h2 { margin: 4px 0 5px; font-family: var(--serif); font-size: 15px; }
-.permission-detail > p { color: var(--ink-2); font-size: 8px; line-height: 1.7; }
 
 .member-head {
   display: flex;
@@ -52,16 +49,6 @@
 
 .role-list .audit-empty { padding: 14px 12px; }
 
-/* ---------------- 角色策略规则行（照原型：.rule / .rule-no / .toggle） ---------------- */
-.policy-rules { margin: 12px -14px 0; }
-.rule { display: grid; grid-template-columns: 28px 1fr auto; gap: 9px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line); }
-.rule-no { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 6px; color: var(--green); background: var(--green-wash); font: 7px var(--mono); font-style: normal; }
-.rule strong { display: block; font-size: 8px; }
-.rule small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
-.toggle { width: 31px; height: 17px; padding: 2px; border: 0; border-radius: 99px; background: #b9beb9; cursor: pointer; }
-.toggle i { display: block; width: 13px; height: 13px; border-radius: 50%; background: white; transition: transform .2s; }
-.toggle.on { background: var(--green); }
-.toggle.on i { transform: translateX(14px); }
-/* 不可改的开关不做成"看起来能拨"：置灰 + not-allowed。
-   .on 那条是产品前提（只读）不提供关闭，其余是后端未接入。 */
-.toggle:disabled { opacity: .55; cursor: not-allowed; }
+/* 规则行组：原型里 .rule 是策略卡的直接子级，靠 border-top 通栏分隔，
+   容器本身不带内边距。行样式见 proto-permissions.css。 */
+.policy-rules { display: block; }

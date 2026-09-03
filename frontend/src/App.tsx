@@ -22,6 +22,13 @@ import './styles/traces.css'
 import './styles/identity.css'
 import './styles/auth.css'
 import './styles/responsive.css'
+/* 各页对齐原型的样式，必须排在通用样式之后 —— 同权重时后者生效 */
+import './styles/proto-query.css'
+import './styles/proto-tasks.css'
+import './styles/proto-sources.css'
+import './styles/proto-permissions.css'
+import './styles/proto-glossary.css'
+import './styles/proto-audit.css'
 
 function App() {
   const [me, setMe] = useState<Me | null>(null)
@@ -29,6 +36,8 @@ function App() {
   const [view, setView] = useState<View>('query')
   const [modal, setModal] = useState<ModalName>(null)
   const [toast, setToast] = useState('')
+  // 侧栏「发起快捷查询」重开一次工作台
+  const [queryEpoch, setQueryEpoch] = useState(0)
   const health = useHealth()
   const sources = useSources()
 
@@ -43,13 +52,24 @@ function App() {
   }
 
   const page = (() => {
-    if (view === 'query') return <div className="page query-page"><PageHeader title="查询 Agent" description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。" action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>} /><QueryWorkspace health={health} sources={sources} onNavigate={setView} /></div>
+    if (view === 'query') return (
+      <div className="page query-page">
+        <PageHeader
+          eyebrow="Phase 1 · Unified Query"
+          title="查询工作台"
+          description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。"
+          action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>}
+        />
+        {/* key 变化即整块重挂 —— 侧栏「发起快捷查询」照原型要回到空态 */}
+        <QueryWorkspace key={queryEpoch} health={health} sources={sources} onNavigate={setView} notify={notify} me={me} />
+      </div>
+    )
     if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} />
     if (view === 'sources') return <DataSourcesPage health={health} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />
     if (view === 'glossary') return <GlossaryPage onNavigate={setView} notify={notify} />
     if (view === 'audit') return <AuditPage />
-    if (view === 'traces') return <TracesPage />
+    if (view === 'traces') return <TracesPage onNavigate={setView} onOpenModal={setModal} />
     return <AuditPage />
   })()
 
@@ -60,6 +80,7 @@ function App() {
         health={health}
         source={sources.current}
         onNavigate={setView}
+        onQuickNew={() => { setQueryEpoch(n => n + 1); setView('query') }}
         me={me}
         onOpenLogin={() => setLoginOpen(true)}
         onSignOut={() => { logout().then(() => { reloadMe(); notify('已退出，回到匿名可见范围') }) }}

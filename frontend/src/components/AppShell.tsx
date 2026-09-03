@@ -10,6 +10,8 @@ interface AppShellProps {
   /** 工作台当前选中的运行时数据源；内置源为 null */
   source: SourceCard | null
   onNavigate: (view: View) => void
+  /** 侧栏「发起快捷查询」：回到工作台并清空上一次结果 */
+  onQuickNew: () => void
   me: Me | null
   onOpenLogin: () => void
   onSignOut: () => void
@@ -113,19 +115,20 @@ function placeOfHost(type: string, where: string): string {
   return /(^|@|\s)(127\.0\.0\.1|localhost)\b/.test(where) ? '本机' : '远端'
 }
 
-export function AppShell({ activeView, health, source, onNavigate, me, onOpenLogin, onSignOut, notice, children }: AppShellProps) {
+export function AppShell({ activeView, health, source, onNavigate, onQuickNew, me, onOpenLogin, onSignOut, notice, children }: AppShellProps) {
   return (
     <div className="app-shell">
       <header className="topbar">
         <Brand />
         <WorkspaceContext health={health} source={source} />
         <div className="top-actions">
+          <span className="secure-label"><i className="online-dot" /> 数据不出域</span>
           <Identity me={me} onOpenLogin={onOpenLogin} onSignOut={onSignOut} />
         </div>
       </header>
 
       <aside className="sidebar">
-        <button className="quick-new" onClick={() => onNavigate('query')}><span>发起查询</span><span>↗</span></button>
+        <button className="quick-new" onClick={onQuickNew}><span>发起快捷查询</span><span>↗</span></button>
         {navGroups.map(group => (
           <div className="nav-group" key={group.label}>
             <div className="nav-label">{group.label}</div>
@@ -138,14 +141,16 @@ export function AppShell({ activeView, health, source, onNavigate, me, onOpenLog
               >
                 <span className="nav-icon">{item.icon}</span>
                 <span className="nav-copy"><strong>{item.title}</strong><small>{item.subtitle}</small></span>
+                {item.badge && <span className="nav-badge">{item.badge}</span>}
               </button>
             ))}
           </div>
         ))}
         <div className="phase-card">
-          <span>当前阶段</span><strong>A · 外壳统一</strong>
-          <div className="progress"><i style={{ width: '14%' }} /></div>
-          <p>界面形态已换到工作台外壳。后端能力正在按页接回，未接入的页面均已标注。</p>
+          <span>CURRENT RELEASE</span>
+          <strong>Phase 1 · 内网试点</strong>
+          <div className="progress"><i /></div>
+          <p>测试库与生产只读镜像已接入，治理能力正在配置。</p>
         </div>
       </aside>
       <main className="main-content">{notice}{children}</main>
@@ -201,14 +206,20 @@ export function Brand({ subtitle = 'ASKDB' }: { subtitle?: string }) {
   )
 }
 
-export function PageHeader({ title, description, action }: {
+export function PageHeader({ eyebrow, title, description, action }: {
+  /** 原型每页标题上方都有一条阶段/能力标（如 "Phase 2 · Full Traceability"） */
+  eyebrow?: string
   title: string
   description: string
   action?: React.ReactNode
 }) {
   return (
     <div className="page-head">
-      <div><h1>{title}</h1><p>{description}</p></div>
+      <div>
+        {eyebrow && <div className="eyebrow">{eyebrow}</div>}
+        <h1>{title}</h1>
+        <p>{description}</p>
+      </div>
       {action}
     </div>
   )

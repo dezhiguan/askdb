@@ -1,0 +1,164 @@
+/* glossary 页对齐原型 trusted-data-agent-prototype.html 的样式。
+   基础原语在 theme.css / pages.css，本文件只放本页专属与差异覆盖。
+   原型对应区块：CSS 第 1312-1338 行、视图 HTML 第 2298-2327 行。 */
+
+/* ---- 两栏布局（原型 .glossary-layout：270px 固定左栏 + 12px 间距） ---- */
+.glossary-page .glossary-layout {
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+/* ---- 左栏：搜索框 ---- */
+.glossary-page .search-box {
+  display: flex;
+  gap: 6px;
+  padding: 9px;
+  border-bottom: 1px solid var(--line);
+}
+
+.glossary-page .search-box input {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  outline: 0;
+  background: white;
+  font-size: 8px;
+  font-family: inherit;
+  color: inherit;
+}
+
+.glossary-page .search-box input::placeholder { color: var(--muted); }
+.glossary-page .search-box input:focus { border-color: #9fc3ac; }
+
+/* ---- 左栏：指标列表 ---- */
+.glossary-page .term-list { padding: 6px; }
+
+/* 覆盖 pages.css 的 `.term-list > button`（那里带 border-bottom、10px 12px 内距） */
+.glossary-page .term-list > button.term {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.glossary-page .term-list > button.term:hover,
+.glossary-page .term-list > button.term.active { background: var(--green-wash); }
+
+.glossary-page .term > span { min-width: 0; }
+.glossary-page .term strong { display: block; font-size: 8px; }
+.glossary-page .term small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.glossary-page .term .status { flex: none; padding: 3px 6px; font: 6px var(--mono); }
+
+/* ---- 右栏：定义卡 ---- */
+.glossary-page .definition { padding: 18px; }
+.glossary-page .definition .eyebrow { margin-bottom: 8px; }
+.glossary-page .definition h2 { margin: 0; font-family: var(--serif); font-size: 19px; }
+.glossary-page .definition > p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 8px;
+  line-height: 1.65;
+}
+
+/* 公式块：原型用绿底 + 左侧 3px 绿条，而不是深色代码块 */
+.glossary-page .formula {
+  margin: 13px 0;
+  padding: 12px;
+  border-left: 3px solid var(--green);
+  background: var(--green-wash);
+  font: 8px var(--mono);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---- 四格事实区（覆盖 pages.css 的 `.permission-grid > div`） ---- */
+.glossary-page .definition .permission-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  margin: 13px 0;
+  border: 1px solid var(--line);
+  background: var(--line);
+}
+
+.glossary-page .permission-cell { padding: 10px; background: var(--paper); }
+.glossary-page .permission-cell span { display: block; color: var(--muted); font-size: 6px; }
+.glossary-page .permission-cell strong {
+  display: block;
+  margin-top: 3px;
+  font: 7px var(--mono);
+  word-break: break-word;
+}
+
+/* ---- 规则行 ---- */
+.glossary-page .definition .rule {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  gap: 9px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.glossary-page .rule-no {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--green);
+  background: var(--green-wash);
+  font: 7px var(--mono);
+  font-style: normal;
+}
+
+.glossary-page .rule strong { display: block; font-size: 8px; }
+.glossary-page .rule small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 7px;
+  line-height: 1.6;
+}
+
+.glossary-page .rule .status { flex: none; padding: 4px 6px; font: 7px var(--mono); }
+.glossary-page .rule small .tag { display: inline-block; margin: 3px 3px 0 0; font-style: normal; }
+
+/* ---- 本页内的真实功能块，跟着原型的字号收敛 ---- */
+.glossary-page .definition .grain-note { margin: 13px 0; }
+.glossary-page .definition .drawer-note { margin: 13px 0; font-size: 7px; line-height: 1.65; }
+.glossary-page .definition .num-cell { color: var(--green); font-family: var(--mono); }
+.glossary-page .definition .nr-act { margin-top: 13px; }
+
+/* 窄屏：左栏塌成整行（responsive.css 已对 .glossary-layout 做单列，
+   这里只补本页作用域下的同等规则，避免被上面的固定 270px 盖住） */
+@media (max-width: 1080px) {
+  .glossary-page .glossary-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* 搜索无结果时的占位条：沿用 .term 排版，但不可点 */
+.glossary-page .term-list > button.term:disabled { cursor: default; }
+.glossary-page .term-list > button.term:disabled:hover { background: transparent; }
+.glossary-page .term-list > button.term:disabled strong { color: var(--muted); }

@@ -84,17 +84,17 @@ export function AddSourceModal({ meta, onClose, onDone }: {
 
   return (
     <div className="modal-backdrop" onMouseDown={e => { if (e.currentTarget === e.target) onClose() }}>
-      <div className="modal source-modal">
-        <header className="modal-dark">
+      <div className={`modal source-modal ${step === 'tables' ? 'scan-modal' : ''}`}>
+        <header className="modal-head modal-dark">
           <div>
             <h3>{step === 'form' ? '添加只读数据源' : '选择开放的表'}</h3>
             <p>
               {step === 'form'
-                ? '连接串与口令只存在服务端，不下发浏览器，也不进入提示词。'
+                ? '连接凭证将加密保存到服务端，不下发浏览器，也不会提供给模型。'
                 : '没勾选的表，模型看不见也查不到 —— 白名单同时是安全边界与准确率边界。'}
             </p>
           </div>
-          <button onClick={onClose} aria-label="关闭">×</button>
+          <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
         </header>
 
         <div className="modal-body">
@@ -102,53 +102,62 @@ export function AddSourceModal({ meta, onClose, onDone }: {
 
           {step === 'form' ? (
             <>
-              <label>数据源名称
-                <input value={name} onChange={e => setName(e.target.value)} />
-              </label>
+              <div className="form-row">
+                <label htmlFor="src-name">数据源名称</label>
+                <input id="src-name" value={name} onChange={e => setName(e.target.value)} />
+              </div>
 
               <div className="form-grid">
-                <label>数据库类型
-                  <select value={type} onChange={e => setType(e.target.value)}>
+                <div className="form-row">
+                  <label htmlFor="src-type">数据库类型</label>
+                  <select id="src-type" value={type} onChange={e => setType(e.target.value)}>
                     {meta.supported_types.map(t => (
                       <option key={t} value={t}>{TYPE_LABEL[t] ?? t}</option>
                     ))}
                   </select>
-                </label>
-                <label>环境
-                  <select value={env} onChange={e => setEnv(e.target.value)}>
+                </div>
+                <div className="form-row">
+                  <label htmlFor="src-env">环境</label>
+                  <select id="src-env" value={env} onChange={e => setEnv(e.target.value)}>
                     <option value="test">测试环境</option>
                     <option value="prod_ro">生产只读镜像</option>
                   </select>
-                </label>
+                </div>
               </div>
 
               {isFile ? (
-                <label>数据库文件路径
-                  <input value={addr} onChange={e => setAddr(e.target.value)} placeholder="data/sample.duckdb" />
-                </label>
+                <div className="form-row">
+                  <label htmlFor="src-file">数据库文件路径</label>
+                  <input id="src-file" value={addr} onChange={e => setAddr(e.target.value)}
+                         placeholder="data/sample.duckdb" />
+                </div>
               ) : (
                 <>
-                  <div className="form-grid">
-                    <label>数据库地址
-                      <input value={addr} onChange={e => setAddr(e.target.value)} placeholder="db.internal:5432" />
-                    </label>
-                    <label>数据库名
-                      <input value={dbname} onChange={e => setDbname(e.target.value)} placeholder="orders" />
-                    </label>
+                  <div className="form-row">
+                    <label htmlFor="src-addr">数据库地址</label>
+                    <input id="src-addr" value={addr} onChange={e => setAddr(e.target.value)}
+                           placeholder="db.internal:5432" />
+                  </div>
+                  <div className="form-row">
+                    <label htmlFor="src-db">数据库名</label>
+                    <input id="src-db" value={dbname} onChange={e => setDbname(e.target.value)} placeholder="orders" />
                   </div>
                   <div className="form-grid">
-                    <label>只读用户名
-                      <input value={user} onChange={e => setUser(e.target.value)} placeholder="askdb_ro" />
-                    </label>
-                    <label>
-                      <span className="cred-head">
+                    <div className="form-row">
+                      <label htmlFor="src-user">只读用户名</label>
+                      <input id="src-user" value={user} onChange={e => setUser(e.target.value)} placeholder="askdb_ro" />
+                    </div>
+                    <div className="form-row">
+                      <label className="cred-head" htmlFor="src-cred">
                         口令
                         <span className="cred-modes">
                           <button
+                            type="button"
                             className={credMode === 'env' ? 'on' : ''}
                             onClick={() => setCredMode('env')}
                           >环境变量名</button>
                           <button
+                            type="button"
                             className={credMode === 'plain' ? 'on' : ''}
                             disabled={!meta.can_store_password}
                             title={meta.can_store_password ? undefined
@@ -156,13 +165,14 @@ export function AddSourceModal({ meta, onClose, onDone }: {
                             onClick={() => setCredMode('plain')}
                           >直接填密码</button>
                         </span>
-                      </span>
+                      </label>
                       {credMode === 'env'
-                        ? <input value={passwordEnv} onChange={e => setPasswordEnv(e.target.value)}
+                        ? <input id="src-cred" value={passwordEnv} onChange={e => setPasswordEnv(e.target.value)}
                                  placeholder="ASKDB_ORDERS_PASSWORD" />
-                        : <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                        : <input id="src-cred" type="password" value={password}
+                                 onChange={e => setPassword(e.target.value)}
                                  placeholder="保存时用主密钥加密" />}
-                    </label>
+                    </div>
                   </div>
                   <p className="cred-note">
                     {credMode === 'env'
@@ -187,7 +197,7 @@ export function AddSourceModal({ meta, onClose, onDone }: {
               <div className="modal-actions">
                 <button className="ghost" onClick={onClose}>取消</button>
                 <button className="secondary" disabled={!!busy} onClick={() => run('test')}>
-                  {busy === 'test' ? '连接中…' : '测试连接'}
+                  {busy === 'test' ? '连接检查中…' : '测试连接'}
                 </button>
                 <button className="primary" disabled={!!busy} onClick={() => run('save')}>
                   {busy === 'save' ? '扫描中…' : '保存并扫描元数据'}
@@ -301,13 +311,13 @@ export function ScanTablesModal({ id, name, onClose, onDone }: {
 
   return (
     <div className="modal-backdrop" onMouseDown={e => { if (e.currentTarget === e.target) onClose() }}>
-      <div className="modal source-modal">
-        <header className="modal-dark">
+      <div className="modal source-modal scan-modal">
+        <header className="modal-head modal-dark">
           <div>
             <h3>开放的表</h3>
             <p>{name} · 取消勾选会立即把该表移出可查范围。</p>
           </div>
-          <button onClick={onClose} aria-label="关闭">×</button>
+          <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
         </header>
         <div className="modal-body">
           {error && <div className="audit-error">{error}</div>}

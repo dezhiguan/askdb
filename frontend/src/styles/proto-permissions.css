@@ -1,0 +1,95 @@
+/* permissions 页对齐原型 trusted-data-agent-prototype.html 的样式。
+   基础原语在 theme.css / pages.css，本文件只放本页专属与差异覆盖。
+
+   原型出处：全站 CSS 第 1300–1324 行（.policy-layout / .role-item / .role-count /
+   .permission-head / .permission-cell / .rule / .rule-no / .toggle）。 */
+
+/* ---------------- 布局 ---------------- */
+/* pages.css 是 260px/14px，原型是 250px/12px */
+.policy-layout { grid-template-columns: 250px minmax(0, 1fr); gap: 12px; }
+
+/* 原型的 .card-head 带浅底色，app 的 pages.css 里没有；只在本页范围内补齐 */
+.policy-layout .card-head { padding: 12px 13px; background: var(--paper-2); }
+
+/* ---------------- 左栏角色列表 ---------------- */
+.role-list { padding: 7px; }
+
+/* pages.css 的 `.role-list > button`（0,1,1）优先级高于 `.role-item`，
+   故这里用 `.role-list > .role-item`（0,2,1）整体覆盖成原型形态。 */
+.role-list > .role-item {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px;
+  border: 0;
+  border-bottom: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.role-list > .role-item:hover,
+.role-list > .role-item.active { background: var(--green-wash); }
+.role-list > .role-item strong { display: block; font-size: 8px; }
+.role-list > .role-item small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
+.role-count { color: var(--green); font: 7px var(--mono); }
+
+/* ---------------- 右栏策略卡 ---------------- */
+.permission-head { padding: 15px; border-bottom: 1px solid var(--line); }
+.permission-head h3 { margin: 0; font-family: var(--serif); font-size: 15px; font-weight: 400; }
+.permission-head p { margin: 4px 0 0; color: var(--muted); font-size: 7px; }
+
+/* pages.css 的 .permission-grid 带 margin/border 且用 `> div` 选中格子；
+   原型是无 margin、无外框、1px 缝隙露底色。 */
+.permission-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  margin: 0;
+  border: 0;
+  background: var(--line);
+}
+.permission-grid > .permission-cell { padding: 10px; background: var(--paper); }
+.permission-grid > .permission-cell span { display: block; color: var(--muted); font-size: 6px; }
+.permission-grid > .permission-cell strong { display: block; margin-top: 3px; font: 7px var(--mono); }
+
+/* 系统角色的职责分离说明：原型没有这一块（原型只有 4 个数据角色），
+   但它是真实存在的角色语义，保留并按卡片内边距排版。 */
+.policy-note { margin: 0; padding: 11px 13px 12px; }
+
+/* ---------------- 规则行 ---------------- */
+.rule {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  gap: 9px;
+  align-items: center;
+  padding: 10px 13px;
+  border-top: 1px solid var(--line);
+}
+.rule-no {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--green);
+  background: var(--green-wash);
+  font: 7px var(--mono);
+  font-style: normal;
+}
+.rule strong { display: block; font-size: 8px; }
+.rule small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
+
+.toggle {
+  width: 31px;
+  height: 17px;
+  padding: 2px;
+  border: 0;
+  border-radius: 99px;
+  background: #b9beb9;
+  cursor: pointer;
+}
+.toggle i { display: block; width: 13px; height: 13px; border-radius: 50%; background: white; transition: transform .2s; }
+.toggle.on { background: var(--green); }
+.toggle.on i { transform: translateX(14px); }

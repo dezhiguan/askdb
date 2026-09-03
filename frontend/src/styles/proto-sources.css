@@ -1,0 +1,94 @@
+/* sources 页对齐原型 trusted-data-agent-prototype.html 的样式。
+   基础原语在 theme.css / pages.css，本文件只放本页专属与差异覆盖。*/
+
+/* ---------------- 数据源卡片栅格 ---------------- */
+
+/* 原型是 10px，pages.css 写成 12px */
+.source-grid { gap: 10px; }
+
+/* 原型 .source-card p 明确 margin:0 / line-height:1.5。
+   pages.css 只给了 line-height:1.55，段落还留着 UA 的 1em 下边距，
+   副标题和 mini-metrics 之间因此多出一截空白 */
+.source-card p { margin: 0; line-height: 1.5; }
+
+/* pages.css 的 .source-top > i（0,1,1）特异性高过 .db-icon（0,1,0），
+   把原型的 8px 圆角压成 7px、700 字重压成 normal。这里按原型压回去。 */
+.source-card .source-top > i.db-icon {
+  border-radius: 8px;
+  font: 700 8px var(--mono);
+}
+
+/* ---------------- 添加数据源弹窗 ---------------- */
+
+/* 原型 .modal：470px 宽、11px 圆角、1px 边框、内容裁切。
+   第二步要摆表清单，470px 装不下，单独放宽。 */
+.source-modal {
+  width: min(470px, calc(100vw - 24px));
+  border: 1px solid #a6afa9;
+  border-radius: 11px;
+}
+
+.source-modal.scan-modal { width: min(680px, calc(100vw - 24px)); }
+
+/* 原型 .modal-head：16px 内边距、16px 标题、7px 说明 */
+.source-modal .modal-head { padding: 16px; }
+.source-modal .modal-head h3 { margin: 0; font-family: var(--serif); font-size: 16px; }
+.source-modal .modal-head p { margin: 4px 0 0; color: #9eafa5; font-size: 7px; line-height: 1.6; }
+.source-modal .modal-close { border: 0; color: white; background: transparent; font-size: 16px; cursor: pointer; }
+
+/* 原型 .modal-body 是 15px 16px 17px，pages.css 给的是 16px 18px */
+.source-modal .modal-body { padding: 15px 16px 17px; }
+
+/* .form-row 在 identity.css 里是「横排一行控件」的意思（display:flex），
+   和原型这套「标签在上、控件在下」是两码事。只在本弹窗内改回原型语义，
+   不动 identity.css，避免波及成员管理表单。 */
+.source-modal .form-row {
+  display: block;
+  margin-top: 10px;
+}
+
+.source-modal .form-row:first-child { margin-top: 0; }
+
+.source-modal .form-row label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--ink-2);
+  font-size: 8px;
+}
+
+/* 口令行的标签自带模式切换按钮，仍要横排 */
+.source-modal .form-row label.cred-head { display: flex; }
+
+.source-modal .form-row input,
+.source-modal .form-row select {
+  /* identity.css 的 .form-row input 带 flex:1 / min-width:120px / 7px 9px 内边距，
+     全部按原型覆盖掉 */
+  flex: none;
+  min-width: 0;
+  width: 100%;
+  margin-top: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: 0;
+  background: white;
+  font-size: 8px;
+}
+
+.source-modal .form-row input:focus,
+.source-modal .form-row select:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(11, 97, 57, .08);
+}
+
+/* 原型 .form-grid 间距是 8px，pages.css 里被覆到 12px */
+.source-modal .form-grid { gap: 8px; }
+
+/* form-grid 是整行的一格，它自己也要跟着 .form-row 的行距走 */
+.source-modal .form-grid { margin-top: 10px; }
+.source-modal .form-grid .form-row { margin-top: 0; }
+
+.source-modal .modal-actions { margin-top: 14px; }
+
+/* duckdb 分支下 check-list 紧挨着上一行控件，补出与其它行一致的行距 */
+.source-modal .check-list { margin-top: 10px; }

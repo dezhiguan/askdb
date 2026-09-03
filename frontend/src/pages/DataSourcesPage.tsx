@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  deleteSource, fetchIntrospect, fetchSchema, fetchSelfCheck, fetchSources,
+  deleteSource, fetchIntrospect, fetchSchema, fetchSelfCheck, fetchSources, scanSource,
   type Introspect, type Schema, type SelfCheck, type SourceCard, type SourceList,
 } from '../api'
 import { AddSourceModal, ScanTablesModal } from '../components/AddSourceModal'
-import { PageHeader } from '../components/AppShell'
 import type { HealthState } from '../useHealth'
 
 /** 数据源类型的短标。图标位 34px，放不下全名。 */
 const TYPE_MARK: Record<string, string> = { duckdb: 'DK', postgresql: 'PG' }
+
+/** 副标题里的引擎名。卡片副标题是「引擎 · host:port」，引擎位要给人看的写法。 */
+const TYPE_NAME: Record<string, string> = { duckdb: 'DuckDB', postgresql: 'PostgreSQL' }
+
+/** 一张运行时数据源卡的连接检查结果。延迟与最后检查两格没有其它来源。 */
+type CardProbe = { latency: number | null; at: Date }
 
 const TENANT_MODE: Record<string, string> = {
   column: '租户列',
@@ -30,12 +35,14 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [sources, setSources] = useState<SourceList | null>(null)
   const [reload, setReload] = useState(0)
+  const [probes, setProbes] = useState<Record<string, CardProbe>>({})
+  const [testingId, setTestingId] = useState('')
 
   useEffect(() => {
     let alive = true
     Promise.all([fetchSchema(), fetchIntrospect()])
       .then(([s, i]) => { if (alive) { setSchema(s); setIntrospect(i) } })
-      .catch(e => { if (alive) setError(String(e.message || e)) })
+      .catch(e => { if (alive) setError(`读取数据源信息失败：${String(e.message || e)}`) })
     return () => { alive = false }
   }, [])
 
@@ -43,7 +50,7 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
     let alive = true
     fetchSources()
       .then(value => { if (alive) setSources(value) })
-      .catch(e => { if (alive) setError(String(e.message || e)) })
+      .catch(e => { if (alive) setError(`读取数据源信息失败：${String(e.message || e)}`) })
     return () => { alive = false }
   }, [reload])
 
@@ -71,6 +78,23 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
       setReload(n => n + 1)
     } catch (e) {
       setError(String((e as Error).message || e))
+    }
+  }
+
+  // 运行时数据源的「测试连接」。真去建连并读一次元数据 —— 延迟和最后检查
+  // 两格没有别的来源，不点就只能是「—」/ NEVER，不拿 0 冒充很快。
+  const testCard = async (card: SourceCard) => {
+    setTestingId(card.id)
+    try {
+      const result = await scanSource(card.id)
+      setProbes(current => ({ ...current, [card.id]: { latency: result.latency_ms, at: new Date() } }))
+      setError(result.ok ? '' : (result.error
+        ? `${result.error}${result.hint ? `｜${result.hint}` : ''}`
+        : `数据源「${card.name}」连接自检未通过`))
+    } catch (e) {
+      setError(String((e as Error).message || e))
+    } finally {
+      setTestingId('')
     }
   }
 
@@ -106,22 +130,24 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
 
   return (
     <div className="page">
-      <PageHeader
-        title="数据源管理"
-        description="只连测试库与生产只读镜像，连接由配置文件指定。表白名单同时是安全边界与准确率边界。"
-        action={
-          <button
-            className="primary"
-            disabled={!sources?.can_add}
-            title={sources && !sources.can_add
-              ? '本实例未开启运行时添加数据源：服务端会按填入的地址主动建连，而 askdb 不设账号体系，对外实例一律关闭'
-              : undefined}
-            onClick={() => setShowAdd(true)}
-          >＋ 添加数据源</button>
-        }
-      />
+      {/* 通用 PageHeader 没有 eyebrow 位，这里按原型直接写出 .page-head */}
+      <div className="page-head">
+        <div>
+          <div className="eyebrow">Phase 1 · Readonly Data</div>
+          <h1>数据源管理</h1>
+          <p>只连接测试库和生产只读镜像，凭证由服务端托管，不下发浏览器也不进入提示词。</p>
+        </div>
+        <button
+          className="primary"
+          disabled={!sources?.can_add}
+          title={sources && !sources.can_add
+            ? '本实例未开启运行时添加数据源：服务端会按填入的地址主动建连，而 askdb 不设账号体系，对外实例一律关闭'
+            : undefined}
+          onClick={() => setShowAdd(true)}
+        >＋ 添加数据源</button>
+      </div>
 
-      {error && <div className="audit-error">读取数据源信息失败：{error}</div>}
+      {error && <div className="audit-error">{error}</div>}
 
       {/* 配置里的默认数据源最多一个，所以内置卡最多一张；它可以被删掉，
           删掉之后本页只剩运行时数据源 */}
@@ -138,9 +164,11 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
                 </span>
               : <span className="card-status off">● 读取中</span>}
           </div>
-          <h3>{ds ? ds.detail : '—'}</h3>
-          <p>
-            {ds ? ds.type : '—'} · {ready?.config ?? '—'}
+          <h3>{builtinCard?.name || '默认数据源'}</h3>
+          {/* 原型的副标题是「引擎 · host:port」。配置文件路径挪进 title —— 它是运维信息，
+              占掉副标题会把「这条连的是哪个库」挤没 */}
+          <p title={ready?.config ? `配置文件：${ready.config}` : undefined}>
+            {ds ? (TYPE_NAME[ds.type] ?? ds.type) : '—'} · {builtinCard?.host || ds?.detail || '—'}
             {ds && !ds.ok && ds.hint && <><br />{ds.hint}</>}
           </p>
           <div className="mini-metrics">
@@ -165,7 +193,7 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
           </div>
           <div className="source-actions">
             <button className="secondary" onClick={runCheck} disabled={checking}>
-              {checking ? '检查中…' : '测试连接'}
+              {checking ? '连接检查中…' : '测试连接'}
             </button>
             <button className="ghost" onClick={() => setShowConfig(v => !v)}>
               {showConfig ? '收起配置' : '配置'}
@@ -182,28 +210,52 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
         </article>
         )}
 
-        {sources?.items.filter(item => !item.builtin).map(card => (
-          <article className="source-card" key={card.id}>
-            <div className="source-top">
-              <i className="db-icon">{TYPE_MARK[card.type] ?? card.type.slice(0, 2).toUpperCase()}</i>
-              <span className={`card-status ${card.table_count ? '' : 'off'}`}>
-                {card.table_count ? <><i className="online" /> 可查询</> : '● 未开放表'}
-              </span>
-            </div>
-            <h3>{card.name}</h3>
-            <p>{card.type} · {card.host || '—'}</p>
-            <div className="mini-metrics">
-              <div className="mini-metric"><span>环境</span><strong>{ENV_LABEL[card.env] ?? card.env}</strong></div>
-              <div className="mini-metric"><span>开放表</span><strong>{card.table_count}</strong></div>
-              <div className="mini-metric"><span>凭证</span><strong>{card.credential || '无口令'}</strong></div>
-              <div className="mini-metric"><span>租户隔离</span><strong>单租户</strong></div>
-            </div>
-            <div className="source-actions">
-              <button className="secondary" onClick={() => setManage(card)}>开放的表</button>
-              <button className="ghost" onClick={() => removeSource(card)}>删除</button>
-            </div>
-          </article>
-        ))}
+        {sources?.items.filter(item => !item.builtin).map(card => {
+          // 一张表都没开放 = 原型里的「待配置」：连上了但模型什么也看不见，
+          // 这时候该催的是去勾表，不是去测连接
+          const pending = card.table_count === 0
+          const probe = probes[card.id]
+          return (
+            <article className="source-card" key={card.id}>
+              <div className="source-top">
+                <i className="db-icon">{TYPE_MARK[card.type] ?? card.type.slice(0, 2).toUpperCase()}</i>
+                <span className={`card-status ${pending ? 'off' : ''}`}>
+                  {pending ? '● 待配置' : <><i className="online" /> 正常</>}
+                </span>
+              </div>
+              <h3>{card.name}</h3>
+              <p>{TYPE_NAME[card.type] ?? card.type} · {card.host || '—'} · {ENV_LABEL[card.env] ?? card.env}</p>
+              <div className="mini-metrics">
+                <div className="mini-metric">
+                  <span>延迟</span>
+                  <strong>{probe?.latency == null ? '—' : `${probe.latency}ms`}</strong>
+                </div>
+                <div className="mini-metric"><span>可见表</span><strong>{card.table_count}</strong></div>
+                <div className="mini-metric">
+                  <span>凭证</span>
+                  <strong>{card.credential || '无需口令'}</strong>
+                </div>
+                <div className="mini-metric">
+                  <span>最后检查</span>
+                  <strong>{probe ? relative(probe.at) : 'NEVER'}</strong>
+                </div>
+              </div>
+              <div className="source-actions">
+                {pending
+                  ? <button className="primary" onClick={() => setManage(card)}>完成配置</button>
+                  : (
+                    <>
+                      <button className="secondary" disabled={testingId === card.id} onClick={() => testCard(card)}>
+                        {testingId === card.id ? '连接检查中…' : '测试连接'}
+                      </button>
+                      <button className="ghost" onClick={() => setManage(card)}>配置</button>
+                    </>
+                  )}
+                <button className="ghost" onClick={() => removeSource(card)}>删除</button>
+              </div>
+            </article>
+          )
+        })}
       </div>
 
       {showConfig && (

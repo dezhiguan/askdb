@@ -23,8 +23,8 @@ export function MetricConfigHelp({ tables, onClose }: {
       <div className="modal">
         <header className="modal-dark">
           <div>
-            <h3>如何新增业务口径</h3>
-            <p>口径跟着配置文件走，页面不参与 —— 下面是实际要做的事。</p>
+            <h3>新建指标</h3>
+            <p>指标口径跟着配置文件走，页面不参与 —— 下面是实际要做的事。</p>
           </div>
           <button onClick={onClose} aria-label="关闭">×</button>
         </header>
