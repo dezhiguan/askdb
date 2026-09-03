@@ -45,8 +45,8 @@
   .result-tabs { overflow-x: auto; }
   .answer-card { grid-template-columns: 1fr; }
   .answer-actions { grid-row: 3; }
-  .checkpoint-console { grid-template-columns: 1fr; }
-  .checkpoint-console > aside { border-right: 0; border-bottom: 1px solid var(--line); }
+  .lifecycle-console { grid-template-columns: 1fr; }
+  .scenario-rail { border-right: 0; border-bottom: 1px solid var(--line); }
   .checkpoint-facts { grid-template-columns: 1fr; }
   .checkpoint-flow { overflow-x: auto; }
   table { min-width: 620px; }

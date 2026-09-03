@@ -107,9 +107,15 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
           {!data && <div className="audit-empty">读取中…</div>}
         </section>
 
+        <div className="policy-stack">
         <section className="card permission-detail">
           {role ? <RoleDetail role={role} /> : <p className="drawer-note">读取中…</p>}
+        </section>
 
+        {/* 原型这一页只有角色与策略两块，没有成员区。成员是真能用的功能
+            （读写都走接口），所以不删 —— 单独成卡放在策略卡下面，
+            策略卡本身与设计稿保持一致。 */}
+        <section className="card member-card">
           <h4 className="member-head">
             成员
             <span className="section-note">
@@ -185,6 +191,7 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
               )
           )}
         </section>
+        </div>
       </div>
     </div>
   )
@@ -196,11 +203,14 @@ function RoleDetail({ role }: { role: RoleInfo }) {
       <div className="eyebrow">{role.system ? 'SYSTEM ROLE' : 'ROLE POLICY'}</div>
       <h2>{role.name} · {role.code}</h2>
       <p>{role.desc}</p>
+      {/* 四个维度照设计稿。环境范围是真值（来自角色定义）；
+          数据期限 / 敏感字段 / 导出权限后端还没有这三个维度，
+          按「先对齐页面」占位成 —— 不编 365 DAYS 这类看着像真的值。 */}
       <div className="permission-grid">
         <div><span>环境范围</span><strong>{role.scope}</strong></div>
-        <div><span>角色类型</span><strong>{role.system ? '系统角色' : '数据角色'}</strong></div>
-        <div><span>成员数</span><strong>{role.members}</strong></div>
-        <div><span>可自定义</span><strong>否</strong></div>
+        <div><span>数据期限</span><strong title="后端尚无该维度">—</strong></div>
+        <div><span>敏感字段</span><strong title="后端尚无该维度">—</strong></div>
+        <div><span>导出权限</span><strong title="后端尚无该维度">—</strong></div>
       </div>
       {role.system && (
         <p className="drawer-note">
@@ -208,6 +218,64 @@ function RoleDetail({ role }: { role: RoleInfo }) {
           管理员本人要查数，须另行加入某个数据角色，且这一动作同样留痕。
         </p>
       )}
+      <RolePolicyRules />
     </>
+  )
+}
+
+/** 角色策略开关。
+ *
+ *  只有 P01 是真的：只读事务 + 护栏拦截写操作，askdb 的每一条连接都如此。
+ *  它**不可关闭** —— 这不是懒得做开关，是这一条一旦可关，整个产品的前提
+ *  就没了；给它一个能拨到 OFF 的开关，等于宣称存在一种"可写模式"。
+ *
+ *  另外三条后端尚无存储也无执行，先按设计稿占位并置灰。宁可页面上少一个
+ *  能拨的开关，也不要一个拨了什么都不会发生的开关 —— 后者会让人以为
+ *  脱敏已经生效。
+ */
+const POLICY_RULES: { code: string; title: string; desc: string; on: boolean; live: boolean }[] = [
+  {
+    code: 'P01', title: '生产环境强制只读',
+    desc: '拦截 INSERT、UPDATE、DELETE、DDL 和存储过程。',
+    on: true, live: true,
+  },
+  {
+    code: 'P03', title: '个人信息默认脱敏',
+    desc: '手机号、姓名、证件号、地址必须经过列级脱敏。',
+    on: true, live: false,
+  },
+  {
+    code: 'P07', title: '高成本查询二次确认',
+    desc: '预计扫描超过 100,000 行时进入数据负责人审批。',
+    on: true, live: false,
+  },
+  {
+    code: 'P11', title: '查询结果禁止用于模型训练',
+    desc: '结果仅在任务生命周期内处理，禁止进入训练数据。',
+    on: true, live: false,
+  },
+]
+
+function RolePolicyRules() {
+  return (
+    <div className="policy-rules">
+      {POLICY_RULES.map(rule => (
+        <div className="rule" key={rule.code}>
+          <i className="rule-no">{rule.code}</i>
+          <div>
+            <strong>{rule.title}</strong>
+            <small>{rule.live ? rule.desc : `${rule.desc}（策略尚未接入，开关不可用）`}</small>
+          </div>
+          <button
+            className={`toggle ${rule.on ? 'on' : ''}`}
+            disabled
+            aria-pressed={rule.on}
+            title={rule.live
+              ? '只读是 askdb 的前提，不提供关闭 —— 每条连接都以只读事务打开，写操作在引擎层即被拒绝'
+              : '该策略后端尚未实现，页面先按设计稿占位'}
+          ><i /></button>
+        </div>
+      ))}
+    </div>
   )
 }

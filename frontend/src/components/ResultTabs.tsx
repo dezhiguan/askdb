@@ -105,13 +105,15 @@ function fmtStamp(ts: string): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-export function ResultTabs({ result, active, dialect, onChange, onResumed }: {
+export function ResultTabs({ result, active, dialect, onChange, onResumed, onOpenTrace }: {
   result: AskResult
   active: ResultTab
   /** 当前数据源的方言，SQL 页签的 meta 行要如实标出来 */
   dialect: string
   onChange: (tab: ResultTab) => void
   onResumed: (result: AskResult) => void
+  /** 跳到「执行追踪」页看这条 trace 的逐步明细 */
+  onOpenTrace: () => void
 }) {
   const interrupted = result.rejected_by === 'INTERRUPTED'
   const tabs: [ResultTab, string][] = [
@@ -135,7 +137,7 @@ export function ResultTabs({ result, active, dialect, onChange, onResumed }: {
       </div>
       {active === 'result' && <ResultPane result={result} />}
       {active === 'sql' && <SqlPane result={result} dialect={dialect} />}
-      {active === 'chain' && <ChainPane result={result} />}
+      {active === 'chain' && <ChainPane result={result} onOpenTrace={onOpenTrace} />}
       {active === 'checkpoint' && <CheckpointPane result={result} onResumed={onResumed} />}
     </div>
   )
@@ -289,15 +291,16 @@ function SqlPane({ result, dialect }: { result: AskResult; dialect: string }) {
   )
 }
 
-function ChainPane({ result }: { result: AskResult }) {
+function ChainPane({ result, onOpenTrace }: { result: AskResult; onOpenTrace: () => void }) {
   const steps = result.steps ?? []
   if (!steps.length) return <div className="pane"><p className="drawer-note">这条记录没有步骤明细。</p></div>
 
-  const total = steps.reduce((sum, s) => sum + (s.ms || 0), 0) || 1
   return (
     <div className="pane">
-      {/* 原型顶部那条横向节点链。它给的是"这次经过了哪几段、各多久"的全貌，
-          下面的明细列表给的是每段具体做了什么 —— 两者都要，缺一个都得靠猜 */}
+      {/* 照原型：这一页只给"经过了哪几段、各多久"的全貌。
+          逐步明细（每段做了什么、token、命中了哪些表）不在这里重画一遍 ——
+          它在「执行追踪」页，按钮直达。同一份数据在一屏里出现两次，
+          读的人得先分辨两块是不是同一件事，反而更慢。 */}
       <div className="mini-trace">
         {steps.map((step, i) => (
           <Fragment key={`${step.step}-${i}`}>
@@ -309,43 +312,41 @@ function ChainPane({ result }: { result: AskResult }) {
           </Fragment>
         ))}
       </div>
-      <div className="result-meta">
-        {result.step_count ?? 1} 步 · {result.attempts ?? 1} 轮 · {result.elapsed_ms ?? 0} ms ·
-        {' '}{result.tok_in ?? 0}+{result.tok_out ?? 0} tok · ¥{(result.cost_cny ?? 0).toFixed(4)}
+      <div className="trace-open">
+        <button className="secondary" onClick={onOpenTrace}>打开完整 Trace</button>
       </div>
-      <div className="chain-list">
-        {steps.map((step, i) => (
-          <div className={`chain-row ${step.status !== 'ok' ? 'bad' : ''}`} key={`${step.step}-${i}`}>
-            <span className="chain-dot">{step.status === 'ok' ? '✓' : step.status === 'blocked' ? '✕' : '!'}</span>
-            <span className="chain-main">
-              <b>{STEP_NAMES[step.step] ?? step.step}</b>
-              {step.note && <small>{step.note}</small>}
-            </span>
-            <span className="chain-bar"><i style={{ width: `${Math.max(2, (step.ms || 0) / total * 100)}%` }} /></span>
-            <span className="chain-ms">
-              {step.ms} ms{step.tok_in ? ` · ${step.tok_in}+${step.tok_out} tok` : ''}
-            </span>
-          </div>
-        ))}
-      </div>
-      {!!result.tables_hit?.length && (
-        <div className="hit-box">
-          <b>命中</b>
-          {result.tables_hit.map(t => <span className="tag" key={t}>{t}</span>)}
-          {result.metrics_hit?.map(m => <span className="tag metric" key={m}>口径 {m}</span>)}
-        </div>
-      )}
     </div>
   )
 }
 
-/** 中断时是续跑面板；正常完成时展示这次判定的事实，不留空页签。 */
+/** 中断场景。askdb 目前只有一种真实中断：预算/条件不足触发的 INTERRUPTED
+ *  检查点。另外三条是原型里画的路径，后端尚未实现 —— 列出来但明确标注未接入，
+ *  不给它们伪造可点击的状态。 */
+const SCENARIOS: { key: string; mark: string; title: string; sub: string; live: boolean }[] = [
+  { key: 'input', mark: '?', title: '信息缺失', sub: '用户补充输入', live: true },
+  { key: 'approval', mark: '!', title: '高风险 / 高成本', sub: '数据负责人审批', live: false },
+  { key: 'schema', mark: 'Δ', title: 'Schema 漂移', sub: '开发者复核', live: false },
+  { key: 'retry', mark: '↻', title: '连接器瞬时失败', sub: '系统自动重试', live: false },
+]
+
+/** 检查点流程的节点。用 askdb 真实的链路节点，不套原型里那套通用名字 ——
+ *  页面上写「权限校验」而链路里根本没有这一步，等于给人一个查不到的节点。 */
+const FLOW: { step: string; label: string }[] = [
+  { step: 'retrieve', label: 'Schema 召回' },
+  { step: 'generate', label: 'SQL 生成' },
+  { step: 'guard', label: '护栏校验' },
+  { step: 'dry_run', label: 'EXPLAIN 干跑' },
+  { step: 'execute', label: '只读执行' },
+  { step: 'finalize', label: '结果与溯源' },
+]
+
 function CheckpointPane({ result, onResumed }: {
   result: AskResult
   onResumed: (result: AskResult) => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [scenario, setScenario] = useState('input')
   const interrupted = result.rejected_by === 'INTERRUPTED'
   const thread = result.thread_id || result.trace_id
 
@@ -365,44 +366,114 @@ function CheckpointPane({ result, onResumed }: {
     }
   }
 
-  if (!interrupted) {
-    return (
-      <div className="pane">
-        <div className="policy-grid">
-          <div><span>检查点线程</span><strong className="mono">{thread}</strong></div>
-          <div><span>执行轮次</span><strong>{result.attempts ?? 1}</strong></div>
-          <div><span>是否多步</span><strong>{result.multi_step ? '多步' : '单步'}</strong></div>
-          <div><span>提前收敛</span><strong>{result.converged_early || '—'}</strong></div>
-        </div>
-        <p className="drawer-note">
-          每次提问的检查点都会落盘，跨进程重启存活。本次正常完成，没有可续跑的断点。
-          判定链路可在审计中心按 trace 复放。
-        </p>
-      </div>
-    )
+  const done = new Set((result.steps ?? []).map(s => s.step))
+  const pausedAt = interrupted ? FLOW.findIndex(n => !done.has(n.step)) : -1
+  const resumeNode = pausedAt >= 0 ? FLOW[pausedAt] : null
+
+  const nodeClass = (index: number) => {
+    if (done.has(FLOW[index].step)) return 'done'
+    if (index === pausedAt) return 'paused'
+    if (!interrupted && result.ok) return 'done'
+    return ''
   }
+  const nodeState = (index: number) => {
+    if (done.has(FLOW[index].step)) return 'DONE'
+    if (index === pausedAt) return 'PAUSED'
+    if (!interrupted && result.ok) return 'DONE'
+    return 'PENDING'
+  }
+
+  const state = interrupted ? 'WAITING' : result.ok ? 'COMPLETED' : 'STOPPED'
 
   return (
     <div className="pane">
-      <div className="notice bad">
-        <div className="t"><span className="rulecode">INTERRUPTED</span>执行在中断点停止</div>
-        {result.error && <div className="why">{result.error}</div>}
-        <div className="fix">
-          <b>下一步：</b>从断点继续。已完成的节点直接沿用，不会重新执行；
-          预算计数一并恢复，续跑不会绕过成本上限。
-        </div>
-      </div>
-      <div className="policy-grid">
-        <div><span>检查点线程</span><strong className="mono">{thread}</strong></div>
-        <div><span>已执行轮次</span><strong>{result.attempts ?? 1}</strong></div>
-        <div><span>已花费</span><strong>¥{(result.cost_cny ?? 0).toFixed(4)}</strong></div>
-        <div><span>已用 token</span><strong>{(result.tok_in ?? 0) + (result.tok_out ?? 0)}</strong></div>
-      </div>
-      {error && <div className="audit-error">{error}</div>}
-      <div className="modal-actions">
-        <button className="primary" disabled={busy} onClick={resume}>
-          {busy ? '续跑中…' : '从断点继续'}
-        </button>
+      <div className="lifecycle-console">
+        <aside className="scenario-rail" aria-label="中断场景">
+          <div className="scenario-rail-head"><strong>选择中断场景</strong><span>4 PATHS</span></div>
+          {SCENARIOS.map(item => (
+            <button
+              className={`scenario-option ${scenario === item.key ? 'active' : ''}`}
+              data-scenario={item.key}
+              key={item.key}
+              disabled={!item.live}
+              title={item.live ? undefined : '该中断路径尚未实现，页面先按设计稿占位'}
+              onClick={() => setScenario(item.key)}
+            >
+              <i>{item.mark}</i>
+              <span><strong>{item.title}</strong><small>{item.live ? item.sub : `${item.sub} · 未接入`}</small></span>
+            </button>
+          ))}
+          <div className="scenario-legend">
+            常规路径不中断。仅触发检查点时持久化最小状态；续跑不会重做已完成节点。
+          </div>
+        </aside>
+
+        <section className="lifecycle-stage" aria-live="polite">
+          <div className="lifecycle-stage-head">
+            <div>
+              <strong>{interrupted ? '信息缺失 → 用户补充' : '本次未触发检查点'}</strong>
+              <p>
+                {interrupted
+                  ? (result.error || '任务在中断点暂停，等待补充后续跑。')
+                  : '每次提问的检查点都会落盘并跨进程重启存活；本次正常完成，没有可续跑的断点。'}
+              </p>
+            </div>
+            <span className={`lifecycle-state ${interrupted ? '' : 'completed'}`}>{state}</span>
+          </div>
+
+          <div className="lifecycle-facts">
+            <div className="lifecycle-fact">
+              <span>触发条件</span>
+              <code>{interrupted ? (result.rejected_by ?? 'INTERRUPTED') : '未触发'}</code>
+            </div>
+            <div className="lifecycle-fact"><span>责任角色</span><code>查询发起人</code></div>
+            <div className="lifecycle-fact"><span>已保存 CHECKPOINT</span><code title={thread}>{thread}</code></div>
+            <div className="lifecycle-fact">
+              <span>精确恢复节点</span>
+              <code>{resumeNode ? `${resumeNode.label}#${String(pausedAt + 1).padStart(2, '0')}` : '—'}</code>
+            </div>
+          </div>
+
+          <div className="checkpoint-flow">
+            {FLOW.map((node, i) => (
+              <div className={`lifecycle-node ${nodeClass(i)}`} key={node.step}>
+                <span className="node-dot">
+                  {i === pausedAt ? '●' : String(i + 1).padStart(2, '0')}
+                </span>
+                <strong>{node.label}</strong>
+                <small>{nodeState(i)}</small>
+              </div>
+            ))}
+          </div>
+
+          <div className="resume-proof">
+            <div>
+              <strong>恢复前重新收窄 · 不是盲目续跑</strong>
+              {/* 措辞按 graph.resume 的真实行为写：续跑用**当前**配置重新收窄，
+                  所以权限是重新生效的；而已完成节点（含 Schema 召回）沿用检查点，
+                  不会重跑 —— 写成"Schema 重验"就是假的。 */}
+              <small>权限：按当前角色重新收窄 / Schema：沿用检查点已召回的表</small>
+            </div>
+            <div className="revalidation-list">
+              <span className="revalidation-chip">权限：续跑时生效</span>
+              <span className="revalidation-chip">已完成节点：沿用</span>
+            </div>
+          </div>
+
+          {error && <div className="audit-error">{error}</div>}
+
+          <div className="lifecycle-footer">
+            <span className="resume-message">
+              {interrupted
+                ? `已完成节点将直接沿用，不会重新执行 · 已花费 ¥${(result.cost_cny ?? 0).toFixed(4)}`
+                : `执行轮次 ${result.attempts ?? 1} · ${result.multi_step ? '多步' : '单步'} · 判定链路可在审计中心按 trace 复放`}
+            </span>
+            <button className="lifecycle-action" disabled={!interrupted || busy} onClick={resume}
+                    title={interrupted ? undefined : '本次没有可续跑的断点'}>
+              {busy ? '续跑中…' : '补充输入并续跑'}
+            </button>
+          </div>
+        </section>
       </div>
     </div>
   )

@@ -149,7 +149,8 @@ export function QueryWorkspace({ health, sources, onNavigate }: {
 
         {result
           ? <ResultTabs result={result} active={tab} dialect={current.dialect}
-                        onChange={setTab} onResumed={setResult} />
+                        onChange={setTab} onResumed={setResult}
+                        onOpenTrace={() => onNavigate('traces')} />
           : <Welcome mode={mode} schema={schema} usable={usable} onPick={setQuestion} />}
       </section>
 

@@ -1,33 +1,43 @@
 .trust-sidebar { min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
-.assurance-card, .side-card { border: 1px solid var(--line); border-radius: 8px; background: rgba(250,249,245,.83); overflow: hidden; }
-.assurance-hero { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 10px; padding: 12px; color: white; background: var(--dark); }
+.assurance-card, .side-card { border: 1px solid var(--line); border-radius: 9px; background: rgba(250,249,245,.88); box-shadow: 0 10px 28px rgba(19,35,26,.05); overflow: hidden; }
+.assurance-hero { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 11px; padding: 12px; color: white; background: var(--dark); }
 .score-ring { width: 43px; height: 43px; display: grid; place-items: center; border: 3px solid var(--green-2); border-right-color: rgba(255,255,255,.15); border-radius: 50%; font: 700 11px var(--mono); }
 .assurance-hero strong, .assurance-hero small { display: block; }
-.assurance-hero strong { font-size: 9px; }
+.assurance-hero strong { font-size: 10px; }
 .assurance-hero small { margin-top: 3px; color: #a9bbb0; font-size: 7px; }
-.ready-badge { color: #78dca3; font: 6px var(--mono); }
-.assurance-grid { display: grid; grid-template-columns: repeat(3,1fr); }
-.assurance-grid > div, .policy-grid > div { padding: 8px; border-right: 1px solid var(--line); }
-.assurance-grid span, .assurance-grid strong, .policy-grid span, .policy-grid strong { display: block; }
-.assurance-grid span, .policy-grid span { color: var(--muted); font-size: 6px; }
-.assurance-grid strong, .policy-grid strong { margin-top: 3px; font: 7px var(--mono); }
+.ready-badge { padding: 4px 6px; border: 1px solid rgba(82,218,143,.28); border-radius: 99px; color: #6ae5a1; background: rgba(44,179,110,.08); font: 6px var(--mono); }
+.assurance-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; background: var(--line); }
+.assurance-grid > div { padding: 8px; background: var(--paper); }
+.assurance-grid span, .assurance-grid strong { display: block; }
+.assurance-grid span { color: var(--muted); font-size: 6px; }
+.assurance-grid strong { margin-top: 3px; color: var(--green); font: 7px var(--mono); white-space: nowrap; }
 .side-head { display: flex; justify-content: space-between; align-items: center; padding: 9px 10px; border-bottom: 1px solid var(--line); }
 .side-head strong, .side-head small { display: block; }
 .side-head strong { font-size: 8px; }
 .side-head small { margin-top: 2px; color: var(--muted); font-size: 6px; }
-.side-head button { border: 0; color: var(--green); background: transparent; font-size: 6px; }
-.policy-grid { display: grid; grid-template-columns: 1fr 1fr; }
-.evidence-actions { padding: 5px 7px; }
-.evidence-actions button { width: 100%; display: grid; grid-template-columns: 26px 1fr auto; gap: 7px; align-items: center; padding: 6px; border: 0; border-bottom: 1px solid var(--line); background: transparent; text-align: left; }
+.side-head button { border: 0; color: var(--green); background: transparent; font-size: 6px; font-weight: 700; cursor: pointer; }
+.policy-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 6px; padding: 8px; }
+.policy-grid > div { padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.5); }
+.policy-grid span, .policy-grid strong { display: block; }
+.policy-grid span { color: var(--muted); font-size: 6px; }
+.policy-grid strong { margin-top: 2px; font: 7px var(--mono); }
+.evidence-actions { padding: 5px 8px 7px; }
+.evidence-actions button { width: 100%; display: grid; grid-template-columns: 26px 1fr auto; gap: 8px; align-items: center; padding: 7px 6px; border: 0; border-bottom: 1px solid #e1ded5; background: transparent; text-align: left; cursor: pointer; }
+.evidence-actions button:last-child { border-bottom: 0; }
+.evidence-actions button:hover:not(:disabled) { background: var(--green-wash); }
 .evidence-actions button:disabled { opacity: .42; cursor: not-allowed; }
-.evidence-actions i { width: 25px; height: 25px; display: grid; place-items: center; border-radius: 5px; color: var(--green); background: var(--green-wash); font: normal 6px var(--mono); }
-.evidence-actions strong, .evidence-actions small { display: block; font-size: 7px; }
-.evidence-actions small { color: var(--muted); font-size: 6px; }
-.evidence-footer { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); }
-.evidence-footer > div { padding: 7px; }
-.evidence-footer span, .evidence-footer code { display: block; font-size: 5px; }
-.evidence-footer span { color: var(--muted); }
-.audit-link { display: flex; justify-content: space-between; padding: 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--green); background: rgba(255,255,255,.45); font-size: 6px; }
+.evidence-actions i { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 6px; color: var(--green); background: var(--green-wash); font: normal 7px var(--mono); }
+.evidence-actions strong, .evidence-actions small { display: block; }
+.evidence-actions strong { font-size: 7px; }
+.evidence-actions small { margin-top: 2px; color: var(--muted); font-size: 6px; }
+.evidence-actions button > b { color: var(--green); font-size: 10px; font-weight: 500; }
+.evidence-footer { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; border-top: 1px solid var(--line); background: var(--line); }
+.evidence-footer > div { padding: 7px 9px; background: var(--paper-2); }
+.evidence-footer span, .evidence-footer code { display: block; }
+.evidence-footer span { color: var(--muted); font-size: 6px; }
+.evidence-footer code { margin-top: 2px; color: var(--ink-2); font: 6px var(--mono); }
+.audit-link { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-2); background: rgba(255,255,255,.45); font-size: 7px; font-weight: 700; cursor: pointer; }
+.audit-link:hover { color: var(--green); border-color: #9fc3ac; background: var(--green-wash); }
 .stats { display: grid; grid-template-columns: repeat(4,1fr); gap: 10px; margin-bottom: 14px; }
 .stats > div { padding: 13px; border: 1px solid var(--line); border-radius: 8px; background: rgba(250,249,245,.78); }
 .stats span, .stats strong, .stats small { display: block; }
@@ -413,21 +423,22 @@
 .stage-error { margin: 0 13px 10px; }
 
 .result-shell { display: flex; flex-direction: column; min-height: 0; flex: 1; }
-.result-tabs { display: flex; gap: 2px; padding: 0 13px; border-bottom: 1px solid var(--line); }
+/* 栏距 16px、下划线内缩不通栏 —— 与原型结果区一致（原型输入区是 13px，
+   结果区是 16px，这 3px 台阶是原型自带的，不是笔误） */
+.result-tabs { display: flex; margin: 0 16px; border-bottom: 1px solid var(--line); }
 .result-tabs button {
   position: relative;
-  padding: 9px 11px;
+  padding: 8px 10px;
   border: 0; border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
   background: none; color: var(--muted);
   font-size: 8px; cursor: pointer;
 }
-.result-tabs button.active { color: var(--ink); border-bottom-color: var(--green); font-weight: 700; }
+.result-tabs button.active { color: var(--ink); border-bottom-color: var(--green); }
 .tab-dot {
   display: inline-block; width: 5px; height: 5px; margin-left: 5px;
   border-radius: 50%; background: var(--amber);
 }
-.pane { padding: 13px; overflow-y: auto; }
+.pane { padding: 16px; overflow-y: auto; }
 
 .result-meta { margin-bottom: 9px; color: var(--muted); font-size: 7.5px; }
 .warn-chip {
@@ -456,25 +467,10 @@
 .sql-facts span { display: block; color: var(--muted); font-size: 6px; }
 .sql-facts code { display: block; margin-top: 2px; font: 7px var(--mono); word-break: break-all; }
 
-.chain-list { display: grid; gap: 1px; border: 1px solid var(--line); background: var(--line); }
-.chain-row {
-  display: grid; grid-template-columns: 18px minmax(0, 1fr) 90px auto;
-  gap: 9px; align-items: center;
-  padding: 8px 10px; background: var(--paper);
-}
-.chain-dot {
-  display: grid; place-items: center; width: 15px; height: 15px;
-  border-radius: 50%; color: white; background: var(--green-2); font-size: 7px;
-}
-.chain-row.bad .chain-dot { background: var(--red); }
-.chain-main b { font-size: 8px; }
-.chain-main small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
-.chain-bar { height: 4px; border-radius: 3px; background: var(--line); overflow: hidden; }
-.chain-bar i { display: block; height: 100%; background: var(--green-2); }
-.chain-ms { color: var(--muted); font: 7px var(--mono); white-space: nowrap; }
+/* 执行链路页的逐步明细列表（.chain-list / .hit-box）已随组件删除：
+   同一份数据原本在节点链下面又画了一遍，逐步明细现在只在「执行追踪」页出现。 */
+.trace-open { display: flex; justify-content: flex-end; margin-top: 8px; }
 
-.hit-box { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 11px; font-size: 7.5px; }
-.hit-box b { color: var(--muted); font-weight: 400; margin-right: 3px; }
 .tag { padding: 2px 6px; border-radius: 4px; background: var(--paper-2); font: 7px var(--mono); }
 .tag.metric { background: var(--green-wash); color: var(--green); }
 
@@ -495,8 +491,8 @@
 }
 .score-ring.low { background: conic-gradient(var(--amber) calc(var(--ratio, 1) * 360deg), rgba(255,255,255,.18) 0); }
 .score-ring.none { background: rgba(255,255,255,.14); }
-.ready-badge.wait { color: #8d521b; background: var(--amber-wash); }
-.ready-badge.bad { color: var(--red); background: var(--red-wash); }
+.ready-badge.wait { color: #8d521b; border-color: rgba(189,107,32,.30); background: var(--amber-wash); }
+.ready-badge.bad { color: var(--red); border-color: rgba(164,68,53,.30); background: var(--red-wash); }
 
 /* ---------------- 任务中心 ---------------- */
 
