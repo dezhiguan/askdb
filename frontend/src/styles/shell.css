@@ -131,3 +131,5 @@
 .login-form .sso-button:disabled { color: var(--muted); background: var(--paper-2); }
 .login-form .enter-button { border-color: var(--green); color: white; background: var(--green); font-weight: 700; }
 .login-form > small a { display: block; margin-top: 8px; color: var(--green); font-weight: 700; text-decoration: none; }
+/* 开放表数为 0 的运行时源连上了但查不出东西 —— 用灰点区别于可查的绿点 */
+.idle-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }

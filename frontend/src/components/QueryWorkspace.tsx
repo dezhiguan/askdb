@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import {
-  askQuestion, fetchSchema, fetchSources, runSql,
-  type AskResult, type Schema, type SourceCard,
-} from '../api'
+import { askQuestion, fetchSchema, runSql, type AskResult, type Schema } from '../api'
 import type { ResultTab, View } from '../types'
 import type { HealthState } from '../useHealth'
+import type { SourcesState } from '../useSources'
 import { ResultTabs } from './ResultTabs'
 import { TrustSidebar } from './TrustSidebar'
 
@@ -16,8 +14,11 @@ import { TrustSidebar } from './TrustSidebar'
  */
 type Mode = 'ask' | 'sql'
 
-export function QueryWorkspace({ health, onNavigate }: {
+export function QueryWorkspace({ health, sources, onNavigate }: {
   health: HealthState
+  /** 数据源选择与顶栏共用同一份状态 —— 各存一份必然漂移，
+   *  而漂移的表现是"正在查 A 库、顶栏说你在 B 库" */
+  sources: SourcesState
   onNavigate: (view: View) => void
 }) {
   // 用户没显式选过时按能力推导：模型没接就落到直查 ——
@@ -29,14 +30,12 @@ export function QueryWorkspace({ health, onNavigate }: {
   const [error, setError] = useState('')
   const [tab, setTab] = useState<ResultTab>('result')
   const [schema, setSchema] = useState<Schema | null>(null)
-  const [sources, setSources] = useState<SourceCard[]>([])
-  const [sourceId, setSourceId] = useState('')      // 空 = 内置源
+  const { items: sourceCards, sourceId, setSourceId } = sources
   const [menuOpen, setMenuOpen] = useState(false)
 
   useEffect(() => {
     let alive = true
     fetchSchema().then(s => { if (alive) setSchema(s) }).catch(() => {})
-    fetchSources().then(d => { if (alive) setSources(d.items) }).catch(() => {})
     return () => { alive = false }
   }, [])
 
@@ -67,7 +66,7 @@ export function QueryWorkspace({ health, onNavigate }: {
       tables: schema?.tables.length ?? 1,
       dialect: DIALECT[ready?.datasource.type ?? ''] ?? ready?.datasource.type ?? '',
     },
-    ...sources.filter(c => !c.builtin).map(c => ({
+    ...sourceCards.filter(c => !c.builtin).map(c => ({
       id: c.id,
       code: MARK[c.type] ?? c.type.slice(0, 2).toUpperCase(),
       name: c.name,

@@ -1,11 +1,14 @@
 import { navGroups } from '../data/mockData'
 import type { Me } from '../api'
+import type { SourceCard } from '../api'
 import type { HealthState } from '../useHealth'
 import type { View } from '../types'
 
 interface AppShellProps {
   activeView: View
   health: HealthState
+  /** 工作台当前选中的运行时数据源；内置源为 null */
+  source: SourceCard | null
   onNavigate: (view: View) => void
   me: Me | null
   onOpenLogin: () => void
@@ -23,18 +26,34 @@ interface AppShellProps {
 /** 顶栏中段：当前空间。
  *
  *  版式照原型 —— 「当前空间 /」+ 三枚 chip。三枚各自填的是**askdb 真有的东西**：
- *    1. 连的哪个库
- *    2. 库在哪（本机文件 / 本机端口 / 远端主机）
- *    3. 这条连接的只读级别
+ *    1. 正在查哪个库（跟随工作台的数据源切换，不是永远显示内置源）
+ *    2. 库在哪（本机文件 / 本机 / 远端）
+ *    3. 这条连接的性质：运行时源报它自己声明的环境，内置源报 READ-ONLY
  *
  *  原型第二枚写「企业内网」、第三枚写「PROD-RO」。前者是部署事实，askdb 无从得知；
- *  后者只有运行时数据源声明了环境才成立，内置源没有这个信息 —— 一律写 PROD-RO
- *  等于对着测试库宣称"这是生产只读镜像"。
+ *  后者只有数据源自己声明了环境才成立 —— 一律写 PROD-RO 等于对着测试库宣称
+ *  "这是生产只读镜像"。
  *
  *  配置文件路径挪进第一枚 chip 的 title：同一台机器上会同时跑多个实例、界面长得
  *  一模一样，这条信息不能没有，但它不该占顶栏的视觉位置。
  */
-function WorkspaceContext({ health }: { health: HealthState }) {
+function WorkspaceContext({ health, source }: { health: HealthState; source: SourceCard | null }) {
+  // 选了运行时数据源就以它为准 —— /api/health 描述的永远是内置源，
+  // 拿它当"当前空间"会在切换后说谎
+  if (source) {
+    return (
+      <div className="workspace-context">
+        <span>当前空间 /</span>
+        <div className="context-chip" title={`运行时数据源 ${source.id}`}>
+          <i className={source.table_count ? 'online-dot' : 'idle-dot'} />
+          {source.name}
+        </div>
+        <div className="context-chip hide-mobile">{placeOfHost(source.type, source.host)}</div>
+        <div className="context-chip hide-mobile">{ENV_LABEL[source.env] ?? 'READ-ONLY'}</div>
+      </div>
+    )
+  }
+
   if (health.status === 'loading') {
     return (
       <div className="workspace-context">
@@ -63,24 +82,28 @@ function WorkspaceContext({ health }: { health: HealthState }) {
         {datasource.ok && <i className="online-dot" />}
         {datasource.ok ? datasource.detail : '数据源不可用'}
       </div>
-      <div className="context-chip hide-mobile">{placeOf(datasource)}</div>
+      <div className="context-chip hide-mobile">{placeOfHost(datasource.type, datasource.detail)}</div>
+      {/* 内置源没有环境声明。READ-ONLY 对 askdb 的所有连接都成立：
+          duckdb 以 read_only 打开，postgres 会话强制 default_transaction_read_only */}
       <div className="context-chip hide-mobile">READ-ONLY</div>
     </div>
   )
 }
 
-/** 库在哪。duckdb 是本机文件；postgres 看 detail 里的主机是不是回环。 */
-function placeOf(ds: { type: string; detail: string }): string {
-  if (ds.type === 'duckdb') return '本机文件'
-  return /(^|@|\s)(127\.0\.0\.1|localhost)\b/.test(ds.detail) ? '本机' : '远端'
+const ENV_LABEL: Record<string, string> = { prod_ro: 'PROD-RO', test: 'TEST' }
+
+/** 库在哪。duckdb 是本机文件；其余看主机是不是回环地址。 */
+function placeOfHost(type: string, where: string): string {
+  if (type === 'duckdb') return '本机文件'
+  return /(^|@|\s)(127\.0\.0\.1|localhost)\b/.test(where) ? '本机' : '远端'
 }
 
-export function AppShell({ activeView, health, onNavigate, me, onOpenLogin, onSignOut, notice, children }: AppShellProps) {
+export function AppShell({ activeView, health, source, onNavigate, me, onOpenLogin, onSignOut, notice, children }: AppShellProps) {
   return (
     <div className="app-shell">
       <header className="topbar">
         <Brand />
-        <WorkspaceContext health={health} />
+        <WorkspaceContext health={health} source={source} />
         <div className="top-actions">
           <Identity me={me} onOpenLogin={onOpenLogin} onSignOut={onSignOut} />
         </div>

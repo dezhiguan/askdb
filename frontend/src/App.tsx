@@ -13,6 +13,7 @@ import { TracesPage } from './pages/TracesPage'
 import type { ModalName, View } from './types'
 import { fetchMe, logout, type Me } from './api'
 import { useHealth } from './useHealth'
+import { useSources } from './useSources'
 import './styles/theme.css'
 import './styles/shell.css'
 import './styles/components.css'
@@ -29,6 +30,7 @@ function App() {
   const [modal, setModal] = useState<ModalName>(null)
   const [toast, setToast] = useState('')
   const health = useHealth()
+  const sources = useSources()
 
   // 身份与生效边界。登录/退出后必须重新拉一次 —— 可见表变了，
   // 页面上那些「当前能查什么」的显示不跟着变就是在说谎
@@ -41,7 +43,7 @@ function App() {
   }
 
   const page = (() => {
-    if (view === 'query') return <div className="page query-page"><PageHeader eyebrow="Phase 1 · Unified Query" title="查询 Agent" description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。" action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>} /><QueryWorkspace health={health} onNavigate={setView} /></div>
+    if (view === 'query') return <div className="page query-page"><PageHeader eyebrow="Phase 1 · Unified Query" title="查询 Agent" description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。" action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>} /><QueryWorkspace health={health} sources={sources} onNavigate={setView} /></div>
     if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} />
     if (view === 'sources') return <DataSourcesPage health={health} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />
@@ -56,6 +58,7 @@ function App() {
       <AppShell
         activeView={view}
         health={health}
+        source={sources.current}
         onNavigate={setView}
         me={me}
         onOpenLogin={() => setLoginOpen(true)}
