@@ -108,8 +108,8 @@ datasources:
 # 它已经有 JWKS、OAuth token-exchange、应用级 membership 那一整套。
 #
 # 不配 dsn 或 enabled=false 时功能整体关闭，接口返回 404。
-# **对外开放实例必须保持关闭**：askdb 尚未接入登录，写接口没有请求方身份
-# 可依据，只能靠部署方持有的 ASKDB_ADMIN_TOKEN 兜底。
+# **对外开放实例必须保持关闭**：askdb 的登录是固定账号、不携带网关身份，
+# 写接口没有可依据的请求方身份，只能靠部署方持有的 ASKDB_ADMIN_TOKEN 兜底。
 #
 # 这里指向的是 askdb 自己的元数据库，与 datasource 是两个库：
 # datasource 是只读的业务数据源，绝不能往里写。

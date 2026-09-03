@@ -159,8 +159,8 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
               ? (
                 <div className="member-form">
                   <div className="form-note">
-                    登录尚未接入，写接口没有请求方身份可依据，暂由部署方持有的管理员令牌兜底。
-                    令牌只留在内存里，刷新页面即失效。
+                    成员写接口要按网关身份授权，而 auth-gateway 对接尚未落地，暂由部署方
+                    持有的管理员令牌兜底。令牌只留在内存里，刷新页面即失效。
                   </div>
                   <div className="form-row">
                     <input type="password" placeholder="管理员令牌" value={token}

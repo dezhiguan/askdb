@@ -352,6 +352,9 @@ of why scores measured on a database you built yourself can mislead.
 | P4 | MCP packaging (stateless spec) | 2026-08-28 | ✅ |
 | P5 | Multi-step query planning (R-15…R-17), ablation group F | 2026-09-02 | ✅ |
 | P6 | Audit & replay page; `/api/replay` per the replay-API design (field allowlist + dual kill-switch); every call — including blocked ones and direct SQL — now leaves one audit record; optional LangSmith wiring | 2026-08-24 | ✅ |
+| P7 | Login (fixed accounts, stateless session), role-based scoping enforced on every query path, and a role-membership registry (write path gated by a deployment-held admin token until auth-gateway identity is wired) | 2026-09-02 | ✅ |
+
+> **Not yet built:** binding members to real **auth-gateway** identities (JWKS / token-exchange) — until then login uses fixed accounts and member writes fall back to a shared admin token. Datasources are limited to DuckDB and PostgreSQL. Multi-step planning (P5) ships but is off by default (ablation F).
 
 > **No unmeasured metric appears in this README.** Every figure above was actually run,
 > published alongside the held-out set score and the unfiltered distribution of failure categories.
