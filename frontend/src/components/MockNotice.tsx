@@ -22,11 +22,6 @@ const NOTICES: Partial<Record<View, Notice>> = {
   // 质量中心：版式先按设计稿落地，页面上的数字一律来自设计稿。
   // 后端其实已经有这两份数据（/api/audit/stats 与 /api/eval），这一版有意没接 ——
   // 接上之后删掉本条即可。
-  evaluation: {
-    phase: 'Production · Agent Quality',
-    backend: '页面按设计稿落地，尚未接入 /api/audit/stats 与 /api/eval；'
-      + '所有数字都是设计稿上的示例，不是本实例的运行结果。',
-  },
 }
 
 export function MockNotice({ view }: { view: View }) {

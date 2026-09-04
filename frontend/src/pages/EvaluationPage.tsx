@@ -23,12 +23,23 @@ import { STEP_NAMES } from '../traceSteps'
 type Scope = 'runtime' | 'online' | 'offline' | 'dataset'
 type Category = 'overview' | 'accuracy' | 'security' | 'stability' | 'performance'
 
-const SCOPES: { key: Scope; icon: string; title: string; sub: string; tag: string }[] = [
-  { key: 'runtime', icon: 'OPS', title: '运行总览', sub: '当前生产 Agent 的持续健康状态', tag: 'HEALTHY' },
-  { key: 'online', icon: 'LIVE', title: '线上质量', sub: '生产 Trace、Span 与实际用户反馈', tag: '4,286 RUNS' },
-  { key: 'offline', icon: 'OFF', title: '离线回归', sub: '候选版本上线前的黄金集验证', tag: '126 CASES' },
-  { key: 'dataset', icon: 'SET', title: '评测集', sub: '黄金问题、标准答案与回归结果', tag: 'V12' },
+/** 四个范围。角标**跟着真数据走** —— 设计稿里是写死的 HEALTHY / 4,286 RUNS /
+ *  126 CASES / V12，那正是最容易被当成真数字看的位置：它就贴在导航上，
+ *  不点进去也会被读到。 */
+const SCOPES: { key: Scope; icon: string; title: string; sub: string }[] = [
+  { key: 'runtime', icon: 'OPS', title: '运行总览', sub: '本实例最近的真实调用' },
+  { key: 'online', icon: 'LIVE', title: '线上质量', sub: '按审计记录统计，不用黄金集分母' },
+  { key: 'offline', icon: 'OFF', title: '离线回归', sub: '黄金集验证结果' },
+  { key: 'dataset', icon: 'SET', title: '评测集', sub: '黄金问题、期望与本轮结果' },
 ]
+
+/** 角标由实时数据算，没有就显示「—」，不留写死值 */
+function scopeTag(key: Scope, live: LiveQuality | null, offline: OfflineQuality | null): string {
+  if (key === 'runtime') return live ? `${live.days}D` : '—'
+  if (key === 'online') return live ? `${live.runs.toLocaleString()} RUNS` : '—'
+  if (key === 'offline') return offline?.blind ? `${offline.blind.n} CASES` : '—'
+  return offline?.golden ? `${offline.golden.total} 条` : '—'
+}
 
 const CATEGORIES: { key: Category; label: string }[] = [
   { key: 'overview', label: '评测总览' },
@@ -141,7 +152,7 @@ export function EvaluationPage() {
           >
             <i className="eval-scope-icon">{item.icon}</i>
             <span><strong>{item.title}</strong><small>{item.sub}</small></span>
-            <code>{item.tag}</code>
+            <code>{scopeTag(item.key, live, offline)}</code>
           </button>
         ))}
       </div>

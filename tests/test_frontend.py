@@ -480,3 +480,43 @@ def test_glossary_surfaces_discrimination():
     src = _code_only(GLOSSARY_PAGE)
     assert "checkMetrics" in src, "没有接区分度核对接口"
     assert "metric.grain" in src, "粒度没有在详情里展示"
+
+
+EVALUATION_PAGE = FRONTEND_SRC / "pages" / "EvaluationPage.tsx"
+
+
+def test_quality_center_is_wired_to_real_endpoints():
+    src = _code_only(EVALUATION_PAGE)
+    for fn in ("fetchLiveQuality", "fetchOfflineQuality"):
+        assert fn in src, f"质量中心没有调用 {fn}"
+
+    notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
+    assert "evaluation:" not in notices, "质量中心已接真实数据，MockNotice 里的条目要删掉"
+
+
+def test_quality_center_invents_no_composite_score():
+    """设计稿有「离线质量分 92.9/100」「综合健康分 97.6/100」与「允许发布」门禁。
+
+    那是四个维度按 40/25/20/15 加权合成的，而**这组权重没有任何依据** ——
+    编一个出来等于替看的人下"能不能发布"的判断，而这一页正是拿来做这个决定的。
+    版本号（v2.4 / v2.3）同理：askdb 没有版本概念，结果文件里也没有该字段。
+    """
+    src = _code_only(EVALUATION_PAGE)
+    for invented in ("92.9", "97.6", "4,286", "126 CASES", "v2.4", "v2.3", "允许发布"):
+        assert invented not in src, f"质量中心出现了没有来源的数字或判语：{invented}"
+
+
+def test_quality_center_shows_where_the_score_came_from():
+    """同一份代码会部署成多个实例。拿别的库跑出来的成绩当本实例的，
+    比没有成绩更糟 —— /api/eval 一直返回 provenance.matches_current，
+    这一页必须把它显示出来。
+    """
+    src = _code_only(EVALUATION_PAGE)
+    assert "matches_current" in src, "没有显示成绩出处是否与当前数据源一致"
+
+
+def test_quality_center_does_not_treat_unrun_cases_as_passed():
+    """盲测只跑黄金集的一部分。把没跑到的算成"没失败所以通过"，
+    会让覆盖面与通过率一起虚高。"""
+    src = _code_only(EVALUATION_PAGE)
+    assert "c.passed === null" in src, "未跑用例必须与通过区分开"
