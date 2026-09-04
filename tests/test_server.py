@@ -446,3 +446,19 @@ def test_metrics_check_skips_what_it_cannot_compare(client, cfg):
     items = client.get("/api/metrics/check").json()["items"]
     assert items[0]["status"] == "skipped"
     assert "naive" in items[0]["detail"]
+
+
+def test_eval_reports_golden_set_composition(client):
+    """质量中心要回答"这套成绩覆盖了几类场景"，而盲测只跑黄金集的一部分。
+
+    只报其一都会让人误判覆盖面：报全集会高估（那些没跑），报盲测数会低估
+    （评测集本身更大）。所以两个数一起给，页面并排显示。
+    """
+    d = client.get("/api/eval").json()
+    if not d.get("available"):
+        pytest.skip("本机没有评测结果文件")
+
+    g = d.get("golden")
+    assert g, "缺少黄金集构成"
+    assert g["total"] >= g["blind_n"], "全集不可能少于盲测实跑数"
+    assert sum(g["by_category"].values()) == g["total"], "类别分布与总数对不上"

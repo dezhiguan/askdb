@@ -791,6 +791,28 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
              "question": qmap.get(o["id"], "")}
             for o in (bd.get("outcomes") or []) if not o.get("passed")
         ]
+        # 黄金集构成。盲测只跑其中一部分（blind 标记的那些），
+        # 而设计稿要回答"这套成绩覆盖了几类场景" —— 把**全集**与**本次跑了多少**
+        # 一起给出去：只报其一都会让人误判覆盖面。
+        if qmap or gpath:
+            gp = cfg.root / gpath if gpath else None
+            cases = []
+            if gp and gp.exists():
+                for line in gp.read_text(encoding="utf-8").splitlines():
+                    if line.strip():
+                        cases.append(_json.loads(line))
+            if cases:
+                by_cat: dict[str, int] = {}
+                for c in cases:
+                    k = str(c.get("category") or "未分类")
+                    by_cat[k] = by_cat.get(k, 0) + 1
+                out["golden"] = {
+                    "path": gpath,
+                    "total": len(cases),
+                    "blind_n": sum(1 for c in cases if c.get("blind")),
+                    "by_category": dict(sorted(by_cat.items(), key=lambda kv: -kv[1])),
+                }
+
         # 复现必须用同一份配置：检查点库跟着配置走
         out["replay_config"] = (bd.get("provenance") or {}).get("config", "")
         out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）
