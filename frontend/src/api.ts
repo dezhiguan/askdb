@@ -657,3 +657,103 @@ export async function fetchTasks(): Promise<TasksResult> {
   const body = await response.json()
   return { status: 'ok', items: body.items, user: body.user }
 }
+
+/* ---------------- Agent 质量中心 ---------------- */
+
+/** 一个执行节点的聚合。数据来自审计记录里的 steps —— 端到端慢在哪一段，
+ *  只能靠它回答。 */
+export interface QualityNode {
+  step: string
+  calls: number
+  success_rate: number | null
+  p50_ms: number | null
+  p95_ms: number | null
+  tok: number
+}
+
+export interface LiveQuality {
+  days: number
+  runs: number
+  ok: number
+  /** 被护栏拦下的次数。**与 failed 分开看** —— 拦截是护栏在做对事，不是故障 */
+  blocked: number
+  /** 执行类失败（数据源异常、模型调用失败） */
+  failed: number
+  success_rate: number | null
+  block_rate: number | null
+  p50_ms: number | null
+  p95_ms: number | null
+  avg_tok: number | null
+  cost_cny: number
+  avg_cost_cny: number | null
+  by_rule: Record<string, number>
+  nodes: QualityNode[]
+}
+
+export async function fetchLiveQuality(days: number): Promise<LiveQuality> {
+  const response = await fetch(`/api/quality/live?days=${days}`)
+  if (!response.ok) throw new Error(`/api/quality/live ${response.status}`)
+  return response.json()
+}
+
+/** 离线回归结果。available:false 时页面显示「尚未运行」，不编数字。 */
+export interface OfflineQuality {
+  available: boolean
+  /** 这组成绩出自哪个数据源、是不是当前这个。matches_current 为 false 时
+   *  必须显眼提示 —— 否则会拿别的库的成绩当本实例的。 */
+  provenance?: {
+    config?: string
+    datasource?: string
+    model?: string
+    golden?: string
+    n_cases?: number
+    current_datasource?: string
+    matches_current?: boolean
+  }
+  blind?: {
+    n: number
+    accuracy: number
+    false_reject: number
+    block_rate: number
+    multi_misuse: number
+    p95_ms: number
+    cost_cny: number
+    failure_kinds: Record<string, number>
+  }
+  /** 消融分组 A–F：同一黄金集下逐层加能力的对照 */
+  groups?: {
+    key: string
+    label: string
+    n: number
+    accuracy: number
+    false_reject: number
+    cost_cny: number
+    p95_ms: number
+    rerun: boolean
+    vs_base: { delta: number; n: number } | null
+  }[]
+  /** 黄金集构成：全集与本次盲测实跑数一起给 */
+  golden?: {
+    path: string
+    total: number
+    blind_n: number
+    by_category: Record<string, number>
+  }
+  failures?: {
+    id: string
+    category: string
+    reason: string
+    detail: string
+    trace_id: string
+    question: string
+  }[]
+  replay_config?: string
+  /** 当前默认配置对应的消融组 */
+  shipped?: string
+}
+
+export async function fetchOfflineQuality(): Promise<OfflineQuality> {
+  const response = await fetch('/api/eval')
+  if (!response.ok) throw new Error(`/api/eval ${response.status}`)
+  return response.json()
+}
