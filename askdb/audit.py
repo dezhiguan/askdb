@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -242,4 +243,84 @@ def stats(path: Path, days: int = 30) -> dict[str, Any]:
         "by_kind": by_kind,
         "by_rule": dict(sorted(by_rule.items(), key=lambda kv: -kv[1])),
         "by_model": dict(sorted(by_model.items(), key=lambda kv: -kv[1]["cost_cny"])),
+    }
+
+
+def _pctl_of(values: list[int], q: float) -> int | None:
+    """按最近秩取分位。样本少时等于某个真实观测值 —— 见 _percentile 的说明。"""
+    return _percentile(sorted(values), q)
+
+
+def quality(path: Path, days: int = 1) -> dict[str, Any]:
+    """线上运行质量：按**真实调用**算，不用黄金集分母。
+
+    与 stats() 的分工：stats 服务审计页（流水、成本、按规则分布），
+    这里服务质量中心 —— 多出来的是**按节点聚合**，那是设计稿里那张
+    「工具/节点」表的数据来源，而它一直只能靠审计记录里的 steps 算出来。
+
+    「成功」的口径写死在这里，不留解释空间：一次调用被护栏拦下（rejected_by
+    非空）或执行失败，都算没成功。拦截是护栏干活、不是故障，所以两者分开报 ——
+    把拦截混进失败率，会让"护栏越有效、质量看起来越差"。
+    """
+    cutoff = datetime.now().astimezone() - timedelta(days=days)
+    recent = [r for r in read_records(path)
+              if (t := _parse_ts(str(r.get("ts", "")))) is not None and t >= cutoff]
+
+    runs = len(recent)
+    blocked = sum(1 for r in recent if r.get("rejected_by"))
+    # 执行类失败（数据源异常、模型调用失败）与护栏拦截是两回事
+    failed = sum(1 for r in recent if r.get("rejected_by") in ("EXEC", "LLM"))
+    ok = runs - blocked
+
+    elapsed = [int(r.get("elapsed_ms") or 0) for r in recent]
+    tok = [int(r.get("tok_in") or 0) + int(r.get("tok_out") or 0) for r in recent]
+    costs = [float(r.get("cost_cny") or 0) for r in recent]
+
+    # ---- 按节点聚合 ----
+    nodes: dict[str, dict[str, Any]] = {}
+    for r in recent:
+        for s in (r.get("steps") or []):
+            name = str(s.get("step", ""))
+            if not name:
+                continue
+            e = nodes.setdefault(name, {"calls": 0, "ok": 0, "ms": [], "tok": 0})
+            e["calls"] += 1
+            if s.get("status") == "ok":
+                e["ok"] += 1
+            e["ms"].append(int(s.get("ms") or 0))
+            e["tok"] += int(s.get("tok_in") or 0) + int(s.get("tok_out") or 0)
+
+    node_rows = [
+        {
+            "step": name,
+            "calls": e["calls"],
+            "success_rate": round(e["ok"] / e["calls"], 4) if e["calls"] else None,
+            "p50_ms": _pctl_of(e["ms"], 0.5),
+            "p95_ms": _pctl_of(e["ms"], 0.95),
+            "tok": e["tok"],
+        }
+        for name, e in nodes.items()
+    ]
+    # 按 P95 倒序：这张表是拿来找延迟贡献最大的那一段的
+    node_rows.sort(key=lambda d: (d["p95_ms"] or 0), reverse=True)
+
+    return {
+        "days": days,
+        "runs": runs,
+        "ok": ok,
+        "blocked": blocked,
+        "failed": failed,
+        # 成功率的分母是全部调用；拦截单列，不混进失败
+        "success_rate": round(ok / runs, 4) if runs else None,
+        "block_rate": round(blocked / runs, 4) if runs else None,
+        "p50_ms": _pctl_of(elapsed, 0.5),
+        "p95_ms": _pctl_of(elapsed, 0.95),
+        "avg_tok": round(sum(tok) / runs) if runs else None,
+        "cost_cny": round(sum(costs), 6),
+        "avg_cost_cny": round(sum(costs) / runs, 6) if runs else None,
+        # 拦截按规则分布，多的在前 —— 这张表回答的是"护栏主要在挡什么"
+        "by_rule": dict(sorted(
+            Counter(str(r["rejected_by"]) for r in recent if r.get("rejected_by")).items(),
+            key=lambda kv: -kv[1])),
+        "nodes": node_rows,
     }

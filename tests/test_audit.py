@@ -253,3 +253,62 @@ def test_latency_percentiles_none_when_no_calls(tmp_path: Path):
     s = audit.stats(p, days=30)
     assert s["calls"] == 0
     assert s["elapsed_p50_ms"] is None and s["elapsed_p95_ms"] is None
+
+
+def test_quality_separates_blocks_from_failures(tmp_path):
+    """护栏拦截不能混进失败率。
+
+    混在一起会让「护栏越有效、质量看起来越差」—— 而拦一次危险 SQL 恰恰是
+    这个产品在做对事，不是故障。所以 blocked 与 failed 分开报，
+    success_rate 的分母是全部调用、分子是没被拦下的那些。
+    """
+    import json
+
+    from askdb.audit import quality
+    from askdb.trace import now_iso
+
+    p = tmp_path / "a.jsonl"
+    recs = [
+        {"trace_id": "a" * 12, "ts": now_iso(), "rejected_by": None, "elapsed_ms": 100,
+         "steps": [{"step": "guard", "ms": 5, "status": "ok"}]},
+        {"trace_id": "b" * 12, "ts": now_iso(), "rejected_by": "R-02", "elapsed_ms": 10,
+         "steps": [{"step": "guard", "ms": 3, "status": "blocked"}]},
+        {"trace_id": "c" * 12, "ts": now_iso(), "rejected_by": "EXEC", "elapsed_ms": 50,
+         "steps": [{"step": "execute", "ms": 40, "status": "failed"}]},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in recs), encoding="utf-8")
+
+    q = quality(p, days=1)
+    assert q["runs"] == 3
+    assert q["blocked"] == 2          # R-02 与 EXEC 都算"没成功"
+    assert q["failed"] == 1           # 但只有 EXEC 是执行失败
+    assert q["success_rate"] == round(1 / 3, 4)
+    assert q["by_rule"] == {"R-02": 1, "EXEC": 1}
+
+
+def test_quality_aggregates_by_node(tmp_path):
+    """按节点聚合是这个接口存在的理由 —— 端到端慢在哪一段只能靠它回答。
+
+    数据一直躺在审计记录的 steps 里，此前没有任何接口把它取出来。
+    """
+    import json
+
+    from askdb.audit import quality
+    from askdb.trace import now_iso
+
+    p = tmp_path / "a.jsonl"
+    recs = [
+        {"trace_id": f"{i:012x}", "ts": now_iso(), "elapsed_ms": 100, "steps": [
+            {"step": "generate_sql", "ms": 1000 + i, "status": "ok", "tok_in": 10, "tok_out": 5},
+            {"step": "guard", "ms": 2, "status": "ok" if i else "blocked"},
+        ]}
+        for i in range(4)
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in recs), encoding="utf-8")
+
+    nodes = {n["step"]: n for n in quality(p, days=1)["nodes"]}
+    assert nodes["generate_sql"]["calls"] == 4
+    assert nodes["generate_sql"]["tok"] == 60          # (10+5) × 4
+    assert nodes["guard"]["success_rate"] == 0.75      # 四次里一次 blocked
+    # 按 P95 倒序 —— 这张表是拿来找延迟贡献最大的那一段的
+    assert quality(p, days=1)["nodes"][0]["step"] == "generate_sql"

@@ -370,6 +370,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             ],
         }
 
+    @app.get("/api/quality/live")
+    def quality_live(request: Request, days: int = 1) -> dict[str, Any]:
+        """线上运行质量 —— 按**真实调用**统计，不用黄金集分母。
+
+        与 /api/audit/stats 的分工：那个服务审计页（流水、成本、按规则分布），
+        这里多出来的是**按节点聚合**（次数、成功率、P50/P95、token）。
+        节点数据一直躺在审计记录的 steps 里，此前没有任何接口把它取出来 ——
+        而"端到端慢在哪一段"只能靠它回答。
+        """
+        from .audit import quality as _quality
+
+        # 窗口按天，上限 90 —— 审计是全量读文件，放开会让这个接口变成慢查询
+        days = max(1, min(int(days), 90))
+        return _quality(cfg.audit_log, days=days)
+
     @app.get("/api/metrics/check")
     def metrics_check(request: Request) -> dict[str, Any]:
         """逐条核对业务口径的**区分度**：按定义算 vs 凭直觉算，差多少。
