@@ -638,6 +638,42 @@ def _ensure_graph(cfg: Config):
     return _GRAPH
 
 
+def is_resumable(thread_id: str, cfg: Config) -> bool | None:
+    """这条线程现在还能不能续跑。True/False；查不到检查点库时返回 None。
+
+    判定与 resume() 同源（values 有、next 非空），避免"任务中心说能续、
+    点下去 404"这种分叉 —— 审计记录只知道上次以 INTERRUPTED 收尾，
+    不知道现场到底有没有落盘，也不知道后来是不是已经被续跑跑完了。
+    """
+    try:
+        snap = _ensure_graph(cfg).get_state(
+            {"configurable": {"thread_id": thread_id}})
+    except Exception:                 # noqa: BLE001
+        return None
+    return bool(snap.values and snap.next)
+
+
+def _interrupt_hint(cfg: Config, thread_id: str) -> str:
+    """中断提示语必须**先看现场在不在**，再决定要不要承诺可以续跑。
+
+    中断的成因之一就是检查点库本身出问题（写不进去）。那种情况下这条线程
+    一条检查点都没有，续跑必然 404 —— 而此前这里无条件写着「判定现场已存入
+    检查点，可从断点续跑」，把用户指向一条走不通的路。
+
+    判定口径与 resume() 保持一致（values 有、next 非空才算可续跑），
+    否则两边对"可不可以续跑"的看法会分叉。
+    """
+    state = is_resumable(thread_id, cfg)
+    if state is None:
+        # 检查点库还没恢复，问不出来。不猜 —— 猜错哪一边都是误导。
+        return ("现场是否落盘暂时查不到（检查点库仍不可用）。"
+                "稍后到任务中心看这条线程是否标为可续跑。")
+    if state:
+        return "判定现场已存入检查点，可从断点续跑；续跑另计一次每日配额。"
+    return ("本次中断发生在写检查点之前，现场没有落盘，无法续跑 —— "
+            "请重新提问。")
+
+
 def _audit_of(result: AskResult, cfg: Config, kind: str,
               explain_rows: Any = None) -> dict[str, Any]:
     """审计记录统一在这里成形 —— ask / resume / 中断三条路共用一个形状。"""
@@ -733,7 +769,7 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
             ok=False, question=question, trace_id=trace_id, org_id=org,
             thread_id=thread_id, rejected_by="INTERRUPTED",
             error=f"任务在执行中中断：{interrupted}",
-            hint="判定现场已存入检查点，可从断点续跑；续跑另计一次每日配额。",
+            hint=_interrupt_hint(cfg, thread_id),
             steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
             tok_in=tok_in, tok_out=tok_out,
             cost_cny=cost_cny(tok_in, tok_out, cfg.llm),
