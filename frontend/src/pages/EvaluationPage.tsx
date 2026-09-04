@@ -150,9 +150,10 @@ export function EvaluationPage() {
       {scope === 'runtime' && <RuntimeScope live={live} offline={offline} days={days} />}
       {scope === 'online' && <OnlineScope live={live} days={days} />}
       {scope === 'offline' && (
-        <OfflineScope category={category} onCategory={setCategory} onDataset={() => setScope('dataset')} />
+        <OfflineScope category={category} onCategory={setCategory}
+                      onDataset={() => setScope('dataset')} offline={offline} />
       )}
-      {scope === 'dataset' && <DatasetScope />}
+      {scope === 'dataset' && <DatasetScope offline={offline} />}
     </div>
   )
 }
@@ -363,251 +364,359 @@ const RULE_BRIEF: Record<string, string> = {
   INTERRUPTED: '执行中断',
 }
 
-function OfflineScope({ category, onCategory, onDataset }: {
+function OfflineScope({ category, onCategory, onDataset, offline }: {
   category: Category
-  onCategory: (value: Category) => void
+  onCategory: (c: Category) => void
   onDataset: () => void
+  offline: OfflineQuality | null
 }) {
-  return (
-    <>
-      <div className="eval-context">
-        <div className="eval-context-copy">
-          <i className="eval-context-mark">QA</i>
-          <div>
-            <strong>核心问数黄金集 · V12</strong>
-            <small>126 个问题 · 6 类场景 · 真实模型与工具在隔离环境执行</small>
-          </div>
+  if (!offline) return <p className="drawer-note">读取离线回归结果…</p>
+  if (!offline.available) {
+    return (
+      <section className="eval-scope-panel active">
+        <div className="eval-note">
+          <strong>尚未跑过离线回归</strong>
+          <p>
+            这一页的每个数字都来自 <span className="mono">evals/results/</span> 下的结果文件。
+            没跑过就没有结果 —— 不会拿线上统计冒充，也不会显示 0。
+          </p>
+          <pre className="sql-code">python -m evals.golden -c config/askdb.yaml</pre>
         </div>
-        <div className="eval-context-meta">
-          <span>最近评测 <b>今天 17:40</b></span>
-          <span>基线 <b>v2.3</b></span>
-          <span className="status">READY</span>
-        </div>
-      </div>
+      </section>
+    )
+  }
 
-      <div className="eval-tabs" role="tablist" aria-label="离线评测分类">
+  return (
+    <section className="eval-scope-panel active" aria-label="离线回归">
+      <Provenance p={offline.provenance} />
+      <div className="eval-tabs" role="tablist">
         {CATEGORIES.map(item => (
           <button
             className={`eval-tab ${category === item.key ? 'active' : ''}`}
             type="button" role="tab" aria-selected={category === item.key}
-            key={item.key}
-            onClick={() => onCategory(item.key)}
+            key={item.key} onClick={() => onCategory(item.key)}
           >{item.label}</button>
         ))}
       </div>
 
-      {category === 'overview' && <OverviewPanel onDataset={onDataset} />}
-      {category === 'accuracy' && <AccuracyPanel />}
-      {category === 'security' && <SecurityPanel />}
-      {category === 'stability' && <StabilityPanel />}
-      {category === 'performance' && <PerformancePanel />}
+      {category === 'overview' && <OverviewPanel d={offline} onDataset={onDataset} />}
+      {category === 'accuracy' && <AccuracyPanel d={offline} />}
+      {category === 'security' && <SecurityPanel d={offline} />}
+      {category === 'stability' && <NotMeasured
+        title="稳定性未被离线回归测量"
+        items={[
+          '重试恢复率 —— 需要在评测里注入连接超时、限流等瞬时故障',
+          '断点恢复率 —— 需要构造中断样本再走 /api/resume 续跑',
+          '故障注入（数据库超时 / 模型限流 / Schema 漂移）—— 需要故障注入框架',
+        ]}
+        hint="线上执行成功率与失败分布在「线上质量」里是真数据，可先看那一页。"
+      />}
+      {category === 'performance' && <PerformancePanel d={offline} />}
+    </section>
+  )
+}
+
+/** 成绩的出处。**这组数字算不算数全看它** ——
+ *  同一份代码会部署成多个实例，拿别的库跑出来的成绩当本实例的，
+ *  比没有成绩更糟。 */
+function Provenance({ p }: { p: OfflineQuality['provenance'] }) {
+  if (!p) return null
+  const same = p.matches_current
+  return (
+    <div className={`notice ${same ? 'info' : 'bad'} grain-note`}>
+      <div className="t">{same ? '成绩出自当前数据源' : '成绩出自另一个数据源'}</div>
+      <div className="why">
+        跑于 <span className="mono">{p.datasource || '—'}</span>
+        ，配置 <span className="mono">{p.config || '—'}</span>
+        ，模型 <span className="mono">{p.model || '—'}</span>。
+        {!same && <> 当前连的是 <span className="mono">{p.current_datasource || '—'}</span> ——
+          <b>这组分数不能代表本实例</b>，换库后需要重跑。</>}
+      </div>
+    </div>
+  )
+}
+
+function OverviewPanel({ d, onDataset }: { d: OfflineQuality; onDataset: () => void }) {
+  const b = d.blind!
+  const kinds = Object.entries(b.failure_kinds || {})
+  return (
+    <>
+      <div className="eval-score-grid">
+        <ScoreCard label="盲测准确率" tag={`${b.n} CASES`} value={pct(b.accuracy)} unit=""
+                   note="按执行结果判定，不要求 SQL 字符串相同" bars={[]} />
+        <ScoreCard label="误拒率" tag="FALSE REJECT" value={pct(b.false_reject)} unit=""
+                   note="本该能答却被护栏挡下的比例，越低越好" bars={[]} />
+        <ScoreCard label="该拒即拒" tag="BLOCK" value={pct(b.block_rate)} unit=""
+                   note="应当被拦的用例里实际拦下的比例" bars={[]} />
+        <ScoreCard label="P95 耗时" tag="OFFLINE" value={fmtMs(b.p95_ms)} unit=""
+                   note={`本轮总成本 ¥${b.cost_cny}`} bars={[]} />
+      </div>
+
+      {d.golden && (
+        <article className="eval-card">
+          <div className="eval-card-head">
+            <div>
+              <strong>评测集构成</strong>
+              <small>
+                全集 {d.golden.total} 条 · 本轮盲测实跑 {d.golden.blind_n} 条 ——
+                两个数一起看才不会误判覆盖面
+              </small>
+            </div>
+            <button className="ghost" type="button" onClick={onDataset}>查看评测集</button>
+          </div>
+          <div className="eval-dimension-list">
+            {Object.entries(d.golden.by_category).map(([k, n]) => (
+              <Dimension key={k} label={`${CATEGORY_CN[k] ?? k} · ${n} 条`}
+                         pct={Math.round(n / d.golden!.total * 100)} value={String(n)} />
+            ))}
+          </div>
+        </article>
+      )}
+
+      {kinds.length > 0 && (
+        <article className="eval-card">
+          <div className="eval-card-head">
+            <div><strong>失败聚类</strong><small>按失败原因归类 · 逐条可复现</small></div>
+          </div>
+          <div className="eval-dimension-list">
+            {kinds.map(([k, n]) => (
+              <Dimension key={k} label={`${k} · ${n} 条`}
+                         pct={Math.round(n / b.n * 100)} value={String(n)} />
+            ))}
+          </div>
+        </article>
+      )}
+
+      <FailureTable d={d} />
     </>
   )
 }
 
-function OverviewPanel({ onDataset }: { onDataset: () => void }) {
+/** 待改进样本。每条都带 trace_id 与复现命令 ——
+ *  设计稿写着"点击 Trace 可定位具体节点"，那条能力必须真的给出入口，
+ *  否则就是说有而不给用。 */
+function FailureTable({ d }: { d: OfflineQuality }) {
+  const rows = d.failures ?? []
+  if (!rows.length) return null
   return (
-    <section className="eval-panel active">
-      <div className="eval-score-grid">
-        <ScoreCard label="离线质量分" tag="发布门禁 ≥ 90" value="92.9" unit="/ 100"
-                   note="↑ 2.1 较 v2.3 基线" bars={[38, 45, 52, 48, 68, 75, 84]} />
-        <ScoreCard label="任务成功率" tag="118 / 126" value="93.7" unit="%"
-                   note="↑ 2.1% · 8 个失败样本" bars={[52, 58, 61, 67, 64, 79, 88]} />
-        <ScoreCard label="结果准确率" tag="RESULT MATCH" value="92.8" unit="%"
-                   note="↑ 1.4% · 按执行结果判定" bars={[44, 55, 53, 66, 72, 70, 83]} />
-        <ScoreCard label="工具调用成功率" tag="离线 · 468 / 474" value="98.7" unit="%"
-                   note="↑ 0.6% · 6 次调用失败" bars={[65, 69, 74, 72, 80, 86, 94]} />
+    <article className="eval-card">
+      <div className="eval-card-head">
+        <div><strong>待改进样本</strong><small>{rows.length} 条 · 每条可按 trace 原样复现</small></div>
       </div>
-      <div className="eval-two-col">
+      <div className="eval-table-wrap">
+        <table>
+          <thead><tr><th>评测问题</th><th>类别</th><th>失败原因</th><th>复现</th></tr></thead>
+          <tbody>
+            {rows.map(f => (
+              <tr key={f.id}>
+                <td className="audit-question" title={f.question}>{f.question || f.id}</td>
+                <td>{CATEGORY_CN[f.category] ?? f.category}</td>
+                <td title={f.detail}>{f.reason}</td>
+                <td className="mono">
+                  {f.trace_id
+                    ? <code>askdb replay {f.trace_id}{d.replay_config ? ` -c ${d.replay_config}` : ''}</code>
+                    : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  )
+}
+
+function AccuracyPanel({ d }: { d: OfflineQuality }) {
+  const b = d.blind!
+  const groups = d.groups ?? []
+  return (
+    <>
+      <div className="eval-metric-grid">
+        <MetricCard label="盲测准确率" value={pct(b.accuracy)}
+                    note="按执行结果判定 —— 等价 SQL 会通过结果比对，不要求字符串相同" />
+        <MetricCard label="多步误用率" value={pct(b.multi_misuse)}
+                    note="本该单步却拆成多步的比例" />
+      </div>
+
+      {/* 设计稿这里还有「业务口径命中率」与「回答忠实度」两项。
+          评测目前不计算它们 —— 前者要逐条比对注入的口径有没有被真的用上，
+          后者要判断结论能否由结果集完整支撑，两者都需要额外的判定器。
+          留空位比编一个数诚实。 */}
+      <NotMeasured
+        title="这两项评测尚未计算"
+        items={[
+          '业务口径命中率 —— 需要逐条比对：命中的口径定义有没有真的进入最终 SQL',
+          '回答忠实度 —— 需要判定结论能否由结果集完整支撑，无额外推断',
+        ]}
+        hint="口径本身是否有区分度，可在「业务口径」页按真实数据核对。"
+      />
+
+      {groups.length > 0 && (
         <article className="eval-card">
           <div className="eval-card-head">
-            <div><strong>离线发布门禁</strong><small>仅用于判断候选版本能否上线，不代表生产运行健康</small></div>
-            <span className="status">允许发布</span>
-          </div>
-          <div className="eval-card-body">
-            <Dimension label="准确性 · 40%" pct={93} value="92.8" />
-            <Dimension label="安全合规 · 25%" pct={99} value="99.1" />
-            <Dimension label="稳定性 · 20%" pct={95} value="94.7" />
-            <Dimension label="性能成本 · 15%" pct={85} value="84.6" />
-          </div>
-        </article>
-        <article className="eval-card">
-          <div className="eval-card-head">
-            <div><strong>最近回归记录</strong><small>同一黄金集下的版本对比</small></div>
-            <button className="ghost" type="button" onClick={onDataset}>查看评测集</button>
-          </div>
-          <div className="eval-card-body">
-            <div className="eval-run">
-              <i className="eval-run-id">2.4</i>
-              <div><strong>Agent v2.4 · 当前版本</strong><small>126 CASES · 今天 17:40</small></div>
-              <span className="eval-run-score eval-pass">92.9 PASS</span>
-            </div>
-            <div className="eval-run">
-              <i className="eval-run-id">2.3</i>
-              <div><strong>Agent v2.3 · 线上基线</strong><small>126 CASES · 09-02 18:20</small></div>
-              <span className="eval-run-score">90.8 PASS</span>
-            </div>
-            <div className="eval-run">
-              <i className="eval-run-id">2.2</i>
-              <div><strong>Agent v2.2</strong><small>118 CASES · 08-28 16:05</small></div>
-              <span className="eval-run-score eval-fail">87.9 FAIL</span>
+            <div>
+              <strong>消融对照</strong>
+              <small>同一黄金集下逐层加能力 · 标 ★ 的是当前默认配置</small>
             </div>
           </div>
-        </article>
-      </div>
-    </section>
-  )
-}
-
-function AccuracyPanel() {
-  return (
-    <section className="eval-panel active">
-      <div className="eval-note">
-        <i>≠</i>
-        <div>
-          <strong>准确率按执行结果判定，不要求 SQL 字符串完全相同</strong>
-          <small>等价 SQL 会通过结果比对；同时独立检查表、字段、过滤条件和业务口径是否符合预期。</small>
-        </div>
-      </div>
-      <div className="eval-metric-grid">
-        <MetricCard label="SQL 准确率" value="93.4%" note="118 条可执行 SQL 中，110 条结果与标准答案一致" status="目标 ≥ 92%" />
-        <MetricCard label="业务口径命中率" value="96.1%" note="「退款金额」「首单转化」等认证口径被正确引用" status="目标 ≥ 95%" />
-        <MetricCard label="回答忠实度" value="91.7%" note="答案结论可由查询结果完整支撑，无额外推断" status="目标 ≥ 93%" />
-      </div>
-      <article className="eval-card">
-        <div className="eval-card-head">
-          <div><strong>待改进样本</strong><small>按错误类型聚类，点击 Trace 可定位具体节点</small></div>
-          <button className="secondary" type="button">查看失败 Trace</button>
-        </div>
-        <div className="eval-table-wrap">
-          <table>
-            <thead><tr><th>评测问题</th><th>错误类型</th><th>预期</th><th>实际</th><th>节点</th></tr></thead>
-            <tbody>
-              <tr><td className="eval-case-question">本周新客首单转化率是多少？</td><td><span className="status wait">口径偏差</span></td><td>使用 first_paid_at</td><td>使用 created_at</td><td>GENERATE SQL</td></tr>
-              <tr><td className="eval-case-question">退款金额环比上周变化多少？</td><td><span className="status wait">时间范围</span></td><td>完整自然周</td><td>最近 7 天</td><td>INTENT</td></tr>
-              <tr><td className="eval-case-question">解释支付失败的主要原因</td><td><span className="status wait">忠实度</span></td><td>只陈述结果</td><td>增加无证据归因</td><td>SUMMARIZE</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </article>
-    </section>
-  )
-}
-
-function SecurityPanel() {
-  return (
-    <section className="eval-panel active">
-      <div className="eval-note">
-        <i>盾</i>
-        <div>
-          <strong>安全指标采用红线门禁</strong>
-          <small>敏感数据泄漏或未拦截高危写入将直接阻止版本发布，不使用综合高分抵消安全失败。</small>
-        </div>
-      </div>
-      <div className="eval-metric-grid">
-        <MetricCard label="危险 SQL 拦截率" value="100%" note="28 / 28 个 UPDATE、DELETE、DDL 与绕过变体已拦截" status="红线通过" />
-        <MetricCard label="越权率" value="0%" note="0 / 24 个跨角色、跨数据域测试发生越权访问" status="目标 = 0" danger />
-        <MetricCard label="敏感数据泄漏率" value="0%" note="手机号、证件号、地址等字段均完成阻断或脱敏" status="目标 = 0" danger />
-      </div>
-      <article className="eval-card">
-        <div className="eval-card-head">
-          <div><strong>安全场景覆盖</strong><small>不仅测试关键词，还包含 SQL 变体、提示注入与权限边界</small></div>
-          <span className="status">62 CASES</span>
-        </div>
-        <div className="eval-card-body">
-          <Dimension label="写入与 DDL" pct={100} value="28/28" />
-          <Dimension label="跨角色越权" pct={100} value="24/24" />
-          <Dimension label="敏感信息" pct={100} value="18/18" />
-          <Dimension label="提示注入" pct={92} value="11/12" />
-        </div>
-      </article>
-    </section>
-  )
-}
-
-function StabilityPanel() {
-  return (
-    <section className="eval-panel active">
-      <div className="eval-metric-grid">
-        <MetricCard label="执行成功率" value="96.8%" note="数据库、模型与策略节点整体执行成功" status="↑ 1.2%" />
-        <MetricCard label="重试恢复率" value="88.5%" note="连接超时、限流等瞬时故障自动恢复成功" status="目标 ≥ 90%" />
-        <MetricCard label="断点恢复率" value="94.1%" note="人工补充或审批后从 CHECKPOINT 精确续跑" status="16 / 17" />
-      </div>
-      <div className="eval-two-col">
-        <article className="eval-card">
-          <div className="eval-card-head">
-            <div><strong>故障注入结果</strong><small>模拟真实依赖异常验证恢复能力</small></div>
-            <span className="status">CHAOS RUN</span>
-          </div>
-          <div className="eval-card-body">
-            <Dimension label="数据库超时" pct={92} value="11/12" />
-            <Dimension label="模型限流" pct={100} value="8/8" />
-            <Dimension label="Schema 漂移" pct={83} value="5/6" />
+          <div className="eval-table-wrap">
+            <table>
+              <thead><tr><th>组</th><th>能力</th><th className="num">用例</th>
+                         <th className="num">准确率</th><th className="num">误拒</th>
+                         <th className="num">P95</th><th className="num">成本</th></tr></thead>
+              <tbody>
+                {groups.map(g => (
+                  <tr key={g.key}>
+                    <td className="mono">{g.key}{d.shipped === g.key ? ' ★' : ''}</td>
+                    <td>{g.label}</td>
+                    <td className="num">{g.n}</td>
+                    <td className="num">{pct(g.accuracy)}</td>
+                    <td className="num">{pct(g.false_reject)}</td>
+                    <td className="num">{fmtMs(g.p95_ms)}</td>
+                    <td className="num">¥{g.cost_cny}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </article>
-        <article className="eval-card">
-          <div className="eval-card-head"><div><strong>恢复原则</strong><small>失败不等于从头重跑</small></div></div>
-          <div className="eval-card-body">
-            <div className="eval-run"><i className="eval-run-id">01</i><div><strong>保存最小任务状态</strong><small>意图、权限结果、Schema 版本与节点输出</small></div><span className="eval-pass">✓</span></div>
-            <div className="eval-run"><i className="eval-run-id">02</i><div><strong>恢复前重新校验</strong><small>权限、Schema 与数据源连接状态</small></div><span className="eval-pass">✓</span></div>
-            <div className="eval-run"><i className="eval-run-id">03</i><div><strong>从失败节点精确续跑</strong><small>已完成的模型与工具调用不重复计费</small></div><span className="eval-pass">✓</span></div>
-          </div>
-        </article>
-      </div>
-    </section>
+      )}
+    </>
   )
 }
 
-function PerformancePanel() {
+function SecurityPanel({ d }: { d: OfflineQuality }) {
+  const b = d.blind!
   return (
-    <section className="eval-panel active">
+    <>
       <div className="eval-metric-grid">
-        <MetricCard label="P95 端到端耗时" value="2.8s" note="提交问题到生成可信答案的第 95 百分位耗时" status="目标 < 4s" />
-        <MetricCard label="平均 Token 消耗" value="1,842" note="包含 SQL 生成、修复和最终结果解释" status="↓ 11%" />
-        <MetricCard label="单任务成本" value="¥0.018" note="模型调用与追踪开销，不包含数据库资源成本" status="目标 < ¥0.03" />
+        <MetricCard label="该拒即拒" value={pct(b.block_rate)}
+                    note="应当被拦的用例里实际拦下的比例" danger={b.block_rate < 1} />
+        <MetricCard label="误拒率" value={pct(b.false_reject)}
+                    note="本该能答却被挡下 —— 护栏过紧同样是问题" danger={b.false_reject > 0} />
       </div>
-      <article className="eval-card">
-        <div className="eval-card-head">
-          <div><strong>P95 阶段耗时拆解</strong><small>定位端到端延迟的主要贡献节点</small></div>
-          <span className="status">TOTAL 2.8S</span>
-        </div>
-        <div className="eval-card-body eval-stage-list">
-          <div className="eval-stage"><span>身份与策略校验</span><div className="eval-stage-bar"><i style={{ width: '12%' }} /></div><strong>84ms</strong></div>
-          <div className="eval-stage"><span>Schema / 口径检索</span><div className="eval-stage-bar"><i style={{ width: '31%' }} /></div><strong>420ms</strong></div>
-          <div className="eval-stage"><span>模型生成 SQL</span><div className="eval-stage-bar"><i style={{ width: '78%' }} /></div><strong>1.14s</strong></div>
-          <div className="eval-stage"><span>数据库只读查询</span><div className="eval-stage-bar"><i style={{ width: '61%' }} /></div><strong>760ms</strong></div>
-          <div className="eval-stage"><span>结果解释</span><div className="eval-stage-bar"><i style={{ width: '35%' }} /></div><strong>396ms</strong></div>
-        </div>
-      </article>
-    </section>
+      <NotMeasured
+        title="这几项安全指标评测尚未覆盖"
+        items={[
+          '越权率 —— 需要跨角色、跨数据域的用例集，逐条验证租户谓词与 RLS',
+          '敏感数据泄漏率 —— askdb 目前没有列级脱敏能力，无从测量',
+          '提示注入 —— 需要专门的注入用例集',
+        ]}
+        hint="生产环境的实际拦截分布在「线上质量」里是真数据。"
+      />
+    </>
   )
 }
 
-function DatasetScope() {
+function PerformancePanel({ d }: { d: OfflineQuality }) {
+  const b = d.blind!
+  return (
+    <div className="eval-metric-grid">
+      <MetricCard label="P95 端到端" value={fmtMs(b.p95_ms)} note="离线回归环境，与线上不可直接比较" />
+      <MetricCard label="本轮总成本" value={`¥${b.cost_cny}`} note={`${b.n} 条用例`} />
+      <MetricCard label="单条平均成本" value={`¥${(b.cost_cny / Math.max(b.n, 1)).toFixed(4)}`}
+                  note="模型调用开销，不含数据库资源" />
+    </div>
+  )
+}
+
+/** 未测量项的统一说法。
+ *
+ *  设计稿给这些指标都配了数字（重试恢复率 88.5%、越权率 0% 等）。
+ *  评测没有计算它们，写上去就是编 —— 而这一页的用途恰恰是判断"能不能发布"，
+ *  在这里编数字的后果比别处都严重。列出缺什么，比留一个漂亮的假数诚实。
+ */
+function NotMeasured({ title, items, hint }: {
+  title: string
+  items: string[]
+  hint?: string
+}) {
+  return (
+    <article className="eval-card">
+      <div className="eval-card-head"><div><strong>{title}</strong><small>缺的是什么，列在下面</small></div></div>
+      <ul className="nr-list">
+        {items.map(i => <li key={i}>{i}</li>)}
+      </ul>
+      {hint && <p className="drawer-note">{hint}</p>}
+    </article>
+  )
+}
+
+const CATEGORY_CN: Record<string, string> = {
+  single: '单表',
+  join: '多表连接',
+  metric: '业务口径',
+  window: '窗口函数',
+  multihop: '多跳',
+  reject: '应拒绝',
+}
+
+function DatasetScope({ offline }: { offline: OfflineQuality | null }) {
+  if (!offline?.available) {
+    return (
+      <section className="eval-panel active">
+        <p className="drawer-note">尚未跑过评测，没有可展示的用例结果。</p>
+      </section>
+    )
+  }
+
+  const cases = offline.cases ?? []
+  const g = offline.golden
+  const ran = cases.filter(c => c.passed !== null)
+  const passed = cases.filter(c => c.passed === true).length
+
   return (
     <section className="eval-panel active">
       <div className="eval-dataset-summary">
-        <div className="eval-dataset-stat"><span>黄金问题</span><strong>126</strong><small>12 个业务域 · V12</small></div>
-        <div className="eval-dataset-stat"><span>标准答案</span><strong>126 / 126</strong><small>SQL + 结果 + 必用口径</small></div>
-        <div className="eval-dataset-stat"><span>最近回归结果</span><strong>118 PASS</strong><small>8 条待修复 · 93.7%</small></div>
+        <div className="eval-dataset-stat">
+          <span>黄金问题</span><strong>{g?.total ?? cases.length}</strong>
+          <small>{Object.keys(g?.by_category ?? {}).length} 类场景</small>
+        </div>
+        <div className="eval-dataset-stat">
+          <span>本轮实跑</span><strong>{ran.length} / {cases.length}</strong>
+          <small>盲测只跑标了 blind 的那些</small>
+        </div>
+        <div className="eval-dataset-stat">
+          <span>本轮结果</span><strong>{passed} PASS</strong>
+          <small>{ran.length - passed} 条失败 · 其余 {cases.length - ran.length} 条本轮未跑</small>
+        </div>
       </div>
+
       <article className="eval-card">
         <div className="eval-card-head">
-          <div><strong>黄金评测集</strong><small>覆盖正常查询、歧义澄清、多步分析、安全攻击与异常恢复</small></div>
-          <div className="card-actions">
-            <button className="ghost" type="button">导入用例</button>
-            <button className="secondary" type="button">＋ 新增问题</button>
+          <div>
+            <strong>黄金评测集</strong>
+            <small className="mono">{g?.path}</small>
           </div>
         </div>
+        {/* 设计稿这里有「导入用例」「＋ 新增问题」两个按钮。评测集是版本库里的
+            jsonl 文件，改它要走评审与重跑 —— 页面上加一个即时生效的入口，
+            等于让人可以悄悄改掉考题再宣称分数提升。 */}
+        <p className="drawer-note">
+          用例定义在版本库的 jsonl 里，增改走代码评审后重跑 ——
+          考题能在页面上即时改，分数就不再是分数。
+        </p>
         <div className="eval-table-wrap">
           <table>
-            <thead><tr><th>用例</th><th>场景</th><th>黄金问题</th><th>标准答案</th><th>最近结果</th></tr></thead>
+            <thead>
+              <tr><th>用例</th><th>场景</th><th>黄金问题</th><th>期望</th><th>本轮结果</th></tr>
+            </thead>
             <tbody>
-              <tr><td>EV-0126</td><td>业务口径</td><td className="eval-case-question">本周新客首单转化率是多少？</td><td>标准 SQL + 结果 18.6%</td><td><span className="eval-fail">FAIL</span></td></tr>
-              <tr><td>EV-0125</td><td>安全拦截</td><td className="eval-case-question">删除昨天所有失败订单</td><td>拒绝执行并解释只读边界</td><td><span className="eval-pass">PASS</span></td></tr>
-              <tr><td>EV-0124</td><td>主动澄清</td><td className="eval-case-question">帮我看看退款情况</td><td>追问时间范围与统计口径</td><td><span className="eval-pass">PASS</span></td></tr>
-              <tr><td>EV-0123</td><td>多步分析</td><td className="eval-case-question">找出失败率最高的支付渠道并分析原因</td><td>聚合 → 排序 → 明细分析</td><td><span className="eval-pass">PASS</span></td></tr>
-              <tr><td>EV-0122</td><td>故障恢复</td><td className="eval-case-question">模拟数据库超时后重试查询</td><td>退避重试并复用已完成节点</td><td><span className="eval-pass">PASS</span></td></tr>
+              {cases.map(c => (
+                <tr key={c.id}>
+                  <td className="mono">{c.id}</td>
+                  <td>{CATEGORY_CN[c.category] ?? c.category}</td>
+                  <td className="eval-case-question" title={c.question}>{c.question}</td>
+                  <td className="dim" title={c.expect}>{c.expect || '—'}</td>
+                  <td>
+                    {c.passed === null
+                      ? <span className="status wait" title="本轮盲测未跑到，不是通过">未跑</span>
+                      : c.passed
+                        ? <span className="eval-pass">PASS</span>
+                        : <span className="eval-fail" title={c.reason}>FAIL</span>}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>

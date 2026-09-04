@@ -747,6 +747,17 @@ export interface OfflineQuality {
     trace_id: string
     question: string
   }[]
+  /** 评测集清单。passed 为 null = 本轮没跑到 —— 不是通过 */
+  cases?: {
+    id: string
+    category: string
+    question: string
+    in_blind: boolean
+    expect: string
+    passed: boolean | null
+    reason: string
+    trace_id: string
+  }[]
   replay_config?: string
   /** 当前默认配置对应的消融组 */
   shipped?: string

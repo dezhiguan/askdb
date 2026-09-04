@@ -462,3 +462,24 @@ def test_eval_reports_golden_set_composition(client):
     assert g, "缺少黄金集构成"
     assert g["total"] >= g["blind_n"], "全集不可能少于盲测实跑数"
     assert sum(g["by_category"].values()) == g["total"], "类别分布与总数对不上"
+
+
+def test_eval_cases_mark_unrun_as_null_not_pass(client):
+    """本轮没跑到的用例必须标 null，不能当成通过。
+
+    盲测只跑黄金集里带 blind 标记的那部分（本机：58 条里跑 17 条）。
+    把没跑的算成"没失败所以通过"，会让覆盖面和通过率一起虚高 ——
+    而这一页正是拿来判断"能不能发布"的。
+    """
+    d = client.get("/api/eval").json()
+    if not d.get("available") or not d.get("cases"):
+        pytest.skip("本机没有评测结果文件")
+
+    cases = d["cases"]
+    ran = [c for c in cases if c["passed"] is not None]
+    assert len(ran) < len(cases) or all(c["in_blind"] for c in cases), \
+        "跑到的用例数不该等于全集，除非全集都标了 blind"
+    # 跑到的那些必须都在盲测集里；没跑到的一律 null
+    for c in cases:
+        if c["passed"] is not None:
+            assert c["in_blind"], f"{c['id']} 有结果却不在盲测集里"

@@ -813,6 +813,36 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     "by_category": dict(sorted(by_cat.items(), key=lambda kv: -kv[1])),
                 }
 
+        # 评测集清单：每条用例 + 它在本轮的结果。
+        #
+        # 只给失败样本不够 —— 评测集页要回答的是"这套题都考了什么"，
+        # 而通过的那些恰恰是覆盖面的主体。**没跑到的用例如实标 null**，
+        # 不要拿"没失败"当"通过"：盲测只跑全集的一部分。
+        outcome_by_id = {o["id"]: o for o in (bd.get("outcomes") or [])}
+        if gpath:
+            gp = cfg.root / gpath
+            if gp.exists():
+                cases = []
+                for line in gp.read_text(encoding="utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    c = _json.loads(line)
+                    o = outcome_by_id.get(c["id"])
+                    cases.append({
+                        "id": c["id"],
+                        "category": c.get("category", ""),
+                        "question": c.get("question", ""),
+                        "in_blind": bool(c.get("blind")),
+                        # 期望：应拒用例看规则，其余看列与行数约束
+                        "expect": (f"应被 {c['expect_rule']} 拦下" if c.get("expect_rule")
+                                   else "、".join(c.get("expect_cols") or []) or c.get("note", "")),
+                        # 本轮没跑到就是 null，不是"通过"
+                        "passed": (None if o is None else bool(o.get("passed"))),
+                        "reason": (o or {}).get("reason", ""),
+                        "trace_id": (o or {}).get("trace_id", ""),
+                    })
+                out["cases"] = cases
+
         # 复现必须用同一份配置：检查点库跟着配置走
         out["replay_config"] = (bd.get("provenance") or {}).get("config", "")
         out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）
@@ -983,8 +1013,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                        "匿名实例不提供未完成任务的枚举入口。",
             )
         from .audit import tasks as _tasks
+        from .graph import is_resumable
 
         items = _tasks(cfg.audit_log, username)
+        # 审计只知道这条线程上次以 INTERRUPTED 收尾，不知道现场有没有真的
+        # 落盘、也不知道后来是不是已被续跑跑完 —— 只按审计标 resumable，
+        # 会出现"这里说能续、点下去 404"。以检查点为准再核一遍。
+        for it in items:
+            if it.get("resumable"):
+                state = is_resumable(str(it.get("thread_id") or ""), cfg)
+                if state is not None:
+                    it["resumable"] = state
         return {"items": items, "user": username}
 
     @app.post("/api/resume")
@@ -1004,14 +1043,30 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         from .audit import read_records
 
         owner = ""
+        origin_source = ""
         for rec in read_records(cfg.audit_log):
             if (rec.get("thread_id") or rec.get("trace_id")) == req.thread_id:
                 owner = rec.get("user") or ""
+                # 续跑必须回到**当初那个数据源**。审计里存了它（_audit_of 的
+                # source 字段），所以不需要调用方再传一次 —— 传参既多一处
+                # 契约，又给了"在 A 源发起、拿 B 源续跑"的可乘之机。
+                origin_source = str(rec.get("source") or "")
                 break
         if owner and owner != (_current_user(request) or ""):
             return not_found          # 与"不存在"同一响应，不暴露任务是否存在
 
-        scoped = _scoped(request)
+        try:
+            base = _cfg_for(origin_source)
+        except HTTPException as e:
+            # 源被删了 / 表被收回 / 实例没有默认源。这不是"任务不存在"，
+            # 得说清楚是哪一步走不通，否则用户只看到一个 500。
+            raise HTTPException(
+                status_code=e.status_code,
+                detail=f"这条任务当初跑在数据源「{origin_source or 'builtin'}」上，"
+                       f"现在没法回到那里：{e.detail}",
+            ) from e
+
+        scoped = _scoped(request, base)
         r = run_resume(req.thread_id, scoped)
         if r is None:
             return not_found
