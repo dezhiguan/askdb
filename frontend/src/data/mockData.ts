@@ -12,7 +12,7 @@ export const navGroups: {
   {
     label: 'Workspace · 阶段一',
     items: [
-      { view: 'query', icon: 'Q', title: '查询工作台', subtitle: '自然语言安全查数', badge: 'LIVE' },
+      { view: 'query', icon: 'Q', title: '查询 Agent', subtitle: '自然语言安全查数', badge: 'LIVE' },
       { view: 'tasks', icon: 'TK', title: '任务中心', subtitle: '执行线程与断点续跑' },
       { view: 'sources', icon: 'DB', title: '数据源', subtitle: '只读库与镜像' },
     ],

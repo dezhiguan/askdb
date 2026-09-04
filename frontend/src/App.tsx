@@ -57,7 +57,7 @@ function App() {
     if (view === 'query') return (
       <div className="page query-page">
         <PageHeader
-          title="查询工作台"
+          title="查询 Agent"
           description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。"
           action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>}
         />
