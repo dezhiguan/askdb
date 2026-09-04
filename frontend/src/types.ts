@@ -4,6 +4,7 @@ export type View =
   | 'sources'
   | 'permissions'
   | 'glossary'
+  | 'evaluation'
   | 'traces'
   | 'audit'
 

@@ -6,6 +6,7 @@ import { ModalLayer } from './components/Modals'
 import { QueryWorkspace } from './components/QueryWorkspace'
 import { DataSourcesPage } from './pages/DataSourcesPage'
 import { AuditPage } from './pages/AuditPage'
+import { EvaluationPage } from './pages/EvaluationPage'
 import { GlossaryPage } from './pages/GlossaryPage'
 import { PermissionsPage } from './pages/PermissionsPage'
 import { TasksPage } from './pages/TasksPage'
@@ -19,6 +20,7 @@ import './styles/shell.css'
 import './styles/components.css'
 import './styles/pages.css'
 import './styles/traces.css'
+import './styles/evaluation.css'
 import './styles/identity.css'
 import './styles/auth.css'
 import './styles/responsive.css'
@@ -68,6 +70,7 @@ function App() {
     if (view === 'permissions') return <PermissionsPage notify={notify} />
     if (view === 'glossary') return <GlossaryPage onNavigate={setView} notify={notify} />
     if (view === 'audit') return <AuditPage />
+    if (view === 'evaluation') return <EvaluationPage />
     if (view === 'traces') return <TracesPage onNavigate={setView} onOpenModal={setModal} />
     return <AuditPage />
   })()
