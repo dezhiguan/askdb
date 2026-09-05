@@ -1,0 +1,717 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdb 角色与权限设计 V1.2</title>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f9f9f7; --surface:#fcfcfb;
+  --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+  --accent:#2a78d6;
+  --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b;
+  --good-ink:#0a7a0a; --crit-ink:#c22f2f; --warn-ink:#8a6300;
+  --wash:rgba(42,120,214,0.08);
+  --code-bg:#f4f4f1;
+  --inj:rgba(42,120,214,0.16);
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --accent:#3987e5;
+    --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+    --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --plane:#0d0d0d; --surface:#1a1a19;
+  --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+  --accent:#3987e5;
+  --good-ink:#3ec73e; --crit-ink:#e86b6b; --warn-ink:#e0ad3a;
+  --wash:rgba(57,135,229,0.14); --code-bg:#141413; --inj:rgba(57,135,229,0.26);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+html,body{max-width:100%;overflow-x:hidden}
+body{font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background:var(--plane);color:var(--ink);font-size:14.5px;line-height:1.75;-webkit-font-smoothing:antialiased}
+.mono,code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+/* header */
+.doc-head{border-bottom:1px solid var(--border);background:var(--surface);position:relative}
+.doc-head-in{max-width:1180px;margin:0 auto;padding:26px 24px 20px}
+.doc-title{font-size:26px;font-weight:650;letter-spacing:-.02em;line-height:1.3}
+.doc-sub{font-size:14px;color:var(--muted);margin-top:4px}
+.meta{display:flex;gap:10px 26px;flex-wrap:wrap;margin-top:16px;font-size:12.5px}
+.meta div{display:flex;gap:7px}
+.meta dt{color:var(--muted)}
+.meta dd{font-weight:600}
+.status{font-size:11.5px;padding:2px 9px;border-radius:999px;background:var(--wash);color:var(--accent);font-weight:600}
+.themebtn{position:absolute;right:24px;top:24px;font:inherit;font-size:12.5px;padding:5px 10px;border-radius:7px;
+  border:1px solid var(--border);background:var(--surface);color:var(--ink-2);cursor:pointer}
+
+/* layout */
+.shell{max-width:1180px;margin:0 auto;padding:0 24px 100px;display:grid;grid-template-columns:214px minmax(0,1fr);gap:40px}
+@media (max-width:940px){.shell{grid-template-columns:minmax(0,1fr);gap:0}.toc{display:none}}
+.toc{position:sticky;top:0;align-self:start;padding-top:28px;max-height:100vh;overflow-y:auto}
+.toc h4{font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;margin-bottom:9px}
+.toc a{display:block;font-size:12.5px;color:var(--ink-2);text-decoration:none;padding:3.5px 0 3.5px 10px;
+  border-left:2px solid transparent;line-height:1.45}
+.toc a:hover{color:var(--accent)}
+.toc a.on{color:var(--accent);border-left-color:var(--accent);font-weight:600}
+.toc a.sub{padding-left:22px;font-size:12px;color:var(--muted)}
+.toc a.sub:hover,.toc a.sub.on{color:var(--accent)}
+
+main{padding-top:28px;min-width:0}
+section{margin-bottom:44px;scroll-margin-top:20px}
+h2{font-size:20px;font-weight:650;letter-spacing:-.01em;margin-bottom:6px;padding-bottom:9px;border-bottom:1px solid var(--border)}
+h2 .n{color:var(--muted);font-weight:500;margin-right:9px}
+h3{font-size:15.5px;font-weight:650;margin:26px 0 8px}
+h3 .n{color:var(--muted);font-weight:500;margin-right:7px}
+h4{font-size:13.5px;font-weight:650;margin:18px 0 6px;color:var(--ink-2)}
+p{margin:9px 0}
+ul,ol{margin:9px 0 9px 22px}
+li{margin:4px 0}
+b,strong{font-weight:650}
+code{background:var(--code-bg);border:1px solid var(--border);padding:1px 5px;border-radius:4px;font-size:.88em}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:9px;padding:14px 16px;
+  overflow-x:auto;font-size:12.5px;line-height:1.72;margin:12px 0}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+pre .k{color:var(--accent);font-weight:600}
+pre .s{color:var(--good-ink)}
+pre .c{color:var(--muted)}
+
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:9px;margin:12px 0}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:9px 13px;text-align:left;border-bottom:1px solid var(--grid);vertical-align:top}
+th{font-weight:650;color:var(--ink-2);background:var(--plane);font-size:12px;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td.c,th.c{text-align:center;white-space:nowrap}
+td .mono{font-size:12.5px}
+
+.note{border-left:3px solid var(--accent);background:var(--surface);padding:11px 15px;border-radius:0 9px 9px 0;
+  font-size:13.5px;color:var(--ink-2);margin:14px 0}
+.note.warn{border-left-color:var(--serious)}
+.note.crit{border-left-color:var(--critical)}
+.note.good{border-left-color:var(--good)}
+.note b{color:var(--ink)}
+.note .lbl{display:block;font-size:11.5px;font-weight:700;letter-spacing:.04em;margin-bottom:3px}
+.note .lbl{color:var(--accent)}
+.note.warn .lbl{color:var(--warn-ink)}
+.note.crit .lbl{color:var(--crit-ink)}
+.note.good .lbl{color:var(--good-ink)}
+
+.tag{font-size:11px;padding:1.5px 7px;border-radius:5px;font-weight:650;white-space:nowrap}
+.tag.p0{background:rgba(208,59,59,.14);color:var(--crit-ink)}
+.tag.p1{background:rgba(236,131,90,.16);color:var(--warn-ink)}
+.tag.p2{background:var(--wash);color:var(--accent)}
+.tag.done{background:rgba(12,163,12,.14);color:var(--good-ink)}
+
+/* 矩阵单元格 */
+.y{color:var(--good-ink);font-weight:700}
+.n{color:var(--crit-ink);font-weight:700}
+.p{color:var(--warn-ink);font-weight:650}
+td.c.appr{background:var(--wash);color:var(--accent);font-weight:700}
+.fn{font-size:.78em;vertical-align:super;color:var(--muted);font-weight:500}
+
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:760px){.two{grid-template-columns:1fr}}
+.box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.box h4{margin-top:0}
+ol.foots{margin-left:20px;font-size:13px;color:var(--ink-2)}
+ol.foots li{margin:7px 0}
+ol.foots b{color:var(--ink)}
+hr{border:0;border-top:1px solid var(--border);margin:32px 0}
+.foot{max-width:1180px;margin:0 auto;padding:0 24px 60px;font-size:12.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+
+<header class="doc-head">
+  <button class="themebtn" id="themeBtn">切换主题</button>
+  <div class="doc-head-in">
+    <div class="doc-title">角色与权限设计</div>
+    <div class="doc-sub">askdb 把「页面上宣称的权限」与「运行时真正执行的权限」对齐</div>
+    <dl class="meta">
+      <div><dt>拟制日期</dt><dd>2026-09-05</dd></div>
+      <div><dt>版本</dt><dd>V1.2</dd></div>
+      <div><dt>最近修订</dt><dd>2026-09-05</dd></div>
+      <div><dt>状态</dt><dd><span class="status">待评审</span></dd></div>
+      <div><dt>拟制</dt><dd>官德志（架构）</dd></div>
+      <div><dt>适用版本</dt><dd>Phase 1 · 内网试点</dd></div>
+    </dl>
+  </div>
+</header>
+
+<div class="shell">
+<nav class="toc" id="toc">
+  <h4>目录</h4>
+  <a href="#rev">修订记录</a>
+  <a href="#s1">1 背景与目标</a>
+  <a href="#s1-1" class="sub">1.1 三条设计原则</a>
+  <a href="#s2">2 现状盘点</a>
+  <a href="#s2-1" class="sub">2.1 真正在跑的授权面</a>
+  <a href="#s2-2" class="sub">2.2 宣称但没有的</a>
+  <a href="#s2-3" class="sub">2.3 六个缺陷</a>
+  <a href="#s3">3 权限点清单</a>
+  <a href="#s4">4 角色权限矩阵</a>
+  <a href="#s4-1" class="sub">4.1 脚注</a>
+  <a href="#s5">5 人员落地对照</a>
+  <a href="#s5-1" class="sub">5.1 两个必须先确认的</a>
+  <a href="#s6">6 落地路径</a>
+  <a href="#s7">7 对现有代码的影响面</a>
+  <a href="#sa">附 RBAC 与租户正交</a>
+  <a href="#s8">8 开放问题</a>
+</nav>
+
+<main>
+
+<section id="rev">
+  <h2>修订记录</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>版本</th><th>日期</th><th>修订内容</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">V1.0</td><td class="mono">2026-09-05</td>
+        <td>首版。基于现有 8 个功能页与 29 个接口，定义 27 个权限点与 5 角色矩阵，给出四阶段落地路径。</td></tr>
+      <tr><td class="mono">V1.2</td><td class="mono">2026-09-05</td>
+        <td>移除矩阵中的「匿名」列 —— 未登录不作为设计中的一种身份。同步补入 2026-09-05 对本机实例的实测数据，
+          D-3 由代码推断升级为实测确认。</td></tr>
+      <tr><td class="mono">V1.1</td><td class="mono">2026-09-05</td>
+        <td><b>全部审批闸门收敛到系统管理员</b>：高成本查询、敏感字段申请、数据源与白名单变更三条审批链改由系统管理员终审，
+          数据负责人退为提出方与策略配置方。同步修订职责分离原则第 3 条与相关脚注。</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s1">
+  <h2><span class="n">1</span>背景与目标</h2>
+  <p>askdb 已上线 5 个内置角色、10 名内置人员、8 个功能页。但<b>角色目前只对「查数」这一条路径生效，且只有两个维度（可见表、行上限）</b>；
+    权限页上展示的其余维度与策略多数没有后端执行。</p>
+  <p>本设计的目标：把「页面上宣称的权限」与「运行时真正执行的权限」对齐，并在<b>不新增角色、不调整人员归属</b>的前提下，
+    为现有每一项功能明确责任边界。</p>
+
+  <h3 id="s1-1"><span class="n">1.1</span>三条设计原则</h3>
+  <ol>
+    <li><b>每一条权限都要对应一个具体的执行动作。</b>落不到护栏或接口拦截上的条目，宁可在页面上标注「未接入」，
+      也不放进矩阵充数 —— 这是 <code>identity.py</code> 里「角色固定不开放自定义」那段注释已经确立的原则，本设计沿用。</li>
+    <li><b>只能收窄，不能放宽。</b>沿用 <code>identity.policy_for</code> / <code>narrow</code> 的既有语义：
+      配置与内置默认取交集，角色叠加取并集，但每个策略本身都是实例白名单的子集。</li>
+    <li><b>职责分离 —— 并且提出与放行分属两人。</b>管人的不看数据（已内置），改数据边界的不自己用这个边界查数。</li>
+  </ol>
+  <div class="note good">
+    <span class="lbl">V1.1 决定 · 全部审批闸门收敛到系统管理员</span>
+    它带来一条结构性保证：系统管理员的内置策略是 <code>Policy(tables=frozenset(), max_rows=0)</code>，
+    <b>永远不可能是查询的发起人，因此自批在结构上不可能发生</b> —— 这不靠流程约定，靠的是已经写死在
+    <code>DEFAULT_POLICIES</code> 里的零表默认。
+  </div>
+  <div class="note warn">
+    <span class="lbl">代价</span>
+    审批人必须看到问题原文与最终 SQL 才能判断该不该放行，所以「系统管理员不看查询内容」这条要在<b>审批场景内</b>放宽（见脚注 12）。
+    放宽的是可见性，不是数据权限 —— 审批通过后任务以<b>发起人的角色</b>恢复执行，审批人拿不到任何结果集。
+  </div>
+</section>
+
+<section id="s2">
+  <h2><span class="n">2</span>现状盘点：宣称 vs. 真实</h2>
+
+  <h3 id="s2-1"><span class="n">2.1</span>真正在跑的授权面</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>机制</th><th>实现位置</th><th>生效范围</th></tr></thead>
+    <tbody>
+      <tr><td>表白名单收窄 <code>tables</code></td><td><code>identity.Policy</code> → <code>narrow()</code> → <code>cfg.tables</code></td>
+        <td>护栏 R-03、Schema 召回、口径过滤，全链路</td></tr>
+      <tr><td>行上限收窄 <code>max_rows</code></td><td>同上 → <code>cfg.max_rows</code></td><td>执行器 R-13</td></tr>
+      <tr><td>系统角色零数据权</td><td><code>DEFAULT_POLICIES["SYS_ADMIN"]</code></td><td>内置默认，配置改不动</td></tr>
+      <tr><td>生产只读（P01）</td><td>护栏层强制只读事务 + R-01/R-02</td><td>所有连接，与角色无关</td></tr>
+      <tr><td>登录门</td><td><code>_require_login</code> —— 无中间件、无全局 <code>Depends</code></td>
+        <td><b>仅</b> <code>/api/ask</code>、<code>/api/sql</code> 两处显式调用；<code>/api/tasks</code> 自带一份等价判断。
+          其余接口不设门（D-3 实测）</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="s2-2"><span class="n">2.2</span>页面上宣称、后端没有的</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>展示项</th><th>页面来源</th><th>真实状态</th></tr></thead>
+    <tbody>
+      <tr><td>环境范围 <code>PROD-RO</code> / <code>STAGING</code> / <code>DEV + STAGING</code></td>
+        <td><code>role.scope</code>，真值字段</td><td class="n">纯展示字符串，无任何执行判定</td></tr>
+      <tr><td>数据期限 <code>90 DAYS</code> 等</td><td><code>PermissionsPage.ROLE_LIMITS</code> 硬编码</td><td>无后端字段</td></tr>
+      <tr><td>敏感字段 <code>MASKED</code></td><td>同上</td><td>全仓无列级脱敏实现</td></tr>
+      <tr><td>导出权限 <code>AGG ONLY</code></td><td>同上</td><td>无导出功能</td></tr>
+      <tr><td>P03 个人信息默认脱敏</td><td><code>POLICY_RULES</code> 前端 state</td><td>无存储、无执行</td></tr>
+      <tr><td>P07 高成本查询二次确认</td><td>同上</td><td>无审批流</td></tr>
+      <tr><td>P11 结果禁止用于模型训练</td><td>同上</td><td>无留存策略字段</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="s2-3"><span class="n">2.3</span>必须先处理的六个缺陷</h3>
+
+  <div class="note crit">
+    <span class="lbl">D-1 · 高 · 环境范围形同虚设</span>
+    <code>_cfg_for(source)</code> 只按 id 取源，取完才按角色收窄表与行数。角色对「能连哪个库」没有任何约束 ——
+    只要数据源列表里有生产只读镜像，测试角色照样能选中并查询。<code>sources.py</code> 里 <code>Source.env</code> 字段的注释写得很直白 ——
+    「环境标签，仅用于界面区分，<b>不参与鉴权</b>」。角色详情第一格 <code>STAGING</code> 因此是
+    <b>页面上唯一一个看起来是真值、实际不成立的字段</b>，比纯占位更有误导性。
+    <br><br>附带一个规模问题：<code>env</code> 的取值只有 <code>test</code> 与 <code>prod_ro</code> 两种
+    （<code>build()</code> 里非法值一律回退 <code>test</code>），而角色 scope 区分了 <code>DEV + STAGING</code> 与 <code>STAGING</code> 两档。
+    <b>枚举撑不起角色已经宣称的粒度</b>，需一并扩展。
+  </div>
+
+  <div class="note crit">
+    <span class="lbl">D-2 · 高 · 数据源写接口只有部署级开关，没有请求方身份判定，且是提权路径</span>
+    <code>POST /api/sources</code>、<code>PUT /api/sources/{id}/tables</code>、<code>DELETE /api/sources/{id}</code> 走
+    <code>_sources_gate()</code>，它校验的是实例开关 <code>datasources.allow_runtime_add</code> 与频率限制 ——
+    <b>是「这个实例允不允许」，不是「这个人允不允许」</b>；函数签名里连 <code>request: Request</code> 都没有，拿不到调用方身份。
+    <code>config/askdb.yaml</code> 当前该开关为 <code>true</code>，即任何能打开页面的人都能调。
+    其中改白名单直接决定 <code>cfg.tables</code> —— <b>一次无身份判定的白名单写入，等于给所有角色同时放宽可见表</b>，
+    绕开了「只能收窄」这条不变量的全部保护。
+  </div>
+
+  <div class="note crit">
+    <span class="lbl">D-5 · 高 · MCP 通道完全绕开角色</span>
+    <code>askdb/mcp_server.py</code> 的 <code>build_server(cfg)</code> 直接持有启动配置，
+    <code>ask</code> / <code>run_sql</code> / <code>schema</code> 三个工具都不经过 <code>_scoped()</code>，
+    <b>以实例白名单全量运行，没有角色、没有身份、没有 user 字段</b>。护栏与只读约束仍然生效（这条通道不能写数据），
+    但「谁能看哪些表」这一层在这里是空的。对外接入的 Agent 因此拥有超过任何内置角色的可见范围，且审计里的 <code>user</code> 为空。
+  </div>
+
+  <div class="note crit">
+    <span class="lbl">D-3 · 高 · 未登录拦截只覆盖了查询路径，治理面没拦（实测确认）</span>
+    2026-09-05 对本机实例（<code>127.0.0.1:8011</code>，<code>auth.required: true</code>）不带任何会话 cookie 逐个打接口：
+    <div class="tablewrap"><table>
+      <thead><tr><th>接口</th><th>无会话时</th></tr></thead>
+      <tbody>
+        <tr><td><code>/api/tasks</code></td><td class="y">401 —— 拦住了</td></tr>
+        <tr><td><code>/api/audit</code></td><td class="n">200 —— 1502 条审计流水</td></tr>
+        <tr><td><code>/api/audit/stats</code></td><td class="n">200</td></tr>
+        <tr><td><code>/api/identity/members</code></td><td class="n">200 —— 返回成员名册</td></tr>
+        <tr><td><code>/api/schema</code></td><td class="n">200 —— 8 KB 表结构</td></tr>
+        <tr><td><code>/api/sources</code>、<code>/api/eval</code>、<code>/api/quality/live</code></td><td class="n">200</td></tr>
+      </tbody></table></div>
+    匿名从 <code>/api/audit</code> 拿到的单条记录含 <code>user</code>、<code>role</code>、<code>question</code> 三个字段 ——
+    <b>即「谁、以什么角色、问了什么原话」</b>，1502 条全都可翻。
+    <br><br>根因是 <code>_require_login</code> 靠逐接口手工调用来覆盖，全仓只挂在 <code>/api/ask</code> 与
+    <code>/api/sql</code> 两处（<code>/api/tasks</code> 自己写了一份等价判断）；没有中间件、没有全局 <code>Depends</code>。
+    <b>审计中心保护的是「谁查了什么」，它自己不设门。</b>
+  </div>
+
+  <div class="note warn">
+    <span class="lbl">D-4 · 中 · 复放是一条按原记录权限读取的通道</span>
+    <code>/api/replay</code> 默认关闭（<code>observability.replay_api</code>）、有字段白名单与限流，这几层做得很扎实；
+    缺的是<b>调用方是谁</b>这一层。开关一旦打开，低权限者拿到 trace_id 即可读到数据负责人查询的最终 SQL 与执行链路。
+  </div>
+
+  <div class="note warn">
+    <span class="lbl">D-6 · 中 · 导出不经服务端，导出权限无处施加</span>
+    审计中心的「导出审计报告(CSV)」与执行追踪的「导出 OpenTelemetry」都是浏览器端把已拉取的数据拼字符串下载，
+    <b>没有后端导出接口</b>。这意味着权限页宣称的 <code>AGG ONLY</code>「导出权限」维度在当前架构下没有任何可施加的位置 ——
+    数据一旦进了页面就已经出去了。真正的控制点在 A-01/A-03 的读取范围，不在导出动作本身。
+  </div>
+</section>
+
+<section id="s3">
+  <h2><span class="n">3</span>权限点清单</h2>
+  <p>按现有功能逐项列出可管控的操作点。「现状」列标注今天的实际拦截情况。</p>
+
+  <h3>Q · 查询执行</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编码</th><th>权限点</th><th>接口 / 位置</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">Q-01</td><td>自然语言查询</td><td><code>POST /api/ask</code></td><td>登录 + 角色收窄</td></tr>
+      <tr><td class="mono">Q-02</td><td>直查 SQL（跳过模型）</td><td><code>POST /api/sql</code></td><td>登录 + 角色收窄</td></tr>
+      <tr><td class="mono">Q-03</td><td>可见表范围</td><td><code>Policy.tables</code></td><td>已实现，配置驱动</td></tr>
+      <tr><td class="mono">Q-04</td><td>结果行上限</td><td><code>Policy.max_rows</code></td><td>已实现，配置驱动</td></tr>
+      <tr><td class="mono">Q-05</td><td><b>可用数据源 / 环境</b></td><td><code>_cfg_for</code></td><td class="n">缺失（D-1）</td></tr>
+      <tr><td class="mono">Q-06</td><td>敏感列脱敏</td><td>—</td><td class="n">缺失（P03）</td></tr>
+      <tr><td class="mono">Q-07</td><td>数据时间窗口</td><td>—</td><td class="n">缺失（数据期限）</td></tr>
+      <tr><td class="mono">Q-08</td><td>高成本查询审批</td><td>—</td><td class="n">缺失（P07），但 R-11 已有扫描行数估算</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>T · 任务中心</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编码</th><th>权限点</th><th>接口</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">T-01</td><td>查看本人任务</td><td><code>GET /api/tasks</code></td><td>登录必需</td></tr>
+      <tr><td class="mono">T-02</td><td>断点续跑</td><td><code>POST /api/resume</code></td><td>登录 + 发起人归属校验</td></tr>
+      <tr><td class="mono">T-03</td><td>查看他人任务</td><td>—</td><td>目前不可</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>S · 数据源</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编码</th><th>权限点</th><th>接口</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">S-01</td><td>查看数据源列表</td><td><code>GET /api/sources</code></td><td>无身份判定（主机名已脱敏展示）</td></tr>
+      <tr><td class="mono">S-02</td><td>测试连接</td><td><code>POST /api/sources/test</code></td><td>无身份判定</td></tr>
+      <tr><td class="mono">S-03</td><td>新增数据源</td><td><code>POST /api/sources</code></td><td class="n">仅部署级开关（D-2）</td></tr>
+      <tr><td class="mono">S-04</td><td>设置表白名单</td><td><code>PUT /api/sources/{id}/tables</code></td><td class="n">仅部署级开关（D-2，提权路径）</td></tr>
+      <tr><td class="mono">S-05</td><td>删除数据源</td><td><code>DELETE /api/sources/{id}</code></td><td class="n">仅部署级开关（D-2）</td></tr>
+      <tr><td class="mono">S-06</td><td>元数据扫描</td><td><code>GET /api/sources/{id}/scan</code></td><td>无身份判定</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>G · 业务口径</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编码</th><th>权限点</th><th>接口</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">G-01</td><td>查看指标与字段词典</td><td><code>GET /api/schema</code>、口径页</td><td>无身份判定</td></tr>
+      <tr><td class="mono">G-02</td><td>口径一致性校验</td><td><code>GET /api/metrics/check</code></td><td>无身份判定</td></tr>
+      <tr><td class="mono">G-03</td><td>编辑口径定义</td><td>—</td><td>配置态（yaml），走代码评审，无写接口</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>E · 质量与自检</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编码</th><th>权限点</th><th>接口</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">E-01</td><td>质量中心与评测结果</td><td><code>GET /api/quality/live</code>、<code>GET /api/eval</code></td><td>无身份判定</td></tr>
+      <tr><td class="mono">E-02</td><td>运行时自检</td><td><code>GET /api/selfcheck</code></td><td>无身份判定</td></tr>
+      <tr><td class="mono">E-03</td><td>库结构内省</td><td><code>GET /api/introspect</code></td><td class="n">无身份判定（D-3）</td></tr>
+      <tr><td class="mono">E-04</td><td>触发评测任务</td><td>—</td><td>仅 CLI，无接口</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>A · 审计与追踪</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编码</th><th>权限点</th><th>接口</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">A-01</td><td>审计流水（含问题原文与最终 SQL）</td><td><code>GET /api/audit</code></td><td class="n">无身份判定（D-3）</td></tr>
+      <tr><td class="mono">A-02</td><td>审计统计</td><td><code>GET /api/audit/stats</code></td><td>无身份判定</td></tr>
+      <tr><td class="mono">A-03</td><td>查询复放</td><td><code>GET /api/replay</code></td><td class="n">无身份判定（D-3 / D-4）</td></tr>
+      <tr><td class="mono">A-04</td><td>执行追踪 Span</td><td>追踪页</td><td>无身份判定</td></tr>
+      <tr><td class="mono">A-05</td><td>待审批队列</td><td>—</td><td class="n">缺失，随阶段四落地</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>M · 外部 Agent 接入</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编码</th><th>权限点</th><th>位置</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">M-01</td><td>MCP <code>ask</code> 自然语言查数</td><td><code>askdb/mcp_server.py</code></td><td class="n">无身份、无角色收窄（D-5）</td></tr>
+      <tr><td class="mono">M-02</td><td>MCP <code>run_sql</code> 直查</td><td>同上</td><td class="n">同上</td></tr>
+      <tr><td class="mono">M-03</td><td>MCP <code>schema</code> 查看开放表与口径</td><td>同上</td><td class="n">同上</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>I · 身份与权限</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编码</th><th>权限点</th><th>接口</th><th>现状</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">I-01</td><td>查看角色定义</td><td><code>GET /api/identity/roles</code></td>
+        <td>公开（角色定义写死在源码，非机密，可接受）</td></tr>
+      <tr><td class="mono">I-02</td><td>查看成员名册</td><td><code>GET /api/identity/members</code></td><td class="n">无身份判定（D-3）</td></tr>
+      <tr><td class="mono">I-03</td><td>增删成员</td><td><code>POST/DELETE /api/identity/members</code></td>
+        <td>部署方共享令牌 <code>ASKDB_ADMIN_TOKEN</code></td></tr>
+      <tr><td class="mono">I-04</td><td>策略开关配置</td><td>前端 state</td><td class="n">无存储</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="s4">
+  <h2><span class="n">4</span>角色权限矩阵</h2>
+  <p><span class="y">✅</span> 全量 ｜ <span class="p">◐</span> 受限（见脚注） ｜ <span class="n">✕</span> 拒绝</p>
+  <div class="note"><span class="lbl">前提 · 未登录不作为一种身份</span>
+    矩阵只描述已登录用户按角色能做什么；未登录一律拦截（<code>auth.required: true</code>）。
+    这个前提当前<b>尚未完全成立</b>，见 D-3 —— 阶段一第 2 条就是让它成立。</div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>权限点</th><th class="c">产品</th><th class="c">测试</th><th class="c">开发</th>
+      <th class="c">数据负责人</th><th class="c">系统管理员</th></tr></thead>
+    <tbody>
+      <tr><td>Q-01 自然语言查询</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>Q-02 直查 SQL</td><td class="c n">✕<span class="fn">1</span></td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>Q-03 可见表</td><td class="c p">◐<span class="fn">2</span></td><td class="c p">◐<span class="fn">3</span></td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>Q-04 行上限</td><td class="c">1000</td><td class="c">500</td><td class="c">实例默认</td><td class="c">实例默认</td><td class="c">0</td></tr>
+      <tr><td>Q-05 可用环境</td><td class="c">仅 <code>prod_ro</code></td><td class="c">仅 <code>test</code></td><td class="c"><code>test</code>+<code>dev</code><span class="fn">15</span></td><td class="c">全部</td><td class="c n">✕</td></tr>
+      <tr><td>Q-06 敏感列</td><td class="c">强制脱敏</td><td class="c">强制脱敏</td><td class="c">部分脱敏<span class="fn">4</span></td><td class="c">申请后放开<span class="fn">5</span></td><td class="c">—</td></tr>
+      <tr><td>Q-07 时间窗口</td><td class="c">90 天</td><td class="c">180 天</td><td class="c">不限（非生产）</td><td class="c">365 天</td><td class="c">—</td></tr>
+      <tr><td>Q-08 高成本查询</td><td class="c">需审批</td><td class="c">需审批</td><td class="c">需审批</td><td class="c">需审批</td><td class="c appr">审批人</td></tr>
+      <tr><td>T-01 本人任务</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>T-02 断点续跑</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>T-03 他人任务</td><td class="c n">✕</td><td class="c n">✕</td><td class="c p">◐<span class="fn">6</span></td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>S-01 数据源列表</td><td class="c p">◐<span class="fn">7</span></td><td class="c p">◐<span class="fn">7</span></td><td class="c p">◐<span class="fn">7</span></td><td class="c y">✅</td><td class="c y">✅<span class="fn">8</span></td></tr>
+      <tr><td>S-02 测试连接</td><td class="c n">✕</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>S-03 新增数据源</td><td class="c n">✕</td><td class="c n">✕</td><td class="c p">◐<span class="fn">9</span></td><td class="c">提出<span class="fn">16</span></td><td class="c appr">审批人</td></tr>
+      <tr><td>S-04 改表白名单</td><td class="c n">✕</td><td class="c n">✕</td><td class="c p">◐<span class="fn">9</span></td><td class="c">提出<span class="fn">16</span></td><td class="c appr">审批人</td></tr>
+      <tr><td>S-05 删除数据源</td><td class="c n">✕</td><td class="c n">✕</td><td class="c p">◐<span class="fn">9</span></td><td class="c">提出<span class="fn">16</span></td><td class="c appr">审批人</td></tr>
+      <tr><td>S-06 元数据扫描</td><td class="c n">✕</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>G-01 查看口径</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>G-02 口径校验</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>G-03 编辑口径</td><td class="c n">✕<span class="fn">10</span></td><td class="c n">✕</td><td class="c p">◐<span class="fn">11</span></td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>E-01 质量中心</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅<span class="fn">8</span></td></tr>
+      <tr><td>E-02 运行时自检</td><td class="c n">✕</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅<span class="fn">8</span></td></tr>
+      <tr><td>E-03 库结构内省</td><td class="c n">✕</td><td class="c p">◐<span class="fn">3</span></td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>E-04 触发评测</td><td class="c n">✕</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>A-01 审计流水</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c y">✅</td><td class="c y">✅</td><td class="c p">◐<span class="fn">12</span></td></tr>
+      <tr><td>A-05 待审批队列</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c appr">✅</td></tr>
+      <tr><td>A-02 审计统计</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td></tr>
+      <tr><td>A-03 查询复放</td><td class="c n">✕</td><td class="c n">✕</td><td class="c y">✅<span class="fn">13</span></td><td class="c y">✅<span class="fn">13</span></td><td class="c n">✕</td></tr>
+      <tr><td>A-04 执行追踪</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
+      <tr><td>I-01 角色定义</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td></tr>
+      <tr><td>I-02 成员名册</td><td class="c">仅本角色</td><td class="c">仅本角色</td><td class="c">仅本角色</td><td class="c y">✅</td><td class="c y">✅</td></tr>
+      <tr><td>I-03 增删成员</td><td class="c n">✕</td><td class="c n">✕</td><td class="c n">✕</td><td class="c n">✕</td><td class="c y">✅</td></tr>
+      <tr><td>I-04 策略配置</td><td class="c">只读</td><td class="c">只读</td><td class="c">只读</td><td class="c y">✅</td><td class="c">只读<span class="fn">14</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="s4-1"><span class="n">4.1</span>脚注</h3>
+  <ol class="foots">
+    <li>直查绕过模型与业务口径层。产品角色的价值恰恰在口径归口，给它一条绕开口径的通道会让「指标以谁为准」失去落点。
+      这是职责收敛，不是安全考虑 —— 直查同样过全部护栏。</li>
+    <li>业务表可见，成本与用量类表（token、计费、模型调用明细）不可见 —— 沿用 <code>config/public.yaml</code> 已确立的口径：「产品角色看业务不看账」。</li>
+    <li>仅测试库与模拟数据表，不含任何承载生产语义的表。</li>
+    <li>开发角色只作用于非生产环境，环境本身已无真实个人信息；对从生产只读镜像同步来的样本表仍强制脱敏。</li>
+    <li>数据负责人对高成本查询与敏感字段同样<b>需要申请</b>，由系统管理员放行（V1.1）。全域可见不等于无需审批 —— 前者是范围，后者是闸门。</li>
+    <li>开发角色可见他人任务的<b>元数据</b>（发起人、状态、耗时、失败原因），不可见问题原文与结果集 —— 排障需要的是前者。</li>
+    <li>仅列出本角色环境范围内的数据源。列表本身就是信息：不该让测试角色知道生产只读镜像的存在与连接目标。</li>
+    <li>系统管理员可见运维健康面（连通性、自检、质量指标），<b>不可见任何业务数据与查询内容</b>。
+      这是对内置 <code>Policy(tables=frozenset(), max_rows=0)</code> 的补充说明，不是放宽。</li>
+    <li>开发角色仅对 <code>env ∈ {dev, test}</code> 的数据源可增删改；生产只读镜像的任何变更一律走审批链。</li>
+    <li>产品角色是口径的<b>业务归口</b>，但口径落地为配置文件，变更走评审。产品提出、数据负责人确认、代码评审合入 —— 页面不提供编辑入口是有意的。</li>
+    <li>开发角色中承担口径与黄金集维护职责者（赵珂）可提交口径变更，仍需数据负责人确认。</li>
+    <li><b>分两种场景，可见范围不同（V1.1 修订）</b>：
+      <ul>
+        <li><b>日常审计浏览</b>：仅见操作元数据（谁、何时、走哪个源、被哪条规则拦下、扫了多少行），不见 <code>question</code> 与 <code>sql_final</code>。</li>
+        <li><b>审批待办</b>：对进入待审批队列的那一条，可见 <code>question</code>、<code>sql_final</code>、<code>explain_rows</code>、涉及表 ——
+          不看这些无法判断该不该放行，一个盲批的审批人比没有审批更糟。</li>
+      </ul>
+      两种场景下都<b>不可见结果集</b>（<code>rows</code> 本就从不写入审计文件，见第七节）。审批动作本身留痕，事后可核「管理员看过哪些查询内容」。</li>
+    <li><b>复放必须按复放者本人的角色重新收窄，不得沿用原记录的角色</b>（见 D-4）。</li>
+    <li>系统管理员对策略只读，不可写。管人的角色若能改数据策略，等于绕一圈拿到数据权限 —— 这与内置的零表默认是同一条原则。</li>
+    <li>现有 <code>env</code> 枚举只有 <code>test</code> / <code>prod_ro</code> 两值，撑不起开发与测试的区分。需扩为
+      <code>dev</code> / <code>test</code> / <code>prod_ro</code> 三值，开发角色取前两者、测试角色仅取 <code>test</code>；
+      在枚举扩展落地前，开发与测试在环境维度上等价。</li>
+    <li>数据负责人负责判断变更在业务上是否成立（这张表该不该开、这个源该不该接），系统管理员负责放行。
+      <b>提出与放行分属两人</b>，任何一次数据可见范围的扩张都需要两个人同意 —— 这是 V1.1 把审批收敛到系统管理员后最直接的收益。</li>
+  </ol>
+</section>
+
+<section id="s5">
+  <h2><span class="n">5</span>人员到权限的落地对照</h2>
+  <p>现有 10 名内置人员，归属不变。</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>姓名</th><th>账号</th><th>角色</th><th>能做什么</th><th>明确不能做</th></tr></thead>
+    <tbody>
+      <tr><td>林晓</td><td class="mono">linxiao</td><td>产品</td>
+        <td>在生产只读镜像上问业务问题、看口径词典、看质量中心、看自己的审计记录</td>
+        <td>直查 SQL、碰数据源、看他人查询、看成本用量表</td></tr>
+      <tr><td>官德志</td><td class="mono">guandezhi</td><td>开发</td>
+        <td>开发与测试环境全量查询与直查、非生产数据源增删改、全量审计与复放、自检与内省</td>
+        <td>连接生产只读镜像、改口径定稿、增删角色成员</td></tr>
+      <tr><td>周琪</td><td class="mono">zhouqi</td><td>开发</td><td>同上，侧重数据源接入与自检</td><td>同上</td></tr>
+      <tr><td>陈昊</td><td class="mono">chenhao</td><td>开发</td><td>同上，侧重计划生成与检索链路排障</td><td>同上</td></tr>
+      <tr><td>李文博</td><td class="mono">liwenbo</td><td>开发</td><td>同上，前端所需的审计与追踪只读面</td><td>同上</td></tr>
+      <tr><td>赵珂</td><td class="mono">zhaoke</td><td>开发</td><td>同上，另可提交口径与黄金集变更（脚注 11）</td><td>口径变更自行定稿</td></tr>
+      <tr><td>苏晚</td><td class="mono">suwan</td><td>测试</td>
+        <td>测试库查询与直查、跑护栏用例与离线回归、触发评测、看自己的审计</td>
+        <td>接触任何生产或开发数据、改数据源、复放他人查询</td></tr>
+      <tr><td>郑铭</td><td class="mono">zhengming</td><td>测试</td><td>同上，另可读自检与质量中心做性能并发验证</td><td>同上</td></tr>
+      <tr><td>何静</td><td class="mono">hejing</td><td>数据负责人</td>
+        <td>全域查询、策略配置、口径定稿、全量审计与复放、<b>提出</b>数据源与白名单变更</td>
+        <td>增删角色成员、放行任何审批（含自己发起的高成本查询）</td></tr>
+      <tr><td>徐婷</td><td class="mono">xuting</td><td>系统管理员</td>
+        <td>增删角色成员、看运维健康面与审计元数据、<b>放行全部审批</b>（高成本查询、敏感字段申请、数据源与白名单变更）</td>
+        <td>任何业务数据、任何结果集、任何策略变更；日常浏览审计时不可见问题原文与 SQL</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3 id="s5-1"><span class="n">5.1</span>两个必须先确认的问题</h3>
+  <div class="note crit">
+    <span class="lbl">阻塞项 · 人员核对</span>
+    权限页显示系统管理员 2 人，而 <code>config/askdb.yaml</code> 的 <code>auth.accounts</code> 里只有徐婷一人。
+    差额来自身份库 <code>askdb_role_members</code> 中一条手工登记、<code>auth_user_id</code> 为空（未绑定网关用户）的记录。
+    <b>V1.1 之后，这意味着一个身份未经核实的账号持有全部审批权。</b>上线前必须查明并处置。
+  </div>
+  <div class="note warn">
+    <span class="lbl">单点风险 · V1.1 后位置变了</span>
+    审批不再压在何静身上，而是全部压在系统管理员上。核实完成后若确认系统管理员实为徐婷一人，需要一名备份审批人。
+    可用 RBAC 的加法语义（<code>identity.combine</code> 已支持多角色叠加）给某位成员叠加 <code>SYS_ADMIN</code> ——
+    <b>不新增角色、不调整人员</b>，只在成员表里多一条登记。
+    备份人选<b>不能是何静</b>：她是数据源变更的提出方，兼任放行方会让「提出与放行分属两人」失效。
+  </div>
+</section>
+
+<section id="s6">
+  <h2><span class="n">6</span>落地路径</h2>
+
+  <h3><span class="tag p0">阶段一</span> 鉴权兜底 · 2026-09-08 ~ 2026-09-19</h3>
+  <p>目标：把裸奔的接口关上。这一阶段不引入任何新权限维度，只让「已有的角色」覆盖到「已有的接口」。</p>
+  <ol>
+    <li>登录判据从逐接口调用改为默认要求，白名单显式列出：<code>/api/health</code>、<code>/api/auth/*</code>、
+      <code>/api/identity/roles</code>、静态资源。当前 <code>_require_login</code> 只挂在 4 个接口上，
+      靠「记得加」来保证覆盖，接口一多必漏。</li>
+    <li><code>/api/sources</code> 的三个写接口（S-03/04/05）接入审批链；<code>/api/introspect</code>、
+      <code>/api/identity/members</code>、<code>/api/audit</code>、<code>/api/replay</code> 按矩阵设门。</li>
+    <li>审计与追踪按 <code>user</code> 字段做可见范围过滤 —— 审计记录里已经有 <code>user</code> 与 <code>role</code> 两个字段，不需要新增存储。</li>
+    <li>复放改为按复放者当前角色调用 <code>_scoped()</code> 重新收窄（D-4）。</li>
+    <li><b>MCP 通道纳入角色体系（D-5）</b>：<code>build_server</code> 接收一个角色码（由启动参数或调用方凭据指定），
+      内部改走 <code>identity.for_role(cfg, role)</code>，默认值取最保守的角色而非全量配置；审计记录补上调用方标识。
+      在此之前，MCP 服务不应对内网以外开放。</li>
+  </ol>
+  <div class="note"><span class="lbl">验收</span>
+    以每个角色的账号登录，逐条走矩阵，越权项返回 403 且文案指向「当前角色无此权限」而非通用护栏措辞。</div>
+
+  <h3><span class="tag p0">阶段二</span> 让环境范围成立 · 2026-09-22 ~ 2026-10-10</h3>
+  <p>目标：消除 D-1，使 <code>role.scope</code> 从展示字符串变为执行判定。</p>
+  <ol>
+    <li><code>Source.env</code> 字段<b>已存在</b>，需要做的是两件事：把枚举从 <code>test</code> / <code>prod_ro</code> 扩为
+      <code>dev</code> / <code>test</code> / <code>prod_ro</code>（已有数据源回填），并<b>删掉「不参与鉴权」这条注释所描述的现状</b> —— 让它真正参与判定。</li>
+    <li><code>Policy</code> 增加 <code>envs</code> 维度，语义与 <code>tables</code> 一致：收窄、取交集、多角色取并集。</li>
+    <li><code>_cfg_for(source)</code> 之后增加环境归属校验；<code>/api/sources</code> 列表按环境过滤（脚注 7）。</li>
+    <li>权限页四格中的「环境范围」改为读取真实生效值。</li>
+  </ol>
+  <div class="note"><span class="lbl">验收</span>
+    测试角色账号在数据源列表中看不到生产只读镜像；直接构造请求指定其 id 返回 403。</div>
+
+  <h3><span class="tag p1">阶段三</span> 脱敏与数据期限 · 2026-10-13 ~ 2026-10-31</h3>
+  <p>目标：P03 与「数据期限」落地。两者都可复用现成机制，不需要新造判定。</p>
+  <ol>
+    <li><b>列级脱敏</b>：<code>Policy</code> 增 <code>masked_columns</code>（按列名模式匹配）。落点在执行器返回前的结果处理；
+      R-05 展开 <code>SELECT *</code> 时已经拿到了真实列名，脱敏所需的列信息现成。</li>
+    <li><b>数据期限</b>：<code>Policy</code> 增 <code>max_age_days</code>，<b>复用 R-10 的强制谓词注入机制</b> ——
+      R-10 已经在做「给 SQL 强制注入租户谓词」，时间窗口是同一类动作，注入一个时间条件即可，不需要新的护栏规则。</li>
+    <li>权限页去掉 <code>ROLE_LIMITS</code> 硬编码，改读后端真值。</li>
+  </ol>
+  <div class="note"><span class="lbl">验收</span>
+    产品角色查询个人信息列返回脱敏值；查询 90 天前的数据返回空集且执行计划中可见注入的时间谓词。</div>
+
+  <h3><span class="tag p1">阶段四</span> 审批闭环 · 2026-11-03 ~ 2026-11-21</h3>
+  <p>目标：P07 落地，三条审批链共用同一个队列。</p>
+  <ol>
+    <li>R-11 已在执行前用 EXPLAIN 估算扫描行数，阈值判定的输入现成。</li>
+    <li>超阈值不再直接拒绝，而是把任务置为「待审批」落入任务中心 —— 任务中心已有断点续跑的执行线程模型，挂起与恢复是同一套机制。</li>
+    <li><b>系统管理员</b>在待审批队列审批（V1.1）。通过则以<b>发起人的角色</b>恢复执行 ——
+      不是审批人的角色，也不可能是：审批人内置零表，用它的角色恢复只会立刻撞上 <code>_require_scope</code>。</li>
+    <li>审批动作独立留痕，记录审批人、时间、决定，以及<b>审批人查看了哪条查询的原文</b>。</li>
+    <li>同一批次落地另外两条审批链：敏感字段按需放开（Q-06）、数据源与白名单变更（S-03/04/05）。三条链共用同一个待审批队列与同一套留痕。</li>
+  </ol>
+  <div class="note"><span class="lbl">验收</span>
+    测试角色发起一条预估扫描超阈值的查询，任务进入待审批；徐婷账号批准后任务恢复并完成，审计中同时存在发起与审批两条记录。
+    补充两条反向用例：何静账号对该条审批返回 403（数据负责人无放行权）；何静自己发起的超阈值查询同样进入待审批，且她本人批不了。</div>
+
+  <h3>不做的部分</h3>
+  <div class="two">
+    <div class="box">
+      <h4>P11 结果禁止用于模型训练</h4>
+      <p>在没有导出功能、结果不落盘的当前架构下，这条已经由「结果只在任务生命周期内处理」天然成立。
+        <b>不新增开关</b>，改为在权限页把它标注为架构约束而非可配置策略 ——
+        一个永远为真且拨不动的开关，比没有这个开关更容易让人误判。</p>
+    </div>
+    <div class="box">
+      <h4>导出权限 / AGG ONLY</h4>
+      <p>没有导出功能（D-6），这一维度暂不定义。若后续引入导出，需同步定义「聚合结果」的判定标准 ——
+        是否含 <code>GROUP BY</code> 不足以判定，<code>SELECT id FROM t GROUP BY id</code> 仍是明细。</p>
+    </div>
+    <div class="box">
+      <h4>策略开关的持久化（I-04）</h4>
+      <p>阶段一至四中，P01/P03/P07 的开关状态由配置文件承载，权限页保持只读展示。
+        把策略做成页面可拨的开关，意味着策略变更没有评审、没有版本、没有回滚 —— 那是比「开关拨不动」更严重的问题。</p>
+    </div>
+  </div>
+</section>
+
+<section id="s7">
+  <h2><span class="n">7</span>对现有代码的影响面</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>模块</th><th>影响</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td><code>askdb/identity.py</code></td>
+        <td><code>Policy</code> 增 3 个维度（envs / masked_columns / max_age_days）；<b>两条角色 desc 需改写</b></td>
+        <td>收窄与并集语义原样扩展，不改结构。<code>DATA_OWNER</code> 的 desc 现写「配置策略、审批高风险与高成本查询」，
+          V1.1 后它不再审批；<code>SYS_ADMIN</code> 的 desc 需补上审批职责。
+          <b>不改就又是一处「页面宣称与实际不符」，正是本设计要消灭的东西</b>。
+          <code>DEFAULT_POLICIES</code> 的零表默认不动 —— 审批权不是数据权</td></tr>
+      <tr><td><code>askdb/server.py</code></td><td>登录判据前移；按矩阵为各接口设门</td>
+        <td>影响面最大的一处，但都是新增拦截，不改业务逻辑</td></tr>
+      <tr><td><code>askdb/sources.py</code></td><td><code>env</code> 枚举扩为三值并接入鉴权</td>
+        <td>字段已存在，需回填与去掉「不参与鉴权」的现状</td></tr>
+      <tr><td><code>askdb/mcp_server.py</code></td><td><code>build_server</code> 接入角色收窄</td>
+        <td>当前以全量配置运行，是最大的一条绕行通道</td></tr>
+      <tr><td><code>askdb/guard.py</code></td><td>时间窗口谓词注入</td><td>复用 R-10 已有机制</td></tr>
+      <tr><td><code>askdb/executor.py</code></td><td>结果列脱敏；R-11 阈值改为挂起而非拒绝</td><td></td></tr>
+      <tr><td>护栏规则 R-01 ~ R-17</td><td class="y"><b>不改</b></td>
+        <td>沿用「收窄配置而非在护栏内分支」的既有决策</td></tr>
+      <tr><td><code>frontend/src/pages/PermissionsPage.tsx</code></td>
+        <td>去掉 <code>ROLE_LIMITS</code> 与 <code>POLICY_RULES</code> 硬编码，改读后端</td><td>阶段二、三分批</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="sa">
+  <h2>附 · RBAC 与租户隔离是两套正交机制</h2>
+  <p>本设计只讨论 RBAC。需要明确的是，它与已有的租户隔离<b>解决的不是同一个问题，不能互相替代</b>：</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th></th><th>控制什么</th><th>实现</th><th>配置</th></tr></thead>
+    <tbody>
+      <tr><td><b>角色（RBAC）</b></td><td><b>能看哪些表、哪些列</b></td>
+        <td><code>Policy.tables</code> → <code>cfg.tables</code> → R-03</td><td><code>role_policies</code></td></tr>
+      <tr><td><b>租户（Tenant）</b></td><td><b>同一张表里能看哪些行</b></td>
+        <td>R-10 强制注入 <code>org_id</code> 谓词 + PostgreSQL RLS 双保险</td>
+        <td><code>tenant</code> 段，<code>on_unresolved: reject</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>两者叠加才是完整边界：角色放行了 <code>documents</code> 表，租户仍然只让你看到自己组织的行。
+    本设计新增的三个维度中，<b>数据时间窗口（Q-07）与租户属于同一类</b>（都是行级收窄、都靠谓词注入），
+    因此阶段三复用 R-10 的机制是顺理成章的；而脱敏（Q-06）是列级，属于角色这一侧。</p>
+</section>
+
+<section id="s8">
+  <h2><span class="n">8</span>开放问题</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>编号</th><th>问题</th><th>待决策方</th><th>期望决策日期</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">O-1</td>
+        <td><span class="tag p0">阻塞项</span> 系统管理员角色中那条未绑定网关用户的成员记录来源 —— V1.1 后该角色持有全部审批权</td>
+        <td>平台管理员</td><td class="mono">2026-09-08</td></tr>
+      <tr><td class="mono">O-2</td><td>备份审批人由谁叠加 <code>SYS_ADMIN</code>（不能是何静）</td><td>业务侧</td><td class="mono">2026-09-12</td></tr>
+      <tr><td class="mono">O-7</td>
+        <td>口径定稿（G-03）保留在数据负责人，未随 V1.1 移交 —— 它是业务正确性决定，不是安全闸门。如需一并收敛请明确</td>
+        <td>架构 / 业务侧</td><td class="mono">2026-09-12</td></tr>
+      <tr><td class="mono">O-3</td><td>生产只读镜像的数据期限取 90 天是否满足产品侧口径分析需要</td>
+        <td>产品 / 数据负责人</td><td class="mono">2026-10-10</td></tr>
+      <tr><td class="mono">O-5</td><td>MCP 通道的调用方身份如何取得：启动参数固定角色，还是每次调用带凭据</td>
+        <td>架构</td><td class="mono">2026-09-12</td></tr>
+      <tr><td class="mono">O-6</td><td><code>datasources.allow_runtime_add</code> 在内网试点期间是否继续保持 <code>true</code></td>
+        <td>数据负责人</td><td class="mono">2026-09-08</td></tr>
+      <tr><td class="mono">O-4</td><td>成员写接口从共享令牌切换为系统管理员角色鉴权的时间点（取决于网关身份对接进度）</td>
+        <td>架构</td><td class="mono">2026-10-31</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+</main>
+</div>
+
+<div class="foot">
+  askdb 角色与权限设计 V1.2 · 拟制日期 2026-09-05 · 拟制 官德志（架构） · 状态：待评审 ·
+  适用版本 Phase 1 · 内网试点
+</div>
+
+<script>
+document.getElementById('themeBtn').onclick = () => {
+  const r = document.documentElement;
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = (r.dataset.theme || (dark?'dark':'light')) === 'dark' ? 'light' : 'dark';
+};
+const links = [...document.querySelectorAll('#toc a')];
+const targets = links.map(a => document.querySelector(a.getAttribute('href'))).filter(Boolean);
+const io = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if(!e.isIntersecting) return;
+    links.forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id));
+  });
+}, {rootMargin:'-10% 0px -80% 0px', threshold:0});
+targets.forEach(t => io.observe(t));
+</script>
+
+</body>
+</html>
