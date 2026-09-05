@@ -232,3 +232,26 @@ def test_identity_on_when_env_dsn_present(cfg, monkeypatch):
     monkeypatch.setenv(identity.DSN_ENV, "host=127.0.0.1 dbname=x user=y")
     cfg.raw["identity"] = {"enabled": True}
     assert identity.enabled(cfg) is True
+
+
+def test_reads_never_create_the_schema(cfg, monkeypatch):
+    """读路径不得建表。
+
+    原来 roles_with_counts / list_members 每次都调 ensure_schema，于是任何人
+    一个匿名 GET（/api/identity/roles）就能让服务端对身份库执行一次 DDL。
+    幂等归幂等，但"未登录不碰库"这条口径它不满足 —— 而且它是一条谁也想不到
+    要去查的写路径。表没建出来 = 一个成员都还没登记过，按空处理即可。
+    """
+    from askdb import identity
+
+    monkeypatch.setattr(identity, "enabled", lambda _cfg: True)
+    monkeypatch.setattr(identity, "_rows", lambda *a, **k: [])
+    monkeypatch.setattr(identity, "ensure_schema",
+                        lambda _cfg: pytest.fail("读路径不该建表"))
+
+    counts = identity.roles_with_counts(cfg)
+    assert [r["code"] for r in counts] == [r.code for r in identity.ROLES]
+    # 库表读不到东西时，名单里只剩配置内置的那批 —— 照样出得来，不必先建表
+    members = identity.list_members(cfg)
+    assert members and all(m["builtin"] for m in members)
+

@@ -40,7 +40,17 @@
 .progress { height: 4px; margin-top: 9px; border-radius: 4px; background: #d8d5cc; overflow: hidden; }
 .progress i { display: block; width: 35%; height: 100%; background: var(--green-2); }
 .main-content { min-width: 0; overflow-y: auto; }
-.page { width: 100%; max-width: 1420px; margin: 0 auto; padding: 24px 28px 48px; animation: pageIn .25s ease both; }
+/* 入场动画**只动 opacity，不动 transform**。
+ *
+ * 原来是 translateY(4px) + fill-mode: both。both 会把最后一帧永久留在元素上，
+ * 于是每一页都常驻一个 transform，而**任何非 none 的 transform 都会让该元素成为
+ * position:fixed 子元素的包含块** —— 弹窗因此不再相对视口居中，而是相对整页内容
+ * 居中。任务中心一千多行时页面高七万多像素，弹窗被放到 37000px 处，屏幕上只剩
+ * 一层遮罩，看着像"点了没反应"。
+ *
+ * 改 fill-mode 治不干净（动画运行期间照样是包含块，页面切换又频繁），
+ * 索性不碰 transform：4px 的位移换不来"全站弹窗都可能被埋掉"这个风险。 */
+.page { width: 100%; max-width: 1420px; margin: 0 auto; padding: 24px 28px 48px; animation: pageIn .25s ease; }
 .query-page { height: 100%; display: flex; flex-direction: column; padding-bottom: 16px; overflow: hidden; }
 /* 查询页的头部压到最小：这一页是工作面，上面每多占 10px，
    下面的结果区就少 10px。标题层级保留，只收紧字号与间距。 */
@@ -48,7 +58,7 @@
 .query-page .page-head { align-items: center; margin-bottom: 10px; }
 .query-page .page-head h1 { font-size: 21px; }
 .query-page .page-head p { margin-top: 2px; }
-@keyframes pageIn { from { opacity: 0; transform: translateY(4px); } }
+@keyframes pageIn { from { opacity: 0; } }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
 .page-head h1 { margin: 0; font-size: 25px; }
 .page-head p { margin: 5px 0 0; color: var(--muted); font-size: 9px; }
