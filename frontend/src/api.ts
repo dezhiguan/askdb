@@ -773,3 +773,51 @@ export async function fetchOfflineQuality(): Promise<OfflineQuality> {
   if (!response.ok) throw new Error(`/api/eval ${response.status}`)
   return response.json()
 }
+
+// ---------- 高成本查询审批（P07 / 设计文档 Q-08） ----------
+
+export interface Approval {
+  id: string
+  status: 'REQUESTED' | 'APPROVED' | 'REJECTED' | 'CONSUMED'
+  ts: string
+  user: string
+  roles: string[]
+  kind: 'ask' | 'sql'
+  question: string
+  sql: string
+  est_rows: number | null
+  threshold: number
+  source: string
+  approver?: string
+  note?: string
+  decided_ts?: string
+}
+
+export interface ApprovalsResult {
+  /** 有 APPROVE 能力位（系统管理员）。没有的人只看得到自己提的 */
+  can_approve: boolean
+  items: Approval[]
+}
+
+export async function fetchApprovals(): Promise<ApprovalsResult> {
+  const response = await fetch('/api/approvals')
+  if (!response.ok) throw new Error(`/api/approvals ${response.status}`)
+  return response.json()
+}
+
+export async function decideApproval(
+  id: string, approved: boolean, note: string,
+): Promise<Approval> {
+  const response = await fetch(`/api/approvals/${encodeURIComponent(id)}/decide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approved, note }),
+  })
+  if (!response.ok) {
+    // 409 = 已经有过结论。把后端那句话原样带出去 —— 它说明的是
+    // "别人已经批过了"，与"你没权限"完全不同，含糊会让人反复重试。
+    const body = await response.json().catch(() => ({}))
+    throw new Error(body.detail || `/api/approvals ${response.status}`)
+  }
+  return response.json()
+}

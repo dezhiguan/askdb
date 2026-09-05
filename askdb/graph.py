@@ -349,13 +349,23 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         # 数据源在链路中途不可用 —— 不是模型的错，别重试
         d.tracer.add("dry_run", t, str(e), status="failed")
         return {"error": str(e), "error_hint": e.hint, "rejected_by": "EXEC"}
-    if not r.ok:
+    if not r.ok and not d.cfg.scan_waiver:
         d.tracer.add("dry_run", t, r.reason, status="blocked")
         return {
             "error": r.reason,
-            "error_hint": "缩小时间范围或加筛选条件，让扫描量降下来。",
+            "error_hint": "缩小时间范围或加筛选条件，让扫描量降下来。"
+                          "确有必要时可申请高成本查询审批。",
             "rejected_by": "R-11",
+            # 超阈值不再是终点：server 据此登记一条待审批（P07）
+            "needs_approval": True,
+            "est_rows": r.est_rows,
         }
+    if not r.ok:
+        # 已获批准。如实记下"这一步本该拦下但按审批放行"，
+        # 审计里必须看得出这条查询是走审批过来的，否则阈值形同虚设。
+        d.tracer.add("dry_run", t, f"{r.reason}（已获审批放行）", status="ok")
+        return {"error": None, "rejected_by": None, "explain_rows": r.est_rows,
+                "approved_over_threshold": True}
     est = f"预估扫描 {r.est_rows:,} 行" if r.est_rows is not None else "计划无基数估计"
     d.tracer.add("dry_run", t, est)
     return {"error": None, "rejected_by": None, "explain_rows": r.est_rows}

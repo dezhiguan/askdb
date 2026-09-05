@@ -424,12 +424,19 @@ def test_tasks_page_is_wired_and_promises_no_approval_flow():
     以为能靠它做人工介入与审批。
 
     说明卡没了之后，唯一还会暗示审批的地方是左导航副标题 —— 守在那里。
+
+    2026-09-06 起 askdb **确实有了**高成本查询审批（P07：预估扫描超阈值 →
+    挂起 → 系统管理员放行 → 发起人重跑一次）。所以断言不再笼统地禁"审批"
+    二字，而是收紧到它真正要守的那一点：**任务中心那一项**不能这么承诺。
+    任务中断是故障恢复，与审批是两件事，混起来会让人以为中断的任务可以靠
+    人工补充输入接着跑 —— 那个能力至今不存在。
     """
     src = _code_only(FRONTEND_SRC / "pages" / "TasksPage.tsx")
     assert "fetchTasks" in src and "resumeTask" in src
 
     nav = _code_only(FRONTEND_SRC / "data" / "mockData.ts")
-    assert "审批" not in nav, "askdb 没有审批流，导航不该这么承诺"
+    tasks_entry = next(line for line in nav.splitlines() if "view: 'tasks'" in line)
+    assert "审批" not in tasks_entry, "任务中断是故障恢复，不是审批流，导航不该这么承诺"
 
     notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
     assert "tasks:" not in notices, "任务中心已接真实数据，MockNotice 里的条目要删掉"

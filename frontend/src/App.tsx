@@ -5,6 +5,7 @@ import { MockNotice } from './components/MockNotice'
 import { ModalLayer } from './components/Modals'
 import { QueryWorkspace } from './components/QueryWorkspace'
 import { DataSourcesPage } from './pages/DataSourcesPage'
+import { ApprovalsPage } from './pages/ApprovalsPage'
 import { AuditPage } from './pages/AuditPage'
 import { EvaluationPage } from './pages/EvaluationPage'
 import { GlossaryPage } from './pages/GlossaryPage'
@@ -86,6 +87,7 @@ function App() {
     if (view === 'sources') return <DataSourcesPage health={health} me={me} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />
     if (view === 'glossary') return <GlossaryPage onNavigate={setView} notify={notify} />
+    if (view === 'approvals') return <ApprovalsPage notify={notify} />
     if (view === 'audit') return <AuditPage />
     if (view === 'evaluation') return <EvaluationPage />
     if (view === 'traces') return <TracesPage onNavigate={setView} onOpenModal={setModal} />

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import secrets
 import time
@@ -17,6 +18,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from . import approvals as _approvals
 from . import auth as _auth
 from . import guard
 from . import identity as _identity
@@ -252,12 +254,21 @@ class AskRequest(BaseModel):
     org_id: int | None = None
     # 运行时数据源 id。留空 / "builtin" 走启动配置里的那个源
     source: str = Field(default="", max_length=32)
+    # 已批准的高成本查询单号（P07）。带上它才可能跳过 R-11，且只跳一次
+    approval_id: str = Field(default="", max_length=32)
 
 
 class SqlRequest(BaseModel):
     sql: str = Field(min_length=1, max_length=20000)
     org_id: int | None = None
     source: str = Field(default="", max_length=32)
+    approval_id: str = Field(default="", max_length=32)
+
+
+class DecideRequest(BaseModel):
+    approved: bool
+    # 驳回时尤其要写：申请人拿到的唯一信息就是这句话
+    note: str = Field(default="", max_length=200)
 
 
 class SourceRequest(BaseModel):
@@ -1258,6 +1269,42 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             raise HTTPException(status_code=404, detail="成员不存在")
         return {"ok": True}
 
+    @app.get("/api/approvals")
+    def approvals_list(request: Request) -> dict[str, Any]:
+        """待审批队列。
+
+        可见范围与审计同一条口径：有 APPROVE 的看全部，没有的只看自己提的。
+        自己提的必须能看到 —— 否则申请人无从知道批没批，只能反复重试。
+        """
+        _require_login(request)
+        can_approve = _can(request, _identity.APPROVE)
+        return {
+            "can_approve": can_approve,
+            "items": _approvals.listing(
+                cfg, only_user=None if can_approve else (_current_user(request) or "")),
+        }
+
+    @app.post("/api/approvals/{approval_id}/decide")
+    def approvals_decide(approval_id: str, req: DecideRequest,
+                         request: Request) -> dict[str, Any]:
+        """放行或驳回。**只有系统管理员**（设计文档 Q-08 / V1.1）。
+
+        数据负责人有意不在此列：数据源变更由它提出，兼任放行方会让
+        「提出与放行分属两人」失效。而系统管理员的 Policy 是空表集，
+        永远不可能是发起人，所以自批在结构上不可能发生。
+        """
+        _require_login(request)
+        _require_cap(request, _identity.APPROVE, "审批高成本查询")
+        rec = _approvals.decide(cfg, approval_id,
+                                approver=_current_user(request) or "",
+                                approved=bool(req.approved), note=req.note)
+        if rec is None:
+            # 不存在与"已经批过"合并成同一句：重复决策不是错误，
+            # 但也不该悄悄覆盖前一个人的结论。
+            raise HTTPException(status_code=409,
+                                detail="该申请不存在，或已经有过结论，不能重复决策。")
+        return rec
+
     @app.get("/api/tasks")
     def tasks(request: Request) -> dict[str, Any]:
         """当前账号名下的**全部执行线程**，新的在前。
@@ -1376,6 +1423,44 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
     def _can(request: Request, cap: str) -> bool:
         return _identity.can(_roles(request), cap)
+
+    def _apply_waiver(scoped: Config, request: Request, *, aid: str,
+                      kind: str, text: str) -> Config:
+        """校验审批单，通过就在这次调用的配置上打一个放行标记。
+
+        走配置而不是层层传参，与 role / tables / max_rows 完全一条路 ——
+        执行链路因此不需要知道"审批"这个概念存在，也就不会有人在
+        某个分支上忘了判。
+
+        校验不过一律 403 并把原因原话给出去：审批被拒、单子过期、
+        内容对不上，这三种情况用户的下一步动作完全不同，含糊其辞
+        会让他反复重试同一个不可能成功的操作。
+        """
+        if not aid:
+            return scoped
+        why = _approvals.waiver(cfg, aid, user=_current_user(request) or "",
+                                kind=kind, text=text)
+        if why:
+            raise HTTPException(status_code=403, detail=why)
+        return dataclasses.replace(
+            scoped, raw={**scoped.raw, "_scan_waiver": True})
+
+    def _open_approval(scoped: Config, request: Request, *, trace_id: str,
+                       kind: str, question: str, sql: str, match_text: str,
+                       est_rows: int | None) -> dict[str, Any]:
+        """超阈值时登记一条待审批，并把单号回给发起人。
+
+        R-11 此前直接打回并附一句"缩小时间范围"。对一次性的年度对账来说
+        那是一句无解的话 —— 需求本身就要扫那么多行。于是人要么放弃，
+        要么绕开 askdb 直接连库，而后者正是这套系统要消灭的行为。
+        """
+        rec = _approvals.request(
+            cfg, trace_id=trace_id, user=_current_user(request) or "",
+            roles=_roles(request), kind=kind, question=question, sql=sql,
+            match_text=match_text, est_rows=est_rows,
+            threshold=int(cfg.raw["guard"]["max_scan_rows"]),
+            source=scoped.source_id or "builtin")
+        return {"approval_id": rec["id"], "approval_status": rec["status"]}
 
     def _audit_owner_filter(request: Request) -> str | None:
         """审计的可见范围：None = 全量，字符串 = 只看这个人发起的。
@@ -1569,8 +1654,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         scoped = _scoped(request, _cfg_for(req.source, request))
         _require_scope(scoped)
         _require_cap(request, _identity.QUERY, "发起查询")
+        scoped = _apply_waiver(scoped, request, aid=req.approval_id,
+                               kind="ask", text=req.question)
         r = run_ask(req.question.strip(), scoped, org_id=req.org_id)
-        return JSONResponse(r.to_dict())
+        out = r.to_dict()
+        if r.rejected_by == "R-11" and not scoped.scan_waiver:
+            # 与直查同一条口径：超阈值挂起，不是终结。
+            # 绑定的是**问题原文**，因为再问一次生成的 SQL 未必逐字相同。
+            out.update(_open_approval(scoped, request, trace_id=r.trace_id, kind="ask",
+                                      question=req.question.strip(),
+                                      sql=r.sql_final or r.sql_raw,
+                                      match_text=req.question.strip(),
+                                      est_rows=getattr(r, "explain_rows", None)))
+        if scoped.scan_waiver and r.ok:
+            _approvals.consume(cfg, req.approval_id)
+        return JSONResponse(out)
 
     @app.post("/api/sql")
     def sql(req: SqlRequest, request: Request) -> JSONResponse:
@@ -1592,6 +1690,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         scoped = _scoped(request, _cfg_for(req.source, request))
         _require_scope(scoped)          # 顺序同 /api/ask，理由见那里
         _require_cap(request, _identity.QUERY_SQL, "使用直查 SQL")
+        scoped = _apply_waiver(scoped, request, aid=req.approval_id,
+                               kind="sql", text=req.sql)
         org = scoped.default_org if req.org_id is None else req.org_id
         trace_id = _uuid.uuid4().hex[:12]
         t0 = time.perf_counter()
@@ -1633,16 +1733,28 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         with Executor(scoped) as ex:
             ep = ex.explain(g.sql)
-            if not ep.ok:
+            if not ep.ok and not scoped.scan_waiver:
                 steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
                 _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)
+                # 挂起而不是终结：登记一条待审批，把单号回给发起人（P07）
+                pending = _open_approval(scoped, request, trace_id=trace_id, kind="sql",
+                                         question="（直查模式）", sql=g.sql,
+                                         # 指纹绑用户提交的原文，不是改写后的
+                                         match_text=req.sql, est_rows=ep.est_rows)
                 return JSONResponse({
                     "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
                     "sql_final": g.sql, "rejected_by": "R-11", "error": ep.reason,
-                    "hint": "缩小时间范围或增加筛选条件，把扫描量降下来。",
+                    "hint": "缩小时间范围或增加筛选条件把扫描量降下来；"
+                            "确有必要跑全量时，这条已登记为待审批，"
+                            "由系统管理员放行后可原样重跑一次。",
                     "rewrites": g.rewrites, "steps": steps, "org_id": org,
-                    "trace_id": trace_id,
+                    "trace_id": trace_id, **pending,
                 })
+            if not ep.ok:
+                # 已获批准。审计里必须看得出这条是走审批过来的，
+                # 否则阈值形同虚设 —— 事后没人能分辨"没超"和"超了但批了"。
+                steps.append({"step": "dry_run", "ms": 0, "status": "ok",
+                              "note": f"{ep.reason}（已获审批放行）"})
             steps.append({"step": "dry_run", "ms": 0, "status": "ok",
                           "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
             try:
@@ -1663,6 +1775,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                       "note": f"返回 {res.row_count} 行"})
         _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,
                explain_rows=ep.est_rows, rows_returned=res.row_count)
+        if scoped.scan_waiver:
+            # **执行成功之后**才作废。执行失败就烧掉一次审批的话，
+            # 用户得为一次数据源抖动重新走一遍人工流程。
+            _approvals.consume(cfg, req.approval_id)
         return JSONResponse({
             "ok": True, "question": "（直查模式）", "sql_raw": req.sql, "sql_final": g.sql,
             "rules_fired": g.rules_fired, "rewrites": g.rewrites,

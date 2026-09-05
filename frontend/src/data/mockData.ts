@@ -24,6 +24,7 @@ export const navGroups: {
       { view: 'glossary', icon: 'DI', title: '业务口径', subtitle: '指标与字段词典' },
       { view: 'evaluation', icon: 'QA', title: 'Agent 质量中心', subtitle: '运行健康与持续评测', badge: 'LIVE' },
       { view: 'traces', icon: 'TR', title: '执行追踪', subtitle: 'Agent 链路与 Span', badge: 'NEW' },
+      { view: 'approvals', icon: 'AP', title: '高成本审批', subtitle: '超阈值查询放行' },
       { view: 'audit', icon: 'AU', title: '审计中心', subtitle: '查询执行全链路' },
     ],
   },

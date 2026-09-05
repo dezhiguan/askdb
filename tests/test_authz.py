@@ -469,3 +469,156 @@ def test_unmask_cannot_be_switched_on_by_config(cfg):
     而这一位配错等于把个人信息交出去。"""
     cfg.raw["role_policies"] = {"QA": {"unmask": True}}
     assert identity.policy_for(cfg, "QA").unmask is False
+
+
+# ---------- 高成本查询审批（Q-08 / P07） ----------
+
+@pytest.fixture
+def tight(zcfg):
+    """把扫描阈值压到 0，让任何查询都超阈值 —— 这样才测得到挂起。
+
+    压到 1 不够：护栏会先注入租户谓词，DuckDB 据此把 orgs 的预估收到 1 行，
+    正好不大于阈值。测阈值行为时要绕开"改写会改变预估"这件事。
+    """
+    zcfg.raw["guard"] = {**zcfg.raw["guard"], "max_scan_rows": 0}
+    return zcfg
+
+
+def _ask_sql(c, sql, **kw):
+    return c.post("/api/sql", json={"sql": sql, **kw}).json()
+
+
+def test_over_threshold_opens_an_approval_instead_of_dead_ending(tight, monkeypatch):
+    """R-11 超阈值不再是终点。
+
+    此前只回一句"缩小时间范围"，对一次性的年度对账来说那是一句无解的话 ——
+    需求本身就要扫那么多行。于是人要么放弃，要么绕开 askdb 直接连库，
+    而后者正是这套系统要消灭的行为。
+    """
+    c = _as(_client(tight, monkeypatch), "qa")
+    r = _ask_sql(c, "SELECT id FROM orgs")
+    assert r["ok"] is False and r["rejected_by"] == "R-11"
+    assert r["approval_id"] and r["approval_status"] == "REQUESTED"
+    assert "待审批" in r["hint"]
+
+
+def test_only_system_admin_can_decide(tight, monkeypatch):
+    """数据负责人有意批不了：它是数据源变更的提出方，
+    兼任放行方会让"提出与放行分属两人"失效。"""
+    c = _as(_client(tight, monkeypatch), "qa")
+    aid = _ask_sql(c, "SELECT id FROM orgs")["approval_id"]
+
+    _as(c, "owner")                                   # DATA_OWNER
+    r = c.post(f"/api/approvals/{aid}/decide", json={"approved": True})
+    assert r.status_code == 403 and "审批高成本查询" in r.json()["detail"]
+
+    _as(c, "root")                                    # SYS_ADMIN
+    assert c.post(f"/api/approvals/{aid}/decide",
+                  json={"approved": True}).status_code == 200
+
+
+def test_approved_query_runs_once_and_only_once(tight, monkeypatch):
+    """放行是一次性的 —— 否则一次审批等于永久豁免。"""
+    c = _as(_client(tight, monkeypatch), "qa")
+    aid = _ask_sql(c, "SELECT id FROM orgs")["approval_id"]
+    _as(c, "root")
+    c.post(f"/api/approvals/{aid}/decide", json={"approved": True})
+
+    _as(c, "qa")
+    ok = _ask_sql(c, "SELECT id FROM orgs", approval_id=aid)
+    assert ok["ok"] is True, ok
+
+    again = c.post("/api/sql", json={"sql": "SELECT id FROM orgs", "approval_id": aid})
+    assert again.status_code == 403 and "一次性" in again.json()["detail"]
+
+
+def test_waiver_is_bound_to_the_exact_request(tight, monkeypatch):
+    """拿小查询骗到批准、再用同一个单号跑别的，审批就成了摆设。"""
+    c = _as(_client(tight, monkeypatch), "qa")
+    aid = _ask_sql(c, "SELECT id FROM orgs")["approval_id"]
+    _as(c, "root")
+    c.post(f"/api/approvals/{aid}/decide", json={"approved": True})
+
+    _as(c, "qa")
+    r = c.post("/api/sql", json={"sql": "SELECT name FROM orgs", "approval_id": aid})
+    assert r.status_code == 403 and "不一致" in r.json()["detail"]
+
+
+def test_waiver_cannot_be_borrowed_by_another_account(tight, monkeypatch):
+    """别人批下来的额度不能借用。"""
+    c = _as(_client(tight, monkeypatch), "qa")
+    aid = _ask_sql(c, "SELECT id FROM orgs")["approval_id"]
+    _as(c, "root")
+    c.post(f"/api/approvals/{aid}/decide", json={"approved": True})
+
+    _as(c, "dev")
+    r = c.post("/api/sql", json={"sql": "SELECT id FROM orgs", "approval_id": aid})
+    assert r.status_code == 403 and "不属于当前账号" in r.json()["detail"]
+
+
+def test_rejection_reason_reaches_the_requester(tight, monkeypatch):
+    """驳回时申请人拿到的唯一信息就是那句话，必须传到。"""
+    c = _as(_client(tight, monkeypatch), "qa")
+    aid = _ask_sql(c, "SELECT id FROM orgs")["approval_id"]
+    _as(c, "root")
+    c.post(f"/api/approvals/{aid}/decide",
+           json={"approved": False, "note": "请改用按月汇总表"})
+
+    _as(c, "qa")
+    r = c.post("/api/sql", json={"sql": "SELECT id FROM orgs", "approval_id": aid})
+    assert r.status_code == 403 and "请改用按月汇总表" in r.json()["detail"]
+
+
+def test_queue_visibility_follows_the_audit_rule(tight, monkeypatch):
+    """有 APPROVE 的看全部，没有的只看自己提的 —— 与审计同一条口径。
+
+    自己提的必须看得到，否则申请人无从知道批没批，只能反复重试。
+    """
+    c = _as(_client(tight, monkeypatch), "qa")
+    _ask_sql(c, "SELECT id FROM orgs")
+    _as(c, "dev")
+    _ask_sql(c, "SELECT name FROM orgs")
+
+    mine = c.get("/api/approvals").json()                     # dev 自己的
+    assert mine["can_approve"] is False and len(mine["items"]) == 1
+
+    _as(c, "root")
+    all_ = c.get("/api/approvals").json()
+    assert all_["can_approve"] is True and len(all_["items"]) == 2
+
+
+def test_decision_is_recorded_with_the_approver(tight, monkeypatch):
+    """审批动作独立留痕，并记下审批人看过原文 ——
+    那是放开"系统管理员不看查询内容"的代价，代价要能被事后核对。"""
+    from askdb import approvals
+
+    c = _as(_client(tight, monkeypatch), "qa")
+    aid = _ask_sql(c, "SELECT id FROM orgs")["approval_id"]
+    _as(c, "root")
+    c.post(f"/api/approvals/{aid}/decide", json={"approved": True, "note": "季度对账"})
+
+    rec = approvals.state(tight)[aid]
+    assert rec["approver"] == "root" and rec["note"] == "季度对账"
+    assert rec["approver_saw_content"] is True
+    assert rec["user"] == "qa"                 # 发起人照旧记着，不被决策覆盖
+
+
+def test_double_decision_is_refused(tight, monkeypatch):
+    """不能重复决策 —— 悄悄覆盖前一个人的结论比拒绝更糟。"""
+    c = _as(_client(tight, monkeypatch), "qa")
+    aid = _ask_sql(c, "SELECT id FROM orgs")["approval_id"]
+    _as(c, "root")
+    assert c.post(f"/api/approvals/{aid}/decide", json={"approved": True}).status_code == 200
+    r = c.post(f"/api/approvals/{aid}/decide", json={"approved": False})
+    assert r.status_code == 409
+
+
+def test_system_admin_can_never_be_the_requester(tight, monkeypatch):
+    """自批在**结构上**不可能：审批人没有查询能力，永远提不出申请。
+
+    这是把审批收敛到系统管理员最主要的收益，用一条端到端用例钉住。
+    """
+    c = _as(_client(tight, monkeypatch), "root")
+    r = c.post("/api/sql", json={"sql": "SELECT id FROM orgs"})
+    assert r.status_code == 403                       # 连查询都发不出去
+    assert c.get("/api/approvals").json()["items"] == []

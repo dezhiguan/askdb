@@ -208,6 +208,15 @@ class Config:
         return bool(self.raw.get("_window_enforceable", True))
 
     @property
+    def scan_waiver(self) -> bool:
+        """本次调用是否已获批准，可以跳过 R-11 扫描阈值一次。
+
+        由 server 在校验完审批单后写进 raw —— 与 role/tables 一样，
+        执行链路只从配置取值，不需要知道"审批"这件事的存在。
+        """
+        return bool(self.raw.get("_scan_waiver", False))
+
+    @property
     def unmask(self) -> bool:
         """当前角色能否看到个人信息列的原值。默认否 —— 漏配要落在安全那边。"""
         return bool(self.raw.get("_role_unmask", False))

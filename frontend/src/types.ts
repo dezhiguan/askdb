@@ -6,6 +6,7 @@ export type View =
   | 'glossary'
   | 'evaluation'
   | 'traces'
+  | 'approvals'
   | 'audit'
 
 export type ResultTab = 'result' | 'sql' | 'chain' | 'checkpoint'
