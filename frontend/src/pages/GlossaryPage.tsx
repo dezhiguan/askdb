@@ -58,6 +58,7 @@ export function GlossaryPage({ onNavigate, notify, me }: {
     try {
       const r = await checkMetrics()
       setChecks(Object.fromEntries(r.items.map(i => [i.name, i])))
+      setError('')                       // 上一次失败的红条要跟着这次成功消掉
       notify(`已按当前数据核对 ${r.items.length} 条口径的区分度`)
     } catch (e) {
       setError(String((e as Error).message || e))
