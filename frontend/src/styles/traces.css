@@ -182,12 +182,29 @@
 .span-type.tool, .span-type.db { color: var(--amber); background: var(--amber-wash); }
 .span-type.sys { color: var(--muted); background: var(--paper-2); }
 
-/* 降级说明只占链路条与 Span 表那两段的位置，标题与事实网格照常显示 */
-.trace-degraded { padding: 16px 13px 20px; }
-.trace-degraded strong { display: block; font-size: 9px; }
-.trace-degraded p { margin: 6px 0 0; color: var(--muted); font-size: 7.5px; line-height: 1.75; }
-.trace-degraded .drawer-code { margin-top: 10px; }
 .trace-empty { padding: 20px 13px; color: var(--muted); font-size: 8px; }
+
+/* ---------- 页尾观测两卡：原型 .observe-grid / .integration-card ---------- */
+.traces-page .observe-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 10px; margin-top: 11px; }
+.traces-page .integration-card {
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(250, 249, 245, .86);
+  box-shadow: var(--shadow);
+}
+.traces-page .integration-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.traces-page .integration-card h3 { margin: 0; font-family: var(--serif); font-size: 13px; }
+.traces-page .integration-card p { margin: 5px 0 10px; color: var(--muted); font-size: 7px; line-height: 1.55; }
+.traces-page .attribute-list { display: flex; flex-wrap: wrap; gap: 5px; }
+.traces-page .attribute-list code {
+  padding: 4px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink-2);
+  background: white;
+  font: 6px var(--mono);
+}
 
 
 @media (max-width: 900px) {
