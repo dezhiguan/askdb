@@ -103,6 +103,10 @@ function fmtValue(v: string | number | boolean | null): string {
 }
 
 function fmtStamp(ts: string): string {
+  /* 空值必须先挡掉。**new Date(null) 不是 NaN，是纪元 0** —— 只判 NaN 的话，
+     没有 ts 的老审计记录会被格式化成「1970-01-01 08:00」，即凭空编出一个
+     看起来合理的时间。宁可显示占位，也不要显示一个假的。 */
+  if (!ts) return '—'
   const d = new Date(ts)
   if (Number.isNaN(d.getTime())) return ts
   const p = (n: number) => String(n).padStart(2, '0')

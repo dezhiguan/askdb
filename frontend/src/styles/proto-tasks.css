@@ -72,7 +72,6 @@
 .tasks-page .task-empty { padding: 24px 14px; text-align: center; }
 .tasks-page .task-empty strong { display: block; font-size: 9px; }
 .tasks-page .task-empty span { display: block; margin: 6px auto 0; max-width: 46ch; color: var(--muted); font-size: 7.5px; line-height: 1.7; }
-.tasks-page .tasks-foot { display: flex; gap: 7px; padding: 0; }
 
 /* ---------------- 弹窗基座（原型 .modal-head / .form-row 一族） ---------------- */
 

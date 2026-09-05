@@ -30,6 +30,10 @@ import { writeGuard } from '../writeGuard'
    不拿模板值冒充真实判定。 */
 
 function fmtClock(ts: string): string {
+  /* 空值必须先挡掉。**new Date(null) 不是 NaN，是纪元 0** —— 只判 NaN 的话，
+     没有 ts 的老审计记录会被格式化成「1970-01-01 08:00」，即凭空编出一个
+     看起来合理的时间。宁可显示占位，也不要显示一个假的。 */
+  if (!ts) return '—'
   const date = new Date(ts)
   if (Number.isNaN(date.getTime())) return ts
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -40,6 +44,8 @@ function fmtClock(ts: string): string {
 }
 
 function fmtFull(ts: string): string {
+  // 同 fmtClock：new Date(null) 是纪元 0 而不是 NaN，空值必须先挡
+  if (!ts) return '—'
   const date = new Date(ts)
   if (Number.isNaN(date.getTime())) return ts
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -103,6 +109,8 @@ export function TasksPage({ onNavigate, notify, me }: {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [filterOpen, setFilterOpen] = useState(false)
   const [keyword, setKeyword] = useState('')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
   const [sources, setSources] = useState<TaskSourceOption[]>([])
 
   const load = useCallback(() => {
@@ -136,7 +144,7 @@ export function TasksPage({ onNavigate, notify, me }: {
     return { interrupted, rejected, doneToday, rate }
   }, [items])
 
-  const visible = useMemo(() => {
+  const matched = useMemo(() => {
     const key = keyword.trim().toLowerCase()
     return items.filter(task => {
       if (statusFilter !== 'all' && task.status !== statusFilter) return false
@@ -144,6 +152,19 @@ export function TasksPage({ onNavigate, notify, me }: {
       return `${task.question ?? ''} ${task.thread_id} ${task.trace_id}`.toLowerCase().includes(key)
     })
   }, [items, statusFilter, keyword])
+
+  /* 分页。/api/tasks 一次返回全部线程（统计卡要算全量），所以这里在**客户端**切页，
+     与筛选、关键词同一条链路 —— 服务端分页会让上面那四个统计数字失真。
+     切页本身也是必须的：这一页曾经一次渲染一千四百多行，DOM 高七万多像素。 */
+  const pages = Math.max(Math.ceil(matched.length / pageSize), 1)
+  const current = Math.min(page, pages)
+  const visible = useMemo(
+    () => matched.slice((current - 1) * pageSize, current * pageSize),
+    [matched, current, pageSize],
+  )
+
+  // 筛选条件一变就回到第一页 —— 停在第 7 页而结果只剩 2 条，会看到一片空白
+  useEffect(() => { setPage(1) }, [statusFilter, keyword, pageSize])
 
   /* 结果与原因都来自审计回放：没有回放就说没有，不靠状态推断内容 */
   const openDetail = (task: Task, kind: 'result' | 'reason') => {
@@ -299,7 +320,7 @@ export function TasksPage({ onNavigate, notify, me }: {
             </div>
           ))}
 
-          {visible.length === 0 && (
+          {matched.length === 0 && (
             <div className="task-empty">
               <strong>{items.length ? '当前筛选条件下没有任务。' : '这个账号名下还没有执行记录。'}</strong>
               <span>
@@ -312,10 +333,17 @@ export function TasksPage({ onNavigate, notify, me }: {
         </div>
       )}
 
-      {result && (
-        <div className="tasks-foot">
-          <button className="ghost" onClick={load}>刷新</button>
-          <button className="ghost" onClick={() => onNavigate('traces')}>去执行追踪看节点明细</button>
+      {/* 分页条与审计中心同一套结构与类名，两页的操作手感必须一致 */}
+      {matched.length > 0 && (
+        <div className="audit-pager">
+          <span>共 {matched.length} 条 · 第 {current} / {pages} 页</span>
+          <span>
+            <select value={pageSize} onChange={event => setPageSize(Number(event.target.value))}>
+              {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
+            </select>
+            <button className="ghost" disabled={current <= 1} onClick={() => setPage(p => p - 1)}>‹ 上一页</button>
+            <button className="ghost" disabled={current >= pages} onClick={() => setPage(p => p + 1)}>下一页 ›</button>
+          </span>
         </div>
       )}
 

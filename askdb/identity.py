@@ -245,9 +245,30 @@ def _connect(cfg: Config):
 
 
 def ensure_schema(cfg: Config) -> None:
-    """建表。幂等，每次读写前调一次成本可以忽略，省掉一套迁移工具。"""
+    """建表。幂等，省掉一套迁移工具。
+
+    **只在写路径调。** 原来读路径也调一次，于是任何人一个匿名 GET
+    （/api/identity/roles）就能让服务端对身份库执行一次 DDL —— 幂等归幂等，
+    但"未登录不碰库"这条口径它是不满足的。读路径改为容忍表不存在，
+    见 _rows()。
+    """
     with _connect(cfg) as con:
         con.execute(_SCHEMA)
+
+
+def _rows(cfg: Config, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    """读一次库，**表还没建出来时按空处理**。
+
+    没有 askdb_role_members 表 = 一个成员都还没登记过，与查出来 0 行是同一回事，
+    不该为了区分这一点而在读路径上建表。第一次写入时 add_member 会建。
+    """
+    import psycopg
+
+    try:
+        with _connect(cfg) as con:
+            return con.execute(sql, params).fetchall()
+    except psycopg.errors.UndefinedTable:
+        return []
 
 
 def builtin_members(cfg: Config, role_code: str = "") -> list[dict[str, Any]]:
@@ -282,11 +303,8 @@ def builtin_members(cfg: Config, role_code: str = "") -> list[dict[str, Any]]:
 def roles_with_counts(cfg: Config) -> list[dict[str, Any]]:
     counts: dict[str, int] = {}
     if enabled(cfg):
-        ensure_schema(cfg)
-        with _connect(cfg) as con:
-            rows = con.execute(
-                "SELECT role_code, COUNT(*) FROM askdb_role_members GROUP BY role_code"
-            ).fetchall()
+        rows = _rows(
+            cfg, "SELECT role_code, COUNT(*) FROM askdb_role_members GROUP BY role_code")
         counts = {code: int(n) for code, n in rows}
     # 内置人员一并计入，并按 (角色, 用户名) 去重 —— 同一个人既写在配置里
     # 又被管理员登记过一次，是一个人，不是两个
@@ -304,7 +322,6 @@ def roles_with_counts(cfg: Config) -> list[dict[str, Any]]:
 
 
 def list_members(cfg: Config, role_code: str = "") -> list[dict[str, Any]]:
-    ensure_schema(cfg)
     sql = ("SELECT id, role_code, auth_user_id, username, display_name, note,"
            " created_at, created_by FROM askdb_role_members")
     params: tuple[Any, ...] = ()
@@ -312,8 +329,7 @@ def list_members(cfg: Config, role_code: str = "") -> list[dict[str, Any]]:
         sql += " WHERE role_code = %s"
         params = (role_code,)
     sql += " ORDER BY created_at DESC, id DESC"
-    with _connect(cfg) as con:
-        rows = con.execute(sql, params).fetchall()
+    rows = _rows(cfg, sql, params)
 
     out = builtin_members(cfg, role_code)          # 内置名册排在前，它是固定的那部分
     seen = {(m["role_code"], m["username"].lower()) for m in out}
@@ -374,7 +390,5 @@ def _db_member_keys(cfg: Config) -> list[tuple[str, str]]:
     """库表里的 (角色, 小写用户名)。只服务于计数去重，不对外。"""
     if not enabled(cfg):
         return []
-    with _connect(cfg) as con:
-        rows = con.execute(
-            "SELECT role_code, lower(username) FROM askdb_role_members").fetchall()
-    return [(r[0], r[1]) for r in rows]
+    return [(r[0], r[1]) for r in _rows(
+        cfg, "SELECT role_code, lower(username) FROM askdb_role_members")]

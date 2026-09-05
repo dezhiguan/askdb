@@ -65,10 +65,16 @@
 .mini-metric { padding: 7px; border: 1px solid var(--line); border-radius: 5px; background: rgba(255,255,255,.48); }
 .mini-metric span { display: block; color: var(--muted); font-size: 6px; }
 .mini-metric strong { display: block; margin-top: 2px; font: 7px var(--mono); }
+/* 「授权 / 库内」里的分母：是参照系不是主数值，压暗一档 */
+.mini-metric .metric-of { display: inline; margin-left: 3px; color: var(--muted); font-size: 6px; }
+/* 白名单里有表在库里已经不见了 */
+.mini-metric strong.metric-drift { color: var(--amber); }
 .db-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; color: var(--green); background: var(--green-wash); font: 700 8px var(--mono); }
 .card-status { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font: 7px var(--mono); }
 .card-status.off { color: var(--amber); }
 .card-status.bad { color: var(--red); }
+/* 从未检查过 —— 既不是好也不是坏，别用绿灯或红灯替它表态 */
+.card-status.idle { color: var(--muted); }
 .online { width: 6px; height: 6px; border-radius: 50%; background: var(--green-2); box-shadow: 0 0 0 3px rgba(44,179,110,.12); }
 .source-actions { display: flex; gap: 6px; }
 .policy-layout, .glossary-layout { display: grid; grid-template-columns: 260px minmax(0,1fr); gap: 14px; }
@@ -190,8 +196,33 @@
   color: var(--muted);
   font-size: 7.5px;
 }
-.audit-pager button { margin-left: 6px; }
+.audit-pager > span:last-child { display: flex; align-items: center; gap: 6px; }
+.audit-pager button { margin-left: 0; }
 .audit-pager button:disabled { opacity: .4; cursor: not-allowed; }
+
+/* 每页条数。原生 select 在这套排版里是唯一一处系统控件外观 ——
+   字号、圆角、边框都跟旁边的按钮对不上，所以收掉默认外观自己画，
+   包括那个箭头（appearance:none 之后原来的会消失）。 */
+.audit-pager select {
+  appearance: none;
+  height: 26px;
+  padding: 0 22px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink-2);
+  background: var(--paper);
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+                    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 12px) center, calc(100% - 8px) center;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+  font-size: 7.5px;
+  outline: 0;
+  cursor: pointer;
+  transition: border-color .15s;
+}
+.audit-pager select:hover { border-color: #a6c3af; }
+.audit-pager select:focus-visible { border-color: var(--green); }
 
 /* 抽屉 */
 .drawer-scrim { position: fixed; inset: 0; z-index: 65; background: rgba(16,35,26,.28); }
@@ -449,7 +480,6 @@
 .tasks-empty strong { display: block; font-size: 9px; }
 .tasks-empty span { display: block; margin: 5px auto 0; max-width: 46ch; color: var(--muted); font-size: 7.5px; line-height: 1.7; }
 
-.tasks-foot { display: flex; gap: 7px; padding: 11px 0 0; }
 /* 口径命中词做成标签，em 默认斜体在中文里很丑 */
 .rule-row small .tag { display: inline-block; margin: 3px 3px 0 0; font-style: normal; }
 .definition .sql-code { margin: 10px 0; }
