@@ -176,7 +176,8 @@
   text-decoration: none;
   cursor: pointer;
 }
-.link-button:hover { text-decoration: underline; }
+.link-button:hover:not(:disabled) { text-decoration: underline; }
+.link-button:disabled { opacity: .42; text-decoration: none; }
 /* 不可用的入口保持可见但明确失效，并靠 title 说清原因 ——
    直接藏起来会让人反复找，点了才 404 更糟 */
 .link-disabled { color: var(--muted); font-size: 8px; cursor: not-allowed; }

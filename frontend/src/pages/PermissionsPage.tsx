@@ -5,7 +5,7 @@ import {
   type RoleInfo, type RoleMember, type RolesResponse,
  type Me,
 } from '../api'
-import { writeGuard } from '../writeGuard'
+import { writeGuard, type WriteGuard } from '../writeGuard'
 
 function fmtDate(ts: string): string {
   const d = new Date(ts)
@@ -159,7 +159,7 @@ export function PermissionsPage({ notify, me }: {
         <div className="policy-stack">
         <section className="card">
           {role
-            ? <RoleDetail notify={notify} role={role} />
+            ? <RoleDetail notify={notify} role={role} guard={guard} />
             : <p className="drawer-note policy-note">读取中…</p>}
         </section>
 
@@ -255,7 +255,11 @@ export function PermissionsPage({ notify, me }: {
   )
 }
 
-function RoleDetail({ role, notify }: { role: RoleInfo; notify: (message: string) => void }) {
+function RoleDetail({ role, notify, guard }: {
+  role: RoleInfo
+  notify: (message: string) => void
+  guard: WriteGuard
+}) {
   const limits = ROLE_LIMITS[role.code]
   const placeholder = '设计稿占位：后端尚无该维度'
   return (
@@ -285,7 +289,7 @@ function RoleDetail({ role, notify }: { role: RoleInfo; notify: (message: string
           管理员本人要查数，须另行加入某个数据角色，且这一动作同样留痕。
         </p>
       )}
-      <RolePolicyRules notify={notify} />
+      <RolePolicyRules notify={notify} guard={guard} />
     </>
   )
 }
@@ -319,7 +323,10 @@ const POLICY_RULES: { code: string; title: string; desc: string; live: boolean }
   },
 ]
 
-function RolePolicyRules({ notify }: { notify: (message: string) => void }) {
+function RolePolicyRules({ notify, guard }: {
+  notify: (message: string) => void
+  guard: WriteGuard
+}) {
   // 原型四条默认全开，点击即翻转
   const [on, setOn] = useState<Record<string, boolean>>(
     () => Object.fromEntries(POLICY_RULES.map(rule => [rule.code, true] as const)),
@@ -347,6 +354,7 @@ function RolePolicyRules({ notify }: { notify: (message: string) => void }) {
             aria-label={rule.title}
             aria-pressed={on[rule.code]}
             className={`toggle ${on[rule.code] ? 'on' : ''}`}
+            {...guard.props}
             onClick={() => flip(rule)}
           ><i /></button>
         </div>

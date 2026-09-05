@@ -149,7 +149,9 @@ export function LoginScreen({ me, onClose, onDone, onSkip, notify, dismissible =
                   </button>
                 )}
               </div>
-              {error && mode === 'choice' && <p className="login-error" role="alert">{error}</p>}
+              {error && mode === 'choice' && (
+                <p className="login-error show" role="alert"><i aria-hidden="true">!</i><span>{error}</span></p>
+              )}
               {/* 这句随入口走。没有一键体验时还挂着解释它的话，是在讲一个不存在的功能 */}
               <div className="login-choice-note">
                 <i>✓</i>
@@ -161,12 +163,11 @@ export function LoginScreen({ me, onClose, onDone, onSkip, notify, dismissible =
 
             <div className={`login-mode-panel ${mode === 'account' ? 'active' : ''}`}>
               <button className="login-back" type="button" onClick={() => switchMode('choice')}>← 返回选择</button>
-              <div className="eyebrow">Account Login</div>
               <h2>账号登录</h2>
               <p>输入账号和密码进入可信数据工作台。</p>
 
               <div className="login-field">
-                <div className="login-field-head"><label htmlFor="loginAccount">账号</label><span>ACCOUNT</span></div>
+                <div className="login-field-head"><label htmlFor="loginAccount">账号</label></div>
                 <div className="login-input-shell">
                   <i>ID</i>
                   <input
@@ -182,7 +183,7 @@ export function LoginScreen({ me, onClose, onDone, onSkip, notify, dismissible =
                 </div>
               </div>
               <div className="login-field">
-                <div className="login-field-head"><label htmlFor="loginPassword">密码</label><span>PASSWORD</span></div>
+                <div className="login-field-head"><label htmlFor="loginPassword">密码</label></div>
                 <div className="login-input-shell">
                   <i>••</i>
                   <input
@@ -205,7 +206,9 @@ export function LoginScreen({ me, onClose, onDone, onSkip, notify, dismissible =
                   </button>
                 </div>
               </div>
-              <p className="login-error" role="alert" aria-live="polite">{mode === 'account' ? error : ''}</p>
+              <p className={`login-error ${mode === 'account' && error ? 'show' : ''}`} role="alert" aria-live="polite">
+                {mode === 'account' && error ? <><i aria-hidden="true">!</i><span>{error}</span></> : ''}
+              </p>
               <button className="login-submit" type="submit" disabled={busy}>
                 {busy ? '正在验证…' : <>登录工作台 <b>→</b></>}
               </button>
