@@ -2,7 +2,7 @@ import { PageHeader } from '../components/AppShell'
 import { useEffect, useMemo, useState } from 'react'
 import {
   deleteSource, fetchIntrospect, fetchSchema, fetchSelfCheck, fetchSources, scanSource,
-  type Introspect, type Schema, type SelfCheck, type SourceCard, type SourceList,
+  type Introspect, type Me, type Schema, type SelfCheck, type SourceCard, type SourceList,
 } from '../api'
 import { AddSourceModal, ScanTablesModal } from '../components/AddSourceModal'
 import type { HealthState } from '../useHealth'
@@ -23,7 +23,12 @@ const TENANT_MODE: Record<string, string> = {
   none: '未开放',
 }
 
-export function DataSourcesPage({ health }: { health: HealthState }) {
+export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | null }) {
+  // 写操作要不要置灰，只看一件事：登录没有。**这只是少让人白点一次** ——
+  // 真正的边界在服务端那道写入中间件上，置灰拦不住任何人。
+  // 判据别在这里"推"：me 是后端给的，前端只读不算。
+  const canWrite = !!me?.username
+  const writeHint = canWrite ? undefined : '这个操作会改动配置，需要登录后才能执行；未登录只能只读查询'
   const [schema, setSchema] = useState<Schema | null>(null)
   const [introspect, setIntrospect] = useState<Introspect | null>(null)
   const [check, setCheck] = useState<SelfCheck | null>(null)
@@ -138,10 +143,10 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
         action={
           <button
             className="primary"
-            disabled={!sources?.can_add}
+            disabled={!sources?.can_add || !canWrite}
             title={sources && !sources.can_add
-              ? '本实例未开启运行时添加数据源：服务端会按填入的地址主动建连，而 askdb 不设账号体系，对外实例一律关闭'
-              : undefined}
+              ? '本实例未开启运行时添加数据源：服务端会按填入的地址主动建连，对外实例一律关闭'
+              : writeHint}
             onClick={() => setShowAdd(true)}
           >＋ 添加数据源</button>
         }
@@ -242,16 +247,22 @@ export function DataSourcesPage({ health }: { health: HealthState }) {
               </div>
               <div className="source-actions">
                 {pending
-                  ? <button className="primary" onClick={() => setManage(card)}>完成配置</button>
+                  ? (
+                    <button className="primary" disabled={!canWrite} title={writeHint}
+                      onClick={() => setManage(card)}>完成配置</button>
+                  )
                   : (
                     <>
+                      {/* 「测试连接」走 GET /scan，是读 —— 未登录照样能自检，不置灰 */}
                       <button className="secondary" disabled={testingId === card.id} onClick={() => testCard(card)}>
                         {testingId === card.id ? '连接检查中…' : '测试连接'}
                       </button>
-                      <button className="ghost" onClick={() => setManage(card)}>配置</button>
+                      <button className="ghost" disabled={!canWrite} title={writeHint}
+                        onClick={() => setManage(card)}>配置</button>
                     </>
                   )}
-                <button className="ghost" onClick={() => removeSource(card)}>删除</button>
+                <button className="ghost" disabled={!canWrite} title={writeHint}
+                  onClick={() => removeSource(card)}>删除</button>
               </div>
             </article>
           )

@@ -11,22 +11,40 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from askdb import identity, server
+from askdb import auth, identity, server
+
+
+def _signed_in(cfg, monkeypatch):
+    """已登录的 client。
+
+    写接口外面还有一道写入中间件（未登录一律 401），而这一组用例测的是
+    **里面那道门**：身份库没启用给 404、没配管理员令牌给 403。不先进门就
+    永远够不着它们，测出来的全是外面那道 401。
+    """
+    monkeypatch.setenv(auth.SESSION_SECRET_ENV, "t" * 40)
+    cfg.raw["auth"] = {
+        "enabled": True, "required": False,
+        "accounts": [{"username": "ops", "roles": ["SYS_ADMIN"],
+                      "password_hash": auth.hash_password("ops-pw")}],
+    }
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+    c = TestClient(server.create_app("ignored.yaml"))
+    assert c.post("/api/auth/login",
+                  json={"username": "ops", "password": "ops-pw"}).status_code == 200
+    return c
 
 
 @pytest.fixture
 def client(cfg, monkeypatch):
-    monkeypatch.setattr(server, "load", lambda _p: cfg)
-    return TestClient(server.create_app("ignored.yaml"))
+    return _signed_in(cfg, monkeypatch)
 
 
 @pytest.fixture
 def enabled_client(cfg, monkeypatch):
     """把身份功能打开，但不给真实数据库 —— 准入判定发生在碰库之前，
     这几条用例因此不需要 PostgreSQL，CI 上也能跑。"""
-    monkeypatch.setattr(server, "load", lambda _p: cfg)
     monkeypatch.setattr(identity, "enabled", lambda _cfg: True)
-    return TestClient(server.create_app("ignored.yaml"))
+    return _signed_in(cfg, monkeypatch)
 
 
 # ---------- 角色定义 ----------

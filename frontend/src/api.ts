@@ -525,6 +525,9 @@ export interface RoleMember {
   created_by: string
   /** 是否已关联到网关账号。登录接入前恒为 false，页面必须如实标注。 */
   bound: boolean
+  /** 出自配置内置名册（auth.accounts）而非管理员登记。
+   *  内置条目 id 恒为 0、删不掉 —— 它们由配置文件管理，页面据此禁用「移除」。 */
+  builtin: boolean
 }
 
 export async function fetchRoles(): Promise<RolesResponse> {
@@ -570,13 +573,6 @@ export function removeMember(token: string, id: number): Promise<void> {
 
 /* ---------------- 登录与会话 ---------------- */
 
-export interface DemoAccount {
-  username: string
-  display_name: string
-  roles: string[]
-  note: string
-}
-
 export interface Me {
   enabled: boolean
   /** false = 匿名可用，登录是可选的能力展示而不是门 */
@@ -586,7 +582,6 @@ export interface Me {
   roles: string[]
   /** 当前身份的**生效边界**。权限体系最怕「配了但看不出有没有生效」。 */
   scope: { tables: string[]; max_rows: number }
-  demo_accounts: DemoAccount[]
 }
 
 export async function fetchMe(): Promise<Me> {
@@ -609,11 +604,6 @@ async function authPost(url: string, body: unknown): Promise<void> {
 
 export function login(username: string, password: string): Promise<void> {
   return authPost('/api/auth/login', { username, password })
-}
-
-/** 一键体验。只跳过认证，不跳过授权 —— 拿到的仍是该账号角色的收窄配置。 */
-export function enterDemo(username: string): Promise<void> {
-  return authPost('/api/auth/demo', { username })
 }
 
 export function logout(): Promise<void> {
@@ -643,19 +633,18 @@ export interface Task {
   resumable: boolean
 }
 
-export type TasksResult =
-  | { status: 'ok'; items: Task[]; user: string }
-  /** 未登录。任务里带着发起人问过的问题原文，匿名不给枚举入口。 */
-  | { status: 'need_login'; detail: string }
+/** 任务列表按发起人收窄，登录与匿名同一条规则 —— 匿名看到的是匿名发起的线程。
+ *  user 为空串即匿名。 */
+export interface TasksResult {
+  items: Task[]
+  user: string
+}
 
 export async function fetchTasks(): Promise<TasksResult> {
   const response = await fetch('/api/tasks')
-  if (response.status === 401) {
-    return { status: 'need_login', detail: (await response.json().catch(() => ({}))).detail || '需要登录' }
-  }
   if (!response.ok) throw new Error(`/api/tasks ${response.status}`)
   const body = await response.json()
-  return { status: 'ok', items: body.items, user: body.user }
+  return { items: body.items, user: body.user || '' }
 }
 
 /* ---------------- Agent 质量中心 ---------------- */

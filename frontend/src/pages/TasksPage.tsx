@@ -119,7 +119,7 @@ export function TasksPage({ onNavigate, notify }: {
       .catch(() => setSources([]))
   }, [])
 
-  const items = useMemo(() => (result?.status === 'ok' ? result.items : []), [result])
+  const items = useMemo(() => result?.items ?? [], [result])
 
   const stats = useMemo(() => {
     const today = new Date().toDateString()
@@ -223,24 +223,12 @@ export function TasksPage({ onNavigate, notify }: {
 
       {error && <div className="audit-error">读取任务失败：{error}</div>}
 
-      {result?.status === 'need_login' && (
-        <section className="card notice-card">
-          <h3>任务列表需要登录</h3>
-          <p>{result.detail}</p>
-          <p>
-            这不是懒得做匿名支持：中断的任务里带着发起人问过的问题原文，
-            列出来就等于任何人都能看到、并续跑别人的任务。
-            所以列表只对已登录用户开放，且<b>只列自己发起的</b>。
-          </p>
-        </section>
-      )}
-
-      {result?.status === 'ok' && (
+      {result && (
         <div className="card task-card" id="taskRowsCard">
           <div className="card-head">
             <div>
               <strong>查询任务</strong>
-              <p>每个任务拥有独立状态、执行轨迹和审计记录。账号 {result.user} · 共 {items.length} 条。</p>
+              <p>每个任务拥有独立状态、执行轨迹和审计记录。{result.user ? `账号 ${result.user}` : '匿名发起'} · 共 {items.length} 条。</p>
             </div>
             <div className="card-actions">
               <button
@@ -319,7 +307,7 @@ export function TasksPage({ onNavigate, notify }: {
         </div>
       )}
 
-      {result?.status === 'ok' && (
+      {result && (
         <div className="tasks-foot">
           <button className="ghost" onClick={load}>刷新</button>
           <button className="ghost" onClick={() => onNavigate('traces')}>去执行追踪看节点明细</button>

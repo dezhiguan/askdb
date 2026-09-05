@@ -143,14 +143,15 @@ identity:
 # ---------------------------------------------------------------------------
 # 登录（本机开发）
 #
-# required: false —— 匿名可用，登录是**可选的能力展示，不是门**。
-# 这份配置的用途是看护栏、审计与角色收窄，拦在登录页前面等于把要看的东西挡住。
+# required: false —— 未登录能只读查询，登录页是可以跳过的落地页。
+# 敢这么放是因为写入面另有一道独立的门（写入中间件默认拒绝），
+# 匿名手里只剩"读"这一件事。
 #
-# **本文件里的账号只开一键体验，不设口令。**
-# password_hash 留空 = 口令登录一律失败（verify_password 解析不出格式即返回
-# False，空口令与任意口令都拒），所以不存在"空密码能登进去"这条路。
-# demo: true 只跳过认证，不跳过授权 —— 体验账号拿到的仍是它自己角色的收窄配置，
-# 与口令登录完全同一条路径。要口令登录就用 `askdb hash-password` 生成哈希填进来。
+# **本文件里的账号只走口令登录，没有任何免口令账号。**
+# 十个内置人员各带 password_hash，口令统一 88888888（本机开发实例，
+# 对外部署必须换掉：`askdb hash-password` 重新生成哈希填进来）。
+# 登录页上的「一键体验」不是某个账号，而是跳过登录 —— 跳过之后就是未登录
+# 身份本身，因此不会出现"陌生访客的查询记在某个身份名下"这种伪造记录。
 #
 # 会话是无状态签名票，密钥走 ASKDB_SESSION_SECRET（`askdb session-secret` 生成）。
 # 没配这个环境变量则登录整体关闭 —— fail-closed 是有意的：自动生成随机密钥会让
@@ -158,24 +159,75 @@ identity:
 # ---------------------------------------------------------------------------
 auth:
   enabled: true
+  # false = 未登录可以只读查询。登录页仍然是落地页（前端在未登录时先显示它），
+  # 但它是一扇**可以跳过**的门，跳过后就是未登录状态本身。
+  #
+  # 匿名可查在这里是安全的，前提是写入面被独立锁死：server.py 的写入中间件
+  # 默认拒绝一切 POST/PUT/PATCH/DELETE，只有查询与认证在豁免表里。
+  # 这两项是一对，改任何一个之前先看另一个。
   required: false
+  session_ttl_days: 30             # 见 auth.py DEFAULT_TTL_DAYS 那段代价说明
   cookie_secure: false             # 本机 http 调试，置 true 会导致 cookie 发不出去
+  # 内置人员名册。**固定十个人，没有自助注册、没有找回密码** ——
+  # 见 auth.py 顶部那段边界说明：这里只核对口令、发一张会话票。
+  # 口令统一 88888888，scrypt 哈希各带各的盐（同口令不同哈希，
+  # 泄露一份也推不出另一份）。
+  #
+  # 没有免口令账号。一键体验不是"以某个账号进入"，而是**跳过登录**：
+  # 未登录身份本身就能只读查询（required: false），而一切改动配置的操作
+  # 由 server.py 的写入中间件统一拦下。不造一个体验账号，就不会出现
+  # "陌生访客的查询记在某个身份名下"这种伪造的操作记录。
   accounts:
-    - username: product
-      display_name: 产品角色
+    - username: linxiao
+      display_name: 林晓
       roles: [PRODUCT]
-      demo: true
-      note: 看业务数据，不看 token 与成本
-    - username: qa
-      display_name: 测试角色
+      note: 产品经理，业务指标口径归口
+      password_hash: "scrypt$16384$8$1$vhM1HzHuJ4V5YetlwLXg8g==$iVlam6v03ZhIpmT1uNZMQw/xfckpssmwOgGNgc1Fflg="
+    - username: guandezhi
+      display_name: 官德志
+      roles: [DEV]
+      note: 架构师，护栏与执行链路
+      password_hash: "scrypt$16384$8$1$0EPKO7jCOIU+Wvv0rwv1zg==$wSpq+eYhL7CZ/TC55IiUZxmo1SZdPaG+MXHg/BC0BSU="
+    - username: zhouqi
+      display_name: 周琪
+      roles: [DEV]
+      note: 后端开发，数据源接入与自检
+      password_hash: "scrypt$16384$8$1$GJyZxxXZr/xLN1ZnnHkBmA==$SLzHvBGX3y5Q+hVDpCD1DXs5bxR5yuMNFNHTB6G/OSU="
+    - username: chenhao
+      display_name: 陈昊
+      roles: [DEV]
+      note: 后端开发，计划生成与检索
+      password_hash: "scrypt$16384$8$1$Ma8mAidkyNUn+qSndlAKgQ==$0dq3YHjPh8ZDBU0m64BJq3M5/yKvhS7K13TCceRk4lc="
+    - username: liwenbo
+      display_name: 李文博
+      roles: [DEV]
+      note: 前端开发，工作台与审计页
+      password_hash: "scrypt$16384$8$1$D01liqR8pQyF5zoDlanPuw==$J9EOYtR0AmUX9ZOU2Nbj1ZSgxG5Fh5D9jlb9rbfBfn4="
+    - username: zhaoke
+      display_name: 赵珂
+      roles: [DEV]
+      note: 数据开发，口径与黄金集维护
+      password_hash: "scrypt$16384$8$1$KTG29CNFpLcEGQGUEoHMxQ==$rogDG8OaBmAYiGm9h7fOxcwxRBU9nfUlHS8IuHPmQ5k="
+    - username: suwan
+      display_name: 苏晚
       roles: [QA]
-      demo: true
-      note: 可见表更少、返回行上限更低
-    - username: owner
-      display_name: 数据负责人
+      note: 测试工程师，护栏用例与离线回归
+      password_hash: "scrypt$16384$8$1$7DMSY1m93H4pyz9XVVlSBw==$pSkRItnDZpfs/3HaAvQMD4WV3zk6KHwOTm2+f8vctJs="
+    - username: zhengming
+      display_name: 郑铭
+      roles: [QA]
+      note: 测试工程师，性能与并发验证
+      password_hash: "scrypt$16384$8$1$D62U06Gm1UyXXGj3eqSdGA==$pCGagkth4g5QitF0iTp+9b5lHGeR6Iqef+EmY4tTge0="
+    - username: hejing
+      display_name: 何静
       roles: [DATA_OWNER]
-      demo: true
-      note: 实例白名单内全部可见
+      note: 数据负责人，审批高风险与高成本查询
+      password_hash: "scrypt$16384$8$1$wJUO73t8GXgjGSOpTvUqPg==$bx0EVzIFzA4xGrxw3y9Tv9pxMZ/My0tZTbQWdm9Egqc="
+    - username: xuting
+      display_name: 徐婷
+      roles: [SYS_ADMIN]
+      note: 平台管理员，只管角色成员、不查数据
+      password_hash: "scrypt$16384$8$1$TNdu6mU8cKCIFdJomXLPrg==$XuUzOS9EtRdATBE37Tgw/4ynuFi5da4uIOcqS6QV084="
 
 # 这份配置**有意不写 role_policies**。
 #

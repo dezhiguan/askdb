@@ -57,9 +57,15 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   const mode: Mode = modeChoice ?? (canAsk ? 'ask' : 'sql')
 
   // 内置源的名字取 health 里的真实库名，而不是配置文件路径 ——
-  // 工作台上要回答的是"我在查哪个库"
+  // 工作台上要回答的是"我在查哪个库"。
+  //
+  // **没配默认源时这一项整个不出现**：configured=false 时 health 的 detail 是
+  // 「未配置默认数据源」，照旧渲染就成了一张以那句话为名的假数据源卡，还能选中，
+  // 选中后每次查询都会撞后端的「本实例未配置默认数据源」。不存在的东西不该在
+  // 选择器里占一行。ready 为 null（还在读 health）时先留着占位，不闪。
+  const hasBuiltin = !ready || ready.datasource.configured
   const options: SourceOption[] = [
-    {
+    ...(hasBuiltin ? [{
       id: '',
       code: ready ? MARK[ready.datasource.type] ?? 'DB' : '··',
       name: ready?.datasource.detail ?? '读取中…',
@@ -70,7 +76,7 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
         : '',
       tables: schema?.tables.length ?? 1,
       dialect: DIALECT[ready?.datasource.type ?? ''] ?? ready?.datasource.type ?? '',
-    },
+    }] : []),
     ...sourceCards.filter(c => !c.builtin).map(c => ({
       id: c.id,
       code: MARK[c.type] ?? c.type.slice(0, 2).toUpperCase(),
@@ -80,7 +86,9 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
       dialect: DIALECT[c.type] ?? c.type,
     })),
   ]
-  const current = options.find(o => o.id === sourceId) ?? options[0]
+  // 既没有内置源、运行时也一个都没加时，options 是空的 —— 兜住，别让 options[0]
+  // 是 undefined 一路 undefined.tables 崩掉整页
+  const current = options.find(o => o.id === sourceId) ?? options[0] ?? EMPTY_SOURCE
   const usable = (mode === 'ask' ? canAsk : canSql) && current.tables > 0
 
   // 最近查询按数据源分桶。空串（内置源）不能直接当键 —— 落盘后与
@@ -115,7 +123,9 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
     setRunning(true); setError('')
     recent.upsert(text, 'running', bucket)
     try {
-      const value = mode === 'ask' ? await askQuestion(text, sourceId) : await runSql(text, sourceId)
+      // 用 current.id 而不是 sourceId：选中项被移除（内置源撤掉、运行时源删掉）时
+      // current 会回落到第一项，此时 sourceId 还是旧值 —— 照它发就是界面显示 A、实际查 B
+      const value = mode === 'ask' ? await askQuestion(text, current.id) : await runSql(text, current.id)
       setResult(value)
       // 被拦下时先看拦截原因，而不是一张空结果表
       setTab(value.ok ? 'result' : value.rejected_by === 'INTERRUPTED' ? 'checkpoint' : 'sql')
@@ -439,6 +449,13 @@ function Welcome({ mode, schema, usable, sourceName, recent, onFill, onDelete, o
   )
 }
 
+
+/** 一个数据源都没有时的兜底项。tables=0 因此发起按钮是禁用的，
+ *  文案直接说下一步该干什么，不给一个点不动又不解释的按钮。 */
+const EMPTY_SOURCE: SourceOption = {
+  id: '', code: '··', name: '没有可用数据源',
+  meta: '到「数据源」页添加一个只读数据源', tables: 0, dialect: '',
+}
 
 interface SourceOption {
   id: string

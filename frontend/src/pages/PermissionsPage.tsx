@@ -175,23 +175,30 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
                   <tr><th>网关用户名</th><th>姓名</th><th>备注</th><th>关联状态</th><th>加入</th><th /></tr>
                 </thead>
                 <tbody>
+                  {/* 内置条目 id 恒为 0，拿 id 当 key 会撞车 —— 角色内用户名唯一 */}
                   {members?.map(member => (
-                    <tr key={member.id}>
+                    <tr key={`${member.role_code}:${member.username}`}>
                       <td className="mono">{member.username}</td>
                       <td>{member.display_name || <span className="dim">—</span>}</td>
                       <td className="audit-question" title={member.note}>
                         {member.note || <span className="dim">—</span>}
                       </td>
                       <td>
-                        {member.bound
-                          ? <span className="status">已绑定 #{member.auth_user_id}</span>
-                          : <span className="status wait">未绑定网关用户</span>}
+                        {member.builtin
+                          ? <span className="status">配置内置</span>
+                          : member.bound
+                            ? <span className="status">已绑定 #{member.auth_user_id}</span>
+                            : <span className="status wait">未绑定网关用户</span>}
                       </td>
-                      <td className="mono dim">{fmtDate(member.created_at)}</td>
+                      <td className="mono dim">
+                        {member.builtin ? '—' : fmtDate(member.created_at)}
+                      </td>
                       <td>
-                        {data.writable
-                          ? <button className="link-button" disabled={busy} onClick={() => drop(member)}>移除</button>
-                          : <span className="link-disabled" title="未配置 ASKDB_ADMIN_TOKEN">移除</span>}
+                        {member.builtin
+                          ? <span className="link-disabled" title="由 config 里的 auth.accounts 管理，改配置文件">移除</span>
+                          : data.writable
+                            ? <button className="link-button" disabled={busy} onClick={() => drop(member)}>移除</button>
+                            : <span className="link-disabled" title="未配置 ASKDB_ADMIN_TOKEN">移除</span>}
                       </td>
                     </tr>
                   ))}

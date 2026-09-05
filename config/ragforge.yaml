@@ -118,19 +118,16 @@ auth:
     - username: product
       display_name: 产品角色
       roles: [PRODUCT]
-      demo: true
       note: 看业务数据，不看 token 与成本
       password_hash: "scrypt$16384$8$1$BXRPaoFjVz+u5NN5hPIZ0w==$m8kDCduTe+hR4xMIEAR8R8WPQJmfdG2vY6EFwEFsSGc="
     - username: qa
       display_name: 测试角色
       roles: [QA]
-      demo: true
       note: 可见表更少、返回行上限更低
       password_hash: "scrypt$16384$8$1$eLDdXb9uFjW/CfrHBgfQGg==$rq3O/fMjtndHe6sevcR7obmmWYYq/zi2MbPmY30brAU="
     - username: owner
       display_name: 数据负责人
       roles: [DATA_OWNER]
-      demo: true
       note: 实例白名单内全部可见
       password_hash: "scrypt$16384$8$1$39p9hx2CGTD3qLeQFcsSQQ==$w5wEOTvqtU/64iFbEG3Cda6D28Ck0jAOJd8tnPD+8dQ="
 

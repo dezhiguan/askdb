@@ -106,8 +106,27 @@ def client(acfg, monkeypatch):
     return TestClient(server.create_app("ignored.yaml"))
 
 
-def test_tasks_endpoint_requires_login(client):
-    assert client.get("/api/tasks").status_code == 401
+def test_anonymous_sees_only_anonymous_threads(client, acfg):
+    """匿名能读任务列表，但**只看得到匿名发起的**。
+
+    2026-09-05 由「匿名一律 401」改为开放。放松的只是"匿名有没有资格看自己
+    那一档"，收窄本身一点没动 —— 这条用例钉的就是后半句：列表里绝不能出现
+    任何登录用户发起的线程，那才是设计 §4.2 真正要挡的东西。
+    """
+    _write(acfg.audit_log, [
+        _rec("a1", "t1", user="alice", rejected="INTERRUPTED", ts=_now()),
+        _rec("n1", "t9", user="", rejected="INTERRUPTED", ts=_now()),
+    ])
+    body = client.get("/api/tasks").json()
+    assert body["user"] == ""
+    assert [t["thread_id"] for t in body["items"]] == ["t9"]
+
+
+def test_anonymous_cannot_resume_an_owned_thread(client, acfg):
+    """列表放开了，续跑的归属校验不能跟着松 ——
+    否则就成了"列不出来但猜得到 thread_id 就能跑别人的任务"。"""
+    _write(acfg.audit_log, [_rec("a1", "t1", user="alice", rejected="INTERRUPTED", ts=_now())])
+    assert client.post("/api/resume", json={"thread_id": "a1"}).status_code == 404
 
 
 def test_tasks_endpoint_scopes_to_caller(client, acfg):

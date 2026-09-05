@@ -32,6 +32,9 @@ import './styles/proto-permissions.css'
 import './styles/proto-glossary.css'
 import './styles/proto-audit.css'
 
+/** 「本次浏览已跳过登录」。session 级 —— 关掉标签页就忘掉。 */
+const SKIP_LOGIN_KEY = 'askdb.skipLogin.v1'
+
 function App() {
   const [me, setMe] = useState<Me | null>(null)
   const [loginOpen, setLoginOpen] = useState(false)
@@ -47,6 +50,20 @@ function App() {
   // 页面上那些「当前能查什么」的显示不跟着变就是在说谎
   const reloadMe = () => { fetchMe().then(setMe).catch(() => setMe(null)) }
   useEffect(reloadMe, [])
+
+  // 登录页是**落地页**：未登录时一进来就显示它。
+  //
+  // required 的实例上它是硬门（关不掉，后端也会 401）；不 required 的实例上
+  // 它可以被「一键体验」跳过 —— 跳过之后就是未登录身份本身。
+  //
+  // 跳过记在 sessionStorage 而不是内存：否则每刷新一次就被拦一次，
+  // 而这个实例本来就允许未登录查数，拦第二次纯属骚扰。用 session 级而非
+  // localStorage，是因为"这次来访不想登录"不该变成一个永久决定。
+  const [skipped, setSkipped] = useState(
+    () => sessionStorage.getItem(SKIP_LOGIN_KEY) === '1',
+  )
+  const needsIdentity = !!me && me.enabled && !me.username
+  const gated = needsIdentity && (me.required || !skipped)
 
   const notify = (message: string) => {
     setToast(message)
@@ -66,7 +83,7 @@ function App() {
       </div>
     )
     if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} />
-    if (view === 'sources') return <DataSourcesPage health={health} />
+    if (view === 'sources') return <DataSourcesPage health={health} me={me} />
     if (view === 'permissions') return <PermissionsPage notify={notify} />
     if (view === 'glossary') return <GlossaryPage onNavigate={setView} notify={notify} />
     if (view === 'audit') return <AuditPage />
@@ -90,11 +107,26 @@ function App() {
       >
         {page}
       </AppShell>
-      {loginOpen && me && (
+      {/* me 还没拿到时**不显示** —— 拿不准是不是要登录就先别糊一扇门上去，
+          那会在每次刷新时闪一下。 */}
+      {(loginOpen || gated) && me && (
         <LoginScreen
           me={me}
+          dismissible={!gated}
           onClose={() => setLoginOpen(false)}
-          onDone={() => { setLoginOpen(false); reloadMe() }}
+          onDone={() => {
+            setLoginOpen(false)
+            // 登录成功就不再是"跳过"状态了，清掉标记：下次退出登录时
+            // 应当重新落在登录页，而不是被上一次的跳过决定顺延
+            sessionStorage.removeItem(SKIP_LOGIN_KEY)
+            setSkipped(false)
+            reloadMe()
+          }}
+          onSkip={() => {
+            sessionStorage.setItem(SKIP_LOGIN_KEY, '1')
+            setSkipped(true)
+            setLoginOpen(false)
+          }}
           notify={notify}
         />
       )}

@@ -123,9 +123,6 @@
 .login-route-node strong { display: block; overflow: hidden; color: #c6d6cd; font-size: 6px; text-overflow: ellipsis; white-space: nowrap; }
 .login-route-node small { display: block; margin-top: 3px; color: #6e8a7b; font: 5px var(--mono); }
 
-.login-trust-row { position: relative; z-index: 1; display: flex; gap: 6px; margin-top: auto; }
-.login-trust-row span { padding: 5px 7px; border: 1px solid rgba(255,255,255,.11); border-radius: 99px; color: #a6baaf; font: 5px var(--mono); }
-
 .login-panel {
   display: grid;
   place-items: center;
@@ -162,9 +159,9 @@
 
 .login-entry:hover { transform: translateY(-1px); border-color: var(--green); background: white; box-shadow: 0 9px 24px rgba(15,52,31,.08); }
 .login-entry:disabled { opacity: .55; cursor: not-allowed; transform: none; box-shadow: none; }
-.login-entry.demo { border-color: #9ebda9; background: var(--green-wash); }
+.login-entry.guest { border-color: #9ebda9; background: var(--green-wash); }
 .login-entry-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 8px; color: var(--green); background: var(--green-wash); font: 7px var(--mono); }
-.login-entry.demo .login-entry-icon { color: white; background: var(--green); }
+.login-entry.guest .login-entry-icon { color: white; background: var(--green); }
 .login-entry-copy strong { display: block; font-size: 9px; }
 .login-entry-copy small { display: block; margin-top: 3px; color: var(--muted); font-size: 6px; line-height: 1.4; }
 .login-entry-arrow { color: var(--green); font: 12px var(--mono); }

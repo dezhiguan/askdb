@@ -206,12 +206,8 @@ role_policies:
 #
 # 账号是固定的三个体验账号，没有注册、没有找回密码、没有短信。
 # 口令**不入配置**，配置里只有 scrypt 哈希（askdb hash-password 生成）。
-# demo: true 的账号同时开放一键体验 —— 那只跳过认证，不跳过授权：
-# 体验账号拿到的仍是它自己角色的收窄配置，与口令登录完全同一条路径。
-#
-# 会话是无状态签名票，密钥走 ASKDB_SESSION_SECRET（askdb session-secret 生成）。
-# 多副本必须共用同一把，否则表现为"刷新几次就掉线"。没配则登录整体关闭。
-# ---------------------------------------------------------------------------
+# 一键体验已改为「跳过登录」，不再由账号开关控制；这份配置 required: true，
+# 因此没有跳过这条路，登录页只有账号登录一个入口。
 auth:
   enabled: true
   # 2026-09-03 由 false 改为 true。
@@ -225,18 +221,15 @@ auth:
     - username: product
       display_name: 产品角色
       roles: [PRODUCT]
-      demo: true
       note: 看业务数据，不看 token 与成本
       password_hash: "scrypt$16384$8$1$+hmZytSP/U/trvz4LhtjHQ==$26LFIdK3jO6mgr7ne6rJf53Jj1sOrQvM5S7fgs1U3Xk="
     - username: qa
       display_name: 测试角色
       roles: [QA]
-      demo: true
       note: 可见表更少、返回行上限更低
       password_hash: "scrypt$16384$8$1$2ZasnZMURkCQs2bb8t1c9A==$f6gkHl+WtNPrMxgP8KmTu6RNl8EgH9KTA9m6qhP3iVs="
     - username: owner
       display_name: 数据负责人
       roles: [DATA_OWNER]
-      demo: true
       note: 实例白名单内全部可见
       password_hash: "scrypt$16384$8$1$5eQ0nqqMH2JJl4MhJ5ZAPg==$Yq9nGQYvZZzojLlLDgfJG4brluHvVcb4LQLoh0iklyo="

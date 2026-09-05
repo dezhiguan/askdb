@@ -4,14 +4,15 @@
 这不是把 auth-gateway 重做一遍 —— 那套东西（注册、重置、验证码、风控、
 应用级注销）一个都不在这里。这里只有「核对一个口令，发一张会话票」。
 
-为什么不接网关：本实例的定位是**任何人可访问的演示站**，可用性优先。
-接网关等于把演示的可用性押在另一个服务上（它今天刚因 Redis 失联挂过，
+为什么不接网关：本实例的定位是**任何人可访问的对外站点**，可用性优先。
+接网关等于把可用性押在另一个服务上（它今天刚因 Redis 失联挂过，
 两个产品登录全灭）。访客点开链接看到登录报错，比没有登录糟得多。
 要展示企业身份接入时，网关可以作为第二种登录方式接进来，不影响这里。
 
 **会话是无状态签名票**，不落库：
   · 多副本天然一致，不需要共享会话存储
-  · 代价是**签发后无法单独吊销**，只能靠短有效期与换密钥整体失效。
+  · 代价是**签发后无法单独吊销**，只能靠有效期到期与换密钥整体失效。
+    默认有效期 30 天（见 DEFAULT_TTL_DAYS），因此这个窗口并不短 ——
     固定账号、无自助注册的场景下这个代价可以接受；真要做单点吊销，
     得先有会话表，那是另一个量级的东西，不该悄悄混进来。
 """
@@ -36,7 +37,15 @@ _DKLEN = 32
 
 SESSION_SECRET_ENV = "ASKDB_SESSION_SECRET"
 COOKIE_NAME = "askdb_session"
-DEFAULT_TTL_S = 12 * 3600
+#: 会话默认有效期 30 天。
+#:
+#: **这是一个被明确接受的代价**：见模块头，会话是无状态签名票、签发后无法单独
+#: 吊销，短有效期本来是唯一的兜底。拉到 30 天等于把"某张票被人拿走"的窗口
+#: 也拉到 30 天，此时唯一的收回手段是换 ASKDB_SESSION_SECRET —— 那会让所有人
+#: 一起掉线。固定十个内置账号、无自助注册的前提下可以接受；真要做单点吊销，
+#: 得先有会话表，那是另一个量级的东西。
+DEFAULT_TTL_DAYS = 30
+DEFAULT_TTL_S = DEFAULT_TTL_DAYS * 24 * 3600
 
 
 class AuthError(RuntimeError):
@@ -124,9 +133,6 @@ class Account:
     display_name: str
     roles: tuple[str, ...]
     password_hash: str = ""
-    #: 允许一键体验（免口令进入）。**只跳过认证，不跳过授权** ——
-    #: 体验账号拿到的是它自己角色的收窄配置，与口令登录完全同一条路径。
-    demo: bool = False
     note: str = ""
 
 
@@ -138,10 +144,23 @@ def enabled(cfg: Config) -> bool:
     return bool(_section(cfg).get("enabled")) and session_available()
 
 
+def ttl_s(cfg: Config) -> int:
+    """本实例的会话有效期（秒）。配置 auth.session_ttl_days 可覆盖。
+
+    非法值（负数、写成字符串）一律退回默认，不让一个配置笔误把有效期
+    变成 0 —— 那表现为"登录成功但立刻掉线"，比登不上更难查。
+    """
+    try:
+        days = int(_section(cfg).get("session_ttl_days", DEFAULT_TTL_DAYS))
+    except (TypeError, ValueError):
+        return DEFAULT_TTL_S
+    return days * 24 * 3600 if days > 0 else DEFAULT_TTL_S
+
+
 def required(cfg: Config) -> bool:
     """是否强制登录。
 
-    公开演示实例为 false：匿名可用，登录是**可选的能力展示**而不是门。
+    对外开放实例为 false：匿名可用，登录是**可选的能力展示**而不是门。
     登录页是访客流失最大的一处，而这个站要给人看的是护栏与审计，不是登录框。
     """
     return bool(_section(cfg).get("required")) and enabled(cfg)
@@ -158,14 +177,9 @@ def accounts(cfg: Config) -> dict[str, Account]:
             display_name=str(spec.get("display_name") or name),
             roles=tuple(str(r) for r in (spec.get("roles") or [])),
             password_hash=str(spec.get("password_hash") or ""),
-            demo=bool(spec.get("demo")),
             note=str(spec.get("note") or ""),
         )
     return out
-
-
-def demo_accounts(cfg: Config) -> list[Account]:
-    return [a for a in accounts(cfg).values() if a.demo]
 
 
 def authenticate(cfg: Config, username: str, password: str) -> Account:
@@ -178,18 +192,10 @@ def authenticate(cfg: Config, username: str, password: str) -> Account:
     return acc
 
 
-def enter_demo(cfg: Config, username: str) -> Account:
-    """一键体验。只认配置里显式标了 demo 的账号 —— 白名单，不是开关。"""
-    acc = accounts(cfg).get((username or "").strip().lower())
-    if not acc or not acc.demo:
-        raise AuthError("该账号不开放一键体验")
-    return acc
-
-
 def roles_of(cfg: Config, username: str) -> list[str]:
     """账号的角色：配置内置 ∪ 身份库里管理员登记的。
 
-    并集而不是二选一：演示实例只有配置（不需要数据库），真实部署可以在
+    并集而不是二选一：对外实例只有配置（不需要数据库），真实部署可以在
     身份库里继续加人，两者互不干扰。
     """
     acc = accounts(cfg).get((username or "").strip().lower())

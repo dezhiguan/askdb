@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,25 @@ def _quota_view(cfg: Config) -> dict[str, Any]:
 #: 那该是一次显式决定，而不是顺手调一下常量。
 _RELEASE_GATE = 90.0
 _P95_TARGET_MS = 4000
+
+#: 未登录也能调的「非写入」路由。**这是一张豁免表，不是黑名单** ——
+#: 写入拦截默认拒绝一切 POST/PUT/PATCH/DELETE，只有列在这里的才放行。
+#:
+#: 方向是有意的：列黑名单的话，将来新增一个写接口而忘了登记，它就是敞开的，
+#: 且没有任何信号会提醒谁。默认拒绝时，忘了登记的后果是「新接口要登录才能用」
+#: —— 漏掉的方向落在安全的那边。
+#:
+#: 往这张表里加一条 = 显式声明「这个接口未登录也能调」，请当成一次安全决定来 review。
+#: ask / sql / resume 是 POST，但它们是**查询**：读走的是角色收窄那条路（_scoped），
+#: 不归写入拦截管。auth 两条是认证本身，拦了就没人能登录了。
+_WRITE_EXEMPT_PATHS = frozenset({
+    "/api/ask",
+    "/api/sql",
+    "/api/resume",
+    "/api/auth/login",
+    "/api/auth/logout",
+})
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 WEB = Path(__file__).resolve().parent / "web"
 # 换壳前的单文件页面。它仍然是唯一一处接了真实数据的界面 ——
@@ -203,10 +223,6 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
-class DemoRequest(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
-
-
 class AddMemberRequest(BaseModel):
     role_code: str = Field(min_length=1, max_length=32)
     username: str = Field(min_length=1, max_length=64)
@@ -251,6 +267,48 @@ class ResumeRequest(BaseModel):
 def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     cfg: Config = load(config_path)
     app = FastAPI(title="askdb", docs_url="/api/docs", openapi_url="/api/openapi.json")
+
+    @app.middleware("http")
+    async def _gate_writes(request: Request, call_next):
+        """未登录一律拦下写操作。**整个写入面只有这一处判据。**
+
+        为什么是中间件而不是给每个写接口挂一个依赖：依赖要一个个挂，将来
+        新增一个写接口而忘了挂，它就是敞开的，且没有任何信号会提醒谁。
+        中间件跑在路由之前、对全部路由生效，所以「忘了」的后果变成
+        「新接口要登录才能用」—— 漏掉的方向落在安全的那边。
+
+        代价有一个，明说：中间件在路由匹配之前跑，所以未登录 POST 一个
+        **不存在**的路径会得到 401 而不是 404。这是可接受的 ——
+        不向未登录者透露哪些路径存在，本身也不是坏事。
+
+        「已登录」认两种凭据。只认会话 cookie 会把部署方现有的管理通道打死：
+        角色成员增删走的是 ASKDB_ADMIN_TOKEN，那也是一种身份，只是不来自浏览器。
+        """
+        if request.method in _WRITE_METHODS and request.url.path not in _WRITE_EXEMPT_PATHS:
+            by_session = bool(_auth.read(request.cookies.get(_auth.COOKIE_NAME)))
+            admin = os.environ.get("ASKDB_ADMIN_TOKEN", "")
+            by_token = bool(admin) and secrets.compare_digest(
+                request.headers.get("X-Askdb-Admin-Token", ""), admin)
+            if not (by_session or by_token):
+                # 说清三件事：拦了什么、当前是什么状态、下一步做什么。
+                # 「无权限」「操作失败」这类话对着排查的人毫无用处。
+                #
+                # 两种状态要分开说。没配会话密钥时登录整体关闭，此时叫人"先登录"
+                # 是让他去撞一扇根本打不开的门 —— 那种提示比不提示更浪费时间。
+                # 这种实例仍有出路：管理员令牌不依赖会话密钥，运维照样进得来。
+                if not _auth.session_available():
+                    return JSONResponse(status_code=401, content={
+                        "code": "login_unavailable",
+                        "detail": "本实例未配置会话密钥（ASKDB_SESSION_SECRET），登录整体关闭，"
+                                  "因此没有人能执行改动配置的操作。配置该环境变量后重启，"
+                                  "或由运维携带管理员令牌调用。",
+                    })
+                return JSONResponse(status_code=401, content={
+                    "code": "login_required",
+                    "detail": "这是一个会改动配置的操作，需要登录后才能执行。"
+                              "你当前未登录，只能只读查询。请先登录再试。",
+                })
+        return await call_next(request)
 
     _NO_STORE = {"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"}
 
@@ -894,14 +952,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return out
 
     @app.get("/api/audit")
-    def audit_list(page: int = 1, page_size: int = 10,
+    def audit_list(request: Request, page: int = 1, page_size: int = 10,
                    q: str = "", kind: str = "") -> dict[str, Any]:
         """审计流水（摘要分页）。列表有意不含 SQL 文本与结果行 ——
-        细节只经 /api/replay 的白名单+开关出去。"""
+        细节只经 /api/replay 的白名单+开关出去。
+
+        **未登录时问题原文与发起人不出接口。** 这一页要展示的是护栏在拦什么、
+        拦了多少、贵不贵 —— 那些是聚合与结构，匿名照常可见；而"别人问过什么"
+        不是展示目标，它和 /api/tasks 挡的是同一类东西（提问原文）。
+        遮蔽在这里做而不是只在前端做：只灰按钮的话，curl 一下照样全拿到。
+        """
         from .audit import list_audits
 
         return list_audits(cfg.audit_log, page=page, page_size=page_size,
-                           q=q.strip(), kind=kind.strip())
+                           q=q.strip(), kind=kind.strip(),
+                           with_text=bool(_current_user(request)))
 
     @app.get("/api/audit/stats")
     def audit_stats(days: int = 30) -> dict[str, Any]:
@@ -920,7 +985,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         }
 
     @app.get("/api/replay")
-    def replay_trace(trace_id: str = "") -> JSONResponse:
+    def replay_trace(request: Request, trace_id: str = "") -> JSONResponse:
         """判定链路回放（设计说明 V1.1）。
 
         三条硬规则，都是为了"接口本身在任何实例上都不泄露数据"：
@@ -930,6 +995,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         - 独立限流：每次回放都要开 SQLite 遍历历史，不能被当查询接口刷。
         """
         not_found = JSONResponse({"error": "not found"}, status_code=404)
+        # 回放要登录：它返回的是 SQL 全文与问题原文，比列表那一行敏感得多。
+        # 与开关关闭、id 不存在**同为 404** —— 沿用本接口既有的"三种结局
+        # 同一响应"约定，区分本身就是信息泄露。
+        if not _current_user(request):
+            return not_found
         if not cfg.raw["observability"].get("replay_api", False):
             return not_found
         if not _REPLAY_RL.allow():
@@ -969,8 +1039,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     # 没配 ASKDB_ADMIN_TOKEN 就整体拒绝写入。缺了这道闸，任何能访问页面的人
     # 都能给自己加角色。
     def _require_admin(token: str | None) -> None:
-        import secrets
-
         expected = os.environ.get("ASKDB_ADMIN_TOKEN", "")
         if not expected:
             raise HTTPException(
@@ -1046,17 +1114,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         正常情况下永远是空的。可续跑的那些由 resumable 字段标出来，
         续跑入口只对它们开放。
 
-        **必须登录**，且只列自己的。中断恢复设计 §4.2 原本禁止一切未完成
-        任务的枚举，理由是当时没有账号体系；登录接入后按发起人收窄的列表
-        不再是枚举入口，但匿名依旧什么都不给 —— 那正是 §4.2 要挡的情形。
+        **按发起人收窄**，登录与匿名同一条规则：匿名看到的是匿名发起的线程，
+        看不到任何登录用户的。收窄没有被放松 —— 放松的只是"匿名有没有资格
+        看自己那一档"。归属口径与 /api/resume 完全一致（有主的只有主人能续跑），
+        所以不会出现"列得出来、续不了"。
         """
-        username = _current_user(request)
-        if not username:
-            raise HTTPException(
-                status_code=401,
-                detail="任务列表需要登录。中断的任务带着发起人问过的问题原文，"
-                       "匿名实例不提供未完成任务的枚举入口。",
-            )
+        username = _current_user(request) or ""
         from .audit import tasks as _tasks
         from .graph import is_resumable
 
@@ -1069,7 +1132,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 state = is_resumable(str(it.get("thread_id") or ""), cfg)
                 if state is not None:
                     it["resumable"] = state
-        return {"items": items, "user": username}
+        return {"items": items, "user": username}   # 匿名时为空串，页面据此显示「匿名」
 
     @app.post("/api/resume")
     def resume_task(req: ResumeRequest, request: Request) -> JSONResponse:
@@ -1160,9 +1223,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             )
 
     def _set_session(response: Response, username: str) -> None:
+        # 票面有效期与 cookie max_age 必须同一个值：cookie 先过期会表现成
+        # "无故掉线"，票先过期会表现成"带着 cookie 但一直 401"，两种都难查
+        ttl = _auth.ttl_s(cfg)
         response.set_cookie(
-            _auth.COOKIE_NAME, _auth.issue(username),
-            max_age=_auth.DEFAULT_TTL_S, httponly=True, samesite="lax",
+            _auth.COOKIE_NAME, _auth.issue(username, ttl),
+            max_age=ttl, httponly=True, samesite="lax",
             # HttpOnly 挡住 JS 读取；SameSite=Lax 挡住跨站携带。
             # secure 跟随部署：本地 http 调试也要能登进去，线上由入口强制 HTTPS。
             secure=bool(cfg.raw.get("auth", {}).get("cookie_secure", False)),
@@ -1186,11 +1252,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "display_name": acc.display_name if acc else "",
             "roles": _auth.roles_of(cfg, username) if username else [],
             "scope": {"tables": sorted(scoped.tables), "max_rows": scoped.max_rows},
-            "demo_accounts": [
-                {"username": a.username, "display_name": a.display_name,
-                 "roles": list(a.roles), "note": a.note}
-                for a in _auth.demo_accounts(cfg)
-            ],
         }
 
     @app.post("/api/auth/login")
@@ -1204,22 +1265,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         except _auth.AuthError as e:
             # 账号不存在与口令不对同一句话、同一状态码 —— 区分就是账号枚举
             raise HTTPException(status_code=401, detail=str(e)) from e
-        _set_session(response, acc.username)
-        return {"ok": True, "username": acc.username, "roles": list(acc.roles)}
-
-    @app.post("/api/auth/demo")
-    def auth_demo(req: DemoRequest, response: Response) -> dict[str, Any]:
-        """一键体验：**只跳过认证，不跳过授权**。
-
-        体验账号拿到的是它自己角色的收窄配置，和口令登录走完全同一条路径。
-        白名单由配置显式声明，不是一个"允许免密"的总开关。
-        """
-        if not _auth.enabled(cfg):
-            raise HTTPException(status_code=404, detail="本实例未启用登录")
-        try:
-            acc = _auth.enter_demo(cfg, req.username)
-        except _auth.AuthError as e:
-            raise HTTPException(status_code=403, detail=str(e)) from e
         _set_session(response, acc.username)
         return {"ok": True, "username": acc.username, "roles": list(acc.roles)}
 

@@ -72,9 +72,16 @@ def _summary(rec: dict[str, Any]) -> dict[str, Any]:
 
 def list_audits(
     path: Path, page: int = 1, page_size: int = 10,
-    q: str = "", kind: str = "",
+    q: str = "", kind: str = "", with_text: bool = True,
 ) -> dict[str, Any]:
-    """流水分页，新记录在前。q 同时匹配 trace_id 与问题文本。"""
+    """流水分页，新记录在前。q 同时匹配 trace_id 与问题文本。
+
+    with_text=False 时**问题原文不出接口**，且 q 只匹配 trace_id。
+
+    两件事必须一起做：只把 question 抹掉、仍允许按文本搜，等于留了一个预言机
+    —— 搜"广州"能搜出 12 条，就已经把内容说出来了。遮蔽和检索面是同一道边界，
+    分开做等于没做。
+    """
     recs = read_records(path)
     recs.reverse()
     if kind:
@@ -84,15 +91,32 @@ def list_audits(
         recs = [
             r for r in recs
             if ql in str(r.get("trace_id", "")).lower()
-            or ql in str(r.get("question", "")).lower()
+            or (with_text and ql in str(r.get("question", "")).lower())
         ]
     page = max(int(page), 1)
     page_size = min(max(int(page_size), 1), 100)
     start = (page - 1) * page_size
     return {
         "total": len(recs), "page": page, "page_size": page_size,
-        "items": [_summary(r) for r in recs[start:start + page_size]],
+        "items": [_redact(_summary(r), with_text) for r in recs[start:start + page_size]],
+        # 页面据此显示遮蔽提示，而不是让人以为这些记录本来就没有问题文本
+        "text_visible": with_text,
     }
+
+
+def _redact(item: dict[str, Any], with_text: bool) -> dict[str, Any]:
+    """未登录时抹掉能指认到人的那两个字段。
+
+    留下的是时间、角色、护栏结果、耗时与成本 —— 那些是**聚合与结构**，
+    也正是这一页要展示的东西（护栏在拦什么、拦了多少、贵不贵）。
+    抹掉的是问题原文与发起人：它们是别人问过的内容，不是这一页的展示目标。
+
+    抹成 None 而不是删键：前端按字段渲染，少一个键会变成 undefined 到处冒，
+    而 None 是一个明确的"这里有东西但你看不到"。
+    """
+    if with_text:
+        return item
+    return {**item, "question": None, "user": ""}
 
 
 def _thread_status(last: dict[str, Any]) -> str:
@@ -120,15 +144,13 @@ def tasks(path: Path, user: str) -> list[dict[str, Any]]:
     只列中断等于这一页正常情况下永远是空的 —— 实际就是这么空了。
     可续跑的那些由 ``resumable`` 字段标出来，续跑入口只对它们开放。
 
-    **必须按账号收窄。** 中断恢复设计 §4.2 原本禁止一切未完成任务的枚举，
-    理由是当时没有账号体系 —— 列出来就等于任何人都能看到并续跑别人的
-    任务，而任务里带着别人问过的问题原文。登录接入后前提变了：
-    按发起人收窄的列表不是枚举入口。但**匿名一律不给**，那正是 §4.2
-    要挡的情形，传空账号直接返回空。
-    """
-    if not user:
-        return []
+    **按发起人收窄**，登录与匿名同一条规则：user 就是"谁"，空串是匿名这一档。
+    所以匿名看到的是匿名发起的线程，看不到任何登录用户的 —— 收窄本身没有
+    被放松，放松的只是"匿名有没有资格看自己那一档"。
 
+    这与 /api/resume 的归属校验是同一条口径（有主的线程只有主人能续跑，
+    无主的凭 thread_id 续跑）。两处必须一致，否则会出现"列得出来、续不了"。
+    """
     threads: dict[str, list[dict[str, Any]]] = {}
     for rec in read_records(path):
         tid = rec.get("thread_id") or rec.get("trace_id")

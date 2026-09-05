@@ -179,9 +179,9 @@ function Identity({ me, onOpenLogin, onSignOut }: {
     return (
       <>
         <span className="context-chip" title={`可见表：${me.scope.tables.join('、')}`}>
-          匿名 · {scope}
+          未登录 · {scope}
         </span>
-        <button className="primary" onClick={onOpenLogin}>登录 / 一键体验</button>
+        <button className="primary" onClick={onOpenLogin}>登录</button>
       </>
     )
   }

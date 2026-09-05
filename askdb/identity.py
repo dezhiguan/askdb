@@ -250,6 +250,35 @@ def ensure_schema(cfg: Config) -> None:
         con.execute(_SCHEMA)
 
 
+def builtin_members(cfg: Config, role_code: str = "") -> list[dict[str, Any]]:
+    """配置里内置的人员，按角色摊平成成员条目。
+
+    这些人**能登录**（auth.accounts 带 password_hash），所以他们就是实打实的
+    角色持有者。名单只从库表读的话，页面会说"测试角色 0 人"，而实际上有两个
+    人拿着口令随时能以 QA 身份查数 —— 权限页最不能出的就是这种谎。
+
+    auth.roles_of() 早就是"配置 ∪ 库表"的并集，这里只是把同一条口径补到名单上。
+    内置条目 id 恒为 0：删除接口按 id 匹配，因此天然删不掉 —— 它们由配置文件
+    管理，不该能在页面上点掉。
+    """
+    from . import auth                      # 延迟导入：auth.roles_of 反向依赖本模块
+
+    want = (role_code or "").strip()
+    out: list[dict[str, Any]] = []
+    for acc in auth.accounts(cfg).values():
+        for code in acc.roles:
+            if code not in ROLE_BY_CODE or (want and code != want):
+                continue
+            out.append({
+                "id": 0, "role_code": code, "auth_user_id": None,
+                "username": acc.username, "display_name": acc.display_name,
+                "note": acc.note, "created_at": "", "created_by": "配置内置",
+                "bound": False, "builtin": True,
+            })
+    out.sort(key=lambda m: (m["role_code"], m["username"]))
+    return out
+
+
 def roles_with_counts(cfg: Config) -> list[dict[str, Any]]:
     counts: dict[str, int] = {}
     if enabled(cfg):
@@ -259,6 +288,14 @@ def roles_with_counts(cfg: Config) -> list[dict[str, Any]]:
                 "SELECT role_code, COUNT(*) FROM askdb_role_members GROUP BY role_code"
             ).fetchall()
         counts = {code: int(n) for code, n in rows}
+    # 内置人员一并计入，并按 (角色, 用户名) 去重 —— 同一个人既写在配置里
+    # 又被管理员登记过一次，是一个人，不是两个
+    seen = {(m["role_code"], m["username"].lower()) for m in builtin_members(cfg)}
+    for code, uname in _db_member_keys(cfg):
+        if (code, uname) in seen:
+            counts[code] = counts.get(code, 0) - 1     # 该行与内置条目重复，扣回
+    for code, _ in seen:
+        counts[code] = counts.get(code, 0) + 1
     return [
         {"code": r.code, "name": r.name, "scope": r.scope, "desc": r.desc,
          "system": r.system, "members": counts.get(r.code, 0)}
@@ -277,14 +314,19 @@ def list_members(cfg: Config, role_code: str = "") -> list[dict[str, Any]]:
     sql += " ORDER BY created_at DESC, id DESC"
     with _connect(cfg) as con:
         rows = con.execute(sql, params).fetchall()
-    return [
-        {"id": r[0], "role_code": r[1], "auth_user_id": r[2], "username": r[3],
-         "display_name": r[4], "note": r[5],
-         "created_at": r[6].isoformat(), "created_by": r[7],
-         # 登录接入前一律未绑定。如实标出来，别让人以为已经关联上网关账号了
-         "bound": r[2] is not None}
-        for r in rows
-    ]
+
+    out = builtin_members(cfg, role_code)          # 内置名册排在前，它是固定的那部分
+    seen = {(m["role_code"], m["username"].lower()) for m in out}
+    for r in rows:
+        if (r[1], r[3].lower()) in seen:           # 与内置条目是同一个人，不重复列
+            continue
+        out.append(
+            {"id": r[0], "role_code": r[1], "auth_user_id": r[2], "username": r[3],
+             "display_name": r[4], "note": r[5],
+             "created_at": r[6].isoformat(), "created_by": r[7],
+             # 登录接入前一律未绑定。如实标出来，别让人以为已经关联上网关账号了
+             "bound": r[2] is not None, "builtin": False})
+    return out
 
 
 def add_member(cfg: Config, *, role_code: str, username: str,
@@ -296,6 +338,10 @@ def add_member(cfg: Config, *, role_code: str, username: str,
         raise IdentityError("用户名不能为空")
     if len(username) > 64:
         raise IdentityError("用户名过长（上限 64）")
+    # 内置条目删不掉（id=0），再登记一条同名的只会造出一行看不见也删不掉的影子
+    if any(m["username"].lower() == username.lower()
+           for m in builtin_members(cfg, role_code)):
+        raise IdentityError(f"{username} 已由配置内置在该角色里")
 
     ensure_schema(cfg)
     import psycopg
@@ -322,3 +368,13 @@ def remove_member(cfg: Config, member_id: int) -> bool:
     with _connect(cfg) as con:
         cur = con.execute("DELETE FROM askdb_role_members WHERE id = %s", (member_id,))
         return cur.rowcount > 0
+
+
+def _db_member_keys(cfg: Config) -> list[tuple[str, str]]:
+    """库表里的 (角色, 小写用户名)。只服务于计数去重，不对外。"""
+    if not enabled(cfg):
+        return []
+    with _connect(cfg) as con:
+        rows = con.execute(
+            "SELECT role_code, lower(username) FROM askdb_role_members").fetchall()
+    return [(r[0], r[1]) for r in rows]

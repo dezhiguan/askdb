@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { enterDemo, login, type Me } from '../api'
+import { login, type Me } from '../api'
 
 type Mode = 'choice' | 'account'
 
@@ -9,15 +9,21 @@ type Mode = 'choice' | 'account'
  * 先选进入方式，再填账号。**两段而不是一屏铺开**，是因为大多数访客走的是
  * 「一键体验」那条路，账号框对他们是噪音。
  *
- * 与原型的差异只有一处、且是有意的：原型里这屏是**拦在前面的门**，
- * askdb 的匿名身份本来就能查数（`me.required=false`），所以这屏由顶栏
- * 唤起，点遮罩或 Esc 可以退回去 —— 不给退路等于把匿名这条路堵死。
+ * 两种形态，由 `dismissible` 决定，判据来自后端的 `me.required`：
+ *   · 门（required=true）—— 未登录进不去，没有 Esc、点遮罩也不关。给一个
+ *     关得掉却什么都做不了的门，只会让人以为页面坏了。
+ *   · 浮层（required=false）—— 匿名本来就能查数，登录只是放宽可见范围，
+ *     必须留退路。
  */
-export function LoginScreen({ me, onClose, onDone, notify }: {
+export function LoginScreen({ me, onClose, onDone, onSkip, notify, dismissible = true }: {
   me: Me
   onClose: () => void
   onDone: () => void
+  /** 跳过登录，以未登录身份进入。仅在 me.required 为 false 时可用 */
+  onSkip: () => void
   notify: (message: string) => void
+  /** false = 这屏是门。关闭入口（Esc / 点遮罩）整体禁用 */
+  dismissible?: boolean
 }) {
   const [mode, setMode] = useState<Mode>('choice')
   const [account, setAccount] = useState('')
@@ -31,8 +37,6 @@ export function LoginScreen({ me, onClose, onDone, notify }: {
   const accountRef = useRef<HTMLInputElement>(null)
   const passwordRef = useRef<HTMLInputElement>(null)
   const chooseRef = useRef<HTMLButtonElement>(null)
-
-  const demo = me.demo_accounts[0]
 
   const clearError = () => {
     setError('')
@@ -52,13 +56,13 @@ export function LoginScreen({ me, onClose, onDone, notify }: {
     }, 80)
   }
 
-  // 匿名可用，所以这屏必须能退出去
   useEffect(() => {
+    chooseRef.current?.focus()
+    if (!dismissible) return                 // 门：没有退路，也就没有 Esc
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
-    chooseRef.current?.focus()
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [onClose, dismissible])
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -84,24 +88,20 @@ export function LoginScreen({ me, onClose, onDone, notify }: {
     }
   }
 
-  const runDemo = async () => {
-    if (!demo) return
-    clearError()
-    setBusy(true)
-    try {
-      await enterDemo(demo.username)
-      setPassword('')
-      onDone()
-      notify(`已切换到「${demo.display_name}」· 该角色的可见范围已生效`)
-    } catch (e) {
-      setError(String((e as Error).message || e))
-    } finally {
-      setBusy(false)
-    }
+  // 一键体验 = **跳过登录**，不是以某个账号进入。不发任何请求、不建会话，
+  // 关掉这扇门之后就是未登录身份本身：能只读查询，一切写操作被后端中间件拦下。
+  const skip = () => {
+    onSkip()
+    notify('已以未登录身份进入 · 可以查询，但改动配置的操作需要登录')
   }
 
   return (
-    <div className="login-screen show" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <div
+      className="login-screen show"
+      onMouseDown={event => {
+        if (dismissible && event.target === event.currentTarget) onClose()
+      }}
+    >
       <div className="login-layout">
         <section className="login-visual" aria-label="可信查询流程">
           <div className="login-brand">
@@ -122,7 +122,6 @@ export function LoginScreen({ me, onClose, onDone, notify }: {
               <div className="login-route-node"><strong>结果证据</strong><small>PROOF</small></div>
             </div>
           </div>
-          <div className="login-trust-row"><span>READ ONLY</span><span>MASKED</span><span>AUDITED</span></div>
         </section>
 
         <section className="login-panel">
@@ -137,21 +136,26 @@ export function LoginScreen({ me, onClose, onDone, notify }: {
                   <span className="login-entry-copy"><strong>账号登录</strong><small>使用已有账号和密码进入工作台</small></span>
                   <b className="login-entry-arrow">→</b>
                 </button>
-                {demo && (
-                  <button className="login-entry demo" type="button" disabled={busy} onClick={runDemo}>
-                    <i className="login-entry-icon">DEMO</i>
+                {/* 这个入口只在"未登录也能查"的实例上成立。required 的实例上
+                    点了也进不去（后端 401），摆着就是骗点击 */}
+                {!me.required && (
+                  <button className="login-entry guest" type="button" onClick={skip}>
+                    <i className="login-entry-icon">TRY</i>
                     <span className="login-entry-copy">
                       <strong>一键体验</strong>
-                      <small>免口令，以「{demo.display_name}」的角色进入</small>
+                      <small>跳过登录直接查数，改动配置的操作需要登录</small>
                     </span>
                     <b className="login-entry-arrow">↗</b>
                   </button>
                 )}
               </div>
               {error && mode === 'choice' && <p className="login-error" role="alert">{error}</p>}
+              {/* 这句随入口走。没有一键体验时还挂着解释它的话，是在讲一个不存在的功能 */}
               <div className="login-choice-note">
                 <i>✓</i>
-                <span>一键体验只跳过口令、不跳过权限：可见的表与返回行数仍按该角色收窄，走的是同一条执行路径。</span>
+                <span>{me.required
+                  ? '账号由部署方内置，没有注册与找回密码入口。每次查询都会记入审计，标明是以哪个身份发起的。'
+                  : '未登录也能查数，走的是同一条执行路径、同样受护栏约束；但添加数据源、改成员这类会改动配置的操作，必须登录。'}</span>
               </div>
             </div>
 

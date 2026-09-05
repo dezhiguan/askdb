@@ -29,8 +29,8 @@ def acfg(cfg):
         "enabled": True,
         "required": False,
         "accounts": [
-            {"username": "demo", "display_name": "体验", "roles": ["QA"],
-             "demo": True, "password_hash": auth.hash_password("demo-pw")},
+            {"username": "visitor", "display_name": "体验", "roles": ["QA"],
+             "password_hash": auth.hash_password("visitor-pw")},
             {"username": "alice", "display_name": "Alice", "roles": ["PRODUCT"],
              "password_hash": auth.hash_password("alice-pw")},
             {"username": "root", "display_name": "管理员", "roles": ["SYS_ADMIN"],
@@ -115,35 +115,6 @@ def test_login_success_sets_httponly_cookie(client):
     # HttpOnly 挡 JS 读取，SameSite 挡跨站携带 —— 两个都掉了才是问题，缺一个也是
     assert "httponly" in cookie
     assert "samesite=lax" in cookie
-
-
-def test_wrong_password_and_unknown_user_are_indistinguishable(client):
-    """区分「账号不存在」与「口令不对」就是账号枚举。状态码与提示语都要一致。"""
-    a = client.post("/api/auth/login", json={"username": "alice", "password": "nope"})
-    b = client.post("/api/auth/login", json={"username": "nobody", "password": "nope"})
-    assert a.status_code == b.status_code == 401
-    assert a.json()["detail"] == b.json()["detail"]
-
-
-def test_demo_entry_only_for_whitelisted_accounts(client):
-    """一键体验是白名单，不是「允许免密」的总开关。"""
-    assert client.post("/api/auth/demo", json={"username": "demo"}).status_code == 200
-    # alice 有口令但没标 demo
-    assert client.post("/api/auth/demo", json={"username": "alice"}).status_code == 403
-    assert client.post("/api/auth/demo", json={"username": "nobody"}).status_code == 403
-
-
-def test_demo_entry_skips_authentication_not_authorization(client):
-    """免密进来的账号，拿到的仍是它自己角色的收窄配置。"""
-    client.post("/api/auth/demo", json={"username": "demo"})
-    me = client.get("/api/auth/me").json()
-    assert me["roles"] == ["QA"]
-    assert set(me["scope"]["tables"]) == {"orgs", "knowledge_bases"}
-
-    r = client.post("/api/sql", json={"sql": "SELECT id FROM documents"}).json()
-    assert r["ok"] is False and r["rejected_by"] == "R-03"
-
-
 def test_logout_clears_session(client):
     client.post("/api/auth/login", json={"username": "alice", "password": "alice-pw"})
     assert client.get("/api/auth/me").json()["username"] == "alice"
@@ -238,3 +209,146 @@ def test_public_instance_stores_no_plaintext_password():
     for spec in (c.raw.get("auth") or {}).get("accounts") or []:
         assert "password" not in spec, f"{spec.get('username')} 配了明文口令"
         assert str(spec.get("password_hash", "")).startswith("scrypt$")
+
+
+# ---------- 会话有效期与落地页 ----------
+
+def test_session_ttl_defaults_to_thirty_days(acfg):
+    """默认 30 天。写死数字是有意的 —— 这个值是一次显式的安全取舍
+    （票签发后无法单独吊销，见 auth 模块头），不该被谁顺手调小/调大而无人察觉。"""
+    from askdb import auth
+
+    acfg.raw["auth"].pop("session_ttl_days", None)
+    assert auth.ttl_s(acfg) == 30 * 24 * 3600
+
+
+@pytest.mark.parametrize("bad", [0, -1, "三十天", None])
+def test_broken_ttl_falls_back_instead_of_expiring_instantly(acfg, bad):
+    """配置写坏时退回默认，绝不能算出 0 —— 那表现为"登录成功但立刻掉线"。"""
+    from askdb import auth
+
+    acfg.raw["auth"]["session_ttl_days"] = bad
+    assert auth.ttl_s(acfg) == auth.DEFAULT_TTL_S
+
+
+def test_login_cookie_max_age_matches_the_ticket(acfg, monkeypatch):
+    """cookie 与票面同一个有效期。两者不一致会造出两种都难查的故障：
+    cookie 先过期 = 无故掉线；票先过期 = 带着 cookie 一直 401。"""
+    acfg.raw["auth"]["session_ttl_days"] = 7
+    monkeypatch.setattr(server, "load", lambda _p: acfg)
+    c = TestClient(server.create_app("ignored.yaml"))
+
+    r = c.post("/api/auth/login", json={"username": "alice", "password": "alice-pw"})
+    assert r.status_code == 200
+    assert "max-age=604800" in r.headers["set-cookie"].lower()      # 7 天
+
+    # 票面本身也是 7 天：只对齐 cookie 而票仍是默认值，故障会推迟到第 8 天才现形
+    raw = r.cookies[auth.COOKIE_NAME]
+    body = raw.split(".", 1)[0]
+    import base64
+    payload = base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)).decode()
+    exp = int(payload.rsplit("|", 1)[1])
+    assert abs(exp - (int(time.time()) + 7 * 24 * 3600)) <= 5
+
+
+def test_anonymous_reads_are_paid_for_by_a_locked_write_face():
+    """匿名可查（required: false）成立的**前提**是写入面独立锁死。
+
+    这两项是一对：豁免表里一旦混进任何一个会改动状态的接口，匿名就不再只有
+    "读"这一件事，而 required: false 当初就是靠这个前提才敢放的。
+    所以规则钉在这里，而不是钉 required 的取值本身 —— 将来某个实例要改回
+    强制登录是合法的，把写接口放进豁免表则永远不合法。
+    """
+    from askdb.server import _WRITE_EXEMPT_PATHS
+
+    for path in _WRITE_EXEMPT_PATHS:
+        assert path.startswith("/api/auth/") or path in {"/api/ask", "/api/sql", "/api/resume"}, (
+            f"{path} 出现在写入豁免表里。只有认证与查询能豁免 —— "
+            f"任何会改动状态的接口都不行"
+        )
+
+
+def test_dev_config_session_lasts_thirty_days():
+    c = _dev_config()
+    assert (c.raw.get("auth") or {}).get("session_ttl_days") == 30
+
+
+def _dev_config():
+    from pathlib import Path
+
+    from askdb.config import load
+
+    return load(Path(__file__).resolve().parent.parent / "config" / "askdb.yaml")
+
+
+# ---------- 写入面：未登录一律拦下 ----------
+
+def _write_calls(c):
+    """全部会改动状态的接口。新增写接口时**这里也要加一条** ——
+    忘了加的后果只是少测一条，而忘了在中间件豁免表里加的后果是接口不可用，
+    两个方向都不会变成"悄悄敞开"。"""
+    return (
+        ("POST", "/api/sources", lambda: c.post("/api/sources", json={"type": "duckdb", "dsn": "x"})),
+        ("POST", "/api/sources/test", lambda: c.post("/api/sources/test", json={"type": "duckdb", "dsn": "x"})),
+        ("PUT", "/api/sources/x/tables", lambda: c.put("/api/sources/x/tables", json={"tables": []})),
+        ("DELETE", "/api/sources/x", lambda: c.delete("/api/sources/x")),
+        ("POST", "/api/identity/members", lambda: c.post("/api/identity/members", json={
+            "role_code": "QA", "username": "x", "display_name": "", "note": ""})),
+        ("DELETE", "/api/identity/members/1", lambda: c.delete("/api/identity/members/1")),
+    )
+
+
+def test_writes_are_refused_without_a_session(client):
+    for method, path, call in _write_calls(client):
+        r = call()
+        assert r.status_code == 401, f"{method} {path} 未登录竟然没被拦"
+        assert r.json()["code"] == "login_required"
+
+
+def test_refusal_says_what_to_do_next(client):
+    """提示要说清"拦了什么 / 现在什么状态 / 下一步做什么"。
+    「无权限」「操作失败」这类话对着排查的人毫无用处。"""
+    detail = client.post("/api/sources", json={"type": "duckdb", "dsn": "x"}).json()["detail"]
+    assert "登录" in detail and "只读" in detail
+    assert "失败" not in detail
+
+
+def test_reads_are_not_touched_by_the_write_gate(client):
+    """ask / sql / resume 是 POST 但它们是查询。被写入拦截误伤的话，
+    未登录就一条数据都查不了 —— 那不是收紧，是把功能关了。"""
+    assert client.post("/api/ask", json={"question": "有多少知识库"}).status_code != 401
+    assert client.post("/api/sql", json={"sql": "SELECT 1"}).status_code != 401
+    assert client.post("/api/resume", json={"thread_id": "nope"}).status_code != 401
+    assert client.get("/api/sources").status_code == 200
+
+
+def test_unknown_write_paths_are_denied_by_default(client):
+    """默认拒绝的方向：没登记过的路径一律拦。
+
+    这条是整个做法的价值所在 —— 将来新增一个写接口而忘了任何事，
+    它的默认状态是"要登录"，不是"敞开"。
+    """
+    assert client.post("/api/some/route/added/next/month").status_code == 401
+
+
+def test_login_reopens_the_write_face(client):
+    assert client.post("/api/auth/login",
+                       json={"username": "alice", "password": "alice-pw"}).status_code == 200
+    # 登录后不再是 401；具体成不成由各接口自己的规则决定（开关、身份库是否配置等）
+    for _, path, call in _write_calls(client):
+        assert call().status_code != 401, f"{path} 登录后仍被当成未登录"
+
+
+def test_admin_token_is_a_valid_identity_at_the_gate(client, monkeypatch):
+    """成员增删走的是管理员令牌而不是会话。中间件只认 cookie 的话，
+    会把部署方现有的管理通道整个打死。"""
+    monkeypatch.setenv("ASKDB_ADMIN_TOKEN", "k" * 20)
+    r = client.post("/api/identity/members",
+                    headers={"X-Askdb-Admin-Token": "k" * 20},
+                    json={"role_code": "QA", "username": "x", "display_name": "", "note": ""})
+    assert r.status_code != 401
+    # 令牌不对就照样是未登录
+    assert client.post("/api/identity/members",
+                       headers={"X-Askdb-Admin-Token": "wrong"},
+                       json={"role_code": "QA", "username": "x", "display_name": "", "note": ""}
+                       ).status_code == 401

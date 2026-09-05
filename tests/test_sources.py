@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from askdb import server, sources
+from askdb import auth, server, sources
 
 
 @pytest.fixture
@@ -24,12 +24,28 @@ def open_cfg(cfg, tmp_path):
 @pytest.fixture
 def client(open_cfg, monkeypatch):
     monkeypatch.setattr(server, "load", lambda _p: open_cfg)
+    # 写接口从 2026-09-05 起统一要登录（server 里那道写入中间件）。这一组用例
+    # 测的是数据源管理本身、不是登录，所以在这里把身份补上。
+    # **有意不复用开发配置里的账号** —— 那边改一次口令就要回来改测试，
+    # conftest 顶上那条"别跟着开发配置漂"的教训同样适用。
+    monkeypatch.setenv(auth.SESSION_SECRET_ENV, "t" * 40)
+    open_cfg.raw["auth"] = {
+        "enabled": True,
+        "required": False,
+        "accounts": [{
+            "username": "ops", "display_name": "运维", "roles": ["DATA_OWNER"],
+            "password_hash": auth.hash_password("ops-pw"),
+        }],
+    }
     # 出站建连限流器是模块级单例（生产上一进程一个 app，这是有意的）。
     # 测试里多个用例共用一个进程，配额会跨用例累积 —— 攒到第 10 次之后
     # 后面的用例全部拿到 429，而报错是 KeyError: 'source' 这种看不出根因的样子。
     # 每个用例发一个干净的限流器。
     monkeypatch.setattr(server, "_SOURCE_RL", server._RateLimit(limit=10, window_s=60))
-    return TestClient(server.create_app("ignored.yaml"))
+    c = TestClient(server.create_app("ignored.yaml"))
+    assert c.post("/api/auth/login",
+                  json={"username": "ops", "password": "ops-pw"}).status_code == 200
+    return c
 
 
 def _body(**over):
@@ -40,21 +56,45 @@ def _body(**over):
 # --------------------------------------------------------------- 准入
 
 def test_write_endpoints_are_closed_by_default(cfg, monkeypatch):
-    """默认必须是关的。开着等于给出一个无鉴权的出站建连入口。"""
+    """默认必须是关的，而且**两道门各自独立**。
+
+    未登录撞的是写入中间件（401），登录之后撞的是 allow_runtime_add 开关（403）。
+    两条都要钉：只钉前者的话，将来谁把开关默认值改成 true，登录用户就能在
+    「本实例不允许运行时加源」的实例上加源，而测试全绿。
+    """
     cfg.raw.pop("datasources", None)
+    monkeypatch.setenv(auth.SESSION_SECRET_ENV, "t" * 40)
+    cfg.raw["auth"] = {
+        "enabled": True, "required": False,
+        "accounts": [{"username": "ops", "roles": ["DATA_OWNER"],
+                      "password_hash": auth.hash_password("ops-pw")}],
+    }
     monkeypatch.setattr(server, "load", lambda _p: cfg)
     c = TestClient(server.create_app("ignored.yaml"))
 
     assert c.get("/api/sources").status_code == 200        # 列表恒可读
     assert c.get("/api/sources").json()["can_add"] is False
 
-    for call in (
+    writes = (
         lambda: c.post("/api/sources", json={"type": "duckdb", "dsn": "x"}),
         lambda: c.post("/api/sources/test", json={"type": "duckdb", "dsn": "x"}),
-        lambda: c.get("/api/sources/src_000000000000/scan"),
         lambda: c.put("/api/sources/src_000000000000/tables", json={"tables": []}),
         lambda: c.delete("/api/sources/src_000000000000"),
-    ):
+    )
+
+    # 未登录：中间件先拦，连开关是什么状态都问不到
+    for call in writes:
+        r = call()
+        assert r.status_code == 401
+        assert r.json()["code"] == "login_required"
+
+    # 扫描是 GET，是读 —— 不归写入中间件管，直接撞开关
+    assert c.get("/api/sources/src_000000000000/scan").status_code == 403
+
+    # 登录之后开关依然挡着。**登录不解锁开关**
+    assert c.post("/api/auth/login",
+                  json={"username": "ops", "password": "ops-pw"}).status_code == 200
+    for call in writes:
         assert call().status_code == 403
 
 

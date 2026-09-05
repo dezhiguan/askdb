@@ -69,6 +69,10 @@ def cfg(sample_db: Path, tmp_path: Path):
     c.raw["observability"] = {**c.raw["observability"], "replay_api": False}
     c.raw["observability"]["audit_log"] = str(tmp_path / "audit.jsonl")
     c.raw["observability"]["checkpoint_db"] = str(tmp_path / "checkpoints.sqlite")
+    # 登录同理钉死。开发配置 2026-09-05 起 required: true（十个内置账号 + 真实库），
+    # 而这里绝大多数用例是匿名发查询的 —— 跟着开发配置漂，一次开关就集体 401。
+    # 要验证强制登录本身的用例自行打开（见 tests/test_auth.py）。
+    c.raw["auth"] = {**(c.raw.get("auth") or {}), "required": False}
     # 身份库是外部 PostgreSQL，和审计日志同属「跨用例累积的外部状态」，
     # 而且它在开发配置里是打开的 —— 不摘掉，跑一次测试就会往开发库里写角色成员。
     # 需要验证身份功能的用例自行打开（见 tests/test_identity.py）。
