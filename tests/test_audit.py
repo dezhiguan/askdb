@@ -38,7 +38,7 @@ def _now(offset_days: float = 0) -> str:
 
 def test_missing_file_is_empty(tmp_path: Path):
     out = audit.list_audits(tmp_path / "nope.jsonl")
-    assert out == {"total": 0, "page": 1, "page_size": 10, "items": []}
+    assert out == {"total": 0, "page": 1, "page_size": 10, "items": [], "text_visible": True}
     assert audit.stats(tmp_path / "nope.jsonl")["calls"] == 0
 
 
@@ -312,3 +312,38 @@ def test_quality_aggregates_by_node(tmp_path):
     assert nodes["guard"]["success_rate"] == 0.75      # 四次里一次 blocked
     # 按 P95 倒序 —— 这张表是拿来找延迟贡献最大的那一段的
     assert quality(p, days=1)["nodes"][0]["step"] == "generate_sql"
+
+
+# ---------- 未登录时的遮蔽 ----------
+
+def test_anonymous_gets_no_question_text(tmp_path: Path):
+    log = tmp_path / "a.jsonl"
+    _write(log, [_rec("t1", _now(), user="alice", role="PRODUCT")])
+
+    visible = audit.list_audits(log)
+    assert visible["text_visible"] is True
+    assert visible["items"][0]["question"] == "各知识库分别有多少文档"
+
+    hidden = audit.list_audits(log, with_text=False)
+    assert hidden["text_visible"] is False
+    item = hidden["items"][0]
+    assert item["question"] is None, "问题原文不得出接口"
+    assert item["user"] == "", "发起人不得出接口"
+    # 遮的只是这两样。护栏结果、耗时、成本是这一页要展示的东西，不能一起关掉
+    assert item["role"] == "PRODUCT"
+    assert item["elapsed_ms"] == 1200
+    assert item["cost_cny"] == 0.001
+
+
+def test_masking_also_closes_the_text_search_oracle(tmp_path: Path):
+    """只抹字段、仍允许按文本搜，等于留了一个预言机：
+    搜「知识库」能搜出 1 条、搜「薪资」搜出 0 条，内容就已经说出来了。
+    遮蔽和检索面是同一道边界，分开做等于没做。"""
+    log = tmp_path / "a.jsonl"
+    _write(log, [_rec("t1", _now())])
+
+    assert audit.list_audits(log, q="知识库")["total"] == 1
+    assert audit.list_audits(log, q="知识库", with_text=False)["total"] == 0
+    # trace_id 仍然搜得到 —— 它不是内容，而且没有它就没法按 id 对账
+    assert audit.list_audits(log, q="t1", with_text=False)["total"] == 1
+

@@ -58,6 +58,7 @@ export interface AuditItem {
   org_id: number | null
   /** 这条调用出自谁的可见范围。老记录没有该字段，后端如实给「（未记录）」 */
   role: string
+  /** 未登录时为 null —— 是"看不到"，不是"没有" */
   question: string | null
   rejected_by: string | null
   attempts: number | null
@@ -74,6 +75,9 @@ export interface AuditList {
   page: number
   page_size: number
   items: AuditItem[]
+  /** 问题原文是否可见。未登录时后端不返回原文，且搜索只匹配 trace_id ——
+   *  页面据此显示遮蔽提示，而不是让人以为这些记录本来就没问过问题。 */
+  text_visible: boolean
 }
 
 export interface Tracing {
