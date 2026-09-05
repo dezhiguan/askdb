@@ -76,31 +76,69 @@ _TRACE_ID_RE = __import__("re").compile(r"[0-9a-f]{12}")
 
 
 class _RateLimit:
-    """回放接口的进程内固定窗口限流。
+    """进程内固定窗口限流，**按调用方分桶**。
 
     单独限流而不是复用全局配额：回放不花 token，但每次都要开 SQLite
     遍历检查点历史 —— 防的是把它当查询接口刷（设计说明 §5.1）。
+
+    分桶而不是所有人共用一个计数器：它要防的是**单个调用方**刷接口，而
+    共用计数器的实际效果是"任何一个人手快一点，所有人一起被锁在门外"。
+    一个人还能不能用，不该由别人的用量决定。
     """
 
     def __init__(self, limit: int = 30, window_s: int = 60) -> None:
         self.limit, self.window_s = limit, window_s
-        self._hits: list[float] = []
+        self._hits: dict[str, list[float]] = {}
 
-    def allow(self) -> bool:
+    def _fresh(self, key: str, now: float) -> list[float]:
+        """窗口内还算数的那些时间戳，顺手把空桶收掉。"""
+        hits = [t for t in self._hits.get(key, ()) if now - t < self.window_s]
+        if hits:
+            self._hits[key] = hits
+        else:
+            self._hits.pop(key, None)
+        return hits
+
+    def allow(self, key: str = "") -> bool:
         import time as _t
 
         now = _t.monotonic()
-        self._hits = [t for t in self._hits if now - t < self.window_s]
-        if len(self._hits) >= self.limit:
+        # 桶数上限：key 来自登录名或来源地址，都由外部决定，不清理就是一条
+        # 随请求增长的内存占用
+        if len(self._hits) > 256:
+            for k in list(self._hits):
+                self._fresh(k, now)
+        hits = self._fresh(key, now)
+        if len(hits) >= self.limit:
             return False
-        self._hits.append(now)
+        self._hits[key] = hits + [now]
         return True
+
+    def retry_after(self, key: str = "") -> int:
+        """还要等几秒才会放行 —— 窗口里最早那次滑出去就腾出一个名额。
+
+        「稍后再试」是一句没用的话：稍后是多久，只有限流器自己知道。
+        """
+        import time as _t
+
+        now = _t.monotonic()
+        hits = self._fresh(key, now)
+        if len(hits) < self.limit:
+            return 0
+        return max(1, int(self.window_s - (now - min(hits))) + 1)
 
 
 _REPLAY_RL = _RateLimit()
-# 新增/测试数据源会让服务端主动向外建连。开关之外再加一道限流 ——
-# 开关决定「能不能」，限流决定「能多快」，被拿去当端口扫描器的正是后者。
-_SOURCE_RL = _RateLimit(limit=10, window_s=60)
+
+# 数据源接口的两份预算。分的是**地址由谁定**，不是读还是写：
+#
+# 服务端会按请求主动建连，被拿去当端口扫描器的是"调用方随手填一个地址"
+# 那条路 —— 也就是 /sources/test 与 POST /sources。至于扫描已注册的源、
+# 改它的白名单，连的是库里早就存着的那个地址，扫不出任何新东西，它只是
+# 一次正常的开销。两者共用一份预算的结果，是点几下配置弹窗就把真正该防
+# 的那份额度花光，而防住的东西一样没多。
+_SOURCE_DIAL_RL = _RateLimit(limit=10, window_s=60)
+_SOURCE_MANAGE_RL = _RateLimit(limit=30, window_s=60)
 
 
 def _paired_delta(base: list[dict], other: list[dict]) -> dict[str, Any] | None:
@@ -473,55 +511,69 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         cfg = _scoped(request)
         out: list[dict[str, Any]] = []
 
-        with Executor(cfg) as ex:
-            for m in cfg.metrics:
-                row: dict[str, Any] = {"name": m.name, "status": "", "detail": ""}
+        try:
+            with Executor(cfg) as ex:
+                for m in cfg.metrics:
+                    row: dict[str, Any] = {"name": m.name, "status": "", "detail": ""}
 
-                # 跨表口径要 JOIN，拼不出通用的对照查询 —— 如实跳过，不猜
-                if len(m.scope) != 1:
-                    row.update(status="skipped",
-                               detail=f"涉及 {len(m.scope)} 张表，无法自动构造对照查询")
+                    # 跨表口径要 JOIN，拼不出通用的对照查询 —— 如实跳过，不猜
+                    if len(m.scope) != 1:
+                        row.update(status="skipped",
+                                   detail=f"涉及 {len(m.scope)} 张表，无法自动构造对照查询")
+                        out.append(row)
+                        continue
+
+                    table = m.scope[0]
+                    if m.predicate:
+                        metric_sql = f"COUNT(*) FILTER (WHERE {m.predicate})"
+                        naive_sql = "COUNT(*)"
+                    elif m.expr and m.naive:
+                        metric_sql, naive_sql = m.expr, m.naive
+                    else:
+                        row.update(status="skipped",
+                                   detail="未声明 naive（凭直觉写法），无从对照")
+                        out.append(row)
+                        continue
+
+                    sql = f"SELECT {metric_sql} AS a, {naive_sql} AS b FROM {table}"
+                    g = guard.check(sql, cfg, org_id=cfg.default_org, dialect=cfg.dialect)
+                    if not g.ok:
+                        row.update(status="blocked", detail=f"{g.rejected_by} {g.reason}")
+                        out.append(row)
+                        continue
+                    try:
+                        res = ex.run(g.sql)
+                    except DataSourceError as e:
+                        row.update(status="error", detail=str(e))
+                        out.append(row)
+                        continue
+
+                    a, b = (jsonable(v) for v in res.rows[0]) if res.rows else (None, None)
+                    row.update(status="ok", value=a, naive=b,
+                               differs=a != b,
+                               detail="两种写法结果相同 —— 当前检验不出模型是否真的用了这条口径"
+                                      if a == b else "")
                     out.append(row)
-                    continue
 
-                table = m.scope[0]
-                if m.predicate:
-                    metric_sql = f"COUNT(*) FILTER (WHERE {m.predicate})"
-                    naive_sql = "COUNT(*)"
-                elif m.expr and m.naive:
-                    metric_sql, naive_sql = m.expr, m.naive
-                else:
-                    row.update(status="skipped",
-                               detail="未声明 naive（凭直觉写法），无从对照")
-                    out.append(row)
-                    continue
+        except DataSourceError as e:
+            # 建连失败与单条口径执行失败是同一类事，不该一个如实落进 detail、
+            # 另一个直接 500 —— 后者在页面上只剩一个状态码，把"配置指错端口"
+            # 这种一眼可辨的问题变成要翻服务端堆栈才查得出来
+            return {"checked_at": _now_iso(), "ok": False,
+                    "error": str(e), "hint": e.hint, "items": []}
 
-                sql = f"SELECT {metric_sql} AS a, {naive_sql} AS b FROM {table}"
-                g = guard.check(sql, cfg, org_id=cfg.default_org, dialect=cfg.dialect)
-                if not g.ok:
-                    row.update(status="blocked", detail=f"{g.rejected_by} {g.reason}")
-                    out.append(row)
-                    continue
-                try:
-                    res = ex.run(g.sql)
-                except DataSourceError as e:
-                    row.update(status="error", detail=str(e))
-                    out.append(row)
-                    continue
-
-                a, b = (jsonable(v) for v in res.rows[0]) if res.rows else (None, None)
-                row.update(status="ok", value=a, naive=b,
-                           differs=a != b,
-                           detail="两种写法结果相同 —— 当前检验不出模型是否真的用了这条口径"
-                                  if a == b else "")
-                out.append(row)
-
-        return {"checked_at": _now_iso(), "items": out}
+        return {"checked_at": _now_iso(), "ok": True, "items": out}
 
     @app.get("/api/selfcheck")
     def selfcheck() -> dict[str, Any]:
-        with Executor(cfg) as ex:
-            checks = ex.self_check()
+        try:
+            with Executor(cfg) as ex:
+                checks = ex.self_check()
+        except DataSourceError as e:
+            # 自检的用途就是"库到底通不通"，连不上正是它要回答的那种情况，
+            # 不能反过来让它自己 500
+            return {"ok": False, "error": str(e), "hint": e.hint,
+                    "checks": [], "latency_ms": None}
         latency = next((c["ms"] for c in checks if "ms" in c), None)
         return {"ok": all(c["ok"] for c in checks), "checks": checks,
                 "latency_ms": latency}
@@ -579,10 +631,38 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     # 启动配置里的那个源是**内置源**：它定义了本部署的护栏阈值、租户策略与
     # 业务口径，永远存在、不可编辑、不可删除。以下接口管的是运行时添加的只读源。
 
-    def _sources_gate() -> None:
-        """写操作的准入。开关关闭时给 403 并说清原因 —— 这不是秘密，
+    def _rl_key(request: Request | None) -> str:
+        """限流分桶的键：登录名优先，匿名退回来源地址。
+
+        退回地址而不是并到同一个匿名桶里 —— 并桶等于让任意一个匿名调用方
+        替所有匿名调用方把额度花光，那正是分桶要消掉的问题。
+        """
+        if request is None:
+            return "-"
+        user = _current_user(request)
+        if user:
+            return f"u:{user}"
+        return f"ip:{request.client.host if request.client else '-'}"
+
+    def _rl_check(limiter: _RateLimit, request: Request | None) -> None:
+        key = _rl_key(request)
+        if limiter.allow(key):
+            return
+        wait = limiter.retry_after(key)
+        # 带上 Retry-After：界面据此显示倒计时，而不是让人盯着
+        # 「稍后再试」猜到底稍后是多久
+        raise HTTPException(status_code=429,
+                            detail=f"操作过于频繁，请 {wait} 秒后再试",
+                            headers={"Retry-After": str(wait)})
+
+    def _sources_gate(request: Request | None = None, *, dial: bool = False) -> None:
+        """数据源接口的准入。开关关闭时给 403 并说清原因 —— 这不是秘密，
         界面需要照实解释为什么按钮是灰的（与 /api/replay 的 404 语义不同：
-        那里要防的是「记录是否存在」这一位信息泄露，这里没有这个问题）。"""
+        那里要防的是「记录是否存在」这一位信息泄露，这里没有这个问题）。
+
+        `dial=True` 表示这次调用的目标地址由调用方给定 —— 走那份严得多的
+        预算，它防的才是把服务端当扫描器使。
+        """
         if not _sources.enabled(cfg):
             raise HTTPException(
                 status_code=403,
@@ -590,8 +670,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                        "服务端会按填入的地址主动建连，而 askdb 不设账号体系，"
                        "所以对外实例一律关闭。",
             )
-        if not _SOURCE_RL.allow():
-            raise HTTPException(status_code=429, detail="操作过于频繁，稍后再试")
+        _rl_check(_SOURCE_DIAL_RL if dial else _SOURCE_MANAGE_RL, request)
 
     def _builtin_card() -> dict[str, Any] | None:
         """配置里没有默认数据源时返回 None —— 列表里不该出现一张空卡。"""
@@ -636,13 +715,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "ok": all(c["ok"] for c in checks),
             "checks": checks,
             "latency_ms": next((c["ms"] for c in checks if "ms" in c), None),
+            # 库里此刻真有多少张表。卡片上的 table_count 是白名单快照，
+            # 两个数不是一回事 —— 同时给出来，界面才看得见漂移。
+            "visible_count": len(tables),
             "tables": tables,
         }
 
     @app.post("/api/sources/test")
-    def sources_test(req: SourceRequest) -> JSONResponse:
+    def sources_test(req: SourceRequest, request: Request) -> JSONResponse:
         """只连不存。表单上的「测试连接」。"""
-        _sources_gate()
+        _sources_gate(request, dial=True)
         try:
             src = _sources.build(name=req.name or "（未命名）", type_=req.type, dsn=req.dsn,
                                  env=req.env, upstream=req.upstream,
@@ -653,17 +735,18 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         except DataSourceError as e:
             # 连不上是预期内的结果，不是服务端错误 —— 如实把原因和处置建议给出去
             return JSONResponse({"ok": False, "error": str(e), "hint": e.hint,
-                                 "checks": [], "latency_ms": None, "tables": []})
+                                 "checks": [], "latency_ms": None,
+                                 "visible_count": None, "tables": []})
 
     @app.post("/api/sources")
-    def sources_create(req: SourceRequest) -> JSONResponse:
+    def sources_create(req: SourceRequest, request: Request) -> JSONResponse:
         """保存并扫描元数据。
 
         **扫描出来的表一张都不开放。** 扫描只解决「看得见」，开放与否是单独
         一步（PUT /tables）—— 白名单同时是安全边界与准确率边界，默认全开
         等于把两条边界一起取消。
         """
-        _sources_gate()
+        _sources_gate(request, dial=True)
         try:
             src = _sources.build(name=req.name, type_=req.type, dsn=req.dsn,
                                  env=req.env, upstream=req.upstream,
@@ -679,12 +762,29 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             raise HTTPException(status_code=400,
                                 detail=f"连接自检未通过：{'、'.join(failed)}")
         _sources.save_source(cfg, src)
+        _sources.record_probe(cfg, src, ok=probe["ok"], latency_ms=probe["latency_ms"],
+                              visible_count=probe["visible_count"])
         return JSONResponse({"source": _sources.to_public(src), **probe}, status_code=201)
 
     @app.get("/api/sources/{sid}/scan")
-    def sources_scan(sid: str) -> JSONResponse:
-        """重新扫描：列出全部表，并标出哪些已在白名单里。"""
-        _sources_gate()
+    def sources_scan(sid: str, request: Request) -> JSONResponse:
+        """重新扫描：列出全部表，并标出哪些已在白名单里。
+
+        **要登录。** 它不改任何东西，但每调一次服务端就真去连一次那个库 ——
+        未登录可反复触发的出站建连，是一个不该白送的能力。它比
+        /api/sources/test 轻（连的是已注册的源，不是调用方随手填的地址），
+        但不是零，所以放在同一条判据后面。
+
+        这是本文件里**唯一一个要登录的 GET**：写入中间件只管
+        POST/PUT/PATCH/DELETE，一个会向外建连的 GET 罩不住，只能单独挡。
+        """
+        if not _current_user(request):
+            raise HTTPException(
+                status_code=401,
+                detail="连接扫描需要登录：每次扫描服务端都会真的去连一次这个数据源。"
+                       "未登录可以查看数据源列表与已开放的表。",
+            )
+        _sources_gate(request)
         src = _sources.get_source(cfg, sid)
         if src is None:
             raise HTTPException(status_code=404, detail="数据源不存在")
@@ -692,15 +792,24 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         try:
             probe = _probe(src)
         except DataSourceError as e:
+            # 连不上同样是一次检查结果，照记 —— 只记成功等于让卡片永远停在
+            # 最后一次通的样子，恰好把"从什么时候开始坏的"这一位信息抹掉
+            _sources.record_probe(cfg, src, ok=False)
             raise HTTPException(status_code=400, detail=f"{e}｜{e.hint}") from e
         for t in probe["tables"]:
             t["allowed"] = t["name"] in allowed
+        # 这个 GET 会写一次记录。它不是幂等纯读，但写的只是这次检查自身的
+        # 结果，属于把已经付出的出站建连代价存下来，不改任何配置。
+        _sources.record_probe(cfg, src, ok=probe["ok"], latency_ms=probe["latency_ms"],
+                              visible_count=probe["visible_count"])
+        probe["checked_at"] = src.last_checked_at
         return JSONResponse(probe)
 
     @app.put("/api/sources/{sid}/tables")
-    def sources_set_tables(sid: str, req: SourceTablesRequest) -> JSONResponse:
+    def sources_set_tables(sid: str, req: SourceTablesRequest,
+                           request: Request) -> JSONResponse:
         """设置白名单。字段名与类型在这里落库 —— R-04 与 R-05 靠它判定。"""
-        _sources_gate()
+        _sources_gate(request)
         src = _sources.get_source(cfg, sid)
         if src is None:
             raise HTTPException(status_code=404, detail="数据源不存在")
@@ -722,8 +831,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return JSONResponse(_sources.to_public(src))
 
     @app.delete("/api/sources/{sid}")
-    def sources_delete(sid: str) -> JSONResponse:
-        _sources_gate()
+    def sources_delete(sid: str, request: Request) -> JSONResponse:
+        _sources_gate(request)
         if sid == "builtin":
             # 删的是配置文件里的那一段，不是 var/sources 下的记录 ——
             # 走同一个开关：能在页面上加源的实例，才谈得上在页面上删源。
@@ -964,16 +1073,18 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """审计流水（摘要分页）。列表有意不含 SQL 文本与结果行 ——
         细节只经 /api/replay 的白名单+开关出去。
 
-        **未登录时问题原文与发起人不出接口。** 这一页要展示的是护栏在拦什么、
-        拦了多少、贵不贵 —— 那些是聚合与结构，匿名照常可见；而"别人问过什么"
-        不是展示目标，它和 /api/tasks 挡的是同一类东西（提问原文）。
-        遮蔽在这里做而不是只在前端做：只灰按钮的话，curl 一下照样全拿到。
+        **问题原文对未登录访问者同样可见**（产品决定，2026-09-06）：审计与追踪
+        两页要讲的是"这套东西在真实调用上如何运转"，标题一律遮成"（提问）"
+        的话这两页就没有可读性了。遮蔽机制（list_audits 的 with_text 与
+        _redact）原样保留，改回来只需把这里换成 bool(_current_user(request))。
+
+        注意这条边界只覆盖问题原文与发起人；SQL 全文、结果行仍只经 /api/replay
+        的开关出去，写入类接口仍由写入中间件按登录态拒绝。
         """
         from .audit import list_audits
 
         return list_audits(cfg.audit_log, page=page, page_size=page_size,
-                           q=q.strip(), kind=kind.strip(),
-                           with_text=bool(_current_user(request)))
+                           q=q.strip(), kind=kind.strip(), with_text=True)
 
     @app.get("/api/audit/stats")
     def audit_stats(days: int = 30) -> dict[str, Any]:
@@ -1009,7 +1120,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             return not_found
         if not cfg.raw["observability"].get("replay_api", False):
             return not_found
-        if not _REPLAY_RL.allow():
+        if not _REPLAY_RL.allow(_rl_key(request)):
             return JSONResponse({"error": "rate limited"}, status_code=429)
         if not _TRACE_ID_RE.fullmatch(trace_id or ""):
             return not_found

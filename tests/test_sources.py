@@ -37,11 +37,12 @@ def client(open_cfg, monkeypatch):
             "password_hash": auth.hash_password("ops-pw"),
         }],
     }
-    # 出站建连限流器是模块级单例（生产上一进程一个 app，这是有意的）。
-    # 测试里多个用例共用一个进程，配额会跨用例累积 —— 攒到第 10 次之后
-    # 后面的用例全部拿到 429，而报错是 KeyError: 'source' 这种看不出根因的样子。
-    # 每个用例发一个干净的限流器。
-    monkeypatch.setattr(server, "_SOURCE_RL", server._RateLimit(limit=10, window_s=60))
+    # 限流器是模块级单例（生产上一进程一个 app，这是有意的）。测试里多个
+    # 用例共用一个进程，配额会跨用例累积 —— 攒满之后后面的用例全部拿到
+    # 429，而报错是 KeyError: 'source' 这种看不出根因的样子。
+    # 每个用例发一对干净的限流器。
+    monkeypatch.setattr(server, "_SOURCE_DIAL_RL", server._RateLimit(limit=10, window_s=60))
+    monkeypatch.setattr(server, "_SOURCE_MANAGE_RL", server._RateLimit(limit=30, window_s=60))
     c = TestClient(server.create_app("ignored.yaml"))
     assert c.post("/api/auth/login",
                   json={"username": "ops", "password": "ops-pw"}).status_code == 200
@@ -88,14 +89,16 @@ def test_write_endpoints_are_closed_by_default(cfg, monkeypatch):
         assert r.status_code == 401
         assert r.json()["code"] == "login_required"
 
-    # 扫描是 GET，是读 —— 不归写入中间件管，直接撞开关
-    assert c.get("/api/sources/src_000000000000/scan").status_code == 403
+    # 扫描是 GET，写入中间件管不着它，但它会让服务端真去连一次库 ——
+    # 所以它自己带一条登录判据（server.py 里唯一一个要登录的 GET）
+    assert c.get("/api/sources/src_000000000000/scan").status_code == 401
 
     # 登录之后开关依然挡着。**登录不解锁开关**
     assert c.post("/api/auth/login",
                   json={"username": "ops", "password": "ops-pw"}).status_code == 200
     for call in writes:
         assert call().status_code == 403
+    assert c.get("/api/sources/src_000000000000/scan").status_code == 403
 
 
 def test_public_instance_keeps_its_remaining_guards():
@@ -113,9 +116,10 @@ def test_public_instance_keeps_its_remaining_guards():
     root = Path(__file__).resolve().parent.parent
     assert sources.enabled(load(root / "config" / "public.yaml")) is True
 
-    # 1. 出站建连限流
-    assert server._SOURCE_RL.limit <= 10, "出站建连限流被放宽了"
-    assert server._SOURCE_RL.window_s >= 60
+    # 1. 出站建连限流。守的是"地址由调用方给定"那条路 —— 它才是能被拿去
+    #    当端口扫描器的那一条，放宽它等于把这道防线拆掉。
+    assert server._SOURCE_DIAL_RL.limit <= 10, "出站建连限流被放宽了"
+    assert server._SOURCE_DIAL_RL.window_s >= 60
 
     # 2. 没有主密钥就不接受明文口令
     key = os.environ.pop("ASKDB_SECRET_KEY", None)
@@ -272,3 +276,27 @@ def test_audit_records_which_source_was_queried(client, sample_db):
     got = {i["source"] for i in items if i.get("source")}
     assert sid in got, "按源查询没有记下数据源"
     assert "builtin" in got, "内置源的调用没有记成 builtin"
+
+
+def test_scan_needs_login_because_it_dials_out(open_cfg, monkeypatch):
+    """扫描不改任何东西，但每调一次服务端就真去连一次那个库。
+
+    写入中间件只管 POST/PUT/PATCH/DELETE，罩不住一个会向外建连的 GET，
+    所以它自己带判据。这条用例存在的意义是：将来谁把这条判据删了，
+    「未登录可反复触发出站建连」会立刻被测出来，而不是等被人拿去当扫描器。
+    """
+    monkeypatch.setenv(auth.SESSION_SECRET_ENV, "t" * 40)
+    open_cfg.raw["auth"] = {
+        "enabled": True, "required": False,
+        "accounts": [{"username": "ops", "roles": ["DATA_OWNER"],
+                      "password_hash": auth.hash_password("ops-pw")}],
+    }
+    monkeypatch.setattr(server, "load", lambda _p: open_cfg)
+    monkeypatch.setattr(server, "_SOURCE_DIAL_RL", server._RateLimit(limit=10, window_s=60))
+    monkeypatch.setattr(server, "_SOURCE_MANAGE_RL", server._RateLimit(limit=30, window_s=60))
+    c = TestClient(server.create_app("ignored.yaml"))
+
+    assert c.get("/api/sources/nope/scan").status_code == 401
+    # 列表仍然匿名可读 —— 收紧的只是"让服务端去连一次"这个动作
+    assert c.get("/api/sources").status_code == 200
+

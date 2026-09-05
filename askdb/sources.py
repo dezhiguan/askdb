@@ -62,6 +62,13 @@ class Source:
     password_enc: str = ""
     created_at: str = ""
     tables: list[dict[str, Any]] = field(default_factory=list)
+    # 最近一次连接检查的结果。**要落盘。** 卡片上的「状态」「延迟」「最后
+    # 检查」三格原先只活在浏览器 state 里，刷新即失忆 —— 而"这个源上次还
+    # 通不通、什么时候通的"恰恰是重新打开这一页时第一个要看的东西。
+    last_checked_at: str = ""
+    last_ok: bool | None = None
+    last_latency_ms: float | None = None
+    last_visible_count: int | None = None      # 检查那一刻库里实际可见的表数
 
     @property
     def credential(self) -> str:
@@ -161,6 +168,21 @@ def save_source(cfg: Config, src: Source) -> None:
     _path(cfg, src.id).write_text(
         yaml.safe_dump(src.__dict__, allow_unicode=True, sort_keys=False),
         encoding="utf-8")
+
+
+def record_probe(cfg: Config, src: Source, *, ok: bool,
+                 latency_ms: float | None = None,
+                 visible_count: int | None = None) -> None:
+    """把一次连接检查的结果落到数据源记录上。
+
+    只动这四个字段，白名单一个字节都不碰 —— 检查是"看"，开放是"改"，
+    两件事共用一次写入，迟早会让一次失败的探测把白名单也带脏。
+    """
+    src.last_checked_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    src.last_ok = ok
+    src.last_latency_ms = latency_ms
+    src.last_visible_count = visible_count
+    save_source(cfg, src)
 
 
 def drop_default_source(cfg: Config) -> None:
@@ -323,7 +345,14 @@ def to_public(src: Source, *, table_count: int | None = None) -> dict[str, Any]:
         "host": src.upstream or _host_of(src.dsn, src.type),
         "credential": src.credential,
         "created_at": src.created_at,
+        # **白名单张数，不是库里的表数。** 列表接口不去连库：一次列表请求
+        # 要为每个源建一条出站连接，其中一个库挂了整页就跟着转圈。库里此刻
+        # 实际有多少张，由最近一次连接检查落下的 last_visible_count 给出。
         "table_count": len(src.tables) if table_count is None else table_count,
+        "last_checked_at": src.last_checked_at,
+        "last_ok": src.last_ok,
+        "last_latency_ms": src.last_latency_ms,
+        "last_visible_count": src.last_visible_count,
         "builtin": False,
     }
 

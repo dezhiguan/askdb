@@ -273,10 +273,20 @@ export interface MetricCheck {
   differs?: boolean
 }
 
+/** 数据源不可用时，接口返回的是 200 + ok:false + 原因，不是 HTTP 错误。
+ *  拼成一句能直接显示给人看的话 —— hint 里往往才是可执行的那半句。 */
+function dataSourceReason(data: { error?: string; hint?: string }): string {
+  return [data.error, data.hint].filter(Boolean).join(' · ')
+}
+
 export async function checkMetrics(): Promise<{ checked_at: string; items: MetricCheck[] }> {
   const response = await fetch('/api/metrics/check')
   if (!response.ok) throw new Error(`/api/metrics/check ${response.status}`)
-  return response.json()
+  const data = await response.json()
+  // 连不上库时 items 是空的。不拦下来就会显示成"一条口径都没有"，
+  // 把"库连不上"讲成"没配口径"，排查方向直接错掉
+  if (data.error) throw new Error(dataSourceReason(data))
+  return data
 }
 
 export interface Schema {
@@ -325,7 +335,11 @@ export async function fetchSchema(): Promise<Schema> {
 export async function fetchSelfCheck(): Promise<SelfCheck> {
   const response = await fetch('/api/selfcheck')
   if (!response.ok) throw new Error(`/api/selfcheck ${response.status}`)
-  return response.json()
+  const data = await response.json()
+  // 这里判 error 而不是判 ok：自检项没过同样是 ok:false，那是正常结果，
+  // 要照常渲染成一张检查表；只有取不到连接才是没有结果可言
+  if (data.error) throw new Error(dataSourceReason(data))
+  return data
 }
 
 export async function fetchIntrospect(): Promise<Introspect> {
@@ -344,7 +358,14 @@ export interface SourceCard {
   host: string
   credential: string
   created_at: string
+  /** **白名单张数，不是库里的表数。** 列表接口不连库（一个库挂了会拖住整页），
+   *  库内实际可见多少张看 last_visible_count —— 它来自最近一次连接检查。 */
   table_count: number
+  /** 最近一次连接检查。服务端落盘，刷新页面不丢；从未检查过时为空/null */
+  last_checked_at: string
+  last_ok: boolean | null
+  last_latency_ms: number | null
+  last_visible_count: number | null
   builtin: boolean
   /** 仅内置源有意义：删除会改配置文件，需开关允许且已有别的源接手 */
   deletable?: boolean
@@ -369,8 +390,13 @@ export interface ScannedTable {
 export interface Probe {
   ok: boolean
   checks: { name: string; ok: boolean; detail: string; ms?: number }[]
+  /** 建连耗时（握手 + 认证）。连不上时为 null —— 不要在界面上拿 0 冒充「很快」 */
   latency_ms: number | null
+  /** 检查那一刻库里实际可见的表数。与 SourceCard.table_count 比对即可看出漂移 */
+  visible_count: number | null
   tables: ScannedTable[]
+  /** 服务端记下这次检查的时刻。以它为准，不要用浏览器本地时钟 */
+  checked_at?: string
   error?: string
   hint?: string
 }
@@ -385,6 +411,25 @@ export interface SourceInput {
   password?: string
 }
 
+/** 被限流了。单拎一个类型，是因为界面对它的处置和别的错不同：别的错要人
+ *  去改点什么，这个只要等 —— 等多久是可以说出来的，就别让人猜。 */
+export class RateLimited extends Error {
+  readonly retryAfter: number
+  constructor(message: string, retryAfter: number) {
+    super(message)
+    this.name = 'RateLimited'
+    this.retryAfter = retryAfter
+  }
+}
+
+/** 429 → RateLimited。取不到 Retry-After 就退回窗口长度，宁可多等一会儿，
+ *  也不要给出一个比实际短的倒计时 —— 那会让人到点再点一次又被弹回来。 */
+function rateLimited(response: Response, detail: string): RateLimited {
+  const header = Number(response.headers.get('Retry-After'))
+  return new RateLimited(detail || '操作过于频繁',
+                         Number.isFinite(header) && header > 0 ? header : 60)
+}
+
 /** 后端把不合规与连不上都表述成 detail 文本，原样抛给用户看 ——
  *  「操作失败」这种话对排查毫无帮助。 */
 async function post<T>(url: string, body: unknown, method = 'POST'): Promise<T> {
@@ -394,6 +439,7 @@ async function post<T>(url: string, body: unknown, method = 'POST'): Promise<T> 
     body: JSON.stringify(body),
   })
   const data = await response.json().catch(() => null)
+  if (response.status === 429) throw rateLimited(response, data?.detail)
   if (!response.ok) throw new Error(data?.detail || `${url} ${response.status}`)
   return data as T
 }
@@ -412,6 +458,7 @@ export const createSource = (input: SourceInput) =>
 export async function scanSource(id: string): Promise<Probe> {
   const response = await fetch(`/api/sources/${id}/scan`)
   const data = await response.json().catch(() => null)
+  if (response.status === 429) throw rateLimited(response, data?.detail)
   if (!response.ok) throw new Error(data?.detail || `扫描失败 ${response.status}`)
   return data
 }

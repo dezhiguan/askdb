@@ -63,6 +63,14 @@ def _local_now() -> str:
     return _fmt_ts(datetime.now().astimezone())
 
 
+def _elapsed_ms(t0: float) -> float:
+    """自 t0 起的毫秒数。亚毫秒保留一位小数 —— int() 截断会把 0.4ms 写成
+    0ms，而 0ms 在界面上读起来是「没测出来」而不是「很快」。"""
+    ms = (time.perf_counter() - t0) * 1000
+    # 10ms 以上取整：小数位在这个量级上是噪声，"68.0ms" 读起来还更假
+    return round(ms, 1) if ms < 10 else round(ms)
+
+
 @dataclass
 class ExplainResult:
     est_rows: int | None
@@ -89,6 +97,13 @@ class _Backend:
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.con: Any = None
+        # 建连耗时，由各后端在**真正建立连接的那一次**写入。
+        #
+        # 放在这里而不是让调用方掐表：connect() 对已有连接是缓存早退，谁先
+        # 调到谁就把这段时间吃掉了。`with Executor(cfg) as ex:` 的 __enter__
+        # 已经连过一次，随后 self_check 再掐表只能掐出 0 —— 数据源卡上那个
+        # 恒为 0ms 的「延迟」就是这么来的。
+        self.connect_ms: float | None = None
 
     def connect(self) -> Any: ...          # pragma: no cover
     def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]: ...  # pragma: no cover
@@ -100,6 +115,8 @@ class _Backend:
         if self.con is not None:
             self.con.close()
             self.con = None
+        # 连接没了，上一次的建连耗时也就不再描述任何现存连接
+        self.connect_ms = None
 
 
 class _DuckBackend(_Backend):
@@ -114,10 +131,12 @@ class _DuckBackend(_Backend):
                 f"样例库不存在：{path}",
                 hint="先运行 `python -m data.seed` 生成本机样例库（约需几秒）。",
             )
+        t0 = time.perf_counter()
         try:
             self.con = duckdb.connect(str(path), read_only=True)
         except Exception as e:  # pragma: no cover - 依赖具体环境
             raise DataSourceError(f"无法打开数据库：{e}", hint="确认文件未被其他进程以写模式占用。") from e
+        self.connect_ms = _elapsed_ms(t0)
         return self.con
 
     def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
@@ -225,6 +244,7 @@ class _PgBackend(_Backend):
                 "未配置 PostgreSQL 连接串（datasource.dsn）。",
                 hint="在 config 中填写 dsn，密码用 password_env 指向环境变量。",
             )
+        t0 = time.perf_counter()
         try:
             self.con = psycopg.connect(dsn, connect_timeout=5, autocommit=True)
         except Exception as e:
@@ -232,6 +252,9 @@ class _PgBackend(_Backend):
                 f"无法连接 PostgreSQL：{str(e).splitlines()[0]}",
                 hint="确认 Postgres.app 在运行、库名与账号正确、该账号已被授权。",
             ) from e
+        # 计到这里为止 —— 自检里那一项叫「网络可达与认证」，量的就该是握手
+        # 加认证。下面几条 SET 是护栏配置，算进去会让这个数字变成另一件事。
+        self.connect_ms = _elapsed_ms(t0)
 
         # 会话级硬护栏。角色级也应配同样的设置，这里是第二道保险。
         ms = int(self.cfg.raw["guard"]["statement_timeout_ms"])
@@ -389,6 +412,11 @@ class Executor:
     def connect(self):
         return self.backend.connect()
 
+    @property
+    def connect_ms(self) -> float | None:
+        """建立当前这条连接真正花了多久。还没连过时为 None。"""
+        return self.backend.connect_ms
+
     def close(self) -> None:
         self.backend.close()
 
@@ -430,8 +458,14 @@ class Executor:
         try:
             self.connect()
             # 连接耗时同时给结构化字段：界面要在数据源卡上单独显示「延迟」，
-            # 从 detail 字符串里正则抠数字迟早会随文案改动而悄悄失效
-            ms = int((time.perf_counter() - t0) * 1000)
+            # 从 detail 字符串里正则抠数字迟早会随文案改动而悄悄失效。
+            #
+            # 取后端记下的那个数，不在这里掐表：调用方几乎都是
+            # `with Executor(cfg) as ex:`，__enter__ 里已经建好连接，上面这次
+            # connect() 只是一次缓存命中，掐出来恒为 0。
+            ms = self.connect_ms
+            if ms is None:            # 后端没记（自定义后端），退回本地掐表
+                ms = _elapsed_ms(t0)
             add("网络可达与认证", True, f"{self.cfg.db_type} · {ms} ms", ms=ms)
         except DataSourceError as e:
             add("网络可达与认证", False, f"{e}｜{e.hint}")

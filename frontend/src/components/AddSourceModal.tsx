@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
-  createSource, scanSource, setSourceTables, testSource,
+  createSource, RateLimited, scanSource, setSourceTables, testSource,
   type Probe, type ScannedTable, type SourceInput, type SourceList,
 } from '../api'
+import { useCountdown } from '../useCountdown'
 
 /** 添加只读数据源。两步：填连接 → 勾选开放的表。
  *
@@ -274,27 +275,50 @@ function buildDsn(addr: string, dbname: string, user: string): string {
 }
 
 /** 给已存在的数据源重新扫描并调整白名单。与新增第二步同一套语义。 */
-export function ScanTablesModal({ id, name, onClose, onDone }: {
+export function ScanTablesModal({ id, name, cached, onScanned, onClose, onDone }: {
   id: string
   name: string
+  /** 本次会话里已经扫过的结果。有就直接用 —— 开→关→开不该各发一次
+   *  出站建连，那既白花限流额度，也白等一次库的往返。 */
+  cached?: Probe | null
+  /** 新扫出来的结果回传给上层缓存 */
+  onScanned?: (probe: Probe) => void
   onClose: () => void
   onDone: () => void
 }) {
-  const [probe, setProbe] = useState<Probe | null>(null)
-  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [probe, setProbe] = useState<Probe | null>(cached ?? null)
+  const [picked, setPicked] = useState<Set<string>>(
+    () => new Set((cached?.tables ?? []).filter(t => t.allowed).map(t => t.name)))
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [coolUntil, setCoolUntil] = useState(0)
+  const cooldown = useCountdown(coolUntil)
+
+  const fail = (e: unknown) => {
+    if (e instanceof RateLimited) setCoolUntil(Date.now() + e.retryAfter * 1000)
+    setError(String((e as Error).message || e))
+  }
+
+  const runScan = useCallback(async () => {
+    setScanning(true); setError('')
+    try {
+      const result = await scanSource(id)
+      setProbe(result)
+      setPicked(new Set(result.tables.filter(t => t.allowed).map(t => t.name)))
+      onScanned?.(result)
+    } catch (e) {
+      fail(e)
+    } finally {
+      setScanning(false)
+    }
+  }, [id, onScanned])
 
   useEffect(() => {
-    let alive = true
-    scanSource(id)
-      .then(result => {
-        if (!alive) return
-        setProbe(result)
-        setPicked(new Set(result.tables.filter(t => t.allowed).map(t => t.name)))
-      })
-      .catch(e => { if (alive) setError(String(e.message || e)) })
-    return () => { alive = false }
+    // 有缓存就不扫。这一格是"看得见哪些表"，库的结构不会在你开关弹窗的
+    // 几秒里变；真变了，右下角「重新扫描」随时能拉最新的一份。
+    if (!cached) void runScan()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   const save = async () => {
@@ -303,7 +327,7 @@ export function ScanTablesModal({ id, name, onClose, onDone }: {
       await setSourceTables(id, [...picked])
       onDone()
     } catch (e) {
-      setError(String((e as Error).message || e))
+      fail(e)
     } finally {
       setBusy(false)
     }
@@ -320,7 +344,12 @@ export function ScanTablesModal({ id, name, onClose, onDone }: {
           <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
         </header>
         <div className="modal-body">
-          {error && <div className="audit-error">{error}</div>}
+          {error && (
+            <div className="audit-error">
+              {error}
+              {cooldown > 0 && <>（还需等待 {cooldown} 秒）</>}
+            </div>
+          )}
           {!probe && !error && <p className="drawer-note">扫描中…</p>}
           <div className="pick-list">
             {probe?.tables.map(table => (
@@ -339,9 +368,14 @@ export function ScanTablesModal({ id, name, onClose, onDone }: {
           </div>
           <div className="modal-actions">
             <span className="pick-count">已选 {picked.size} / {probe?.tables.length ?? 0}</span>
+            {/* 上面那份可能是本次会话早先扫的。库结构变过就点这里，
+                不必把弹窗关掉再开 —— 那本来也拉不到新的了 */}
+            <button className="ghost" disabled={scanning || cooldown > 0} onClick={runScan}>
+              {scanning ? '扫描中…' : cooldown > 0 ? `重新扫描（${cooldown}s）` : '重新扫描'}
+            </button>
             <button className="ghost" onClick={onClose}>取消</button>
-            <button className="primary" disabled={busy || !probe} onClick={save}>
-              {busy ? '保存中…' : '保存白名单'}
+            <button className="primary" disabled={busy || !probe || cooldown > 0} onClick={save}>
+              {busy ? '保存中…' : cooldown > 0 ? `保存白名单（${cooldown}s）` : '保存白名单'}
             </button>
           </div>
         </div>
