@@ -21,6 +21,13 @@ class Column:
     desc: str = ""
     enum: list[str] = field(default_factory=list)
     tenant: bool = False
+    #: 个人信息列（P03）。**敏感性是数据的属性，不是角色的属性** ——
+    #: 声明在这里，角色只决定看不看得到原值，不需要每个角色各列一份清单。
+    #: 清单分散到角色上，加一张表就要改 N 处，漏掉一处就是一次泄露。
+    sensitive: bool = False
+    #: 数据期限所依据的时间列。语义与 tenant 完全对称：
+    #: 那个标"按谁隔离"，这个标"按哪一列算新旧"。
+    time: bool = False
 
 
 @dataclass
@@ -34,6 +41,10 @@ class Table:
     tenant_filter: str | None = None
     # 显式声明该表与租户无关（如全局字典表）。必须是有意为之，不能靠遗漏。
     tenant_exempt: bool = False
+    # 显式声明该表没有时间维度（维表、字典表）。与 tenant_exempt 同一个理由：
+    # 必须是有意为之。漏标的表在有数据期限的角色下会被 R-19 拒掉，
+    # 那是**故意的** —— 静默放行等于把"只能看 90 天"这句话变成一句空话。
+    time_exempt: bool = False
 
     @property
     def tenant_column(self) -> str | None:
@@ -41,6 +52,17 @@ class Table:
             if c.tenant:
                 return c.name
         return None
+
+    @property
+    def time_column(self) -> str | None:
+        for c in self.columns.values():
+            if c.time:
+                return c.name
+        return None
+
+    @property
+    def sensitive_columns(self) -> list[str]:
+        return [c.name for c in self.columns.values() if c.sensitive]
 
     @property
     def has_tenancy(self) -> bool:
@@ -167,6 +189,30 @@ class Config:
         return bool(self.raw["tenant"].get("enabled", True))
 
     @property
+    def window_days(self) -> int | None:
+        """当前角色的数据时间窗口（天）。None = 不限。
+
+        由 identity.narrow 写进 raw。护栏从这里取值，因此它不需要知道
+        "角色"是什么 —— 与 max_rows / tables 完全同一条路径。
+        """
+        v = self.raw.get("_role_window_days")
+        return None if v is None else int(v)
+
+    @property
+    def window_enforceable(self) -> bool:
+        """时间窗口在这个数据源上能不能落地。
+
+        运行时数据源的表结构来自扫描，扫描看不出哪一列该用来算新旧，
+        因此那里一律关闭（见 sources.derive_config），并由界面标注。
+        """
+        return bool(self.raw.get("_window_enforceable", True))
+
+    @property
+    def unmask(self) -> bool:
+        """当前角色能否看到个人信息列的原值。默认否 —— 漏配要落在安全那边。"""
+        return bool(self.raw.get("_role_unmask", False))
+
+    @property
     def tenant_column(self) -> str:
         return self.raw["tenant"]["column"]
 
@@ -262,6 +308,8 @@ def parse_tables(spec: list[dict[str, Any]]) -> dict[str, Table]:
                 desc=col.get("desc", ""),
                 enum=col.get("enum", []) or [],
                 tenant=bool(col.get("tenant", False)),
+                sensitive=bool(col.get("sensitive", False)),
+                time=bool(col.get("time", False)),
             )
             for name, col in t["columns"].items()
         }
@@ -270,6 +318,7 @@ def parse_tables(spec: list[dict[str, Any]]) -> dict[str, Table]:
             columns=cols,
             tenant_filter=t.get("tenant_filter"),
             tenant_exempt=bool(t.get("tenant_exempt", False)),
+            time_exempt=bool(t.get("time_exempt", False)),
         )
     return tables
 

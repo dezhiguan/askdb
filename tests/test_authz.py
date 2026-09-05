@@ -370,3 +370,102 @@ def test_roles_endpoint_exposes_the_effective_envs(zcfg, monkeypatch):
     roles = {r["code"]: r for r in c.get("/api/identity/roles").json()["roles"]}
     assert roles["QA"]["envs"] == ["test"]
     assert roles["DATA_OWNER"]["envs_unrestricted"] is True
+
+
+# ---------- 数据期限（Q-07 / R-19） ----------
+
+def test_window_predicate_is_injected(cfg):
+    """时间窗口复用 R-10 的谓词注入，不新造判定。"""
+    from askdb import guard
+
+    scoped = identity.for_roles(cfg, ["QA"])          # 内置默认 180 天
+    g = guard.check("SELECT id FROM documents", scoped,
+                    org_id=scoped.default_org, dialect=scoped.dialect)
+    assert g.ok, g.reason
+    assert "R-19" in g.rules_fired
+    assert "created_at" in g.sql and any("数据期限" in r for r in g.rewrites)
+
+
+def test_window_does_not_touch_dimension_tables(cfg):
+    """维表显式声明 time_exempt，不该被注入 —— 注入了会直接查空。"""
+    from askdb import guard
+
+    scoped = identity.for_roles(cfg, ["QA"])
+    g = guard.check("SELECT id FROM orgs", scoped,
+                    org_id=scoped.default_org, dialect=scoped.dialect)
+    assert g.ok, g.reason
+    assert "R-19" not in g.rules_fired
+
+
+def test_undeclared_time_column_is_rejected_not_ignored(cfg):
+    """漏标的表要被拒，**不能静默放行**。
+
+    静默放行等于把权限页上"只能看 90 天"那句话变成一句空话，
+    而那句话是写给人看的承诺。
+    """
+    from askdb import guard
+
+    cfg.tables["documents"].columns["created_at"].time = False    # 模拟漏标
+    scoped = identity.for_roles(cfg, ["PRODUCT"])
+    g = guard.check("SELECT id FROM documents", scoped,
+                    org_id=scoped.default_org, dialect=scoped.dialect)
+    assert not g.ok and g.rejected_by == "R-19"
+    assert "time: true" in g.reason          # 措辞要告诉人怎么修
+
+
+def test_no_window_role_is_untouched(cfg):
+    """开发角色没有期限，SQL 不该被动一个字。"""
+    from askdb import guard
+
+    scoped = identity.for_roles(cfg, ["DEV"])
+    g = guard.check("SELECT id FROM documents", scoped,
+                    org_id=scoped.default_org, dialect=scoped.dialect)
+    assert g.ok and "R-19" not in g.rules_fired
+
+
+def test_window_is_disabled_on_scanned_sources(cfg, tmp_path):
+    """运行时源的表结构来自扫描，扫描看不出哪一列该算新旧。
+
+    与租户隔离在那里一律关闭是同一个问题的同一个答案：猜错会**悄悄给出
+    错误的数据**，比越权更难发现，因为结果看着正常。
+    """
+    from askdb import sources as S
+
+    src = S.build(name="x", type_="duckdb", dsn=str(tmp_path / "a.duckdb"))
+    derived = S.derive_config(cfg, src)
+    assert derived.window_enforceable is False
+    scoped = identity.for_roles(derived, ["QA"])
+    assert scoped.window_days == 180              # 角色策略照常算出来
+    assert scoped.window_enforceable is False     # 但在这个源上落不了地
+
+
+# ---------- 列级脱敏（Q-06 / P03） ----------
+
+def test_sensitive_columns_are_masked_for_roles_without_unmask():
+    from askdb.executor import _masked
+
+    assert _masked("13800001234") == "1*********4"
+    assert _masked("张三") == "**"           # 短值整体打星，保留首尾等于原样交出
+    assert _masked(12345) == "1***5"          # 与列的存储类型无关
+
+
+def test_mask_keeps_first_and_last_for_reconciliation():
+    """保留首尾是为了让审计与对账还能做，全星会把那件事彻底做不了。"""
+    from askdb.executor import _masked
+
+    m = _masked("18565040934")
+    assert m.startswith("1") and m.endswith("4") and set(m[1:-1]) == {"*"}
+
+
+def test_unmask_is_additive_across_roles(cfg):
+    """RBAC 是加法：兼任开发的人看得到原值，与 tables 取并集同一个语义。"""
+    assert identity.for_roles(cfg, ["QA"]).unmask is False
+    assert identity.for_roles(cfg, ["DEV"]).unmask is True
+    assert identity.for_roles(cfg, ["QA", "DEV"]).unmask is True
+
+
+def test_unmask_cannot_be_switched_on_by_config(cfg):
+    """脱敏这一位有意不从配置读 —— 能配的东西就会被配错，
+    而这一位配错等于把个人信息交出去。"""
+    cfg.raw["role_policies"] = {"QA": {"unmask": True}}
+    assert identity.policy_for(cfg, "QA").unmask is False

@@ -307,6 +307,14 @@ def derive_config(base: Config, src: Source) -> Config:
         ds["upstream"] = src.upstream
     raw["datasource"] = ds
     raw["tenant"] = {**raw.get("tenant", {}), "enabled": False}
+    # **数据期限同理关闭。** 与上面那段是同一个问题的同一个答案：一次结构扫描
+    # 看不出哪一列该用来算新旧（created_at？updated_at？还是某个业务日期），
+    # 猜错的后果是**悄悄给出错误的数据** —— 比越权更难发现，因为结果看着正常。
+    #
+    # 这里不选"拒绝执行"：这套部署的每个源都是运行时源，拒绝等于把功能整个关掉；
+    # 也不选"假装在拦" —— 那正是这轮改造要消灭的东西。所以如实关闭并标注，
+    # 要真正按期限收窄，仍然得写配置文件把时间列声明出来。
+    raw["_window_enforceable"] = False
 
     tables: dict[str, Table] = {}
     for t in src.tables:

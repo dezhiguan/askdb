@@ -30,14 +30,28 @@ const ROLE_TITLE: Record<string, string> = {
   DATA_OWNER: '数据负责人 · Data Owner',
 }
 
-/** 原型 permissionData 的后三个维度：数据期限 / 敏感字段 / 导出权限。
- *  这三项后端没有对应字段，按设计稿占位（第一维「环境范围」用真实 role.scope）。
- *  设计稿未覆盖的角色留 —— ，不编数值。 */
-const ROLE_LIMITS: Record<string, [string, string, string]> = {
-  PRODUCT: ['90 DAYS', 'MASKED', 'AGG ONLY'],
-  DEV: ['ALL TEST', 'PARTIAL', 'ALLOWED'],
-  QA: ['180 DAYS', 'MASKED', '≤ 10K'],
-  DATA_OWNER: ['365 DAYS', 'ON DEMAND', 'APPROVAL'],
+/** 四个维度全部取后端真值。
+ *
+ *  此前这三格是照设计稿写死的（'90 DAYS' / 'MASKED' / 'AGG ONLY'），
+ *  而后端当时根本没有对应字段 —— 页面显示了一个从未生效过的值，
+ *  比"看不出有没有生效"更糟。现在环境范围、数据期限、敏感字段都由
+ *  identity.Policy 算出来，改角色策略这里立刻跟着变。
+ *
+ *  「导出权限」没有列进来：askdb 没有后端导出接口，审计与追踪的导出都是
+ *  浏览器端把已拉取的数据拼字符串下载。在那种架构下这一维度**没有任何
+ *  可施加的位置**，写一个值上去就是在承诺一件做不到的事。 */
+function envLabel(role: RoleInfo): string {
+  if (role.envs_unrestricted) return 'ALL'
+  if (!role.envs.length) return '—'
+  return role.envs.map(e => e.toUpperCase().replace('_', '-')).join(' + ')
+}
+
+function ageLabel(role: RoleInfo): string {
+  return role.max_age_days == null ? '不限' : `${role.max_age_days} DAYS`
+}
+
+function maskLabel(role: RoleInfo): string {
+  return role.unmask ? '原值可见' : 'MASKED'
 }
 
 export function PermissionsPage({ notify }: { notify: (message: string) => void }) {
@@ -250,8 +264,6 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
 }
 
 function RoleDetail({ role, notify }: { role: RoleInfo; notify: (message: string) => void }) {
-  const limits = ROLE_LIMITS[role.code]
-  const placeholder = '设计稿占位：后端尚无该维度'
   return (
     <>
       <div className="permission-head">
@@ -262,15 +274,20 @@ function RoleDetail({ role, notify }: { role: RoleInfo; notify: (message: string
       {/* 四个维度照设计稿。环境范围是真值（来自角色定义）；
           后三项后端还没有这三个维度，按设计稿取值占位并在 title 里标明。 */}
       <div className="permission-grid">
-        <div className="permission-cell"><span>环境范围</span><strong>{role.scope}</strong></div>
         <div className="permission-cell">
-          <span>数据期限</span><strong title={placeholder}>{limits?.[0] ?? '—'}</strong>
+          <span>环境范围</span>
+          <strong title="角色可连接的数据源环境档位，选源时强制校验">{envLabel(role)}</strong>
         </div>
         <div className="permission-cell">
-          <span>敏感字段</span><strong title={placeholder}>{limits?.[1] ?? '—'}</strong>
+          <span>数据期限</span>
+          <strong title="护栏 R-18 按此注入时间窗口谓词">{ageLabel(role)}</strong>
         </div>
         <div className="permission-cell">
-          <span>导出权限</span><strong title={placeholder}>{limits?.[2] ?? '—'}</strong>
+          <span>敏感字段</span>
+          <strong title="个人信息列在返回结果中是否脱敏">{maskLabel(role)}</strong>
+        </div>
+        <div className="permission-cell">
+          <span>成员</span><strong>{role.members} 人</strong>
         </div>
       </div>
       {role.system && (

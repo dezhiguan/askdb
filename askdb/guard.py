@@ -7,7 +7,7 @@
   3. 表引用收集必须遍历完整 AST：FROM / JOIN / 子查询 / CTE / IN(SELECT) / EXISTS / UNION。
      **漏掉任一分支即构成绕过路径。**
 
-本模块实现 R-01～R-10；R-11～R-14 在 executor / graph，R-15～R-17 在 planner。
+本模块实现 R-01～R-10 与 R-19；R-11～R-14 在 executor / graph，R-15～R-17 在 planner。
 """
 
 from __future__ import annotations
@@ -297,6 +297,64 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> Guard
     if injected:
         fired.append("R-10")
         rewrites.append("注入租户谓词：" + "、".join(dict.fromkeys(injected)))
+
+    # ---------- R-19 数据期限窗口注入 ----------
+    # 与 R-10 是同一类动作：都往 SQL 里加一个行级条件。因此这里刻意照抄
+    # 它的形状（外连接进 ON、幂等去重、未声明即拒），而不是另发明一套 ——
+    # 两条规则对"怎么加条件"的做法不一致，是最容易长出 bug 的地方。
+    window = cfg.window_days
+    if window is not None and cfg.window_enforceable:
+        from datetime import datetime, timedelta
+
+        cutoff = (datetime.now().astimezone() - timedelta(days=int(window)))
+        cutoff_lit = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+        aged: list[str] = []
+        no_time: set[str] = set()
+        for sel in root.find_all(exp.Select):
+            for t, join in _direct_tables(sel):
+                name = (t.name or "").lower()
+                if name in ctes:            # CTE 遮蔽，与 R-03/R-04/R-10 认定一致
+                    continue
+                spec = cfg.tables.get(name)
+                if spec is None or spec.time_exempt:
+                    continue
+                col = spec.time_column
+                if not col:
+                    # 朝安全的方向失败。静默放行等于把"只能看 90 天"变成空话，
+                    # 而那句话是写在权限页上给人看的。
+                    no_time.add(name)
+                    continue
+                ref = t.alias_or_name
+                text = f"{ref}.{col} >= '{cutoff_lit}'"
+                try:
+                    cond = exp.condition(text, dialect=dialect)
+                except Exception:
+                    return GuardResult(
+                        ok=False, rejected_by="R-19",
+                        reason=f"表 {name} 的时间窗口谓词无法解析：{text}",
+                    )
+                target = join.args.get("on") if (join is not None and _is_outer(join)) \
+                    else sel.args.get("where")
+                if target is not None and _has_condition(target, cond):
+                    continue
+                if join is not None and _is_outer(join):
+                    join.on(cond, copy=False)
+                else:
+                    sel.where(cond, copy=False)
+                aged.append(text)
+
+        if no_time:
+            return GuardResult(
+                ok=False, rejected_by="R-19",
+                reason=(f"当前角色只能查看最近 {window} 天的数据，"
+                        f"但这些表没有声明时间列：{'、'.join(sorted(no_time))}。"
+                        "请在表配置里给时间列标 time: true，"
+                        "或对确无时间维度的维表标 time_exempt: true。"),
+            )
+        if aged:
+            fired.append("R-19")
+            rewrites.append(f"注入数据期限窗口（最近 {window} 天）："
+                            + "、".join(dict.fromkeys(aged)))
 
     # ---------- R-09 强制 LIMIT 注入 ----------
     cap = cfg.max_rows

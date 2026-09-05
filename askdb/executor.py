@@ -363,6 +363,22 @@ def _group_columns(rows: Any) -> dict[str, list[dict[str, Any]]]:
             {"name": str(column), "type": str(dtype).upper()})
     return out
 
+def _masked(value) -> str:
+    """脱敏成「首字符 + 星号 + 末字符」。
+
+    保留首尾而不是整列打星：排查问题时经常需要确认"是不是同一个人"，
+    全星会让审计与对账彻底做不了；保留首尾既够用，也不足以还原。
+    短值（≤2 字符）整体打星 —— 保留首尾等于把它原样交出去。
+
+    统一转成字符串：手机号在库里可能是数值类型，按数值处理会得到
+    一个仍然可读的数字。脱敏必须与列的存储类型无关。
+    """
+    text = str(value)
+    if len(text) <= 2:
+        return "*" * len(text)
+    return f"{text[0]}{'*' * (len(text) - 2)}{text[-1]}"
+
+
 
 # ==========================================================================
 # 对外
@@ -498,11 +514,46 @@ class Executor:
         truncated = len(rows) > cap
         if truncated:
             rows = rows[:cap]
+        names = [str(c) for c in columns]
         return QueryResult(
-            columns=[str(c) for c in columns],
-            rows=rows,
+            columns=names,
+            rows=self._mask(names, rows),
             row_count=len(rows),
             truncated=truncated,
             elapsed_ms=elapsed,
             as_of=as_of,
         )
+
+    def _mask(self, columns: list[str], rows: list[list]) -> list[list]:
+        """按列名脱敏个人信息（P03）。
+
+        **落点在这里而不是在 SQL 里**，有两个理由：
+          · 改 SQL 意味着要正确处理别名、表达式、聚合、子查询里的同名列 ——
+            每一处判错都是一次泄露，而这里拿到的是最终真正返回的列名，
+            没有歧义。
+          · 脱敏不该改变查询语义。把 phone 换成 substr(...) 会让
+            COUNT(DISTINCT phone) 之类的口径悄悄变样，那是比看到原值
+            更难发现的错误。
+
+        代价要说清楚：模型与护栏仍然看得到真实列名，脱敏只作用于**返回值**。
+        所以它防的是"人看到了不该看的内容"，防不住"按敏感列做筛选"
+        （WHERE phone = '138...' 仍能试探）。后者要靠表白名单收窄，
+        不是靠这一层 —— 两件事别混。
+        """
+        if self.cfg.unmask:
+            return rows
+        sensitive = {c.lower()
+                     for t in self.cfg.tables.values() for c in t.sensitive_columns}
+        if not sensitive:
+            return rows
+        hit = [i for i, name in enumerate(columns) if name.lower() in sensitive]
+        if not hit:
+            return rows
+        out = []
+        for row in rows:
+            r = list(row)
+            for i in hit:
+                if r[i] is not None:
+                    r[i] = _masked(r[i])
+            out.append(r)
+        return out
