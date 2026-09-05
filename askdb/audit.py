@@ -73,6 +73,7 @@ def _summary(rec: dict[str, Any]) -> dict[str, Any]:
 def list_audits(
     path: Path, page: int = 1, page_size: int = 10,
     q: str = "", kind: str = "", with_text: bool = True,
+    only_user: str | None = None,
 ) -> dict[str, Any]:
     """流水分页，新记录在前。q 同时匹配 trace_id 与问题文本。
 
@@ -81,9 +82,16 @@ def list_audits(
     两件事必须一起做：只把 question 抹掉、仍允许按文本搜，等于留了一个预言机
     —— 搜"广州"能搜出 12 条，就已经把内容说出来了。遮蔽和检索面是同一道边界，
     分开做等于没做。
+
+    only_user 不为 None 时只返回该用户发起的记录（产品与测试角色就是这样看
+    审计的：只看自己的）。**这一层过滤排在 q 与分页之前**，理由和上面那条
+    完全一样 —— 先搜后滤会让 total 泄露别人有多少条命中，那也是一个预言机。
+    空串是合法取值：它表示"只看没有发起人的记录"，不是"不过滤"。
     """
     recs = read_records(path)
     recs.reverse()
+    if only_user is not None:
+        recs = [r for r in recs if (r.get("user") or "") == only_user]
     if kind:
         recs = [r for r in recs if r.get("kind", "ask") == kind]
     if q:
@@ -212,15 +220,21 @@ def _percentile(values: list[int], q: float) -> int | None:
     return values[k]
 
 
-def stats(path: Path, days: int = 30) -> dict[str, Any]:
+def stats(path: Path, days: int = 30, only_user: str | None = None) -> dict[str, Any]:
     """时间窗内的调用/拦截/成本统计与按日序列。
 
     trace_complete 按"记录里带步骤级 trace 的占比"如实计算，
     不是写死的 100% —— 页面上那格数字必须经得起对账。
+
+    only_user 的语义与 list_audits 一致，而且**必须一起收敛**：
+    列表只给本人、统计却给全量，那张成本卡就是一个按天的聚合泄露 ——
+    别人昨天花了多少、被拦了几次，一眼可见。同一道边界只做一半等于没做。
     """
     cutoff = datetime.now().astimezone() - timedelta(days=days)
     recent: list[dict[str, Any]] = []
     for rec in read_records(path):
+        if only_user is not None and (rec.get("user") or "") != only_user:
+            continue
         t = _parse_ts(str(rec.get("ts", "")))
         if t is not None and t >= cutoff:
             recent.append(rec)

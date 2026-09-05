@@ -99,6 +99,109 @@ DEFAULT_POLICIES: dict[str, Policy] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 能力位
+#
+# 与 Policy 是**两个不同的问题**，别合并：
+#   · Policy 管「看得到哪些数据」—— 表、行数，落在护栏 R-03 / R-13 上。
+#   · 能力位管「进不进得了这个功能」—— 落在接口入口处。
+#
+# 分开的理由是它们的失效方式不同。Policy 配错了，人少看见几张表；
+# 能力位配错了，人能调一个本不该调的接口。把两者塞进一个结构，
+# 就得在每个判定点回答"这个字段现在是哪种语义"，迟早判错一次。
+#
+# 名称直接对应设计文档《角色与权限设计》第三节的权限点编码，
+# 便于在矩阵与代码之间对读 —— 矩阵改了而代码没改，grep 一遍就能发现。
+# ---------------------------------------------------------------------------
+
+QUERY = "query"                     # Q-01 自然语言查询
+QUERY_SQL = "query.sql"             # Q-02 直查 SQL
+SOURCES_READ = "sources.read"       # S-01 数据源列表
+SOURCES_TEST = "sources.test"       # S-02 测试连接
+SOURCES_WRITE = "sources.write"     # S-03/04/05 增删改
+SOURCES_SCAN = "sources.scan"       # S-06 元数据扫描
+GLOSSARY_READ = "glossary.read"     # G-01/G-02 口径查看与校验
+QUALITY_READ = "quality.read"       # E-01 质量中心
+SELFCHECK = "selfcheck"             # E-02 运行时自检
+INTROSPECT = "introspect"           # E-03 库结构内省
+AUDIT_READ = "audit.read"           # A-01/A-02 审计（默认只有本人的）
+AUDIT_ALL = "audit.all"             # A-01 跨用户查看
+AUDIT_CONTENT = "audit.content"     # A-01 看得到 question 与 sql_final
+REPLAY = "replay"                   # A-03 查询复放
+TASKS_ALL = "tasks.all"             # T-03 他人任务（仅元数据）
+MEMBERS_READ = "members.read"       # I-02 跨角色成员名册
+MEMBERS_WRITE = "members.write"     # I-03 增删成员
+APPROVE = "approve"                 # Q-08 / S-03~05 审批放行
+
+#: 角色 → 能力位。**固定，不开放配置**，理由同 ROLES 那段注释：
+#: 能配的东西就会被配错，而这一层配错等于开门。
+#:
+#: 三条要点，改之前先读：
+#:   1. SYS_ADMIN 有 APPROVE 但没有 QUERY —— 它的 Policy 是空表集，
+#:      永远不可能是查询发起人，所以**自批在结构上不可能发生**。
+#:      这是把审批收敛到系统管理员最主要的收益，别为了"方便"给它加 QUERY。
+#:   2. SYS_ADMIN 有 AUDIT_READ + AUDIT_ALL 但**没有 AUDIT_CONTENT** ——
+#:      管人的需要知道有没有人在违规访问，不需要知道业务上问了什么。
+#:      审批场景是唯一例外，走单独的判定（见 server 的待审批队列）。
+#:   3. DATA_OWNER 没有 APPROVE：数据源变更由它提出、由系统管理员放行，
+#:      提出与放行分属两人。给它 APPROVE 就等于自己批自己。
+CAPABILITIES: dict[str, frozenset[str]] = {
+    "PRODUCT": frozenset({
+        QUERY, SOURCES_READ, GLOSSARY_READ, QUALITY_READ,
+        AUDIT_READ, AUDIT_CONTENT,          # 只有本人的：没有 AUDIT_ALL
+    }),
+    "DEV": frozenset({
+        QUERY, QUERY_SQL, SOURCES_READ, SOURCES_TEST, SOURCES_WRITE, SOURCES_SCAN,
+        GLOSSARY_READ, QUALITY_READ, SELFCHECK, INTROSPECT,
+        AUDIT_READ, AUDIT_ALL, AUDIT_CONTENT, REPLAY, TASKS_ALL,
+    }),
+    "QA": frozenset({
+        QUERY, QUERY_SQL, SOURCES_READ, SOURCES_TEST, SOURCES_SCAN,
+        GLOSSARY_READ, QUALITY_READ, SELFCHECK, INTROSPECT,
+        AUDIT_READ, AUDIT_CONTENT,          # 只有本人的
+    }),
+    "DATA_OWNER": frozenset({
+        QUERY, QUERY_SQL, SOURCES_READ, SOURCES_TEST, SOURCES_WRITE, SOURCES_SCAN,
+        GLOSSARY_READ, QUALITY_READ, SELFCHECK, INTROSPECT,
+        AUDIT_READ, AUDIT_ALL, AUDIT_CONTENT, REPLAY, TASKS_ALL,
+        MEMBERS_READ,
+    }),
+    "SYS_ADMIN": frozenset({
+        MEMBERS_READ, MEMBERS_WRITE, APPROVE,
+        SOURCES_READ, QUALITY_READ, SELFCHECK,
+        AUDIT_READ, AUDIT_ALL,              # 元数据可见，AUDIT_CONTENT 不给
+    }),
+    # 匿名只在 auth.required=false 的实例上出现 —— 那是部署方明确选择的
+    # "对外可看"状态，不是漏配。它保留今天的可见面，因为收紧它等于把
+    # 一个以展示护栏与审计为目的的实例整个关掉。要锁就把 required 打开。
+    ANONYMOUS: frozenset({
+        QUERY, QUERY_SQL, SOURCES_READ, GLOSSARY_READ, QUALITY_READ,
+        # 有 AUDIT_ALL 没有 AUDIT_CONTENT：看得到"护栏拦了多少、贵不贵"这些
+        # 聚合与结构，看不到别人问过什么。这一页要展示的是前者。
+        AUDIT_READ, AUDIT_ALL,
+        INTROSPECT, SELFCHECK,
+    }),
+}
+
+
+def caps_of(role_codes: list[str]) -> frozenset[str]:
+    """一组角色的能力位并集。
+
+    与 Policy 一样，RBAC 在这里是**加法**：身兼两职的人拿到两者之和。
+    未知角色码贡献空集 —— 名单里出现一个已下线的角色不会让判定崩掉，
+    但也绝不会因此多给一位。
+    """
+    out: frozenset[str] = frozenset()
+    for code in role_codes:
+        out |= CAPABILITIES.get(code, frozenset())
+    return out
+
+
+def can(role_codes: list[str], cap: str) -> bool:
+    """这组角色有没有某个能力位。空名单一律没有。"""
+    return cap in caps_of(role_codes)
+
+
 def for_role(cfg: Config, role_code: str) -> Config:
     """取某个角色眼里的配置。调用方只需要这一个入口。"""
     return narrow(cfg, policy_for(cfg, role_code), role_code)

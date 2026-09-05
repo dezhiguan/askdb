@@ -61,10 +61,27 @@ _WRITE_EXEMPT_PATHS = frozenset({
     "/api/ask",
     "/api/sql",
     "/api/resume",
+    # 登录入口自己必须在豁免里，否则是一扇锁着钥匙的门：要登录才能调登录接口。
+    # /logout 同理 —— 会话已经过期的人也得能清干净 cookie。
     "/api/auth/login",
     "/api/auth/logout",
 })
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+#: 读操作里不要求登录的路径。**白名单是穷举的**，新接口默认要登录 ——
+#: 与写门同一个理由：漏掉的方向必须落在安全的那边。
+#:
+#: 这几条各有各的理由，不是随手放的：
+#:   · /api/health   页面加载时就要调，它决定要不要显示配置横幅
+#:   · /api/auth/me  登录页自己要靠它判断"要不要显示登录框"
+#:   · /api/identity/roles  角色定义写死在源码里，本就不是秘密
+_READ_EXEMPT_PATHS = frozenset({
+    "/api/health",
+    "/api/auth/me",
+    "/api/identity/roles",
+    "/api/docs",
+    "/api/openapi.json",
+})
 
 WEB = Path(__file__).resolve().parent / "web"
 # 换壳前的单文件页面。它仍然是唯一一处接了真实数据的界面 ——
@@ -310,6 +327,42 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 })
         return await call_next(request)
 
+    @app.middleware("http")
+    async def _gate_reads(request: Request, call_next):
+        """要求登录的实例上，未登录一律拦下**读**操作。
+
+        写门（上面那个）挡的是"改配置"，这一个挡的是"看数据与治理面"。
+        分成两个中间件而不是合并：两者的判据不同（写门认管理员令牌，
+        读门不认 —— 令牌是给运维改配置用的，不是一张能翻审计的通行证），
+        豁免清单也不同。合并就得在函数体里长出一堆 if，每次改动都要重读全部分支。
+
+        **判据是 auth.required，不是"有没有登录"。**
+        required=false 是部署方的明确选择：对外实例的目的就是让人看到护栏、
+        审计与角色收窄，把它锁上等于把要展示的东西全挡住。那种实例上
+        匿名仍然是一个**普通角色**（ANONYMOUS），照样受能力位与表白名单约束，
+        不是绕过分支。
+
+        required=true 时（内网试点就是这个状态），除白名单外全部要登录。
+        白名单是穷举的，新接口默认要登录 —— 与写门同一个理由。
+
+        为什么必须是中间件：此前 _require_login 靠逐接口手工调用，全仓只挂在
+        /api/ask 与 /api/sql 两处，于是 /api/audit 在 required=true 的实例上
+        照样匿名可读，而它一条记录里就有 user、role、question 三个字段 ——
+        「谁、以什么角色、问了什么原话」。审计中心保护的是"谁查了什么"，
+        它自己不设门是这套权限体系里最不该出现的洞。
+        """
+        path = request.url.path
+        if (request.method not in _WRITE_METHODS      # 写操作已由上面那道门处理
+                and path.startswith("/api/")
+                and path not in _READ_EXEMPT_PATHS
+                and _auth.required(cfg)
+                and not _auth.read(request.cookies.get(_auth.COOKIE_NAME))):
+            return JSONResponse(status_code=401, content={
+                "code": "login_required",
+                "detail": "本实例需要登录后才能访问。请先登录再试。",
+            })
+        return await call_next(request)
+
     _NO_STORE = {"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"}
 
     @app.get("/", include_in_schema=False)
@@ -404,6 +457,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         这个接口却把 documents、model_usage 的全部字段一起吐出来。
         既是信息泄露，也让业务口径页列出一批用了就被 R-03 拦的口径。
         """
+        _require_cap(request, _identity.GLOSSARY_READ, "查看业务口径")
         cfg = _scoped(request)
         return {
             "tables": [
@@ -443,6 +497,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         节点数据一直躺在审计记录的 steps 里，此前没有任何接口把它取出来 ——
         而"端到端慢在哪一段"只能靠它回答。
         """
+        _require_cap(request, _identity.QUALITY_READ, "查看质量中心")
         from .audit import quality as _quality
 
         # 窗口按天，上限 90 —— 审计是全量读文件，放开会让这个接口变成慢查询
@@ -463,6 +518,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         SQL 走**同一套护栏**再执行：口径的 SQL 自己都过不了护栏，本身就是要报的事。
         """
+        _require_cap(request, _identity.GLOSSARY_READ, "校验业务口径")
         cfg = _scoped(request)
         out: list[dict[str, Any]] = []
 
@@ -512,7 +568,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return {"checked_at": _now_iso(), "items": out}
 
     @app.get("/api/selfcheck")
-    def selfcheck() -> dict[str, Any]:
+    def selfcheck(request: Request) -> dict[str, Any]:
+        _require_cap(request, _identity.SELFCHECK, "运行数据源自检")
         with Executor(cfg) as ex:
             checks = ex.self_check()
         latency = next((c["ms"] for c in checks if "ms" in c), None)
@@ -520,11 +577,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "latency_ms": latency}
 
     @app.get("/api/introspect")
-    def introspect() -> dict[str, Any]:
+    def introspect(request: Request) -> dict[str, Any]:
         """列出数据源里全部的表，供接入向导第 2 步选表。
 
         白名单之外的表也要列出来 —— 用户得先看见，才谈得上决定开不开放。
         """
+        _require_cap(request, _identity.INTROSPECT, "内省库结构")
         try:
             with Executor(cfg) as ex:
                 found = ex.introspect()
@@ -607,8 +665,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         }
 
     @app.get("/api/sources")
-    def sources_list() -> dict[str, Any]:
+    def sources_list(request: Request) -> dict[str, Any]:
         """列表恒可读；能不能新增由 can_add 告诉前端，而不是让它点了才知道。"""
+        _require_cap(request, _identity.SOURCES_READ, "查看数据源")
         return {
             "can_add": _sources.enabled(cfg),
             "supported_types": list(_sources.SUPPORTED_TYPES),
@@ -633,8 +692,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         }
 
     @app.post("/api/sources/test")
-    def sources_test(req: SourceRequest) -> JSONResponse:
+    def sources_test(req: SourceRequest, request: Request) -> JSONResponse:
         """只连不存。表单上的「测试连接」。"""
+        _require_cap(request, _identity.SOURCES_TEST, "测试数据源连接")
         _sources_gate()
         try:
             src = _sources.build(name=req.name or "（未命名）", type_=req.type, dsn=req.dsn,
@@ -649,13 +709,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                                  "checks": [], "latency_ms": None, "tables": []})
 
     @app.post("/api/sources")
-    def sources_create(req: SourceRequest) -> JSONResponse:
+    def sources_create(req: SourceRequest, request: Request) -> JSONResponse:
         """保存并扫描元数据。
 
         **扫描出来的表一张都不开放。** 扫描只解决「看得见」，开放与否是单独
         一步（PUT /tables）—— 白名单同时是安全边界与准确率边界，默认全开
         等于把两条边界一起取消。
         """
+        _require_cap(request, _identity.SOURCES_WRITE, "新增数据源")
         _sources_gate()
         try:
             src = _sources.build(name=req.name, type_=req.type, dsn=req.dsn,
@@ -675,8 +736,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return JSONResponse({"source": _sources.to_public(src), **probe}, status_code=201)
 
     @app.get("/api/sources/{sid}/scan")
-    def sources_scan(sid: str) -> JSONResponse:
+    def sources_scan(sid: str, request: Request) -> JSONResponse:
         """重新扫描：列出全部表，并标出哪些已在白名单里。"""
+        _require_cap(request, _identity.SOURCES_SCAN, "扫描数据源元数据")
         _sources_gate()
         src = _sources.get_source(cfg, sid)
         if src is None:
@@ -691,8 +753,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return JSONResponse(probe)
 
     @app.put("/api/sources/{sid}/tables")
-    def sources_set_tables(sid: str, req: SourceTablesRequest) -> JSONResponse:
+    def sources_set_tables(sid: str, req: SourceTablesRequest, request: Request) -> JSONResponse:
         """设置白名单。字段名与类型在这里落库 —— R-04 与 R-05 靠它判定。"""
+        _require_cap(request, _identity.SOURCES_WRITE, "修改表白名单")
         _sources_gate()
         src = _sources.get_source(cfg, sid)
         if src is None:
@@ -715,7 +778,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return JSONResponse(_sources.to_public(src))
 
     @app.delete("/api/sources/{sid}")
-    def sources_delete(sid: str) -> JSONResponse:
+    def sources_delete(sid: str, request: Request) -> JSONResponse:
+        _require_cap(request, _identity.SOURCES_WRITE, "删除数据源")
         _sources_gate()
         if sid == "builtin":
             # 删的是配置文件里的那一段，不是 var/sources 下的记录 ——
@@ -739,12 +803,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return JSONResponse({"ok": True})
 
     @app.get("/api/eval")
-    def evaluation() -> dict[str, Any]:
+    def evaluation(request: Request) -> dict[str, Any]:
         """已跑完的评测结果。
 
         没有结果文件时如实返回 available:false —— 页面据此显示"尚未运行"，
         而不是编一组数字出来。
         """
+        _require_cap(request, _identity.QUALITY_READ, "查看评测结果")
         root = cfg.root / "evals" / "results"
 
         import json as _json
@@ -961,25 +1026,34 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         拦了多少、贵不贵 —— 那些是聚合与结构，匿名照常可见；而"别人问过什么"
         不是展示目标，它和 /api/tasks 挡的是同一类东西（提问原文）。
         遮蔽在这里做而不是只在前端做：只灰按钮的话，curl 一下照样全拿到。
+
+        登录之后再按角色分两层（见《角色与权限设计》A-01）：
+          · AUDIT_ALL   —— 没有就只看得到自己发起的记录（产品、测试）
+          · AUDIT_CONTENT —— 没有就看不到 question（系统管理员：它要知道
+            有没有人在违规访问，不需要知道业务上问了什么）
         """
+        _require_cap(request, _identity.AUDIT_READ, "查看审计流水")
         from .audit import list_audits
 
         return list_audits(cfg.audit_log, page=page, page_size=page_size,
                            q=q.strip(), kind=kind.strip(),
-                           with_text=bool(_current_user(request)))
+                           with_text=_can(request, _identity.AUDIT_CONTENT),
+                           only_user=_audit_owner_filter(request))
 
     @app.get("/api/audit/stats")
-    def audit_stats(days: int = 30) -> dict[str, Any]:
+    def audit_stats(request: Request, days: int = 30) -> dict[str, Any]:
         """时间窗统计：调用/拦截率/成本/按日序列。
 
         replay_api 开关状态一并带出 —— 前端据此决定"复放"入口
         显示还是置灰，而不是点了才发现 404。
         """
+        _require_cap(request, _identity.AUDIT_READ, "查看审计统计")
         from .audit import stats as _stats
 
         days = min(max(int(days), 1), 365)
         return {
-            **_stats(cfg.audit_log, days=days),
+            **_stats(cfg.audit_log, days=days,
+                     only_user=_audit_owner_filter(request)),
             "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
             "tracing": _obs_status(),
         }
@@ -1000,6 +1074,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 同一响应"约定，区分本身就是信息泄露。
         if not _current_user(request):
             return not_found
+        # 能力位在这里**不能用 _require_cap**：那会抛 403，等于告诉调用方
+        # "这条记录存在，只是你没权限"。本接口的全部结局必须收敛到同一个 404，
+        # 否则前面三条硬规则白设 —— 403 与 404 的差别本身就是一位信息。
+        if not _can(request, _identity.REPLAY):
+            return not_found
         if not cfg.raw["observability"].get("replay_api", False):
             return not_found
         if not _REPLAY_RL.allow():
@@ -1011,6 +1090,20 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         rec = get_audit(cfg.audit_log, trace_id)
         if rec is None:
+            return not_found
+
+        # **按复放者当下的角色重新收窄，不沿用记录里的 role。**
+        #
+        # 不做这一步，复放就是一条现成的提权路径：低权限者拿到 trace_id
+        # 即可读到数据负责人查过的最终 SQL —— 而 SQL 里带着表名、字段名、
+        # 过滤条件，等于把那张表的结构和口径一起给了出去。
+        #
+        # 判据用记录里的 tables_hit 与本人此刻可见表取子集关系：
+        # 记录是历史，权限是现在，一个人今天被移出某个角色，
+        # 昨天的记录就该跟着看不见了。
+        scoped = _scoped(request)
+        hit = {str(t).lower() for t in (rec.get("tables_hit") or [])}
+        if hit and not hit <= {t.lower() for t in scoped.tables}:
             return not_found
 
         out = {k: rec.get(k) for k in REPLAY_FIELDS}
@@ -1038,13 +1131,23 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     # 请求方身份**。在那之前用一把部署方持有的管理员令牌兜底，并且 fail-closed：
     # 没配 ASKDB_ADMIN_TOKEN 就整体拒绝写入。缺了这道闸，任何能访问页面的人
     # 都能给自己加角色。
-    def _require_admin(token: str | None) -> None:
+    def _require_admin(token: str | None, request: Request | None = None) -> None:
+        """成员写入的准入：**系统管理员角色**，或部署方的管理员令牌。
+
+        令牌这条路留着，但它的定位变了 —— 从"唯一依据"降为 break-glass：
+        身份库自身出问题、没人能登进来时，运维仍要有办法把成员改回去。
+        日常路径应当是登录后按角色走，因为令牌是共享的，
+        它记不下"是谁改的"，而成员变更恰恰是最需要留痕的一类操作。
+        """
+        if request is not None and _can(request, _identity.MEMBERS_WRITE):
+            return
+
         expected = os.environ.get("ASKDB_ADMIN_TOKEN", "")
         if not expected:
             raise HTTPException(
                 status_code=403,
-                detail="未配置 ASKDB_ADMIN_TOKEN，角色写入整体关闭。"
-                       "这是有意的默认值：登录未接入前，写接口没有请求方身份可依据。",
+                detail="当前角色无权增删成员，且本实例未配置 ASKDB_ADMIN_TOKEN。"
+                       "成员变更由系统管理员执行；运维可配置该环境变量作为应急通道。",
             )
         if not secrets.compare_digest(token or "", expected):
             raise HTTPException(status_code=401, detail="管理员令牌不正确")
@@ -1071,7 +1174,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         }
 
     @app.get("/api/identity/members")
-    def identity_members(role: str = "") -> dict[str, Any]:
+    def identity_members(request: Request, role: str = "") -> dict[str, Any]:
+        """成员名册。跨角色要 MEMBERS_READ，**看自己所属角色不需要**。
+
+        为什么留这个口子：一个人有权知道自己和谁同组 —— 那是他所在角色的
+        构成，不是别人的信息。而完整名册是组织结构，属于治理数据，
+        只给数据负责人与系统管理员（设计文档 I-02）。
+
+        判据用「请求的 role 是不是自己的角色之一」，不是"有没有登录"：
+        后者等于把整份名册开给任何登录用户，与不设门只差一步。
+        """
+        want = role.strip()
+        if not (want and want in _roles(request)):
+            _require_cap(request, _identity.MEMBERS_READ, "查看其他角色的成员名册")
         _require_identity()
         try:
             return {"items": _identity.list_members(cfg, role.strip())}
@@ -1081,14 +1196,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     @app.post("/api/identity/members")
     def identity_add_member(
         req: AddMemberRequest,
+        request: Request,
         x_askdb_admin_token: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_identity()
-        _require_admin(x_askdb_admin_token)
+        _require_admin(x_askdb_admin_token, request)
         try:
             return _identity.add_member(
                 cfg, role_code=req.role_code, username=req.username,
-                display_name=req.display_name, note=req.note, created_by="admin-token")
+                display_name=req.display_name, note=req.note,
+                # 走角色的记真名，走令牌的仍记 admin-token —— 令牌是共享的，
+                # 记一个具体人名会是编造。留痕的价值在于事后能对上人，
+                # 对不上的时候就该如实说对不上。
+                created_by=_current_user(request) or "admin-token")
         except _identity.IdentityError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except _identity.IdentityDisabled as e:
@@ -1097,10 +1217,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     @app.delete("/api/identity/members/{member_id}")
     def identity_remove_member(
         member_id: int,
+        request: Request,
         x_askdb_admin_token: str | None = Header(default=None),
     ) -> dict[str, Any]:
         _require_identity()
-        _require_admin(x_askdb_admin_token)
+        _require_admin(x_askdb_admin_token, request)
         if not _identity.remove_member(cfg, member_id):
             raise HTTPException(status_code=404, detail="成员不存在")
         return {"ok": True}
@@ -1208,6 +1329,52 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         if _auth.required(cfg) and not _current_user(request):
             raise HTTPException(status_code=401, detail="本实例需要登录后才能查询")
 
+    def _roles(request: Request) -> list[str]:
+        """调用方的角色码。未登录得到 [ANONYMOUS] —— 它是一个普通角色。
+
+        没有"没有身份"这种第三态，判定代码里因此少一整类判空错误。
+        这条与 _scoped 的口径必须一致，两处都从内置配置读角色名单。
+        """
+        username = _current_user(request)
+        if not username:
+            return [_identity.ANONYMOUS]
+        return _auth.roles_of(cfg, username) or [_identity.ANONYMOUS]
+
+    def _can(request: Request, cap: str) -> bool:
+        return _identity.can(_roles(request), cap)
+
+    def _audit_owner_filter(request: Request) -> str | None:
+        """审计的可见范围：None = 全量，字符串 = 只看这个人发起的。
+
+        列表与统计**必须共用这一个函数**。两处各写一遍判断，就迟早出现
+        "列表收敛了、统计没收敛"——而按天聚合的成本卡本身就是一次泄露。
+        """
+        if _can(request, _identity.AUDIT_ALL):
+            return None
+        return _current_user(request) or ""
+
+    def _require_cap(request: Request, cap: str, what: str) -> None:
+        """能力位判定。**接口入口处的那一层。**
+
+        与 _require_scope 的分工：这里回答"进不进得了这个功能"，
+        那里回答"进来之后看得到哪些数据"。两个问题混在一起判，
+        就会出现"表白名单为空所以顺带把功能也关了"这种把因果说反的提示。
+
+        措辞上给出角色名而不是角色码：看到这句话的人是业务方，
+        「当前角色（产品）无权测试数据源连接」比「PRODUCT lacks sources.test」
+        更能让他知道该找谁。
+        """
+        if _can(request, cap):
+            return
+        codes = _roles(request)
+        names = "、".join(
+            _identity.ROLE_BY_CODE[c].name for c in codes if c in _identity.ROLE_BY_CODE
+        ) or "未登录"
+        raise HTTPException(
+            status_code=403,
+            detail=f"当前角色（{names}）无权{what}。如需该权限，请联系系统管理员调整角色归属。",
+        )
+
     def _require_scope(scoped: Config) -> None:
         """当前角色一张表都看不到时，给一句能懂的话。
 
@@ -1305,8 +1472,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 按角色收窄后再进链路。护栏、执行器、Schema 召回全部从配置取值，
         # 所以收窄一次即全链路生效 —— 模型连不可见的表都召回不到。
         _require_login(request)
+        # 顺序要紧：_require_scope 先跑。只有系统角色的人可见表为空，
+        # 那时该给的是"你没有数据角色"，而不是"你无权用这个功能"——
+        # 后者会让他去找系统管理员，而他自己就是。
         scoped = _scoped(request, _cfg_for(req.source))
         _require_scope(scoped)
+        _require_cap(request, _identity.QUERY, "发起查询")
         r = run_ask(req.question.strip(), scoped, org_id=req.org_id)
         return JSONResponse(r.to_dict())
 
@@ -1324,8 +1495,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         # 直查同样按角色收窄：它绕过模型，但**不绕过权限**
         _require_login(request)
+        # 产品角色没有这一位：直查绕开业务口径层，而口径归口正是它的职责所在，
+        # 给它一条绕开口径的通道会让「指标以谁为准」失去落点。
+        # 这是职责收敛，不是安全考虑 —— 直查同样过全部护栏。
         scoped = _scoped(request, _cfg_for(req.source))
-        _require_scope(scoped)
+        _require_scope(scoped)          # 顺序同 /api/ask，理由见那里
+        _require_cap(request, _identity.QUERY_SQL, "使用直查 SQL")
         org = scoped.default_org if req.org_id is None else req.org_id
         trace_id = _uuid.uuid4().hex[:12]
         t0 = time.perf_counter()

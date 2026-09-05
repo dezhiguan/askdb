@@ -1,9 +1,9 @@
 """身份与权限：角色定义与写接口的准入。
 
-这一版**只做授权，不做认证** —— 谁是谁交给 auth-gateway。因此在登录接入
-之前，写接口没有任何请求方身份可依据，必须靠一把部署方持有的令牌兜底，
-而且必须 fail-closed。这个文件里最要紧的就是那几条准入用例：一旦写接口
-在没配令牌时也能调，任何能打开页面的人都可以给自己加角色。
+认证交给 auth-gateway，授权归 askdb。登录接入后，成员写入的准入是
+**角色优先、令牌兜底**：系统管理员按角色直接放行，令牌降为 break-glass
+（身份库出问题、没人登得进来时运维还能改回去）。两条路都不通时必须
+fail-closed —— 一旦写接口在两者皆无时也能调，任何登录用户都可以给自己加角色。
 """
 
 from __future__ import annotations
@@ -37,6 +37,31 @@ def _signed_in(cfg, monkeypatch):
 @pytest.fixture
 def client(cfg, monkeypatch):
     return _signed_in(cfg, monkeypatch)
+
+
+def _signed_in_as(cfg, monkeypatch, role: str):
+    """以指定角色登录的 client。
+
+    成员写入的准入自 2026-09 起是**角色优先、令牌兜底**：系统管理员按角色直接放行，
+    其他角色仍然只能靠部署方令牌。要把这两条路分别测到，就需要一个"角色不够"的人。
+    """
+    monkeypatch.setenv(auth.SESSION_SECRET_ENV, "t" * 40)
+    cfg.raw["auth"] = {
+        "enabled": True, "required": False,
+        "accounts": [{"username": "dev", "roles": [role],
+                      "password_hash": auth.hash_password("dev-pw")}],
+    }
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+    monkeypatch.setattr(identity, "enabled", lambda _cfg: True)
+    c = TestClient(server.create_app("ignored.yaml"))
+    assert c.post("/api/auth/login",
+                  json={"username": "dev", "password": "dev-pw"}).status_code == 200
+    return c
+
+
+@pytest.fixture
+def non_admin_client(cfg, monkeypatch):
+    return _signed_in_as(cfg, monkeypatch, "DEV")
 
 
 @pytest.fixture
@@ -89,36 +114,52 @@ def test_member_endpoints_404_when_disabled(client):
 
 # ---------- 写接口准入 ----------
 
-def test_write_refused_when_admin_token_not_configured(enabled_client, monkeypatch):
-    """没配 ASKDB_ADMIN_TOKEN 就整体拒绝写入。
+def test_write_refused_without_role_and_without_token(non_admin_client, monkeypatch):
+    """角色不够、又没配令牌，就整体拒绝写入。
 
-    fail-closed 是有意的：登录未接入前，开着写接口等于任何能打开页面的人
-    都能给自己加角色。
+    fail-closed 是有意的：这两条路都不通时，开着写接口等于任何登录用户
+    都能给自己加角色。措辞里要同时点出两条出路，否则排查的人不知道该走哪边。
+    """
+    monkeypatch.delenv("ASKDB_ADMIN_TOKEN", raising=False)
+    r = non_admin_client.post("/api/identity/members",
+                              json={"role_code": "PRODUCT", "username": "x"})
+    assert r.status_code == 403
+    assert "系统管理员" in r.json()["detail"]
+    assert "ASKDB_ADMIN_TOKEN" in r.json()["detail"]
+
+
+def test_write_refused_with_wrong_token(non_admin_client, monkeypatch):
+    monkeypatch.setenv("ASKDB_ADMIN_TOKEN", "right")
+    r = non_admin_client.post("/api/identity/members",
+                              headers={"X-Askdb-Admin-Token": "wrong"},
+                              json={"role_code": "PRODUCT", "username": "x"})
+    assert r.status_code == 401
+
+
+def test_delete_also_refused_without_role_or_token(non_admin_client, monkeypatch):
+    """删除和新增一样危险 —— 把人踢出角色同样是越权路径，别只守住新增。"""
+    monkeypatch.delenv("ASKDB_ADMIN_TOKEN", raising=False)
+    assert non_admin_client.delete("/api/identity/members/1").status_code == 403
+
+    monkeypatch.setenv("ASKDB_ADMIN_TOKEN", "right")
+    r = non_admin_client.delete("/api/identity/members/1",
+                                headers={"X-Askdb-Admin-Token": "wrong"})
+    assert r.status_code == 401
+
+
+def test_system_admin_writes_without_any_token(enabled_client, monkeypatch):
+    """系统管理员按**角色**就能改成员，不需要令牌（设计文档 I-03）。
+
+    这是令牌定位的转折点：它从"唯一依据"降为 break-glass。令牌是共享的，
+    记不下是谁改的，而成员变更恰恰最需要留痕 —— 日常路径必须走角色。
+
+    这里断言的是"准入这一关过了"：身份库没接真库，因此后面必然撞上
+    IdentityDisabled 转成的 404。**不是 403** 就说明角色这条路是通的。
     """
     monkeypatch.delenv("ASKDB_ADMIN_TOKEN", raising=False)
     r = enabled_client.post("/api/identity/members",
                             json={"role_code": "PRODUCT", "username": "x"})
-    assert r.status_code == 403
-    assert "ASKDB_ADMIN_TOKEN" in r.json()["detail"]
-
-
-def test_write_refused_with_wrong_token(enabled_client, monkeypatch):
-    monkeypatch.setenv("ASKDB_ADMIN_TOKEN", "right")
-    r = enabled_client.post("/api/identity/members",
-                            headers={"X-Askdb-Admin-Token": "wrong"},
-                            json={"role_code": "PRODUCT", "username": "x"})
-    assert r.status_code == 401
-
-
-def test_delete_also_requires_admin_token(enabled_client, monkeypatch):
-    """删除和新增一样危险 —— 把人踢出角色同样是越权路径，别只守住新增。"""
-    monkeypatch.delenv("ASKDB_ADMIN_TOKEN", raising=False)
-    assert enabled_client.delete("/api/identity/members/1").status_code == 403
-
-    monkeypatch.setenv("ASKDB_ADMIN_TOKEN", "right")
-    r = enabled_client.delete("/api/identity/members/1",
-                              headers={"X-Askdb-Admin-Token": "wrong"})
-    assert r.status_code == 401
+    assert r.status_code == 404
 
 
 def test_writable_flag_reflects_token_presence(enabled_client, monkeypatch):

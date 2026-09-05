@@ -152,8 +152,26 @@ def test_required_mode_rejects_anonymous(acfg, monkeypatch):
     c = TestClient(server.create_app("ignored.yaml"))
 
     assert c.post("/api/sql", json={"sql": "SELECT id FROM orgs"}).status_code == 401
-    c.post("/api/auth/login", json={"username": "alice", "password": "alice-pw"})
+    # 用 visitor（QA）而不是 alice（PRODUCT）：直查是 QA 有、PRODUCT 没有的
+    # 能力位，拿 alice 测会把"登录门"和"能力位"两件事混在一条断言里。
+    c.post("/api/auth/login", json={"username": "visitor", "password": "visitor-pw"})
     assert c.post("/api/sql", json={"sql": "SELECT id FROM orgs"}).status_code == 200
+
+
+def test_product_role_cannot_use_direct_sql(client):
+    """产品角色不给直查（设计文档 Q-02 脚注 1）。
+
+    直查绕过模型与业务口径层，而口径归口正是产品角色的职责所在 ——
+    给它一条绕开口径的通道，「指标以谁为准」就失去了落点。
+    这是**职责收敛，不是安全考虑**：直查同样过全部护栏。
+    """
+    client.post("/api/auth/login", json={"username": "alice", "password": "alice-pw"})
+    # 自然语言那条路照常开着 —— 拦的是"绕开口径"，不是"查数"
+    assert client.get("/api/schema").status_code == 200
+
+    r = client.post("/api/sql", json={"sql": "SELECT id FROM orgs"})
+    assert r.status_code == 403
+    assert "直查" in r.json()["detail"]
 
 
 def test_login_disabled_without_secret(acfg, monkeypatch):

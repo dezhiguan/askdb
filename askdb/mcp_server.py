@@ -21,7 +21,7 @@ import argparse
 import json
 from typing import Any
 
-from . import guard
+from . import guard, identity
 from .config import Config, load
 from .executor import DataSourceError, Executor
 from .graph import ask as run_ask, jsonable
@@ -66,9 +66,33 @@ def _result_payload(r: Any) -> dict[str, Any]:
     }
 
 
-def build_server(cfg: Config):
+def build_server(cfg: Config, role: str = identity.ANONYMOUS):
+    """把 askdb 暴露成 MCP 工具，**按角色收窄之后**。
+
+    这里此前直接吃启动配置，于是三个工具都以实例白名单全量运行 ——
+    一个接进来的 Agent 因此拥有超过任何内置角色的可见范围，而审计里
+    user 还是空的。那是这套权限体系里唯一一条完全绕开角色的通道。
+
+    收窄走 identity.for_roles，与 HTTP 那条链路是同一个入口，所以
+    表白名单、行上限、Schema 召回、口径过滤全部自动跟着生效 ——
+    不需要在这里重复实现任何判定，也就不会与 HTTP 那侧走偏。
+
+    默认 ANONYMOUS：它是一个**普通角色**，语义与匿名 HTTP 调用完全一致。
+    在配了 role_policies 的实例上它会被真实收窄；没配的实例上它等于
+    实例白名单 —— 与今天的行为相同，所以接入这层不会悄悄改变任何现有部署，
+    但从此有一个可以调紧的旋钮，而不是一条没有旋钮的旁路。
+
+    user 记 "mcp" 而不是留空：调用方确实不是某个人，留空会让审计里
+    那一栏看起来像"记录丢了"。如实写明它来自哪条通道。
+    """
     # 2026 版 SDK 的类名是 MCPServer（旧版叫 FastMCP，已不存在）
     from mcp.server.mcpserver import MCPServer
+
+    if role != identity.ANONYMOUS and role not in identity.ROLE_BY_CODE:
+        # 拼错角色码就退回全量，正是这次要消灭的那类静默失效 —— 宁可起不来
+        raise SystemExit(
+            f"未知角色：{role}。可选：{', '.join([*identity.ROLE_BY_CODE, identity.ANONYMOUS])}")
+    cfg = identity.for_roles(cfg, [role], user="mcp")
 
     mcp = MCPServer("askdb")
 
@@ -145,8 +169,12 @@ def build_server(cfg: Config):
 def main() -> None:
     ap = argparse.ArgumentParser(description="askdb MCP 服务端（stdio）")
     ap.add_argument("-c", "--config", default="config/askdb.yaml")
+    # 这条通道没有登录，角色只能由启动方声明。默认取最保守的那一个 ——
+    # 要放宽是部署方的显式决定，而不是忘了写参数的副作用。
+    ap.add_argument("--role", default=identity.ANONYMOUS,
+                    help="以哪个角色的可见范围运行（默认 ANONYMOUS）")
     a = ap.parse_args()
-    build_server(load(a.config)).run(transport="stdio")
+    build_server(load(a.config), role=a.role).run(transport="stdio")
 
 
 if __name__ == "__main__":
