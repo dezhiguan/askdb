@@ -311,3 +311,62 @@ def test_mcp_refuses_unknown_role(cfg):
     with pytest.raises(SystemExit):
         from askdb import mcp_server
         mcp_server.build_server(cfg, role="TYPO")
+
+
+# ---------- 环境范围（Q-05 / D-1） ----------
+
+def test_role_scope_is_now_enforced_not_decorative():
+    """角色详情第一格从展示字符串变成真判定。
+
+    此前 sources.py 里 env 的注释明写「仅用于界面区分，不参与鉴权」，
+    而角色卡上却写着 STAGING —— 页面上唯一一个看起来是真值、实际不成立的
+    字段，比纯占位更有误导性。
+    """
+    def envs(code: str):
+        return identity.DEFAULT_POLICIES.get(code, identity.Policy()).envs
+
+    assert envs("QA") == frozenset({"test"})
+    assert envs("PRODUCT") == frozenset({"prod_ro"})
+    assert envs("DEV") == frozenset({"dev", "test"})
+    assert envs("DATA_OWNER") is None                  # 跨全域，不额外收窄
+    assert envs("SYS_ADMIN") == frozenset()            # 一个都不给
+
+
+def test_qa_cannot_reach_the_production_mirror(zcfg, monkeypatch, tmp_path):
+    """测试角色连不上生产只读镜像 —— 这是 QA 角色描述里承诺过的那句话。
+
+    表白名单拦不住这个：生产镜像与测试库的表结构往往一模一样，
+    SQL 一字不差、数据完全不同。所以必须在选源时判。
+    """
+    from askdb import sources as S
+
+    src = S.build(name="prod-mirror", type_="duckdb",
+                  dsn=str(tmp_path / "p.duckdb"), env="prod_ro")
+    monkeypatch.setattr(S, "list_sources", lambda _c: [src])
+    monkeypatch.setattr(S, "get_source", lambda _c, sid: src if sid == src.id else None)
+
+    c = _client(zcfg, monkeypatch)
+
+    _as(c, "qa")
+    r = c.post("/api/sql", json={"sql": "SELECT 1", "source": src.id})
+    assert r.status_code == 403 and "PROD-RO" in r.json()["detail"]
+    # 列表里也看不到它：列表本身就是信息
+    assert [i["id"] for i in c.get("/api/sources").json()["items"]] == ["builtin"]
+
+    _as(c, "owner")                                   # 数据负责人跨全域
+    assert src.id in [i["id"] for i in c.get("/api/sources").json()["items"]]
+
+
+def test_env_falls_back_to_the_conservative_value(tmp_path):
+    """拼错 env 的后果必须是"看得更少"，不能是"看得更多"。"""
+    from askdb import sources as S
+    src = S.build(name="x", type_="duckdb", dsn=str(tmp_path / "a.duckdb"), env="PRODUCTION")
+    assert src.env == "test"
+
+
+def test_roles_endpoint_exposes_the_effective_envs(zcfg, monkeypatch):
+    """前端那一格要读真值，否则又是一处"配了但看不出有没有生效"。"""
+    c = _client(zcfg, monkeypatch)
+    roles = {r["code"]: r for r in c.get("/api/identity/roles").json()["roles"]}
+    assert roles["QA"]["envs"] == ["test"]
+    assert roles["DATA_OWNER"]["envs_unrestricted"] is True

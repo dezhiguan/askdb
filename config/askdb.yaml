@@ -112,6 +112,10 @@ metrics_file: ./config/metrics-ragforge.yaml
 # 运行时添加只读数据源。开着的时候，服务端会按界面填入的地址主动建连 ——
 # askdb 不设账号体系，所以这等于把出站建连的能力交给任何能打开页面的人。
 # 本机开发实例开启；任何对外可达的实例必须显式关闭（见 config/public.yaml）。
+# 内置数据源若要参与「环境范围」鉴权，在 datasource 段声明 env（dev / test / prod_ro）。
+# **不声明就不参与判定** —— 对着一个没声明归属的库宣称"已按环境鉴权"，
+# 等于在权限页上写一句不成立的话。运行时源在添加时必填，因此一律参与。
+# 这套部署没有内置源（只用运行时源），所以这里没有 datasource 段。
 datasources:
   allow_runtime_add: true
 

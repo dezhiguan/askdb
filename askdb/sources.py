@@ -56,7 +56,11 @@ class Source:
     name: str
     type: str
     dsn: str
-    env: str = "test"                 # 环境标签，仅用于界面区分，不参与鉴权
+    #: 环境归属。**参与鉴权**：角色的 Policy.envs 按它收窄可用数据源
+    #: （设计文档 Q-05）。此前它只是个界面标签，于是角色详情里的
+    #: 「环境范围 STAGING」是页面上唯一一个看起来是真值、实际不成立的字段
+    #: —— 比纯占位更有误导性，因为它会让人以为测试角色碰不到生产。
+    env: str = "test"
     upstream: str = ""                # 经隧道时的真实库地址
     password_env: str = ""
     password_enc: str = ""
@@ -209,6 +213,15 @@ def delete_source(cfg: Config, sid: str) -> bool:
 # 新建
 # --------------------------------------------------------------------------
 
+#: 环境档位，按"离生产的距离"从远到近排列。
+#:
+#: 三档而不是两档：角色 scope 区分了「开发及测试环境」与「仅测试环境」，
+#: 而枚举只有 test/prod_ro 时这两者无法区分 —— 枚举撑不起角色已经宣称的粒度。
+ENVS: tuple[str, ...] = ("dev", "test", "prod_ro")
+
+ENV_LABEL = {"dev": "DEV", "test": "TEST", "prod_ro": "PROD-RO"}
+
+
 def build(*, name: str, type_: str, dsn: str, env: str = "test",
           upstream: str = "", password_env: str = "", password: str = "") -> Source:
     """校验并构造一条数据源。任何一项不合规都直接抛，不做静默兜底。"""
@@ -233,7 +246,9 @@ def build(*, name: str, type_: str, dsn: str, env: str = "test",
         name=name,
         type=type_,
         dsn=dsn,
-        env=env if env in ("test", "prod_ro") else "test",
+        # 非法值一律回退到最保守的那一档，不是回退到"默认档"：
+        # 拼错 env 的后果必须是"看得更少"，不能是"看得更多"。
+        env=env if env in ENVS else "test",
         upstream=(upstream or "").strip(),
         password_env=password_env,
         password_enc=encrypt_password(password) if password else "",

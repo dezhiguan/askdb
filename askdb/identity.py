@@ -76,16 +76,22 @@ ANONYMOUS = "ANONYMOUS"
 class Policy:
     """一个角色能看到什么。
 
-    只有两个维度，都是**收窄**语义：
+    三个维度，都是**收窄**语义：
       · tables   —— 可见表。None 表示不额外收窄（用实例白名单）
       · max_rows —— 返回行上限。None 表示不额外收窄（用实例配置）
+      · envs     —— 可用数据源的环境档位。None 表示不额外收窄
 
-    刻意不做"允许列表"之外的能力位。权限模型每多一个维度，就多一处
-    "这条规则到底拦不拦得住"的争论；这两个维度直接落在既有的 R-03 与 R-13 上，
-    不需要新造任何判定。
+    刻意不做"允许列表"之外的能力位 —— 那些是 CAPABILITIES 的事。
+    这三个维度都落在既有判定上：tables/max_rows 落在护栏 R-03 与 R-13，
+    envs 落在选源那一步，不需要新造任何规则。
+
+    envs 与另外两个的区别值得记一笔：tables/max_rows 收窄的是"查到的东西"，
+    envs 收窄的是"连哪个库"。后者必须在选源时判，不能等进了护栏 ——
+    护栏只看 SQL，它没有"这条连接通向哪台机器"这个信息。
     """
     tables: frozenset[str] | None = None
     max_rows: int | None = None
+    envs: frozenset[str] | None = None
 
 
 #: 内置默认。配置可以在此基础上**继续收窄**，不能放宽。
@@ -95,7 +101,16 @@ class Policy:
 DEFAULT_POLICIES: dict[str, Policy] = {
     # 职责分离在这里落到实处：管人的角色拿不到任何数据。
     # 这不是配置项，是内置默认 —— 忘了配也不会漏。
-    "SYS_ADMIN": Policy(tables=frozenset(), max_rows=0),
+    "SYS_ADMIN": Policy(tables=frozenset(), max_rows=0, envs=frozenset()),
+
+    # 环境档位是**内置的**，不是配置项：它就是 Role.scope 那一行字的执行含义。
+    # 放进配置意味着可以把测试角色配到生产只读镜像上，而那恰恰是
+    # 「仅测试环境与模拟数据，不接触任何生产数据」这句话承诺过不会发生的事。
+    # 要改这几行必须改代码、走评审 —— 与 ROLES 固定不开放自定义同一个理由。
+    "PRODUCT": Policy(envs=frozenset({"prod_ro"})),
+    "DEV": Policy(envs=frozenset({"dev", "test"})),
+    "QA": Policy(envs=frozenset({"test"})),
+    # 数据负责人跨全域，不额外收窄环境（envs=None）
 }
 
 
@@ -228,7 +243,12 @@ def policy_for(cfg: Config, role_code: str) -> Policy:
         cap = int(spec["max_rows"])
         max_rows = cap if max_rows is None else min(max_rows, cap)
 
-    return Policy(tables=tables, max_rows=max_rows)
+    envs = base.envs
+    if spec.get("envs") is not None:
+        want_envs = frozenset(str(e).strip().lower() for e in spec["envs"])
+        envs = want_envs if envs is None else (envs & want_envs)
+
+    return Policy(tables=tables, max_rows=max_rows, envs=envs)
 
 
 def combine(policies: list[Policy]) -> Policy:
@@ -255,7 +275,14 @@ def combine(policies: list[Policy]) -> Policy:
     caps = [p.max_rows for p in policies]
     max_rows = None if any(c is None for c in caps) else max(caps)
 
-    return Policy(tables=tables, max_rows=max_rows)
+    envs: frozenset[str] | None = frozenset()
+    for p in policies:
+        if p.envs is None:
+            envs = None
+            break
+        envs |= p.envs
+
+    return Policy(tables=tables, max_rows=max_rows, envs=envs)
 
 
 def for_roles(cfg: Config, role_codes: list[str], user: str = "") -> Config:
@@ -401,7 +428,12 @@ def roles_with_counts(cfg: Config) -> list[dict[str, Any]]:
         counts[code] = counts.get(code, 0) + 1
     return [
         {"code": r.code, "name": r.name, "scope": r.scope, "desc": r.desc,
-         "system": r.system, "members": counts.get(r.code, 0)}
+         "system": r.system, "members": counts.get(r.code, 0),
+         # envs 是 scope 那行字的**执行值**。一并给出去，前端的「环境范围」
+         # 就不再是照抄设计稿的字符串，而是这套部署真正在拦的东西 ——
+         # 权限体系最怕的是"配了但看不出有没有生效"。
+         "envs": sorted(policy_for(cfg, r.code).envs or ()),
+         "envs_unrestricted": policy_for(cfg, r.code).envs is None}
         for r in ROLES
     ]
 
