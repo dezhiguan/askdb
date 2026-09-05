@@ -224,7 +224,8 @@
   font-size: 7px;
   cursor: pointer;
 }
-.recent-clear:hover { color: var(--red); }
+.recent-clear:hover:not(:disabled) { color: var(--red); }
+.recent-clear:disabled { opacity: .42; }
 .recent-clear:disabled { opacity: .4; cursor: default; }
 
 .recent-query-list {

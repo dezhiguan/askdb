@@ -7,16 +7,28 @@ import copy
 import pytest
 from fastapi.testclient import TestClient
 
-from askdb import server
+from askdb import auth, server
 
 
 def _client(cfg, monkeypatch, replay_api: bool):
     c = copy.deepcopy(cfg)
     c.raw = copy.deepcopy(cfg.raw)
     c.raw["observability"]["replay_api"] = replay_api
+    # 回放于 2026-09-05 起要登录：它返回 SQL 全文与问题原文。这一组用例测的是
+    # **里面那几条规则**（字段白名单、统一 404、独立限流），所以先把身份补上，
+    # 否则测到的全是外面那道"未登录"。匿名拿 404 由 test_auth 单独钉。
+    monkeypatch.setenv(auth.SESSION_SECRET_ENV, "t" * 40)
+    c.raw["auth"] = {
+        "enabled": True, "required": False,
+        "accounts": [{"username": "ops", "roles": ["DATA_OWNER"],
+                      "password_hash": auth.hash_password("ops-pw")}],
+    }
     monkeypatch.setattr(server, "load", lambda _p: c)
     monkeypatch.setattr(server, "_REPLAY_RL", server._RateLimit())
-    return TestClient(server.create_app("ignored.yaml"))
+    client = TestClient(server.create_app("ignored.yaml"))
+    assert client.post("/api/auth/login",
+                       json={"username": "ops", "password": "ops-pw"}).status_code == 200
+    return client
 
 
 def _make_trace(client) -> str:
@@ -64,3 +76,22 @@ def test_rate_limited_separately(cfg, monkeypatch):
     codes = [client.get("/api/replay?trace_id=0123456789ab").status_code
              for _ in range(5)]
     assert codes[:3] == [404, 404, 404] and codes[3] == 429
+
+
+def test_anonymous_replay_is_indistinguishable_from_not_found(cfg, monkeypatch):
+    """未登录回放与「不存在」同一响应。
+
+    回放返回的是这次调用的 SQL 全文与问题原文 —— 比列表那一行敏感得多。
+    用 404 而不是 401，是沿用本接口既有的"三种结局同一响应"约定：
+    区分「存在但你没权限」和「不存在」，本身就是信息泄露。
+    """
+    c = _client(cfg, monkeypatch, replay_api=True)
+    tid = _make_trace(c)
+    assert c.get(f"/api/replay?trace_id={tid}").status_code == 200
+
+    c.post("/api/auth/logout")
+    anon = c.get(f"/api/replay?trace_id={tid}")
+    missing = c.get("/api/replay?trace_id=0123456789ab")
+    assert anon.status_code == 404
+    assert anon.text == missing.text          # 逐字节一致
+

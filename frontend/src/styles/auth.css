@@ -173,20 +173,22 @@
   align-items: center;
   gap: 5px;
   margin-bottom: 19px;
-  padding: 0;
-  border: 0;
-  color: var(--muted);
-  background: transparent;
+  padding: 6px 11px;
+  border: 1px solid #bfc6c0;
+  border-radius: 999px;
+  color: var(--ink-2);
+  background: rgba(255,255,255,.72);
   font-size: 7px;
+  font-weight: 700;
   cursor: pointer;
+  transition: border-color .18s, color .18s, background .18s;
 }
 
-.login-back:hover { color: var(--green); }
+.login-back:hover { color: var(--green); border-color: var(--green); background: white; }
 
 .login-field { margin-top: 13px; }
 .login-field-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .login-field-head label { color: var(--ink-2); font-size: 7px; font-weight: 800; }
-.login-field-head span { color: var(--muted); font-size: 6px; }
 .login-input-shell { position: relative; }
 .login-input-shell > i { position: absolute; left: 11px; top: 50%; color: #759082; font: 7px var(--mono); font-style: normal; transform: translateY(-50%); pointer-events: none; }
 .login-input-shell input {
@@ -206,6 +208,37 @@
 .login-input-shell input.invalid { border-color: var(--red); background: var(--red-wash); }
 .login-password-toggle { position: absolute; right: 7px; top: 50%; padding: 5px; border: 0; color: var(--muted); background: transparent; font: 6px var(--mono); cursor: pointer; transform: translateY(-50%); }
 .login-error { min-height: 15px; margin: 6px 0 0; color: var(--red); font-size: 6px; }
+.login-error.show {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 0;
+  margin: 10px 0 8px;
+  padding: 9px 11px;
+  border: 1px solid #d4aaa3;
+  border-left: 3px solid var(--red);
+  border-radius: 7px;
+  background: var(--red-wash);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1.45;
+  animation: loginErrorIn .2s ease both;
+}
+
+.login-error.show i {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--red);
+  font: 700 7px var(--mono);
+  font-style: normal;
+}
+
+@keyframes loginErrorIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 
 .login-submit {
   width: 100%;

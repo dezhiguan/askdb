@@ -49,7 +49,24 @@ code, pre { font-family: var(--mono); }
 .secondary { border: 1px solid #a6c3af; color: var(--green); background: var(--green-wash); }
 .ghost { border: 1px solid var(--line); color: var(--ink-2); background: rgba(255,255,255,.45); }
 .danger { border: 1px solid #d4aaa3; color: var(--red); background: var(--red-wash); }
-.primary:hover, .secondary:hover, .ghost:hover { transform: translateY(-1px); }
+.primary:hover:not(:disabled), .secondary:hover:not(:disabled), .ghost:hover:not(:disabled) { transform: translateY(-1px); }
+
+/* 禁用态的统一表现。
+ *
+ * 之前只给按钮加了 disabled 属性却没有任何 :disabled 样式 —— 点不动，但颜色、
+ * 透明度、光标与正常态**一模一样**，hover 还照样上浮，看着比能点的更像能点。
+ * 结果是"已经禁用了"和"忘了禁用"在界面上无法区分，实际比不禁用更糟：
+ * 用户会反复点一个不给任何反馈的按钮。
+ *
+ * 放在这里而不是各页各写：禁用是一种全局状态，十几处入口各调各的必然漂。
+ * 具体**为什么**禁用由每个按钮自己的 title 说，样式只负责"这个点不了"。 */
+button:disabled { cursor: not-allowed; }
+.primary:disabled, .secondary:disabled, .ghost:disabled, .danger:disabled {
+  opacity: .42;
+  transform: none;
+  box-shadow: none;
+  filter: grayscale(.65);
+}
 .status { display: inline-flex; align-items: center; padding: 3px 6px; border-radius: 99px; color: var(--green); background: var(--green-wash); font: 6px var(--mono); white-space: nowrap; }
 .status.wait { color: #8d521b; background: var(--amber-wash); }
 .online-dot { width: 6px; height: 6px; display: inline-block; border-radius: 50%; background: var(--green-2); box-shadow: 0 0 0 3px rgba(44,179,110,.12); }

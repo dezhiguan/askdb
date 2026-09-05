@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { writeGuard } from './writeGuard'
 import { AppShell, PageHeader } from './components/AppShell'
 import { LoginScreen } from './components/LoginScreen'
 import { MockNotice } from './components/MockNotice'
@@ -77,20 +78,23 @@ function App() {
         <PageHeader
           title="查询 Agent"
           description="无需写 SQL，直接描述你想查看的数据。每次查询均使用独立上下文。"
-          action={<button className="secondary" onClick={() => setView('tasks')}>创建复杂任务</button>}
+          /* 这只是跳转，但它通向的「创建任务」要登录 —— 入口和目的地状态不一致，
+             会让人点进去才发现做不了 */
+          action={<button className="secondary" {...writeGuard(me, '创建任务').props}
+            onClick={() => setView('tasks')}>创建复杂任务</button>}
         />
         {/* key 变化即整块重挂 —— 侧栏「发起快捷查询」照原型要回到空态 */}
         <QueryWorkspace key={queryEpoch} health={health} sources={sources} onNavigate={setView} notify={notify} me={me} />
       </div>
     )
-    if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} />
+    if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} me={me} />
     if (view === 'sources') return <DataSourcesPage health={health} me={me} />
-    if (view === 'permissions') return <PermissionsPage notify={notify} />
-    if (view === 'glossary') return <GlossaryPage onNavigate={setView} notify={notify} />
+    if (view === 'permissions') return <PermissionsPage notify={notify} me={me} />
+    if (view === 'glossary') return <GlossaryPage onNavigate={setView} notify={notify} me={me} />
     if (view === 'approvals') return <ApprovalsPage notify={notify} />
     if (view === 'audit') return <AuditPage />
     if (view === 'evaluation') return <EvaluationPage />
-    if (view === 'traces') return <TracesPage onNavigate={setView} onOpenModal={setModal} />
+    if (view === 'traces') return <TracesPage onNavigate={setView} onOpenModal={setModal} me={me} />
     return <AuditPage />
   })()
 

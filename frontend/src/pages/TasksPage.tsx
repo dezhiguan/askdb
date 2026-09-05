@@ -9,6 +9,7 @@ import {
   type Replay,
   type Task,
   type TasksResult,
+ type Me,
 } from '../api'
 import {
   ClarificationModal,
@@ -21,6 +22,7 @@ import {
   type TaskSourceOption,
 } from '../components/Modals'
 import type { View } from '../types'
+import { writeGuard } from '../writeGuard'
 
 /* 结构、类名与文案对齐原型 trusted-data-agent-prototype.html 的 #view-tasks。
    原型里的任务是写死的样例，这里的每一行都来自 /api/tasks；
@@ -85,10 +87,12 @@ type ModalState =
   | { kind: 'reason'; task: Task }
   | { kind: 'clarify'; task: Task }
 
-export function TasksPage({ onNavigate, notify }: {
+export function TasksPage({ onNavigate, notify, me }: {
   onNavigate: (view: View) => void
   notify: (message: string) => void
+  me: Me | null
 }) {
+  const guard = writeGuard(me, '创建任务')
   const [result, setResult] = useState<TasksResult | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
@@ -180,7 +184,7 @@ export function TasksPage({ onNavigate, notify }: {
   const create = async (payload: CreateTaskPayload) => {
     setCreating(true)
     try {
-      const response = await askQuestion(payload.goal, payload.sourceId)
+      const response = await askQuestion(payload.goal, payload.sourceId, undefined, true)
       if (response.ok) {
         notify(`任务已创建并执行 · trace ${response.trace_id}`)
       } else {
@@ -209,7 +213,8 @@ export function TasksPage({ onNavigate, notify }: {
         title="任务中心"
         description="需要确认、耗时较长或包含复杂分析步骤的查询会自动升级为任务。"
         action={
-          <button className="primary" onClick={() => setModal({ kind: 'create' })}>＋ 创建任务</button>
+          <button className="primary" {...guard.props}
+            onClick={() => setModal({ kind: 'create' })}>＋ 创建任务</button>
         }
       />
 

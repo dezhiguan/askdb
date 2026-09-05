@@ -25,6 +25,10 @@ type Drawer =
   | null
 
 export function AuditPage() {
+  // 原文可见与否**以后端返回的 text_visible 为准**，不用 me 自己推。
+  // 前端推一遍就多一处判据，两处迟早分叉 —— 而这一处分叉的后果是
+  // 页面显示"已遮蔽"、接口却照样把原文发了出来。
+  const textVisible = (list: AuditList | null) => list?.text_visible !== false
   const [stats, setStats] = useState<AuditStats | null>(null)
   const [error, setError] = useState('')
 
@@ -104,7 +108,16 @@ export function AuditPage() {
           <div className="card-actions">
             {/* 成本分布原来挂在统计卡上，那一排撤掉后入口挪到这里 —— 抽屉本身是真功能 */}
             <button className="ghost" onClick={() => setDrawer({ mode: 'cost' })}>成本分布</button>
-            <button className="ghost" onClick={exportReport} disabled={!list || list.items.length === 0}>
+            {/* 导出的就是问题原文 CSV。未登录时表格里本来也没有原文，
+                让他导出一份全是空列的文件，不如直接说清为什么 */}
+            <button
+              className="ghost"
+              onClick={exportReport}
+              disabled={!list || list.items.length === 0 || !textVisible(list)}
+              title={list && !textVisible(list)
+                ? '导出内容包含各条记录的问题原文，登录后才能导出；未登录可以看统计、护栏结果与耗时成本'
+                : undefined}
+            >
               导出审计报告
             </button>
           </div>
@@ -147,7 +160,8 @@ export function AuditPage() {
           </thead>
           <tbody>
             {list?.items.map(item => (
-              <AuditRow key={item.trace_id + item.ts} item={item} stats={stats} onReplay={openReplay} />
+              <AuditRow key={item.trace_id + item.ts} item={item} stats={stats}
+                textVisible={textVisible(list)} onReplay={openReplay} />
             ))}
             {list && list.items.length === 0 && !loading && (
               <tr><td colSpan={10} className="audit-empty">没有匹配的记录</td></tr>
@@ -228,12 +242,14 @@ function guardText(item: AuditItem): string {
   return `${item.rejected_by} 拦截`
 }
 
-function AuditRow({ item, stats, onReplay }: {
+function AuditRow({ item, stats, textVisible, onReplay }: {
   item: AuditItem
   stats: AuditStats | null
+  /** 问题原文可见（= 已登录）。复放返回的是 SQL 全文，比这一行更敏感，同一判据 */
+  textVisible: boolean
   onReplay: (traceId: string) => void
 }) {
-  const replayOn = !!stats?.replay_api
+  const replayOn = !!stats?.replay_api && textVisible
   const link = stats && item.kind !== 'sql' ? tracingLink(stats.tracing, item.trace_id) : null
 
   return (
@@ -249,7 +265,10 @@ function AuditRow({ item, stats, onReplay }: {
       <td title="审计记录未落调用者账号，仅记录生效角色">
         <span className="audit-na">{DASH}</span> / {item.role || DASH}
       </td>
-      <td className="audit-question" title={item.question ?? ''}>{item.question}</td>
+      <td className="audit-question" title={item.question ?? ''}>
+        {/* question 为 null 是"看不到"，不是"没问过" —— 空着会被读成后者 */}
+        {item.question ?? <span className="mask">登录后可见</span>}
+      </td>
       {/* 单实例单数据源，逐条记录里不存数据源名 */}
       <td className="audit-na" title="审计记录未按条落数据源">{DASH}</td>
       <td><GuardBadge item={item} /></td>
@@ -258,7 +277,12 @@ function AuditRow({ item, stats, onReplay }: {
       <td onClick={event => event.stopPropagation()}>
         {replayOn
           ? <button className="link-button" onClick={() => onReplay(item.trace_id)}>复放</button>
-          : <span className="link-disabled" title="replay_api 未开启（连真实数据源的实例默认关闭）">复放</span>}
+          : <span
+              className="link-disabled"
+              title={!textVisible
+                ? '复放会返回这次调用的 SQL 全文与问题原文，登录后才能查看'
+                : 'replay_api 未开启（连真实数据源的实例默认关闭）'}
+            >复放</span>}
       </td>
       <td onClick={event => event.stopPropagation()}>
         {link

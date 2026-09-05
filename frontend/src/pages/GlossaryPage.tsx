@@ -1,18 +1,21 @@
 import { PageHeader } from '../components/AppShell'
 import { useEffect, useMemo, useState } from 'react'
-import { checkMetrics, fetchSchema, type MetricCheck, type Schema, type SchemaMetric } from '../api'
+import { checkMetrics, fetchSchema, type MetricCheck, type Me, type Schema, type SchemaMetric } from '../api'
 import { MetricConfigHelp } from '../components/MetricConfigHelp'
 import type { View } from '../types'
+import { writeGuard } from '../writeGuard'
 
 const KIND_LABEL: Record<string, string> = {
   expr: '表达式 · 进 SELECT',
   predicate: '谓词 · 进 WHERE',
 }
 
-export function GlossaryPage({ onNavigate, notify }: {
+export function GlossaryPage({ onNavigate, notify, me }: {
   onNavigate: (view: View) => void
   notify: (message: string) => void
+  me: Me | null
 }) {
+  const guard = writeGuard(me, '新建指标')
   const [schema, setSchema] = useState<Schema | null>(null)
   const [error, setError] = useState('')
   const [picked, setPicked] = useState('')
@@ -73,7 +76,8 @@ export function GlossaryPage({ onNavigate, notify }: {
             <button className="secondary" disabled={checking || !metrics.length} onClick={runCheck}>
               {checking ? '核对中…' : '核对区分度'}
             </button>
-            <button className="primary" onClick={() => setShowAdd(true)}>＋ 新建指标</button>
+            <button className="primary" {...guard.props}
+              onClick={() => setShowAdd(true)}>＋ 新建指标</button>
           </div>
         }
       />

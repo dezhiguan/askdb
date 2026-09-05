@@ -58,6 +58,7 @@ export interface AuditItem {
   org_id: number | null
   /** 这条调用出自谁的可见范围。老记录没有该字段，后端如实给「（未记录）」 */
   role: string
+  /** 未登录时为 null —— 是"看不到"，不是"没有" */
   question: string | null
   rejected_by: string | null
   attempts: number | null
@@ -74,6 +75,9 @@ export interface AuditList {
   page: number
   page_size: number
   items: AuditItem[]
+  /** 问题原文是否可见。未登录时后端不返回原文，且搜索只匹配 trace_id ——
+   *  页面据此显示遮蔽提示，而不是让人以为这些记录本来就没问过问题。 */
+  text_visible: boolean
 }
 
 export interface Tracing {
@@ -474,9 +478,12 @@ export interface AskResult {
   cost_cny?: number
 }
 
-/** source 是运行时数据源 id；留空走启动配置里的内置源。 */
-export const askQuestion = (question: string, source = '', orgId?: number) =>
-  post<AskResult>('/api/ask', { question, source, org_id: orgId ?? null })
+/** source 是运行时数据源 id；留空走启动配置里的内置源。
+ *
+ *  asTask=true 表示这次提问来自「创建任务」。后端据此要求登录 —— 任务与普通
+ *  提问走同一条链路，后端分辨不出来，只能由调用方声明。 */
+export const askQuestion = (question: string, source = '', orgId?: number, asTask = false) =>
+  post<AskResult>('/api/ask', { question, source, org_id: orgId ?? null, as_task: asTask })
 
 export const runSql = (sql: string, source = '', orgId?: number) =>
   post<AskResult>('/api/sql', { sql, source, org_id: orgId ?? null })

@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react'
 import {
   addMember, fetchMembers, fetchRoles, removeMember,
   type RoleInfo, type RoleMember, type RolesResponse,
+ type Me,
 } from '../api'
+import { writeGuard, type WriteGuard } from '../writeGuard'
 
 function fmtDate(ts: string): string {
   const d = new Date(ts)
@@ -54,7 +56,11 @@ function maskLabel(role: RoleInfo): string {
   return role.unmask ? '原值可见' : 'MASKED'
 }
 
-export function PermissionsPage({ notify }: { notify: (message: string) => void }) {
+export function PermissionsPage({ notify, me }: {
+  notify: (message: string) => void
+  me: Me | null
+}) {
+  const guard = writeGuard(me, '同步企业组织')
   const [data, setData] = useState<RolesResponse | null>(null)
   const [active, setActive] = useState<string>('PRODUCT')
   const [members, setMembers] = useState<RoleMember[] | null>(null)
@@ -129,7 +135,7 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
       <PageHeader
         title="身份与权限中心"
         description="企业 SSO 提供身份，RBAC 定义角色，ABAC 根据环境和数据属性动态收敛权限。"
-        action={<button className="primary" onClick={syncOrg}>同步企业组织</button>}
+        action={<button className="primary" {...guard.props} onClick={syncOrg}>同步企业组织</button>}
       />
 
       {error && <div className="audit-error">读取失败：{error}</div>}
@@ -167,7 +173,7 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
         <div className="policy-stack">
         <section className="card">
           {role
-            ? <RoleDetail notify={notify} role={role} />
+            ? <RoleDetail notify={notify} role={role} guard={guard} />
             : <p className="drawer-note policy-note">读取中…</p>}
         </section>
 
@@ -263,7 +269,11 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
   )
 }
 
-function RoleDetail({ role, notify }: { role: RoleInfo; notify: (message: string) => void }) {
+function RoleDetail({ role, notify, guard }: {
+  role: RoleInfo
+  notify: (message: string) => void
+  guard: WriteGuard
+}) {
   return (
     <>
       <div className="permission-head">
@@ -271,8 +281,9 @@ function RoleDetail({ role, notify }: { role: RoleInfo; notify: (message: string
         <h3>{ROLE_TITLE[role.code] ?? `${role.name} · ${role.code}`}</h3>
         <p>{role.desc}</p>
       </div>
-      {/* 四个维度照设计稿。环境范围是真值（来自角色定义）；
-          后三项后端还没有这三个维度，按设计稿取值占位并在 title 里标明。 */}
+      {/* 四个维度**全部是真值**，由 identity.Policy 算出来。
+          此前后三项是照设计稿写死的，而后端根本没有对应字段 ——
+          那比"看不出有没有生效"更糟：它显示了一个从未生效过的值。 */}
       <div className="permission-grid">
         <div className="permission-cell">
           <span>环境范围</span>
@@ -296,7 +307,7 @@ function RoleDetail({ role, notify }: { role: RoleInfo; notify: (message: string
           管理员本人要查数，须另行加入某个数据角色，且这一动作同样留痕。
         </p>
       )}
-      <RolePolicyRules notify={notify} />
+      <RolePolicyRules notify={notify} guard={guard} />
     </>
   )
 }
@@ -330,7 +341,10 @@ const POLICY_RULES: { code: string; title: string; desc: string; live: boolean }
   },
 ]
 
-function RolePolicyRules({ notify }: { notify: (message: string) => void }) {
+function RolePolicyRules({ notify, guard }: {
+  notify: (message: string) => void
+  guard: WriteGuard
+}) {
   // 原型四条默认全开，点击即翻转
   const [on, setOn] = useState<Record<string, boolean>>(
     () => Object.fromEntries(POLICY_RULES.map(rule => [rule.code, true] as const)),
@@ -358,6 +372,7 @@ function RolePolicyRules({ notify }: { notify: (message: string) => void }) {
             aria-label={rule.title}
             aria-pressed={on[rule.code]}
             className={`toggle ${on[rule.code] ? 'on' : ''}`}
+            {...guard.props}
             onClick={() => flip(rule)}
           ><i /></button>
         </div>

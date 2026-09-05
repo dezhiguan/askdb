@@ -93,3 +93,4 @@
 .toggle i { display: block; width: 13px; height: 13px; border-radius: 50%; background: white; transition: transform .2s; }
 .toggle.on { background: var(--green); }
 .toggle.on i { transform: translateX(14px); }
+.toggle:disabled { opacity: .42; filter: grayscale(.65); }
