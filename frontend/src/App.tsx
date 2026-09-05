@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AppShell, PageHeader } from './components/AppShell'
-import { LoginPanel } from './components/LoginPanel'
+import { LoginScreen } from './components/LoginScreen'
 import { MockNotice } from './components/MockNotice'
 import { ModalLayer } from './components/Modals'
 import { QueryWorkspace } from './components/QueryWorkspace'
@@ -91,7 +91,7 @@ function App() {
         {page}
       </AppShell>
       {loginOpen && me && (
-        <LoginPanel
+        <LoginScreen
           me={me}
           onClose={() => setLoginOpen(false)}
           onDone={() => { setLoginOpen(false); reloadMe() }}

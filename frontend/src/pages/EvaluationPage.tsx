@@ -162,7 +162,7 @@ export function EvaluationPage() {
       {scope === 'online' && <OnlineScope live={live} days={days} />}
       {scope === 'offline' && (
         <OfflineScope category={category} onCategory={setCategory}
-                      onDataset={() => setScope('dataset')} offline={offline} />
+                      onDataset={() => setScope('dataset')} offline={offline} live={live} />
       )}
       {scope === 'dataset' && <DatasetScope offline={offline} />}
     </div>
@@ -284,14 +284,14 @@ function OnlineScope({ live, days }: { live: LiveQuality | null; days: number })
       </div>
 
       <div className="eval-metric-grid">
-        <MetricCard label="调用成功率" value={pct(live.success_rate)}
+        <MetricCard label="调用成功率" status={`AUDIT · ${live.days}D`} value={pct(live.success_rate)}
                     note={`${live.ok.toLocaleString()} / ${live.runs.toLocaleString()} 次`} />
-        <MetricCard label="护栏拦截率" value={pct(live.block_rate)}
-                    note={`${live.blocked} 次被拦 —— 这是护栏在做对事，不是故障`} />
-        <MetricCard label="执行失败" value={String(live.failed)}
+        <MetricCard label="护栏拦截率" status={`${live.blocked} BLOCKED`} value={pct(live.block_rate)}
+                    note="拦下一条危险 SQL 是护栏在做对事，不是故障" />
+        <MetricCard label="执行失败" status="EXEC / LLM" value={String(live.failed)}
                     note="数据源异常或模型调用失败" danger={live.failed > 0} />
-        <MetricCard label="P95 端到端" value={fmtMs(live.p95_ms)}
-                    note={`中位 ${fmtMs(live.p50_ms)}`} />
+        <MetricCard label="P95 端到端" status={`P50 ${fmtMs(live.p50_ms)}`} value={fmtMs(live.p95_ms)}
+                    note={`样本 ${live.runs.toLocaleString()} 次真实调用`} />
       </div>
 
       <article className="eval-card">
@@ -375,24 +375,29 @@ const RULE_BRIEF: Record<string, string> = {
   INTERRUPTED: '执行中断',
 }
 
-function OfflineScope({ category, onCategory, onDataset, offline }: {
+function OfflineScope({ category, onCategory, onDataset, offline, live }: {
   category: Category
   onCategory: (c: Category) => void
   onDataset: () => void
   offline: OfflineQuality | null
+  /** 性能页的阶段拆解取线上真实调用 —— 离线样本量撑不起分位数 */
+  live: LiveQuality | null
 }) {
   if (!offline) return <p className="drawer-note">读取离线回归结果…</p>
   if (!offline.available) {
     return (
       <section className="eval-scope-panel active">
         <div className="eval-note">
-          <strong>尚未跑过离线回归</strong>
-          <p>
-            这一页的每个数字都来自 <span className="mono">evals/results/</span> 下的结果文件。
-            没跑过就没有结果 —— 不会拿线上统计冒充，也不会显示 0。
-          </p>
-          <pre className="sql-code">python -m evals.golden -c config/askdb.yaml</pre>
+          <i>OFF</i>
+          <div>
+            <strong>尚未跑过离线回归</strong>
+            <small>
+              这一页的每个数字都来自 evals/results/ 下的结果文件。
+              没跑过就没有结果 —— 不会拿线上统计冒充，也不会显示 0。
+            </small>
+          </div>
         </div>
+        <pre className="sql-code">python -m evals.golden -c config/askdb.yaml</pre>
       </section>
     )
   }
@@ -413,16 +418,8 @@ function OfflineScope({ category, onCategory, onDataset, offline }: {
       {category === 'overview' && <OverviewPanel d={offline} onDataset={onDataset} />}
       {category === 'accuracy' && <AccuracyPanel d={offline} />}
       {category === 'security' && <SecurityPanel d={offline} />}
-      {category === 'stability' && <NotMeasured
-        title="稳定性未被离线回归测量"
-        items={[
-          '重试恢复率 —— 需要在评测里注入连接超时、限流等瞬时故障',
-          '断点恢复率 —— 需要构造中断样本再走 /api/resume 续跑',
-          '故障注入（数据库超时 / 模型限流 / Schema 漂移）—— 需要故障注入框架',
-        ]}
-        hint="线上执行成功率与失败分布在「线上质量」里是真数据，可先看那一页。"
-      />}
-      {category === 'performance' && <PerformancePanel d={offline} />}
+      {category === 'stability' && <StabilityPanel d={offline} live={live} />}
+      {category === 'performance' && <PerformancePanel d={offline} live={live} />}
     </section>
   )
 }
@@ -449,54 +446,91 @@ function Provenance({ p }: { p: OfflineQuality['provenance'] }) {
 
 function OverviewPanel({ d, onDataset }: { d: OfflineQuality; onDataset: () => void }) {
   const b = d.blind!
+  const sc = d.score
+  const passed = Math.round(b.accuracy * b.n)
   const kinds = Object.entries(b.failure_kinds || {})
+  const linkFail = b.failure_kinds?.['链路失败'] ?? 0
+
   return (
     <>
+      {/* 四张卡的标签与版式照原型。数值全部来自本轮结果；
+          右上角 code 位改成写**这个数是怎么来的**，而不是原型里的
+          "118 / 126"这类写死值。 */}
       <div className="eval-score-grid">
-        <ScoreCard label="盲测准确率" tag={`${b.n} CASES`} value={pct(b.accuracy)} unit=""
-                   note="按执行结果判定，不要求 SQL 字符串相同" bars={[]} />
-        <ScoreCard label="误拒率" tag="FALSE REJECT" value={pct(b.false_reject)} unit=""
-                   note="本该能答却被护栏挡下的比例，越低越好" bars={[]} />
-        <ScoreCard label="该拒即拒" tag="BLOCK" value={pct(b.block_rate)} unit=""
-                   note="应当被拦的用例里实际拦下的比例" bars={[]} />
-        <ScoreCard label="P95 耗时" tag="OFFLINE" value={fmtMs(b.p95_ms)} unit=""
-                   note={`本轮总成本 ¥${b.cost_cny}`} bars={[]} />
+        <ScoreCard label="离线质量分" tag={`发布门禁 ≥ ${sc?.gate ?? 90}`}
+                   value={sc ? String(sc.overall) : '—'} unit="/ 100"
+                   note={sc ? (sc.pass ? '达到发布门禁' : `距门禁还差 ${(sc.gate - sc.overall).toFixed(1)}`) : ''}
+                   bars={sc ? sc.dimensions.map(x => x.value) : []} />
+        <ScoreCard label="任务成功率" tag={`${passed} / ${b.n}`}
+                   value={(b.accuracy * 100).toFixed(1)} unit="%"
+                   note={`${b.n - passed} 个失败样本`}
+                   bars={[]} />
+        <ScoreCard label="结果准确率" tag="RESULT MATCH"
+                   value={(b.accuracy * 100).toFixed(1)} unit="%"
+                   note="按执行结果判定，等价 SQL 会通过比对"
+                   bars={[]} />
+        <ScoreCard label="链路完成率" tag={`离线 · ${b.n - linkFail} / ${b.n}`}
+                   value={((1 - linkFail / Math.max(b.n, 1)) * 100).toFixed(1)} unit="%"
+                   note={linkFail ? `${linkFail} 次链路失败` : '无链路失败'}
+                   bars={[]} />
       </div>
 
-      {d.golden && (
+      <div className="eval-two-col">
         <article className="eval-card">
           <div className="eval-card-head">
             <div>
-              <strong>评测集构成</strong>
+              <strong>离线发布门禁</strong>
+              <small>仅用于判断候选版本能否上线，不代表生产运行健康</small>
+            </div>
+            {sc && (
+              <span className={`status ${sc.pass ? '' : 'bad'}`}>
+                {sc.pass ? '允许发布' : '未达门禁'}
+              </span>
+            )}
+          </div>
+          {sc && (
+            <div className="eval-card-body">
+              {sc.dimensions.map(x => (
+                <Dimension key={x.key}
+                           label={`${x.label} · ${(x.weight * 100).toFixed(0)}%`}
+                           pct={x.value} value={x.value.toFixed(1)} />
+              ))}
+            </div>
+          )}
+          {/* 这句必须显示：把策略当测量，是这一页最容易骗人的地方 */}
+          {sc && (
+            <div className="eval-card-body eval-gate-note">
               <small>
-                全集 {d.golden.total} 条 · 本轮盲测实跑 {d.golden.blind_n} 条 ——
-                两个数一起看才不会误判覆盖面
+                {sc.policy_note}
+                各维度来源 —— {sc.dimensions.map(x => `${x.label}：${x.source}`).join('；')}。
               </small>
             </div>
-            <button className="ghost" type="button" onClick={onDataset}>查看评测集</button>
-          </div>
-          <div className="eval-dimension-list">
-            {Object.entries(d.golden.by_category).map(([k, n]) => (
-              <Dimension key={k} label={`${CATEGORY_CN[k] ?? k} · ${n} 条`}
-                         pct={Math.round(n / d.golden!.total * 100)} value={String(n)} />
-            ))}
-          </div>
+          )}
         </article>
-      )}
 
-      {kinds.length > 0 && (
         <article className="eval-card">
           <div className="eval-card-head">
-            <div><strong>失败聚类</strong><small>按失败原因归类 · 逐条可复现</small></div>
+            <div><strong>本轮失败聚类</strong><small>按失败原因归类 · 逐条可复现</small></div>
+            <button className="ghost" type="button" onClick={onDataset}>查看评测集</button>
           </div>
-          <div className="eval-dimension-list">
-            {kinds.map(([k, n]) => (
-              <Dimension key={k} label={`${k} · ${n} 条`}
-                         pct={Math.round(n / b.n * 100)} value={String(n)} />
-            ))}
-          </div>
+          {kinds.length ? (
+            <div className="eval-card-body">
+              {kinds.map(([k, n]) => (
+                <Dimension key={k} label={`${k} · ${n} 条`}
+                           pct={Math.round(n / b.n * 100)} value={String(n)} />
+              ))}
+            </div>
+          ) : <p className="drawer-note">本轮没有失败样本。</p>}
+          {d.golden && (
+            <div className="eval-card-body eval-gate-note">
+              <small>
+                评测集全集 {d.golden.total} 条，本轮盲测实跑 {d.golden.blind_n} 条 ——
+                两个数一起看才不会误判覆盖面。
+              </small>
+            </div>
+          )}
         </article>
-      )}
+      </div>
 
       <FailureTable d={d} />
     </>
@@ -542,10 +576,19 @@ function AccuracyPanel({ d }: { d: OfflineQuality }) {
   const groups = d.groups ?? []
   return (
     <>
+      <div className="eval-note">
+        <i>≠</i>
+        <div>
+          <strong>准确率按执行结果判定，不要求 SQL 字符串完全相同</strong>
+          <small>
+            等价 SQL 会通过结果比对；判定同时看返回列与行数约束是否符合预期。
+          </small>
+        </div>
+      </div>
       <div className="eval-metric-grid">
-        <MetricCard label="盲测准确率" value={pct(b.accuracy)}
+        <MetricCard label="盲测准确率" status={`${b.n} CASES`} value={pct(b.accuracy)}
                     note="按执行结果判定 —— 等价 SQL 会通过结果比对，不要求字符串相同" />
-        <MetricCard label="多步误用率" value={pct(b.multi_misuse)}
+        <MetricCard label="多步误用率" status="MULTI-STEP" value={pct(b.multi_misuse)}
                     note="本该单步却拆成多步的比例" />
       </div>
 
@@ -600,10 +643,20 @@ function SecurityPanel({ d }: { d: OfflineQuality }) {
   const b = d.blind!
   return (
     <>
+      <div className="eval-note">
+        <i>盾</i>
+        <div>
+          <strong>安全指标采用红线门禁</strong>
+          <small>
+            该拒未拒是红线，不用综合高分抵消 —— 一次放行危险 SQL，
+            比准确率低几个点严重得多。
+          </small>
+        </div>
+      </div>
       <div className="eval-metric-grid">
-        <MetricCard label="该拒即拒" value={pct(b.block_rate)}
+        <MetricCard label="该拒即拒" status="红线" value={pct(b.block_rate)}
                     note="应当被拦的用例里实际拦下的比例" danger={b.block_rate < 1} />
-        <MetricCard label="误拒率" value={pct(b.false_reject)}
+        <MetricCard label="误拒率" status="越低越好" value={pct(b.false_reject)}
                     note="本该能答却被挡下 —— 护栏过紧同样是问题" danger={b.false_reject > 0} />
       </div>
       <NotMeasured
@@ -619,15 +672,133 @@ function SecurityPanel({ d }: { d: OfflineQuality }) {
   )
 }
 
-function PerformancePanel({ d }: { d: OfflineQuality }) {
+/* 稳定性。原型这一页有三张指标卡 + 故障注入 + 恢复原则。
+ *
+ * 三项里只有「执行成功率」askdb 真的在测；重试恢复率与故障注入需要故障
+ * 注入框架，没有就如实空着，不拿线上成功率去顶替 —— 那两个数问的是
+ * "坏掉之后能不能自己回来"，跟"平时跑得顺不顺"不是一回事。
+ *
+ * 「恢复原则」那张卡是**行为说明**不是测量值，可以照原型的版式做，
+ * 但内容必须写 askdb 真实的行为：原型写"已完成调用不重复计费"，
+ * 而 graph.resume() 明确另计一次每日配额 —— 照抄就是编。
+ */
+function StabilityPanel({ d, live }: { d: OfflineQuality; live: LiveQuality | null }) {
   const b = d.blind!
+  // 不在前端重推一遍 —— 后端 /api/eval 的 score.stability 已经按
+  // outcomes 里的"链路失败"算过。两处各算各的迟早会对不上。
+  const dim = d.score?.dimensions.find(x => x.key === 'stability')
   return (
+    <>
+      <div className="eval-metric-grid">
+        <MetricCard label="执行成功率（离线）" status={dim?.source ?? `N=${b.n}`}
+                    value={dim ? `${dim.value}%` : '—'}
+                    note="盲测里没有栽在执行或模型链路上的比例" />
+        <MetricCard label="执行成功率（线上）" status={`AUDIT · ${live?.days ?? '-'}D`}
+                    value={live ? pct((live.runs - live.failed) / Math.max(live.runs, 1)) : '—'}
+                    note={live ? `${live.runs} 次真实调用，${live.failed} 次链路失败` : '读取中'} />
+        <MetricCard label="重试恢复率" status="未测量" value="—"
+                    note="要在评测里注入连接超时与限流，目前没有故障注入" />
+        <MetricCard label="断点续跑成功率" status="未测量" value="—"
+                    note="要先构造中断样本再走 /api/resume，尚未纳入回归" />
+      </div>
+
+      <NotMeasured
+        title="故障注入结果"
+        items={[
+          '数据库连接超时 —— 需要能在评测中断开只读连接',
+          '模型限流 / 超时 —— 需要可控地让 LLM 调用失败',
+          'Schema 漂移 —— 需要在跑批中途改表结构再观察护栏反应',
+        ]}
+        hint="这三类都要故障注入框架才能测，askdb 目前没有，因此上面两格留空而不是填数。"
+      />
+
+      <article className="eval-card">
+        <div className="eval-card-head">
+          <div>
+            <strong>恢复原则</strong>
+            <small>失败不等于从头重跑 · 以下是 askdb 的实际行为，不是目标</small>
+          </div>
+          <span className="status">graph.resume()</span>
+        </div>
+        <div className="eval-card-body">
+          <div className="eval-run">
+            <span className="eval-run-id">01</span>
+            <div>
+              <strong>保存最小任务状态</strong>
+              <small>问题原文、org_id 与 R-17 累计计数进检查点；续跑时回种，计数不归零</small>
+            </div>
+            <span className="eval-pass">已实现</span>
+          </div>
+          <div className="eval-run">
+            <span className="eval-run-id">02</span>
+            <div>
+              <strong>从最后一个完成的检查点续跑</strong>
+              <small>线程不变，审计写新的 trace_id，两条经 thread_id 关联</small>
+            </div>
+            <span className="eval-pass">已实现</span>
+          </div>
+          <div className="eval-run">
+            <span className="eval-run-id">03</span>
+            <div>
+              <strong>续跑另计一次每日配额</strong>
+              <small>与原型写的"不重复计费"相反 —— 恢复要再走一遍模型调用，就照实计</small>
+            </div>
+            <span className="eval-pass">已实现</span>
+          </div>
+          <div className="eval-run">
+            <span className="eval-run-id">04</span>
+            <div>
+              <strong>恢复前重新校验权限与 Schema</strong>
+              <small>尚未实现：目前直接从检查点状态续跑，中断期间权限或表结构变了不会被重新拦</small>
+            </div>
+            <span className="status wait">未实现</span>
+          </div>
+        </div>
+      </article>
+    </>
+  )
+}
+
+function PerformancePanel({ d, live }: { d: OfflineQuality; live: LiveQuality | null }) {
+  const b = d.blind!
+  const nodes = live?.nodes ?? []
+  const worst = Math.max(...nodes.map(n => n.p95_ms ?? 0), 1)
+  return (
+    <>
     <div className="eval-metric-grid">
-      <MetricCard label="P95 端到端" value={fmtMs(b.p95_ms)} note="离线回归环境，与线上不可直接比较" />
-      <MetricCard label="本轮总成本" value={`¥${b.cost_cny}`} note={`${b.n} 条用例`} />
-      <MetricCard label="单条平均成本" value={`¥${(b.cost_cny / Math.max(b.n, 1)).toFixed(4)}`}
-                  note="模型调用开销，不含数据库资源" />
+      <MetricCard label="P95 端到端" status="OFFLINE" value={fmtMs(b.p95_ms)}
+                  note="离线回归环境，与线上不可直接比较" />
+      <MetricCard label="本轮总成本" status={`${b.n} CASES`} value={`¥${b.cost_cny}`}
+                  note="仅模型调用开销，不含数据库资源" />
+      <MetricCard label="单条平均成本" status="AVG" value={`¥${(b.cost_cny / Math.max(b.n, 1)).toFixed(4)}`}
+                  note="用来估算跑一轮全集要花多少" />
     </div>
+
+    {/* 原型这里是「P95 阶段耗时拆解」。数据用**线上真实调用**的节点聚合 ——
+        离线回归的样本量太小，拆出来的分位没有意义；而线上那份本来就在算。 */}
+    {nodes.length > 0 && (
+      <article className="eval-card">
+        <div className="eval-card-head">
+          <div>
+            <strong>P95 阶段耗时拆解</strong>
+            <small>定位端到端延迟的主要贡献节点 · 来自线上真实调用，非离线样本</small>
+          </div>
+          <span className="status">TOTAL {fmtMs(live?.p95_ms)}</span>
+        </div>
+        <div className="eval-stage-list">
+          {nodes.map(n => (
+            <div className="eval-stage" key={n.step}>
+              <span>{STEP_NAMES[n.step] ?? n.step}</span>
+              <strong>{fmtMs(n.p95_ms)}</strong>
+              <div className="eval-stage-bar">
+                <i style={{ width: `${Math.round((n.p95_ms ?? 0) / worst * 100)}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </article>
+    )}
+    </>
   )
 }
 
@@ -644,11 +815,14 @@ function NotMeasured({ title, items, hint }: {
 }) {
   return (
     <article className="eval-card">
-      <div className="eval-card-head"><div><strong>{title}</strong><small>缺的是什么，列在下面</small></div></div>
-      <ul className="nr-list">
-        {items.map(i => <li key={i}>{i}</li>)}
-      </ul>
-      {hint && <p className="drawer-note">{hint}</p>}
+      <div className="eval-card-head">
+        <div><strong>{title}</strong><small>缺的是什么，逐条列在下面</small></div>
+        <span className="status wait">未测量</span>
+      </div>
+      <div className="eval-card-body">
+        <ul className="nr-list">{items.map(i => <li key={i}>{i}</li>)}</ul>
+        {hint && <p className="drawer-note">{hint}</p>}
+      </div>
     </article>
   )
 }
@@ -665,7 +839,7 @@ const CATEGORY_CN: Record<string, string> = {
 function DatasetScope({ offline }: { offline: OfflineQuality | null }) {
   if (!offline?.available) {
     return (
-      <section className="eval-panel active">
+      <section className="eval-scope-panel active">
         <p className="drawer-note">尚未跑过评测，没有可展示的用例结果。</p>
       </section>
     )
@@ -677,7 +851,7 @@ function DatasetScope({ offline }: { offline: OfflineQuality | null }) {
   const passed = cases.filter(c => c.passed === true).length
 
   return (
-    <section className="eval-panel active">
+    <section className="eval-scope-panel active">
       <div className="eval-dataset-summary">
         <div className="eval-dataset-stat">
           <span>黄金问题</span><strong>{g?.total ?? cases.length}</strong>

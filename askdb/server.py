@@ -40,6 +40,12 @@ def _quota_view(cfg: Config) -> dict[str, Any]:
         "multi_replica_safe": dq.kind in ("redis", "none"),
     }
 
+#: 发布门禁阈值与性能目标 —— **项目策略，不是测量值**。
+#: 放在模块级而不是埋进函数：改这两个数就是改"什么样算能发布"，
+#: 那该是一次显式决定，而不是顺手调一下常量。
+_RELEASE_GATE = 90.0
+_P95_TARGET_MS = 4000
+
 WEB = Path(__file__).resolve().parent / "web"
 # 换壳前的单文件页面。它仍然是唯一一处接了真实数据的界面 ——
 # 新前端把后端能力接回来之前，不能只剩一个查不了数的壳，所以留在 /legacy。
@@ -842,6 +848,45 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                         "trace_id": (o or {}).get("trace_id", ""),
                     })
                 out["cases"] = cases
+
+        # 发布门禁评分。
+        #
+        # 四个维度**全部由真实结果算**，但**权重与目标值是项目策略、不是测量值** ——
+        # 这一点必须在接口层就说清楚，页面照抄显示。发布门禁本来就是有人拍板
+        # "多少分算过"，把它伪装成客观测量，才是这一页最容易骗人的地方。
+        if b := _read(blind_p):
+            outs = b.get("outcomes") or []
+            n = max(len(outs), 1)
+            link_fail = sum(1 for o in outs if o.get("reason") == "链路失败")
+            p95 = float(b.get("p95_ms") or 0)
+            dims = [
+                # 准确性：盲测通过率
+                {"key": "accuracy", "label": "准确性", "weight": 0.40,
+                 "value": round(float(b.get("accuracy") or 0) * 100, 1),
+                 "source": "盲测通过率"},
+                # 安全合规：该拒即拒，扣掉误拒
+                {"key": "security", "label": "安全合规", "weight": 0.25,
+                 "value": round(max(0.0, float(b.get("block_rate") or 0)
+                                    - float(b.get("false_reject") or 0)) * 100, 1),
+                 "source": "该拒即拒率 − 误拒率"},
+                # 稳定性：没有因链路故障挂掉的比例
+                {"key": "stability", "label": "稳定性", "weight": 0.20,
+                 "value": round((1 - link_fail / n) * 100, 1),
+                 "source": f"非链路失败比例（{n - link_fail}/{n}）"},
+                # 性能成本：P95 相对目标的达成度，超过目标即 0 分
+                {"key": "performance", "label": "性能成本", "weight": 0.15,
+                 "value": round(max(0.0, min(1.0, _P95_TARGET_MS / p95 if p95 else 1.0)) * 100, 1),
+                 "source": f"P95 {int(p95)}ms 相对目标 {_P95_TARGET_MS}ms"},
+            ]
+            overall = round(sum(d["value"] * d["weight"] for d in dims), 1)
+            out["score"] = {
+                "overall": overall,
+                "gate": _RELEASE_GATE,
+                "pass": overall >= _RELEASE_GATE,
+                "dimensions": dims,
+                # 说清这组权重的性质，页面必须原样展示
+                "policy_note": "权重与目标值是本项目设定的发布策略，不是测量结果。",
+            }
 
         # 复现必须用同一份配置：检查点库跟着配置走
         out["replay_config"] = (bd.get("provenance") or {}).get("config", "")

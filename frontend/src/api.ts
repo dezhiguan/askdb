@@ -747,6 +747,15 @@ export interface OfflineQuality {
     trace_id: string
     question: string
   }[]
+  /** 发布门禁评分。四个维度由真实结果算，
+   *  但 weight 与 gate 是**项目策略、不是测量值** —— policy_note 必须原样显示 */
+  score?: {
+    overall: number
+    gate: number
+    pass: boolean
+    dimensions: { key: string; label: string; weight: number; value: number; source: string }[]
+    policy_note: string
+  }
   /** 评测集清单。passed 为 null = 本轮没跑到 —— 不是通过 */
   cases?: {
     id: string

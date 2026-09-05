@@ -62,8 +62,8 @@
   .clarify-progress span { min-width: 90px; }
   .form-grid { grid-template-columns: 1fr; }
   .login-layout { grid-template-columns: 1fr; }
-  .login-story { display: none; }
-  .login-form { padding: 30px 22px; }
+  .login-visual { display: none; }
+  .login-panel { padding: 30px 22px; }
   .audit-drawer { width: min(430px,100vw); }
 }
 

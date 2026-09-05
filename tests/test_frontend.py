@@ -497,13 +497,21 @@ def test_quality_center_is_wired_to_real_endpoints():
 def test_quality_center_invents_no_composite_score():
     """设计稿有「离线质量分 92.9/100」「综合健康分 97.6/100」与「允许发布」门禁。
 
-    那是四个维度按 40/25/20/15 加权合成的，而**这组权重没有任何依据** ——
-    编一个出来等于替看的人下"能不能发布"的判断，而这一页正是拿来做这个决定的。
-    版本号（v2.4 / v2.3）同理：askdb 没有版本概念，结果文件里也没有该字段。
+    那几个数在设计稿里是**写死的**，没有任何来源。版本号（v2.4 / v2.3）同理：
+    askdb 没有版本概念，结果文件里也没有该字段。
+
+    「允许发布」不在禁用之列，但有条件：它现在由 /api/eval 的 score.pass
+    算出来（overall 与门禁比大小），页面只是显示。所以这里不禁字面量，
+    而是钉住那条绑定 —— 一旦有人把它改回常量，判语又变成凭空下的结论。
     """
     src = _code_only(EVALUATION_PAGE)
-    for invented in ("92.9", "97.6", "4,286", "126 CASES", "v2.4", "v2.3", "允许发布"):
+    for invented in ("92.9", "97.6", "4,286", "126 CASES", "v2.4", "v2.3"):
         assert invented not in src, f"质量中心出现了没有来源的数字或判语：{invented}"
+
+    if "允许发布" in src:
+        assert "sc.pass ?" in src or ".pass ?" in src, (
+            "「允许发布」必须由 score.pass 算出来，不能写成固定文案"
+        )
 
 
 def test_quality_center_shows_where_the_score_came_from():

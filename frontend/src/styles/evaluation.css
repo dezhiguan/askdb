@@ -138,3 +138,6 @@
   .online-eval-flow { grid-template-columns: 1fr 1fr; }
   .online-eval-step:not(:last-child)::after { display: none; }
 }
+/* 门禁与聚类下方的口径说明。放进卡体而不是贴在卡外 —— 它解释的是这张卡里的数 */
+.eval-gate-note { padding-top: 0; }
+.eval-gate-note small { display: block; color: var(--muted); font-size: 6px; line-height: 1.55; }
