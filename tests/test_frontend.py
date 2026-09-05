@@ -366,21 +366,29 @@ def test_trace_detail_does_not_depend_on_replay_for_the_basics():
 
     回放（observability.replay_api）在连真实数据源的实例上**默认关闭** ——
     那才是常态。一旦把整个详情区做成"取不到回放就只显示一句话"，
-    右半屏就是一片空白，看起来像页面坏了；而耗时、角色、轮次、成本
-    这些字段流水里本来就有，不该跟着一起消失。
+    右半屏就是一片空白，看起来像页面坏了；而耗时这类字段流水里本来就有，
+    不该跟着一起消失。
+
+    2026-09-06 起事实网格严格照原型的六格（总耗时/模型/Token/工具调用/
+    SQL Hash/数据源），角色、轮次、成本等格子已撤 —— 那些是原型没有的字段。
+    这条钉的是"不依赖回放"，不是"必须有哪几格"。
     """
     src = _code_only(FRONTEND_SRC / "pages" / "TracesPage.tsx")
 
     head = src[src.index("function TraceDetail("):src.index("function TraceNodes(")]
-    for field in ("item.elapsed_ms", "item.attempts", "item.cost_cny", "item.trace_id"):
+    for field in ("item.elapsed_ms", "item.trace_id", "item.kind"):
         assert field in head, f"详情区标题/事实网格没有用 {field}，可能又挂到回放上了"
 
-    # 钉的是「不能因为取不到回放就提前 return」，而不是「不许出现 replayOn」——
-    # 它作为参数往下传给链路条那一段是正常的
+    # 钉的是「不能因为取不到回放就提前 return」
     for early in ("if (!replayOn)", "if (!replay)", "if (!replay "):
         assert early not in head, f"标题/事实网格前有基于回放的提前返回（{early}），整块会被一起吞掉"
-    assert "if (!replayOn)" in src[src.index("function TraceNodes("):], \
-        "链路条那一段没有处理回放未开启的情况"
+
+    # 链路条与 Span 表同理：取不到回放时按原型版式留空表，
+    # 而不是把这两段换成一段说明文字 —— 页面形态要和原型一致。
+    nodes = src[src.index("function TraceNodes("):src.index("function ObserveGrid(")]
+    assert "Span 明细" in nodes, "回放那一段没有渲染 Span 表版式"
+    for early in ("if (!replayOn)", "if (!replay)", "if (!replay "):
+        assert early not in nodes, f"链路条那一段有提前返回（{early}），空态会变成一段说明文字"
 
 
 def test_removed_pages_leave_no_dangling_references():
