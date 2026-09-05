@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { askQuestion, fetchSchema, runSql, type AskResult, type Me, type Schema } from '../api'
+import { writeGuard, type WriteGuard } from '../writeGuard'
 import type { ResultTab, View } from '../types'
 import type { HealthState } from '../useHealth'
 import type { SourcesState } from '../useSources'
@@ -35,6 +36,7 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   const [tab, setTab] = useState<ResultTab>('result')
   const [schema, setSchema] = useState<Schema | null>(null)
   const { items: sourceCards, sourceId, setSourceId } = sources
+  const guard = writeGuard(me ?? null, '清空历史记录')
   const [menuOpen, setMenuOpen] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -197,6 +199,7 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
               usable={usable}
               sourceName={current.name}
               recent={visibleRecent}
+              guard={guard}
               onFill={fill}
               onDelete={recent.remove}
               onClear={() => recent.clearSource(sourceKey)}
@@ -341,12 +344,13 @@ function useRecentQueries() {
 
 /** 示例问题按**当前库的白名单和口径**生成，不写死。
  *  写死的示例换个数据源就全是查不出结果的废话，还会让人以为库里有这些表。 */
-function Welcome({ mode, schema, usable, sourceName, recent, onFill, onDelete, onClear }: {
+function Welcome({ mode, schema, usable, sourceName, recent, guard, onFill, onDelete, onClear }: {
   mode: Mode
   schema: Schema | null
   usable: boolean
   sourceName: string
   recent: RecentQuery[]
+  guard: WriteGuard
   onFill: (text: string) => void
   onDelete: (id: string) => void
   onClear: () => void
@@ -393,7 +397,10 @@ function Welcome({ mode, schema, usable, sourceName, recent, onFill, onDelete, o
             <span>{sourceName}</span>
             <span>{recent.length} / {RECENT_QUERY_LIMIT}</span>
           </div>
-          <button className="recent-clear" type="button" disabled={!recent.length} onClick={onClear}>
+          <button className="recent-clear" type="button"
+            disabled={!recent.length || !guard.can}
+            title={guard.props.title}
+            onClick={onClear}>
             清空当前数据源
           </button>
         </div>

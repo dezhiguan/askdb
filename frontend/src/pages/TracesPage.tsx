@@ -3,8 +3,10 @@ import { Fragment, useEffect, useState } from 'react'
 import {
   fetchAudit, fetchAuditStats, fetchReplay, tracingLink,
   type AuditItem, type AuditStats, type Replay, type ReplayResult, type ReplayStep,
+ type Me,
 } from '../api'
 import type { ModalName, View } from '../types'
+import { writeGuard } from '../writeGuard'
 import { KIND_NAMES, STEP_NAMES, STEP_TYPE } from '../traceSteps'
 
 
@@ -24,12 +26,14 @@ const NA = '—'
 const toolCalls = (steps: ReplayStep[]) =>
   steps.filter(s => STEP_TYPE[s.step] === 'TOOL' || STEP_TYPE[s.step] === 'DB').length
 
-export function TracesPage({ onNavigate, onOpenModal }: {
+export function TracesPage({ onNavigate, onOpenModal, me }: {
   /** App 未传时退回点击侧栏导航（见 goTasks 注释） */
   onNavigate?: (view: View) => void
   /** 「接入 Langfuse」弹窗由 App 的 ModalLayer 挂载，未传时按钮置灰 */
   onOpenModal?: (modal: ModalName) => void
+  me?: Me | null
 } = {}) {
+  const guard = writeGuard(me ?? null, '这个操作')
   const [stats, setStats] = useState<AuditStats | null>(null)
   const [items, setItems] = useState<AuditItem[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -88,8 +92,9 @@ export function TracesPage({ onNavigate, onOpenModal }: {
             <button className="ghost" onClick={goTasks}>← 返回任务中心</button>
             <button
               className="ghost"
-              disabled={!currentItem}
-              title={currentItem ? '导出当前 trace 的 OTLP/JSON' : '先选一条调用'}
+              disabled={!currentItem || !guard.can}
+              title={!guard.can ? guard.props.title
+                : currentItem ? '导出当前 trace 的 OTLP/JSON' : '先选一条调用'}
               onClick={() => currentItem && exportOtel(currentItem, currentReplay)}
             >
               导出 OpenTelemetry
@@ -102,8 +107,9 @@ export function TracesPage({ onNavigate, onOpenModal }: {
                 </a>
               : <button
                   className="primary"
-                  disabled={!onOpenModal}
-                  title={onOpenModal ? undefined : '接入向导由应用外壳挂载，当前实例未启用'}
+                  disabled={!onOpenModal || !guard.can}
+                  title={!guard.can ? guard.props.title
+                    : onOpenModal ? undefined : '接入向导由应用外壳挂载，当前实例未启用'}
                   onClick={() => onOpenModal?.('langfuse')}
                 >
                   接入 Langfuse

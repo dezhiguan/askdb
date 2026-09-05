@@ -352,3 +352,21 @@ def test_admin_token_is_a_valid_identity_at_the_gate(client, monkeypatch):
                        headers={"X-Askdb-Admin-Token": "wrong"},
                        json={"role_code": "QA", "username": "x", "display_name": "", "note": ""}
                        ).status_code == 401
+
+
+def test_creating_a_task_needs_login_but_plain_asking_does_not(client):
+    """任务与普通提问走同一条链路，后端分辨不出来，所以由调用方带 as_task 声明。
+
+    这个标记**只用来加严**：为真时要求登录，为假时行为与从前完全一致 ——
+    伪造它只会把自己挡在外面，没有可乘之机。这条用例钉的就是这个方向：
+    匿名提问必须仍然通得过，否则「未登录能查数」这条就被顺手废掉了。
+    """
+    assert client.post("/api/ask", json={"question": "有多少知识库", "as_task": True}
+                       ).status_code == 401
+    assert client.post("/api/ask", json={"question": "有多少知识库"}).status_code != 401
+
+    assert client.post("/api/auth/login",
+                       json={"username": "alice", "password": "alice-pw"}).status_code == 200
+    assert client.post("/api/ask", json={"question": "有多少知识库", "as_task": True}
+                       ).status_code != 401
+

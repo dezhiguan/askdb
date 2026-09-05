@@ -3,7 +3,9 @@ import { useEffect, useState } from 'react'
 import {
   addMember, fetchMembers, fetchRoles, removeMember,
   type RoleInfo, type RoleMember, type RolesResponse,
+ type Me,
 } from '../api'
+import { writeGuard } from '../writeGuard'
 
 function fmtDate(ts: string): string {
   const d = new Date(ts)
@@ -40,7 +42,11 @@ const ROLE_LIMITS: Record<string, [string, string, string]> = {
   DATA_OWNER: ['365 DAYS', 'ON DEMAND', 'APPROVAL'],
 }
 
-export function PermissionsPage({ notify }: { notify: (message: string) => void }) {
+export function PermissionsPage({ notify, me }: {
+  notify: (message: string) => void
+  me: Me | null
+}) {
+  const guard = writeGuard(me, '同步企业组织')
   const [data, setData] = useState<RolesResponse | null>(null)
   const [active, setActive] = useState<string>('PRODUCT')
   const [members, setMembers] = useState<RoleMember[] | null>(null)
@@ -115,7 +121,7 @@ export function PermissionsPage({ notify }: { notify: (message: string) => void 
       <PageHeader
         title="身份与权限中心"
         description="企业 SSO 提供身份，RBAC 定义角色，ABAC 根据环境和数据属性动态收敛权限。"
-        action={<button className="primary" onClick={syncOrg}>同步企业组织</button>}
+        action={<button className="primary" {...guard.props} onClick={syncOrg}>同步企业组织</button>}
       />
 
       {error && <div className="audit-error">读取失败：{error}</div>}

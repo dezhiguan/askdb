@@ -235,6 +235,13 @@ class AskRequest(BaseModel):
     org_id: int | None = None
     # 运行时数据源 id。留空 / "builtin" 走启动配置里的那个源
     source: str = Field(default="", max_length=32)
+    #: 这次提问是从「创建任务」发起的。
+    #:
+    #: 任务与普通提问走的是同一条链路（任务 = 一条可续跑、有归属的线程），
+    #: 因此后端无法从请求本身分辨两者 —— 调用方必须自己说。
+    #: 这个标记**只用来加严**：为真时要求登录，为假时行为与从前完全一致。
+    #: 伪造它只会把自己挡在外面，没有可乘之机。
+    as_task: bool = False
 
 
 class SqlRequest(BaseModel):
@@ -1305,6 +1312,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 按角色收窄后再进链路。护栏、执行器、Schema 召回全部从配置取值，
         # 所以收窄一次即全链路生效 —— 模型连不可见的表都召回不到。
         _require_login(request)
+        # 「创建任务」要登录，普通提问不要。两者是同一条链路，区别在于任务是
+        # 一条**有归属、可续跑**的线程：匿名建出来的线程只落在匿名那一档，
+        # 发起人自己都找不回来，等于点完就丢。与其让它成功，不如在这里说清楚。
+        if req.as_task and not _current_user(request):
+            raise HTTPException(
+                status_code=401,
+                detail="创建任务需要登录。任务是一条有归属、可续跑的线程，"
+                       "匿名建出来无人认领，之后也无法续跑。"
+                       "未登录可以直接在查询页提问，结果一样。",
+            )
         scoped = _scoped(request, _cfg_for(req.source))
         _require_scope(scoped)
         r = run_ask(req.question.strip(), scoped, org_id=req.org_id)
