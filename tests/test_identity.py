@@ -147,19 +147,29 @@ def test_delete_also_refused_without_role_or_token(non_admin_client, monkeypatch
     assert r.status_code == 401
 
 
-def test_system_admin_writes_without_any_token(enabled_client, monkeypatch):
+def test_system_admin_writes_without_any_token(cfg, monkeypatch):
     """系统管理员按**角色**就能改成员，不需要令牌（设计文档 I-03）。
 
     这是令牌定位的转折点：它从"唯一依据"降为 break-glass。令牌是共享的，
     记不下是谁改的，而成员变更恰恰最需要留痕 —— 日常路径必须走角色。
 
-    这里断言的是"准入这一关过了"：身份库没接真库，因此后面必然撞上
-    IdentityDisabled 转成的 404。**不是 403** 就说明角色这条路是通的。
+    **写入层整个换成假的**，这条用例才不会碰真库。conftest 顶上那句
+    "不摘掉身份库，跑一次测试就会往开发库里写角色成员"同样适用于这里：
+    只把 identity.enabled 打开是不够的，DSN 还会从 ASKDB_IDENTITY_DSN
+    读到一个真实地址 —— 前几次运行确实往本机开发库里插了一行。
+    断言的是"准入这一关过了"，不是"库里真写进去了"。
     """
+    seen: dict = {}
+    monkeypatch.setattr(identity, "enabled", lambda _cfg: True)
+    monkeypatch.setattr(identity, "add_member",
+                        lambda _cfg, **kw: seen.update(kw) or {"id": 1, **kw})
     monkeypatch.delenv("ASKDB_ADMIN_TOKEN", raising=False)
-    r = enabled_client.post("/api/identity/members",
-                            json={"role_code": "PRODUCT", "username": "x"})
-    assert r.status_code == 404
+
+    c = _signed_in_as(cfg, monkeypatch, "SYS_ADMIN")
+    r = c.post("/api/identity/members", json={"role_code": "PRODUCT", "username": "x"})
+    assert r.status_code == 200, r.json()
+    # 走角色的记真名 —— 令牌是共享的，记一个具体人名会是编造
+    assert seen["created_by"] == "dev"
 
 
 def test_writable_flag_reflects_token_presence(enabled_client, monkeypatch):

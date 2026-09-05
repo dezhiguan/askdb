@@ -402,6 +402,10 @@ def test_schema_endpoint_is_scoped_to_the_caller(cfg, monkeypatch):
 
     root = Path(__file__).resolve().parent.parent
     public = load(root / "config" / "public.yaml")
+    # 这条测的是**按角色收窄**，不是登录门。public.yaml 自 2026-09 起
+    # required: true（它连的是真实库），匿名会被读门直接 401，够不着收窄那一步。
+    # 关掉 required 才能拿匿名当"最窄的角色"用 —— 收窄逻辑本身与登录无关。
+    public.raw["auth"] = {**(public.raw.get("auth") or {}), "required": False}
     monkeypatch.setattr(server, "load", lambda _p: public)
     c = TestClient(server.create_app("ignored.yaml"))
 
