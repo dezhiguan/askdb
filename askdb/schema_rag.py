@@ -346,7 +346,15 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
             # 上限 5）表」。因此 min_score **不是硬阈值** —— 过线表不足 top_k
             # 时，低于阈值的表会被补齐进来。配置注释已同步说明这一点；
             # 若要让它成为硬阈值，须先改设计文档里的 Top-K 约定。
-            picked = [t for s, t in ranked if s >= min_score][:max_k]
+            over = [t for s, t in ranked if s >= min_score]
+            picked = over[:max_k]
+            # **一条都没过线 = 这次也是盲选。**
+            #
+            # 与 keyword 那边的"只有泛词命中"是同一件事的两种说法：下面补齐的
+            # top_k 张是保底，不是相关度筛出来的。不在这里判，换到 vector 模式
+            # 就等于把盲选示警整个关掉 —— 而盲选下的错答与正常答案在页面上
+            # 长得一模一样，那层保护正是为它加的。
+            blind = not over
             if len(picked) < top_k:
                 picked = [t for _, t in ranked[:top_k]]
             # 向量也能召回口径 —— 别名没写全时靠语义补上。
@@ -382,18 +390,28 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     # 模型看得见 33 张表的表名时不会挑错，看不见时只能在给它的 3 张里硬凑。
     # 塞不进就如实说"这次是盲选"，让上层把不确定性透出去，而不是伪装成一次
     # 正常召回。§3.2.3「禁止全库注入」针对的是**常态**，不是这种召回失败的兜底。
-    if blind and mode == "keyword":
+    if blind:
+        # 措辞跟着模式走：两种模式失败的**方式**不同，排查的下一步也不同。
+        # keyword 是词对不上（该加别名/注释），vector 是语义都不够近（该看
+        # 阈值或问法）。给一句放之四海的"召回失败"，等于让人自己去猜。
+        why = ("没有一张表的语义相似度达到阈值" if mode == "vector"
+               else "关键词召回一张表都没命中")
         whole = _render(all_tables, metrics)
         if all_tables and _est_tokens(whole) <= budget:
             picked = all_tables
             # 全库都给了，模型手上不再有"看不见的表"，这就不算盲选了 ——
             # 只有"给了 3 张、真正该用的那张不在里面"才需要向用户示警。
             blind = False
-            note = (f"关键词召回一张表都没命中，已改为把全部 {len(all_tables)} 张表"
+            said = (f"{why}，已改为把全部 {len(all_tables)} 张表"
                     f"交给模型自行判断（仍在 token 预算内）")
         else:
-            note = (f"关键词召回一张表都没命中，下列 {len(picked)} 张表是按白名单顺序"
-                    f"取的，**不是**按相关度选出来的；结果可能答非所问，请核对 SQL")
+            said = (f"{why}，下列 {len(picked)} 张表是按"
+                    + ("相似度顺序" if mode == "vector" else "白名单顺序")
+                    + "取的，**不是**过线选出来的；结果可能答非所问，请核对 SQL")
+        # 已经有话要说（向量不可用回落到关键词）就接上，别覆盖 ——
+        # "为什么回落"与"回落之后也没召到"是两条独立的信息，
+        # 少了前一条，排查会从"关键词为什么不准"开始，方向就错了。
+        note = f"{note}；{said}" if note else said
 
     # 命中口径涉及的表必须一并注入，否则口径表达式引用的列不可见
     by_name = {t.name: t for t in picked}

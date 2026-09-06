@@ -125,12 +125,51 @@ def test_vector_mode_uses_index_ranking(cfg):
 
 
 def test_vector_mode_keeps_top_k_even_below_threshold(cfg):
-    """全都不过线时也要保底，不能让模型无表可用。"""
+    """全都不过线时也要保底，不能让模型无表可用。
+
+    2026-09-07 起"全都不过线"另外还是一次**盲选**：表少塞得下就整份给模型
+    （见下一条），塞不下才退回保底 top_k 并示警。这里把预算压死，测的是
+    保底那一支 —— 保底本身没有取消。
+    """
     cfg.raw["schema_rag"]["mode"] = "vector"
     cfg.raw["schema_rag"]["top_k"] = 2
+    cfg.raw["schema_rag"]["token_budget"] = 60
     idx = FakeIndex(("table:documents", 0.05), ("table:orgs", 0.04))
     r = schema_rag.recall("完全无关的问题", cfg, index=idx)
-    assert len(r.tables) == 2
+    assert len(r.tables) >= 1
+    assert r.blind, "一条都没过线，保底选出来的表不能冒充召回成功"
+    assert "相似度" in r.note
+
+
+def test_vector_mode_blind_widens_to_all_tables_when_budget_allows(cfg):
+    """向量模式下的盲选保护必须与关键词模式一致。
+
+    换到 vector 之前这条判定只写在 keyword 那一支上（`if blind and
+    mode == "keyword"`），照原样开 vector 等于把盲选示警整个关掉 ——
+    开一个功能、关一层保护。
+    """
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    cfg.raw["schema_rag"]["token_budget"] = 5000
+    idx = FakeIndex(("table:documents", 0.05), ("table:orgs", 0.04))
+    r = schema_rag.recall("完全无关的问题", cfg, index=idx)
+    assert set(r.table_names) == set(cfg.tables)
+    assert not r.blind          # 全库都给了，不存在"看不见的表"
+    assert "相似度" in r.note
+
+
+def test_vector_fallback_note_survives_the_blind_note(cfg, monkeypatch):
+    """"为什么回落"与"回落之后也没召到"是两条独立信息，不能互相覆盖。"""
+    from askdb import vectors
+
+    class Dead:
+        def search(self, question, k):
+            raise vectors.EmbeddingUnavailable("没配密钥")
+
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    cfg.raw["schema_rag"]["token_budget"] = 60
+    r = schema_rag.recall("完全无关的问题", cfg, index=Dead())
+    assert "向量召回不可用" in r.note
+    assert "关键词召回一张表都没命中" in r.note
 
 
 def test_vector_mode_recalls_metrics_by_semantics(cfg):

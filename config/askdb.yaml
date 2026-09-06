@@ -45,9 +45,12 @@ planner:
   on_cap_reached: converge           # converge | fail —— 触顶后收敛作答并标注，不静默返回
 
 schema_rag:
-  # 运行时添加的数据源（/api/sources）无法携带表 desc/aliases，keyword 打分对中文
-  # 问题会全部得 0 分，退化成"恒定返回白名单前 top_k 张表"，表现为静默答错。
-  # 本机测试实例改走全量注入：32 张表整体约 3178 token，成本可接受。
+  # 本机测试实例走全量注入：32 张表整体约 3178 token，成本可接受，且召回这一维
+  # 被固定住，测别的东西时不会被它干扰。
+  #
+  # 这里原来的理由是"keyword 对中文问题全得 0 分，退化成恒定返回前 top_k 张表"——
+  # 那个缺陷 2026-09-07 已修（词级匹配 + 中英词典 + 库注释入白名单 + 盲选示警），
+  # 不再是选 all 的原因。生产实例现在走 mode: vector，见 ragforge-prod.yaml。
   mode: all                        # keyword（P0）| all | vector（P1）
   top_k: 3
   max_k: 5
