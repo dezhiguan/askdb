@@ -87,3 +87,85 @@ def test_chaos_report_reports_what_it_dropped(cfg):
                     verbose=False, llm_factory=DeadLlm)
     assert rep.n_cases == 0 and rep.skipped == 1
     assert all(f.injected == 0 and f.rate is None for f in rep.faults)
+
+
+# ---------------------------------------------------------------- 口径命中
+
+
+def test_metric_adherence_is_deterministic_and_scoped():
+    """业务口径命中率必须是**确定性判定**，且只在判得动的题上算。
+
+    口径存在的意义就是「按定义算，别凭直觉算」：expr 是认证定义式，
+    naive 是与之对照的直觉写法。这里钉住三件事 ——
+      · 没注入口径、或没生成 SQL 的题不进分母（返回 None）。
+        混进来会让"命中率"被题目构成推着走，测不出任何东西。
+      · 命中取"注入的口径里任意一条 expr 出现在 SQL 里"：召回一次最多塞
+        max_metrics 条，其中常有一条与本题无关，要求全部出现会误判。
+      · 用了 naive 写法必须在说明里点名 —— 那正是口径要防的那件事。
+    """
+    from types import SimpleNamespace as NS
+
+    from askdb.config import Metric
+    from evals.replay import _metric_adherence
+
+    jd = Metric(name="JD 文档数", aliases=[], scope=["documents"],
+                expr="COUNT(*) FILTER (WHERE chunk_type = 'JD')", naive="COUNT(*)")
+    docs = Metric(name="文档数", aliases=[], scope=["documents"],
+                  expr="COUNT(*) FILTER (WHERE parse_status = 'COMPLETED')",
+                  naive="COUNT(*)")
+    cfg = NS(metrics=[jd, docs])
+
+    def r(sql: str, hit: list[str]):
+        return NS(sql_final=sql, metrics_hit=hit)
+
+    # 用上了定义式 —— 换行与大小写不该影响判定
+    ok, detail, graded = _metric_adherence(
+        r("select count(*)\n  filter (where CHUNK_TYPE = 'JD')\nfrom documents",
+          ["JD 文档数"]), cfg)
+    assert ok is True and detail == "" and graded == ["JD 文档数"]
+
+    # 注入两条只用上一条 —— 仍算命中，另一条与本题无关
+    assert _metric_adherence(
+        r("select count(*) filter (where chunk_type = 'JD') from documents",
+          ["JD 文档数", "文档数"]), cfg)[0] is True
+
+    # 凭直觉写 COUNT(*) —— 未命中，且必须点名说它改用了直觉写法
+    ok, detail, _ = _metric_adherence(r("select count(*) from documents", ["JD 文档数"]), cfg)
+    assert ok is False
+    assert "JD 文档数" in detail and "直觉写法" in detail
+
+    # 判不动的两种情形都必须是 None，不是 False —— False 会把它算成失分
+    assert _metric_adherence(r("select count(*) from documents", []), cfg)[0] is None
+    assert _metric_adherence(r("", ["JD 文档数"]), cfg)[0] is None
+    # 口径没写 expr 时同样判不动
+    bare = NS(metrics=[Metric(name="慢检索", aliases=[], scope=["retrieval_logs"])])
+    assert _metric_adherence(r("select 1", ["慢检索"]), bare)[0] is None
+
+
+def test_completeness_counts_only_answers_that_came_back():
+    """结果完整度只在**真的跑出结果集**的题上算，且三种不完整都要认出来。
+
+    没跑出结果的题（被拒、链路失败）进分母，等于拿"没跑出来"去压"跑出来但
+    不完整" —— 那两件事已经分别由拦截率和准确率在报了，混在一起两个数都废。
+
+    三个信号都是链路自己记下的事实标记，不是判断：截断、提前收敛、召回盲选。
+    """
+    from types import SimpleNamespace as NS
+
+    from evals.replay import _completeness
+
+    def r(**kw):
+        base = dict(ok=True, truncated=False, converged_early="",
+                    recall_blind=False, recall_note="")
+        return NS(**{**base, **kw})
+
+    assert _completeness(r()) == (True, "")
+    assert _completeness(r(truncated=True))[0] is False
+    assert "截断" in _completeness(r(truncated=True))[1]
+    assert _completeness(r(converged_early="已达步数上限（3 步）"))[0] is False
+    assert _completeness(r(recall_blind=True, recall_note="白名单 32 张全给了"))[0] is False
+    # 多种同时命中要一并说清，不能只报第一条
+    ok, why = _completeness(r(truncated=True, recall_blind=True))
+    assert ok is False and "截断" in why and "盲选" in why
+    # 没跑出结果 → 不进分母，必须是 None 而不是 False
+    assert _completeness(r(ok=False))[0] is None

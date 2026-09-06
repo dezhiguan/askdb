@@ -329,7 +329,7 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
       {scope === 'offline' && (
         <OfflineScope category={category} onCategory={setCategory}
                       onDataset={() => setScope('dataset')} offline={offline}
-                      live={live} live30={live30} />
+                      live={live} live30={live30} onNavigate={onNavigate} />
       )}
       {scope === 'dataset' && <DatasetScope offline={offline} />}
     </div>
@@ -600,6 +600,10 @@ const P95_TARGET_MS = 10000
 /** 单任务成本目标（元）。与 P95 目标一样，是**本项目设定的策略、不是测量值** ——
  *  显示成"目标 < ¥0.03"而不是把它混进指标里，就是为了让人看得出这是谁定的。 */
 const COST_TARGET_CNY = 0.03
+/** 准确性三项的目标线（百分点）。与上面两条同一条纪律：**是按设计稿定下的发布
+ *  策略，不是测量值**，所以写成一处常量、在卡上显示成"目标 ≥ 92%"，让人看得出
+ *  这个数是谁定的、不是跑出来的。达标与否由真实值和它比出来，不写死颜色。 */
+const ACCURACY_TARGETS = { sql: 92, metric: 95, complete: 93 }
 
 /** sparkline 的柱高。等分七段的真实序列 → 0–100 的高度。
 *
@@ -821,7 +825,7 @@ function OnlineScope({ live, days, onNavigate }: {
 }
 
 
-function OfflineScope({ category, onCategory, onDataset, offline, live, live30 }: {
+function OfflineScope({ category, onCategory, onDataset, offline, live, live30, onNavigate }: {
   category: Category
   onCategory: (c: Category) => void
   onDataset: () => void
@@ -830,6 +834,8 @@ function OfflineScope({ category, onCategory, onDataset, offline, live, live30 }
   live: LiveQuality | null
   /** 稳定性页专用的固定 30 天窗口。中断与重试太稀疏，24 小时窗口取不到样本 */
   live30: LiveQuality | null
+  /** 「待改进样本」右上角的「查看失败 Trace」要跳执行追踪页 */
+  onNavigate?: (view: View) => void
 }) {
   if (!offline) return <p className="drawer-note">读取离线回归结果…</p>
   if (!offline.available) {
@@ -864,7 +870,7 @@ function OfflineScope({ category, onCategory, onDataset, offline, live, live30 }
       </div>
 
       {category === 'overview' && <OverviewPanel d={offline} onDataset={onDataset} />}
-      {category === 'accuracy' && <AccuracyPanel d={offline} />}
+      {category === 'accuracy' && <AccuracyPanel d={offline} onNavigate={onNavigate} />}
       {category === 'security' && <SecurityPanel d={offline} />}
       {category === 'stability' && <StabilityPanel d={offline} live={live30} />}
       {category === 'performance' && <PerformancePanel d={offline} live={live} />}
@@ -1028,9 +1034,49 @@ function OverviewPanel({ d, onDataset }: { d: OfflineQuality; onDataset: () => v
   )
 }
 
-function AccuracyPanel({ d }: { d: OfflineQuality }) {
+/** 每种失败原因对应的**判定标准**，也就是这条题"本该怎样"。
+ *
+ *  判分器只在「结果不一致」这一种情形下写出结构化的 `期望 X，实得 Y`；链路失败、
+ *  被护栏拦截这些在到达结果比对之前就返回了，detail 里只有错误串，没有可比的期望
+ *  值。但"本该怎样"是**判定规则本身**，不是猜出来的数 —— 照 evals/replay.py 里
+ *  各分支的判据逐条写在这里，比留一列「—」有用。改判据时这张表要跟着改。 */
+const EXPECTED_BY_REASON: Record<string, string> = {
+  链路失败: '能生成可执行 SQL',
+  被护栏拦截: '不触发护栏',
+  应拒未拒: '该拒即拒',
+  拦截规则不符: '命中预期的护栏规则',
+  行数超出预期区间: '落在预期行数区间',
+  标准答案不可用: '标准答案本身可执行',
+  配额拒绝: '不受配额影响',
+}
+
+/** 失败明细拆成原型那两列（预期 / 实际）。 */
+function splitDetail(reason: string, detail: string): [string, string] {
+  const m = /^期望\s*(.+?)\s*，\s*实得\s*(.+?)\s*$/.exec(detail || '')
+  if (!m) return [EXPECTED_BY_REASON[reason] ?? '—', detail || '—']
+  // 判分器这句只比了**行数**。行数相同却判不通过，说明差在内容上 ——
+  // 两列写同一个数会看起来像"预期等于实际却算失败"，这里把差在哪写明
+  return m[1] === m[2] ? [m[1], `${m[2]}（内容不一致）`] : [m[1], m[2]]
+}
+
+/** 准确性。版式照原型 [data-eval-panel="accuracy"]：判定说明 + 三张指标卡 +
+ *  「待改进样本」。
+ *
+ *  三项里只有 SQL 准确率 askdb 真的在算 —— 业务口径命中率要逐条比对命中的口径
+ *  有没有真的进最终 SQL，回答忠实度要判断结论能否由结果集完整支撑，两者都缺判定
+ *  器。这两格按原型的卡片形状占位（值「—」、角标走待办色），不拿设计稿里的
+ *  96.1% / 91.7% 充数：这一页是用来判断能不能发布的，在这里编数字的后果比别处
+ *  都严重。
+ *
+ *  「节点」一列同理 —— 失败样本记了 trace_id，但没有记栽在哪个节点，整列占位，
+ *  由「查看失败 Trace」把人送进执行追踪去看。 */
+function AccuracyPanel({ d, onNavigate }: {
+  d: OfflineQuality
+  onNavigate?: (view: View) => void
+}) {
   const b = d.blind!
-  const groups = d.groups ?? []
+  const passed = Math.round(b.accuracy * b.n)
+  const failures = d.failures ?? []
   return (
     <>
       <div className="eval-note">
@@ -1043,59 +1089,84 @@ function AccuracyPanel({ d }: { d: OfflineQuality }) {
         </div>
       </div>
       <div className="eval-metric-grid">
-        <MetricCard label="盲测准确率" status={`${b.n} CASES`} value={pct(b.accuracy)}
-                    note="按执行结果判定 —— 等价 SQL 会通过结果比对，不要求字符串相同" />
-        <MetricCard label="多步误用率" status="MULTI-STEP" value={pct(b.multi_misuse)}
-                    note="本该单步却拆成多步的比例" />
+        <MetricCard label="SQL 准确率" value={pct(b.accuracy)}
+                    note={`${b.n} 条盲测用例中，${passed} 条结果与标准答案一致`}
+                    status={`目标 ≥ ${ACCURACY_TARGETS.sql}%`}
+                    wait={b.accuracy * 100 < ACCURACY_TARGETS.sql} />
+        <MetricCard label="业务口径命中率" value={pct(b.metric_hit_rate)}
+                    note={b.metric_graded_n
+                      ? `注入认证口径的 ${b.metric_graded_n} 条题里，`
+                        + `${Math.round((b.metric_hit_rate ?? 0) * b.metric_graded_n)} `
+                        + '条最终 SQL 真的用上了定义式'
+                      : '认证口径被正确引用'}
+                    status={`目标 ≥ ${ACCURACY_TARGETS.metric}%`}
+                    wait={(b.metric_hit_rate ?? 0) * 100 < ACCURACY_TARGETS.metric} />
+        {/* 原型这格是「回答忠实度」（答案结论可由查询结果完整支撑）。askdb 的链路里
+            没有 summarize 节点、AskResult 里也没有任何自然语言字段 —— 它交回去的是
+            SQL 与表格，不写结论，"结论超出结果集"这件事无从谈起。同一层意思在这个
+            产品形态下能测的是反过来的一问：交回去的结果本身够不够作答。 */}
+        <MetricCard label="结果完整度" value={pct(b.completeness)}
+                    note={b.complete_graded_n
+                      ? `${b.complete_graded_n} 条跑出结果的题里，`
+                        + `${Math.round((b.completeness ?? 0) * b.complete_graded_n)} `
+                        + '条结果可直接作答 —— 未被 LIMIT 截断、未提前收敛、召回非盲选'
+                      : '结果集可直接作答，未被截断、未提前收敛、召回非盲选'}
+                    status={`目标 ≥ ${ACCURACY_TARGETS.complete}%`}
+                    wait={(b.completeness ?? 0) * 100 < ACCURACY_TARGETS.complete} />
       </div>
 
-      {/* 设计稿这里还有「业务口径命中率」与「回答忠实度」两项。
-          评测目前不计算它们 —— 前者要逐条比对注入的口径有没有被真的用上，
-          后者要判断结论能否由结果集完整支撑，两者都需要额外的判定器。
-          留空位比编一个数诚实。 */}
-      <NotMeasured
-        title="这两项评测尚未计算"
-        items={[
-          '业务口径命中率 —— 需要逐条比对：命中的口径定义有没有真的进入最终 SQL',
-          '回答忠实度 —— 需要判定结论能否由结果集完整支撑，无额外推断',
-        ]}
-        hint="口径本身是否有区分度，可在「业务口径」页按真实数据核对。"
-      />
-
-      {groups.length > 0 && (
-        <article className="eval-card">
-          <div className="eval-card-head">
-            <div>
-              <strong>消融对照</strong>
-              <small>同一黄金集下逐层加能力 · 标 ★ 的是当前默认配置</small>
-            </div>
+      <article className="eval-card">
+        <div className="eval-card-head">
+          <div>
+            <strong>待改进样本</strong>
+            <small>按错误类型聚类，点击 Trace 可定位具体节点</small>
           </div>
+          {onNavigate && (
+            <button className="secondary" type="button" onClick={() => onNavigate('traces')}>
+              查看失败 Trace
+            </button>
+          )}
+        </div>
+        {failures.length ? (
           <div className="eval-table-wrap">
             <table>
-              <thead><tr><th>组</th><th>能力</th><th className="num">用例</th>
-                         <th className="num">准确率</th><th className="num">误拒</th>
-                         <th className="num">P95</th><th className="num">成本</th></tr></thead>
+              <thead><tr><th>评测问题</th><th>错误类型</th><th>预期</th>
+                         <th>实际</th><th>节点</th></tr></thead>
               <tbody>
-                {groups.map(g => (
-                  <tr key={g.key}>
-                    <td className="mono">{g.key}{d.shipped === g.key ? ' ★' : ''}</td>
-                    <td>{g.label}</td>
-                    <td className="num">{g.n}</td>
-                    <td className="num">{pct(g.accuracy)}</td>
-                    <td className="num">{pct(g.false_reject)}</td>
-                    <td className="num">{fmtMs(g.p95_ms)}</td>
-                    <td className="num">¥{g.cost_cny}</td>
-                  </tr>
-                ))}
+                {failures.map(f => {
+                  const [want, got] = splitDetail(f.reason, f.detail)
+                  return (
+                    <tr key={f.id}>
+                      <td className="eval-case-question" title={f.id}>{f.question || f.id}</td>
+                      <td><span className="status wait">{f.reason || '—'}</span></td>
+                      <td>{want}</td>
+                      <td className="eval-case-question">{got}</td>
+                      <td>—</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
-        </article>
-      )}
+        ) : (
+          <div className="eval-card-body">
+            <p className="drawer-note">本轮盲测没有失败样本。</p>
+          </div>
+        )}
+      </article>
     </>
   )
 }
 
+/** 原型「安全场景覆盖」的四类场景。评测集目前只有一类笼统的 reject 用例，
+ *  分不出这四格各自跑了多少 —— 四行一起占位，不把 reject 拆着填。 */
+const SECURITY_SCENARIOS = ['写入与 DDL', '跨角色越权', '敏感信息', '提示注入']
+
+/** 安全合规。版式照原型 [data-eval-panel="security"]：红线说明 + 三张指标卡 +
+ *  「安全场景覆盖」。
+ *
+ *  只有危险 SQL 拦截率是真的在测。越权与敏感数据泄漏各自要成套用例（跨角色、
+ *  跨数据域；逐列核脱敏），评测集里还没有，按卡片形状占位。 */
 function SecurityPanel({ d }: { d: OfflineQuality }) {
   const b = d.blind!
   return (
@@ -1111,24 +1182,32 @@ function SecurityPanel({ d }: { d: OfflineQuality }) {
         </div>
       </div>
       <div className="eval-metric-grid">
-        <MetricCard label="该拒即拒" status="红线" value={pct(b.block_rate)}
-                    note="应当被拦的用例里实际拦下的比例" danger={b.block_rate < 1} />
-        <MetricCard label="误拒率" status="越低越好" value={pct(b.false_reject)}
-                    note="本该能答却被挡下 —— 护栏过紧同样是问题" danger={b.false_reject > 0} />
+        <MetricCard label="危险 SQL 拦截率" value={pct(b.block_rate)}
+                    note="应当被拦的 UPDATE、DELETE、DDL 与绕过变体里实际拦下的比例"
+                    status={b.block_rate < 1 ? '红线未过' : '红线通过'}
+                    wait={b.block_rate < 1} danger={b.block_rate < 1} />
+        <MetricCard label="越权率" value="—" wait
+                    note="跨角色、跨数据域测试是否发生越权访问"
+                    status="目标 = 0" />
+        <MetricCard label="敏感数据泄漏率" value="—" wait
+                    note="手机号、证件号、地址等字段是否完成阻断或脱敏"
+                    status="目标 = 0" />
       </div>
-      <NotMeasured
-        title="这几项安全指标评测尚未覆盖"
-        items={[
-          '越权率 —— 需要跨角色、跨数据域的用例集，逐条验证租户谓词与 RLS',
-          '敏感数据泄漏率 —— 列级脱敏已在执行层无条件生效，但还没有成套用例逐列验证它',
-          '提示注入 —— 需要专门的注入用例集',
-        ]}
-        hint="生产环境的实际拦截分布在「线上质量」里是真数据。"
-      />
+      <article className="eval-card">
+        <div className="eval-card-head">
+          <div>
+            <strong>安全场景覆盖</strong>
+            <small>不仅测试关键词，还包含 SQL 变体、提示注入与权限边界</small>
+          </div>
+          <span className="status wait">待接入</span>
+        </div>
+        <div className="eval-card-body">
+          {SECURITY_SCENARIOS.map(s => <Dimension key={s} label={s} pct={0} value="—" />)}
+        </div>
+      </article>
     </>
   )
 }
-
 /* 稳定性。版式严格照原型（trusted-data-agent-prototype.html
  * [data-eval-panel="stability"]）：三张指标卡 + 「故障注入结果 / 恢复原则」两栏。
  *
@@ -1310,31 +1389,6 @@ function PerformancePanel({ d, live }: { d: OfflineQuality; live: LiveQuality | 
       </article>
     )}
     </>
-  )
-}
-
-/** 未测量项的统一说法。
- *
- *  设计稿给这些指标都配了数字（重试恢复率 88.5%、越权率 0% 等）。
- *  评测没有计算它们，写上去就是编 —— 而这一页的用途恰恰是判断"能不能发布"，
- *  在这里编数字的后果比别处都严重。列出缺什么，比留一个漂亮的假数诚实。
- */
-function NotMeasured({ title, items, hint }: {
-  title: string
-  items: string[]
-  hint?: string
-}) {
-  return (
-    <article className="eval-card">
-      <div className="eval-card-head">
-        <div><strong>{title}</strong><small>缺的是什么，逐条列在下面</small></div>
-        <span className="status wait">未测量</span>
-      </div>
-      <div className="eval-card-body">
-        <ul className="nr-list">{items.map(i => <li key={i}>{i}</li>)}</ul>
-        {hint && <p className="drawer-note">{hint}</p>}
-      </div>
-    </article>
   )
 }
 

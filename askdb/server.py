@@ -1290,7 +1290,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         if (b := _read(blind_p)):
             out["blind"] = {k: b.get(k) for k in
                             ("n", "accuracy", "false_reject", "block_rate",
-                             "multi_misuse", "p95_ms", "cost_cny", "failure_kinds")}
+                             "multi_misuse", "p95_ms", "cost_cny", "failure_kinds",
+                             # 业务口径命中率。**这一轮跑之前的结果文件里没有这两个
+                             # 键**，取不到就是 None —— 前端据此显示"—"而不是 0
+                             "metric_hit_rate", "metric_graded_n",
+                             "completeness", "complete_graded_n")}
             out["blind"]["avg_tok"] = _avg_tok(b)
             # 上一轮成绩（运行回归时留下的存档），用来出 token / 成本 / 耗时的环比。
             # **出处不一致就不给**：换了库、换了题库或换了模型，两轮之间差的

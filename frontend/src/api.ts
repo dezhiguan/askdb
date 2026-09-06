@@ -891,6 +891,13 @@ export interface OfflineQuality {
     false_reject: number
     block_rate: number
     multi_misuse: number
+    /** 业务口径命中率。null = 本轮没有判得动的题（或结果文件早于这项判定） */
+    metric_hit_rate: number | null
+    /** 参与口径命中判定的题数 —— 分母必须跟着率一起给 */
+    metric_graded_n: number | null
+    /** 结果完整度：结果集可直接作答的比例。null = 本轮没有判得动的题 */
+    completeness: number | null
+    complete_graded_n: number | null
     p95_ms: number
     cost_cny: number
     /** 每题平均 token（输入 + 输出）。老结果文件由后端按逐题记录现算 */

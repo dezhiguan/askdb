@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass, field
@@ -53,6 +54,16 @@ class Outcome:
     tok_in: int = 0
     tok_out: int = 0
     cost_cny: float = 0.0
+    #: 生成的最终 SQL。口径命中要拿它比对，没有它这项事后无从复算
+    sql_final: str = ""
+    #: 本题召回阶段注入了哪些认证口径
+    metrics_injected: list[str] = field(default_factory=list)
+    #: 认证口径有没有真的进最终 SQL。None = 本题没注入带定义式的口径，不进分母
+    metric_used: bool | None = None
+    metric_detail: str = ""
+    #: 结果能不能直接拿来作答。None = 本题压根没跑出结果集，不进分母
+    complete: bool | None = None
+    incomplete_why: str = ""
 
 
 @dataclass
@@ -136,6 +147,36 @@ class Report:
     provenance: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def complete_graded(self) -> list[Outcome]:
+        """能判结果完整度的题：真的跑出了结果集的那些。
+
+        被拒、链路失败的题没有结果可判，进分母就成了拿"没跑出来"去压
+        "跑出来但不完整" —— 那两件事已经分别由拦截率和准确率在报了。
+        """
+        return [o for o in self.outcomes if o.complete is not None]
+
+    @property
+    def completeness(self) -> float | None:
+        """结果完整度：结果集可直接作答的比例。None = 本轮没有判得动的题。"""
+        g = self.complete_graded
+        return round(sum(bool(o.complete) for o in g) / len(g), 4) if g else None
+
+    @property
+    def metric_graded(self) -> list[Outcome]:
+        """能判口径命中的题：召回真的注入了带定义式的口径，且生成了 SQL。
+
+        没注入口径的题不能进分母 —— 模型完全无视口径也答得对的题混进来，
+        算出的"命中率"测不出任何东西，只会被题目构成推着走。
+        """
+        return [o for o in self.outcomes if o.metric_used is not None]
+
+    @property
+    def metric_hit_rate(self) -> float | None:
+        """业务口径命中率。None = 本轮没有一道题判得动，不是 0。"""
+        g = self.metric_graded
+        return round(sum(bool(o.metric_used) for o in g) / len(g), 4) if g else None
+
+    @property
     def failure_kinds(self) -> dict[str, int]:
         """失败分类分布 —— 不做筛选，全量公开。"""
         return dict(Counter(o.reason for o in self.outcomes if not o.passed))
@@ -154,6 +195,10 @@ class Report:
             "block_rate": self.block_rate, "multi_misuse": self.multi_misuse,
             "avg_steps": self.avg_steps, "cost_cny": self.cost, "p95_ms": self.p95_ms,
             "avg_tok": self.avg_tok,
+            "metric_hit_rate": self.metric_hit_rate,
+            "metric_graded_n": len(self.metric_graded),
+            "completeness": self.completeness,
+            "complete_graded_n": len(self.complete_graded),
             "failure_kinds": self.failure_kinds,
             "outcomes": [asdict(o) for o in self.outcomes],
         }
@@ -250,10 +295,85 @@ def _expected(case: Case, cfg: Config, ex: Executor) -> list[tuple] | None:
     return _norm(ex.run(g.sql).rows)
 
 
+def _sql_norm(s: str) -> str:
+    """SQL 归一化到可做子串比对的形态：小写 + 空白折叠。
+
+    只抹掉换行与缩进这类无意义差异，**不做语义解析** —— 判定必须是确定性的，
+    看得懂、复算得出来，否则这个数字和让模型自己打分没有区别。
+    """
+    return re.sub(r"\s+", " ", (s or "").lower()).strip()
+
+
+def _metric_adherence(r: graph.AskResult, cfg: Config) -> tuple[bool | None, str, list[str]]:
+    """认证口径有没有真的进最终 SQL。
+
+    口径存在的全部意义就是"按定义算，别凭直觉算"：`expr` 是认证定义式，
+    `naive` 是与之对照的直觉写法。判定规则：
+
+      · 召回没注入带 expr 的口径，或压根没生成 SQL → 返回 None，本题不进分母。
+      · 注入的口径里**任意一条**的 expr 出现在最终 SQL 里 → 命中。
+        取"任意一条"而不是"全部"，是因为召回按 max_metrics 一次最多塞 2 条，
+        其中常有一条与本题无关 —— 要求全部出现会把无关口径记成失分。
+      · 一条都没出现 → 未命中；若 SQL 里反而出现了某条口径的 naive 写法，
+        额外记下来：那正是口径要防的那件事，光说"没用上"会漏掉这层信息。
+
+    返回 (命中, 说明, 参与判定的口径名)。
+    """
+    names = list(r.metrics_hit or [])
+    if not names or not r.sql_final:
+        return None, "", []
+    by_name = {m.name: m for m in cfg.metrics}
+    graded = [by_name[n] for n in names if by_name.get(n) and by_name[n].expr]
+    if not graded:
+        return None, "", []
+
+    sql = _sql_norm(r.sql_final)
+    if any(_sql_norm(m.expr) in sql for m in graded):
+        return True, "", [m.name for m in graded]
+
+    detail = "未用口径定义式：" + "、".join(m.name for m in graded)
+    naive_used = [m.name for m in graded if m.naive and _sql_norm(m.naive) in sql]
+    if naive_used:
+        detail += "；改用了直觉写法：" + "、".join(naive_used)
+    return False, detail, [m.name for m in graded]
+
+
+def _completeness(r: graph.AskResult) -> tuple[bool | None, str]:
+    """结果集能不能直接拿来作答。
+
+    askdb 不写自然语言结论（链路里没有 summarize 节点），所以"结论有没有超出
+    结果集"这件事无从谈起。同一层意思在这个产品形态下能测的是**反过来的一问**：
+    交回去的这份结果，本身够不够回答那个问题。三种情况算不够 ——
+
+      · truncated       —— 被 LIMIT 截断，看到的不是全集
+      · converged_early —— 多步撞上步数/成本上限，基于半截结果收敛
+      · recall_blind    —— 召回是盲选，给模型的表不是按相关度挑的，可能答非所问
+
+    这三项都是链路自己记下来的**事实标记**，不是判断，所以这个数是确定性的。
+    没跑出结果集的题返回 None，不进分母。
+    """
+    if not r.ok:
+        return None, ""
+    why = []
+    if r.truncated:
+        why.append("结果被截断")
+    if r.converged_early:
+        why.append(f"提前收敛（{r.converged_early}）")
+    if r.recall_blind:
+        why.append("召回盲选" + (f"（{r.recall_note}）" if r.recall_note else ""))
+    return (not why), "；".join(why)
+
+
 def judge(case: Case, r: graph.AskResult, cfg: Config, ex: Executor) -> Outcome:
     o = Outcome(id=case.id, category=case.category, blind=case.blind, passed=False,
                 trace_id=r.trace_id, steps=r.step_count, elapsed_ms=r.elapsed_ms,
-                tok_in=r.tok_in, tok_out=r.tok_out, cost_cny=r.cost_cny)
+                tok_in=r.tok_in, tok_out=r.tok_out, cost_cny=r.cost_cny,
+                sql_final=r.sql_final)
+
+    # 口径命中与通过与否无关，**每道题都判**：结果对但没用口径的题恰恰是
+    # 最该被看见的一类 —— 这次对是因为数据碰巧，换批数据就错。
+    o.metric_used, o.metric_detail, o.metrics_injected = _metric_adherence(r, cfg)
+    o.complete, o.incomplete_why = _completeness(r)
 
     if case.kind == "reject":
         if r.ok:
