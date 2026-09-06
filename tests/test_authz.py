@@ -125,13 +125,18 @@ def test_anonymous_reads_everything_and_writes_nothing():
     anon = identity.caps_of([identity.ANONYMOUS])
     logged_in = identity.caps_of(["PRODUCT"])
 
-    # 读类：与登录用户**一位不差**
+    # 读类：与登录用户**一位不差**。
+    # 右边这份名单是写类能力位的手抄本，**有意手抄**：写成
+    # `logged_in - identity._WRITE` 就成了恒真式，新增一个写位会自动溜过去。
+    # 加位的人必须在这里显式回答一次"匿名给不给"，这条用例红了就是在问这个。
     assert anon == logged_in - {identity.SOURCES_TEST, identity.SOURCES_SCAN,
-                                identity.SOURCES_WRITE}
+                                identity.SOURCES_WRITE, identity.EVAL_RUN}
     # 写类：一位都没有
     assert identity.SOURCES_WRITE not in anon
     assert identity.APPROVE not in anon
     assert identity.MEMBERS_WRITE not in anon
+    # 跑一轮黄金集回归会真的调模型、真的查库（花钱也压库），判据同 SOURCES_SCAN
+    assert identity.EVAL_RUN not in anon
     # 读类里那几个"看起来敏感"的位确实给了匿名 —— 这是对外实例要展示的东西
     for cap in (identity.AUDIT_CONTENT, identity.REPLAY, identity.QUALITY_READ):
         assert cap in anon
