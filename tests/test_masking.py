@@ -84,3 +84,27 @@ def test_executor_keeps_ordinary_columns_intact(ex):
     assert r.masked_columns == []
     for row in r.rows:
         assert "*" not in str(row[0])
+
+
+def test_direct_sql_reports_masked_columns(cfg, monkeypatch):
+    """直查这条路也要给出脱敏字段 —— 它才是最容易一次拉出整表的那条路。
+
+    2026-09-07 实测：/api/sql 的返回体里没有 masked_columns / mask_degraded，
+    值脱了、界面却说不出是谁脱的；审计里同样没记，事后无从证明脱没脱。
+    """
+    import copy
+
+    from fastapi.testclient import TestClient
+
+    from askdb import server
+
+    c = copy.deepcopy(cfg)
+    c.raw = copy.deepcopy(cfg.raw)
+    monkeypatch.setattr(server, "load", lambda _p: c)
+    client = TestClient(server.create_app("ignored.yaml"))
+
+    r = client.post("/api/sql", json={"sql": "SELECT file_name FROM documents LIMIT 3"}).json()
+    assert r["ok"] is True, r
+    assert r["masked_columns"] == ["file_name"]
+    assert r["mask_degraded"] is False
+    assert all("*" in str(row[0]) for row in r["rows"]), r["rows"]

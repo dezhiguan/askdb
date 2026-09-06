@@ -549,26 +549,43 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         实证跑一次要连库，所以：默认不跑（?probe=1 才跑）+ 独立限流。
         """
-        if not db_ok or not cfg.has_default_source:
+        if not db_ok:
             return {"ok": False, "reason": "数据源不可用，实证无从谈起",
                     "write_blocked": None, "default_tenant_has_rows": None}
 
-        table = next(iter(sorted(cfg.tenant_tables())), None) or next(iter(cfg.tables), None)
+        # 内置源撤掉之后（2026-09-07，见 config/public.yaml），这套部署一条
+        # 数据源都不在配置里 —— 而"部署后实证"恰恰是那种一旦失效就没人发现的
+        # 检查：它不报错，只是安静地不再验任何东西，流水线照样全绿。
+        # 所以这里回落到注册表里的第一个源，而不是直接放弃实证。
+        probe_cfg, source_name = cfg, ""
+        if not cfg.has_default_source:
+            try:
+                src = next((s for s in _sources.list_sources(cfg) if s.tables), None)
+            except _sources.StoreUnavailable as e:
+                return {"ok": False, "reason": f"数据源注册表不可用：{e}",
+                        "write_blocked": None, "default_tenant_has_rows": None}
+            if src is None:
+                return {"ok": False, "reason": "没有可实证的数据源（注册表为空，或源里一张表都没开放）",
+                        "write_blocked": None, "default_tenant_has_rows": None}
+            probe_cfg, source_name = _sources.derive_config(cfg, src), src.name
+
+        table = (next(iter(sorted(probe_cfg.tenant_tables())), None)
+                 or next(iter(probe_cfg.tables), None))
         if table is None:
             return {"ok": False, "reason": "白名单里没有表",
                     "write_blocked": None, "default_tenant_has_rows": None}
 
         # 护栏：静态判定就够了，它拦的就是这一层（R-02 非只读语句）
-        g = guard.check(f"DELETE FROM {table}", cfg,
-                        org_id=cfg.default_org, dialect=cfg.dialect)
+        g = guard.check(f"DELETE FROM {table}", probe_cfg,
+                        org_id=probe_cfg.default_org, dialect=probe_cfg.dialect)
         write_blocked = (not g.ok) and g.rejected_by == "R-02"
 
         has_rows = None
         try:
-            probe_sql = guard.check(f"SELECT 1 FROM {table}", cfg,
-                                    org_id=cfg.default_org, dialect=cfg.dialect)
+            probe_sql = guard.check(f"SELECT 1 FROM {table}", probe_cfg,
+                                    org_id=probe_cfg.default_org, dialect=probe_cfg.dialect)
             if probe_sql.ok:
-                with Executor(cfg) as ex:
+                with Executor(probe_cfg) as ex:
                     # 走护栏改写后的那条：租户谓词与 LIMIT 都是它注入的，
                     # 绕过去验出来的"有数据"回答的是另一个问题
                     has_rows = bool(ex.run(probe_sql.sql).rows)
@@ -578,9 +595,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return {
             "ok": bool(write_blocked and has_rows),
             "table": table,
-            "org_id": cfg.default_org,
+            # 租户没在生效时不报组织号：报一个不参与过滤的 316 出去，
+            # 正好是这轮改动最容易造成的误读（"看着还在按组织过滤"）。
+            "org_id": probe_cfg.default_org if probe_cfg.tenant_enabled else None,
             "write_blocked": write_blocked,
+            # 运行时源上租户隔离是关的（derive_config 写死），这一格于是退化成
+            # "探针表里有没有行"。**名字保持不变**：冒烟断言与历史记录都认它，
+            # 语义差别由下面的 tenant_enforced 如实标出，而不是靠改键名去暗示。
             "default_tenant_has_rows": has_rows,
+            "tenant_enforced": bool(probe_cfg.tenant_enabled),
+            "source": source_name,
         }
 
     @app.get("/api/health")
@@ -635,6 +659,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "mode": cfg.raw["tenant"].get("mode", "predicate"),
                 "on_unresolved": cfg.raw["tenant"].get("on_unresolved", "reject"),
                 "tables": sorted(cfg.tenant_tables()),
+                # 上面六格全部读**启动配置**，而运行时数据源上租户是关的
+                # （derive_config 写死）。没有内置源的部署里，那六格描述的是
+                # 一份不参与任何查询的配置 —— 照着它读会得出"线上还在按组织
+                # 过滤"这个正好相反的结论。所以这里如实给出它到底生不生效。
+                "enforced": cfg.tenant_enabled and cfg.has_default_source,
             },
             "guard": {
                 "max_rows": cfg.max_rows,
@@ -2220,7 +2249,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         def _audit(*, rejected_by: str | None, sql_final: str = "",
                    rules_fired: list[str] | None = None,
-                   explain_rows: int | None = None, rows_returned: int = 0) -> None:
+                   explain_rows: int | None = None, rows_returned: int = 0,
+                   masked_columns: list[str] | None = None,
+                   mask_degraded: bool = False) -> None:
             write_audit(scoped.audit_log, {
                 "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
                 "model": None,
@@ -2234,6 +2265,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "attempts": 1, "explain_rows": explain_rows,
                 "step_count": 1, "multi_step": False, "converged_early": "",
                 "rows_returned": rows_returned,
+                # 与 ask 链路同一套字段：脱了哪几列必须进审计，
+                # 否则事后无从证明某一次结果到底脱没脱
+                "masked_columns": masked_columns or [],
+                "mask_degraded": mask_degraded,
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
                 "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,
             })
@@ -2292,10 +2327,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     "trace_id": trace_id,
                 })
 
+        note = f"返回 {res.row_count} 行"
+        if res.masked_columns:
+            note += f"；已脱敏 {len(res.masked_columns)} 列（{'、'.join(res.masked_columns[:5])}）"
+        if res.mask_degraded:
+            note += "；SQL 解析不出投影来源，本次按整行从严脱敏"
         steps.append({"step": "execute", "ms": res.elapsed_ms, "status": "ok",
-                      "note": f"返回 {res.row_count} 行"})
+                      "note": note})
         _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,
-               explain_rows=ep.est_rows, rows_returned=res.row_count)
+               explain_rows=ep.est_rows, rows_returned=res.row_count,
+               masked_columns=list(res.masked_columns),
+               mask_degraded=res.mask_degraded)
         if scoped.scan_waiver:
             # **执行成功之后**才作废。执行失败就烧掉一次审批的话，
             # 用户得为一次数据源抖动重新走一遍人工流程。
@@ -2309,6 +2351,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "rows": [[jsonable(v) for v in r] for r in res.rows],
             "row_count": res.row_count, "truncated": res.truncated,
             "as_of": res.as_of, "explain_rows": ep.est_rows,
+            # 直查与 /api/ask 同一套契约：脱敏了哪几列、判定有没有退化，
+            # 两条路都要给。少了它，直查模式下那条"星号是系统加的"的提示
+            # 永远不出现 —— 而直查恰恰是最容易一次拉出整表的那条路。
+            "masked_columns": list(res.masked_columns),
+            "mask_degraded": res.mask_degraded,
             "elapsed_ms": res.elapsed_ms, "attempts": 1, "org_id": org,
             "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,
             "trace_id": trace_id,
