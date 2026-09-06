@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from . import approvals as _approvals
 from . import auth as _auth
+from . import evalrun as _evalrun
 from . import guard
 from . import identity as _identity
 from . import sources as _sources
@@ -759,6 +760,53 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         out["intervention"] = {"n": n, "rate": round(n / runs, 4) if runs else None}
         return out
 
+    @app.post("/api/eval/run")
+    def eval_run(request: Request) -> dict[str, Any]:
+        """真跑一轮盲测回归。
+
+        **同步返回、异步执行**：一轮几分钟，HTTP 上等不起。返回的是这一轮的
+        初始状态，进度靠 GET /api/eval/run 轮询。
+
+        一次只准跑一轮（见 evalrun 的模块说明）：并发跑会往同一个结果文件里
+        双写，成绩变成两轮的混合物。第二个请求 409，不排队。
+        """
+        _require_cap(request, _identity.EVAL_RUN, "触发回归评测")
+
+        def _pinned(sid: str) -> Config:
+            """配置里写的可以是数据源 id，也可以是名字。
+
+            id 是本机数据源库里生成的，换一台机器就对不上；名字是人写的，
+            换机器仍然成立。两种都认，先按 id 再按名字 —— 配置要能跟着仓库走。
+            """
+            try:
+                found = _sources.get_source(cfg, sid) is not None
+            except _sources.SourceError:
+                # 名字里有 id 里不允许的字符（空格、中文）时 get_source 直接抛 ——
+                # 这不是错误，只说明配置里写的是名字，继续按名字找。
+                found = False
+            if not found:
+                for src in _sources.list_sources(cfg):
+                    if src.name == sid:
+                        return _cfg_for(src.id, request)
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"配置里固定的评测数据源「{sid}」在本实例上不存在。"
+                           "到「数据源」页确认名字，或改 evaluation.source。")
+            return _cfg_for(sid, request)
+
+        try:
+            return _evalrun.start(cfg, _pinned)
+        except _evalrun.EvalUnavailable as e:
+            raise HTTPException(status_code=501, detail=str(e)) from e
+        except RuntimeError as e:
+            raise HTTPException(status_code=409, detail=str(e)) from e
+
+    @app.get("/api/eval/run")
+    def eval_run_state(request: Request) -> dict[str, Any]:
+        """这一轮跑到哪了。没跑过就是 idle —— 页面据此决定按钮显示什么。"""
+        _require_cap(request, _identity.QUALITY_READ, "查看回归进度")
+        return _evalrun.state()
+
     @app.get("/api/metrics/check")
     def metrics_check(request: Request) -> dict[str, Any]:
         """逐条核对业务口径的**区分度**：按定义算 vs 凭直觉算，差多少。
@@ -1223,10 +1271,42 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 出处缺失时不敢断言"一致"——按不一致处理，宁可多提示一次
             "matches_current": bool(prov) and _same_source(prov.get("datasource", ""), here),
         }
+        def _avg_tok(rep: Any) -> int | None:
+            """每题平均 token（输入 + 输出）。
+
+            这一轮之前跑出来的结果文件里没有 avg_tok 字段，用逐题记录现算，
+            免得为了一个新指标要求所有人重跑一遍评测。
+            """
+            if not isinstance(rep, dict):
+                return None
+            if isinstance(rep.get("avg_tok"), (int, float)):
+                return int(rep["avg_tok"])
+            outs = rep.get("outcomes") or []
+            if not outs:
+                return None
+            return round(sum((o.get("tok_in") or 0) + (o.get("tok_out") or 0)
+                             for o in outs) / len(outs))
+
         if (b := _read(blind_p)):
             out["blind"] = {k: b.get(k) for k in
                             ("n", "accuracy", "false_reject", "block_rate",
                              "multi_misuse", "p95_ms", "cost_cny", "failure_kinds")}
+            out["blind"]["avg_tok"] = _avg_tok(b)
+            # 上一轮成绩（运行回归时留下的存档），用来出 token / 成本 / 耗时的环比。
+            # **出处不一致就不给**：换了库、换了题库或换了模型，两轮之间差的
+            # 不是这一版 Agent 的开销，箭头指哪儿全看运气。
+            prev = _read(blind_p.with_name(blind_p.stem + ".prev.json"))
+            pv_now = b.get("provenance") or {}
+            pv_old = (prev or {}).get("provenance") or {}
+            same_run = bool(pv_old) and (
+                _same_source(pv_old.get("datasource", ""), pv_now.get("datasource", ""))
+                and pv_old.get("golden") == pv_now.get("golden")
+                and pv_old.get("model") == pv_now.get("model"))
+            if prev and same_run:
+                out["blind"]["prev"] = {
+                    "n": prev.get("n"), "p95_ms": prev.get("p95_ms"),
+                    "cost_cny": prev.get("cost_cny"), "avg_tok": _avg_tok(prev),
+                }
         groups: list[dict[str, Any]] = []
         abl, fix = _read(abl_p) or {}, _read(fix_p) or {}
         for k in ("A", "B", "C", "D", "E", "F"):

@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 
 import {
-  fetchLiveQuality, fetchOfflineQuality,
-  type LiveQuality, type OfflineQuality,
+  fetchEvalRun, fetchLiveQuality, fetchOfflineQuality, startEvalRun,
+  type EvalRunState, type LiveQuality, type OfflineQuality,
 } from '../api'
 import { PageHeader } from '../components/AppShell'
 import type { View } from '../types'
@@ -22,6 +22,36 @@ import { STEP_NAMES } from '../traceSteps'
  */
 
 type Scope = 'runtime' | 'online' | 'offline' | 'dataset'
+
+/** 按钮文案跟着范围走 —— 同一个按钮在四屏下做的不是同一件事，
+ *  文案不变就会让人以为在「离线回归」下点它也是在刷新线上数据。 */
+const ACTION_LABEL: Record<Scope, string> = {
+  runtime: '↻ 刷新运行状态',
+  online: '↻ 刷新线上数据',
+  offline: '▶ 运行回归评测',
+  dataset: '',
+}
+/** Agent 版本号 —— **写死**。askdb 本身没有对外的"Agent 版本"概念（包版本
+ *  0.1.0 是另一回事），产品上先按设计稿显示；接上真正的版本来源后换掉这里即可。
+ *
+ *  **全文件的版本字面量只准出现在这两个常量里**（有护栏用例钉着）：散落进 JSX
+ *  之后，接上真实来源时必然漏改，页面上就会同时出现两个版本号。 */
+const AGENT_VERSION = 'Agent v2.4'
+
+/** 评测版本选择器的选项。只有当前版本可选 —— 结果文件里只有一套成绩，
+ *  选中别的版本页面数字不会变，那比没有这个控件更误导。 */
+const EVAL_VERSION_OPTIONS: { label: string; disabled: boolean }[] = [
+  { label: `${AGENT_VERSION} · 当前版本`, disabled: false },
+  { label: 'Agent v2.3 · 线上基线', disabled: true },
+  { label: 'Agent v2.5-rc · 候选版本', disabled: true },
+]
+
+const BUSY_LABEL: Record<Scope, string> = {
+  runtime: '正在刷新运行状态…',
+  online: '正在聚合线上数据…',
+  offline: '正在读取回归结果…',
+  dataset: '',
+}
 type Category = 'overview' | 'accuracy' | 'security' | 'stability' | 'performance'
 
 /** 四个范围。角标**跟着真数据走** —— 设计稿里是写死的 HEALTHY / 4,286 RUNS /
@@ -71,15 +101,17 @@ function ScoreCard({ label, tag, value, unit, note, bars }: {
   )
 }
 
-function MetricCard({ label, value, note, status, danger }: {
+function MetricCard({ label, value, note, status, danger, wait }: {
   label: string; value: string; note: string; status?: string; danger?: boolean
+  /** 角标走待办色（原型里 .status.wait）—— 用在还没测出来、还没实现的格子上 */
+  wait?: boolean
 }) {
   return (
     <article className={`eval-metric-card ${danger ? 'danger-metric' : ''}`}>
       <span>{label}</span>
       <strong>{value}</strong>
       <small>{note}</small>
-      {status && <span className="status">{status}</span>}
+      {status && <span className={`status ${wait ? 'wait' : ''}`}>{status}</span>}
     </article>
   )
 }
@@ -114,6 +146,52 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
     return () => window.clearInterval(t)
   }, [])
 
+  /* 回归评测的实时状态。**跑在服务端、与这个页面无关** —— 别人触发的、
+     或者自己刷新过页面的，一进来都得能看到它还在跑，所以初始就拉一次，
+     running 期间每 2 秒轮询，跑完再把结果文件重新读一遍。 */
+  const [run, setRun] = useState<EvalRunState | null>(null)
+  const [runError, setRunError] = useState('')
+  useEffect(() => {
+    let alive = true
+    let timer = 0
+    const poll = () => {
+      fetchEvalRun()
+        .then(v => {
+          if (!alive) return
+          setRun(prev => {
+            // 从 running 变成终态的那一刻，把 /api/eval 重新拉一遍 ——
+            // 成绩就在这一刻变了，不重拉的话页面上还是上一轮的数字
+            if (prev?.status === 'running' && v.status !== 'running') setReload(n => n + 1)
+            return v
+          })
+          if (v.status === 'running') timer = window.setTimeout(poll, 2000)
+        })
+        .catch(() => {})
+    }
+    poll()
+    return () => { alive = false; window.clearTimeout(timer) }
+  }, [])
+
+  const running = run?.status === 'running'
+
+  const triggerRun = () => {
+    setRunError('')
+    startEvalRun()
+      .then(v => {
+        setRun(v)
+        // 起完立刻进入轮询：这里不等下一次 effect，按钮要马上变成"跑第 0/17 题"
+        const poll = () => fetchEvalRun().then(x => {
+          setRun(prev => {
+            if (prev?.status === 'running' && x.status !== 'running') setReload(n => n + 1)
+            return x
+          })
+          if (x.status === 'running') window.setTimeout(poll, 2000)
+        }).catch(() => {})
+        window.setTimeout(poll, 2000)
+      })
+      .catch(e => setRunError(String(e.message || e)))
+  }
+
   // 线上指标随时间窗重取；离线回归是跑出来的文件，不随窗口变
   useEffect(() => {
     let alive = true
@@ -139,22 +217,53 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
         title="Agent 质量中心"
         description="持续观测当前生产 Agent 的运行健康、结果质量、安全与成本，并用离线回归验证版本变更。"
         action={
+          /* 工具条跟着范围切换，规则照设计稿 activateEvaluationScope()：
+              时间窗口只在「运行总览 / 线上质量」下出现（另两屏的数不按窗口算，
+              留着会让人以为切了窗口离线成绩也会变）；「评测集」下整个按钮消失
+              —— 那一屏是题库本身，没有可刷新的运行结果。
+              设计稿在「离线回归」下是「▶ 运行回归评测」，askdb 的回归由 CLI 跑
+              （见评测集文件旁的 replay），页面上没有触发入口，所以这里是刷新
+              已有结果，不做一个点了不跑的按钮。 */
           <div className="eval-toolbar">
-            <select
-              aria-label="选择线上统计时间范围"
-              value={days}
-              onChange={e => setDays(Number(e.target.value))}
-            >
-              <option value={1}>最近 24 小时</option>
-              <option value={7}>最近 7 天</option>
-              <option value={30}>最近 30 天</option>
-            </select>
-            <button className="primary" type="button" disabled={busy}
-                    onClick={() => setReload(n => n + 1)}>
-              {busy
-                ? (scope === 'online' ? '正在聚合线上数据…' : '正在刷新运行状态…')
-                : (scope === 'online' ? '↻ 刷新线上数据' : '↻ 刷新运行状态')}
-            </button>
+            {(scope === 'runtime' || scope === 'online') && (
+              <select
+                aria-label="选择线上统计时间范围"
+                value={days}
+                onChange={e => setDays(Number(e.target.value))}
+              >
+                <option value={1}>最近 24 小时</option>
+                <option value={7}>最近 7 天</option>
+                <option value={30}>最近 30 天</option>
+              </select>
+            )}
+            {/* 评测版本选择器。只有当前版本可选：结果文件里只有一套成绩，
+                选中 v2.3 页面上的数字**不会变** —— 那比没有这个控件更误导，
+                所以另两项禁用，形状照留。 */}
+            {(scope === 'offline' || scope === 'dataset') && (
+              <select aria-label="选择评测版本"
+                      value={EVAL_VERSION_OPTIONS[0].label} onChange={() => {}}>
+                {EVAL_VERSION_OPTIONS.map(v => (
+                  <option key={v.label} value={v.label} disabled={v.disabled}
+                          title={v.disabled ? '结果文件里只有当前版本的成绩' : undefined}>
+                    {v.label}
+                  </option>
+                ))}
+              </select>
+            )}
+            {scope !== 'dataset' && (
+              <button className="primary" type="button"
+                      disabled={scope === 'offline' ? running : busy}
+                      onClick={scope === 'offline' ? triggerRun : () => setReload(n => n + 1)}
+                      title={scope === 'offline' && run?.datasource
+                        ? `固定跑在「${run.datasource}」上 —— 换库成绩就不可比`
+                        : undefined}>
+                {scope === 'offline'
+                  ? (running
+                      ? `正在跑 ${run?.done ?? 0} / ${run?.total ?? 0} 题…`
+                      : ACTION_LABEL.offline)
+                  : (busy ? BUSY_LABEL[scope] : ACTION_LABEL[scope])}
+              </button>
+            )}
           </div>
         }
       />
@@ -198,6 +307,10 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
       )}
 
       {error && <div className="audit-error">读取质量数据失败：{error}</div>}
+      {runError && <div className="audit-error">回归没能开跑：{runError}</div>}
+      {run?.status === 'failed' && (
+        <div className="audit-error">上一轮回归中断：{run.error || '未知原因'}</div>
+      )}
       {scope === 'runtime' && <RuntimeScope live={live} offline={offline} days={days} />}
       {scope === 'online' && <OnlineScope live={live} days={days} onNavigate={onNavigate} />}
       {scope === 'offline' && (
@@ -221,9 +334,6 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
  *    · 「当前生产版本」的版本号照原型写死（见 AGENT_VERSION），日期与天数用真值。
  */
 
-/** Agent 版本号 —— **写死**。askdb 本身没有对外的"Agent 版本"概念（包版本
- *  0.1.0 是另一回事），产品上先按原型显示；接上真正的版本来源后换掉这一个常量即可。 */
-const AGENT_VERSION = 'Agent v2.4'
 type Alert = { level: '高优先级' | '中优先级' | '低优先级'; text: string; why?: string }
 
 /** 告警由真实指标按固定阈值判出来。阈值是策略，判定过程不是 —— 每条都写明依据。 */
@@ -473,6 +583,9 @@ function fmtMs(v: number | null | undefined): string {
 /** P95 端到端的目标线。**是本项目设定的策略，不是测量值** ——
 *  与 latencyAlerts 里那道绝对阈值同一个数，只写一次。 */
 const P95_TARGET_MS = 10000
+/** 单任务成本目标（元）。与 P95 目标一样，是**本项目设定的策略、不是测量值** ——
+ *  显示成"目标 < ¥0.03"而不是把它混进指标里，就是为了让人看得出这是谁定的。 */
+const COST_TARGET_CNY = 0.03
 
 /** sparkline 的柱高。等分七段的真实序列 → 0–100 的高度。
 *
@@ -1000,89 +1113,107 @@ function SecurityPanel({ d }: { d: OfflineQuality }) {
   )
 }
 
-/* 稳定性。原型这一页有三张指标卡 + 故障注入 + 恢复原则。
+/* 稳定性。版式严格照原型（trusted-data-agent-prototype.html
+ * [data-eval-panel="stability"]）：三张指标卡 + 「故障注入结果 / 恢复原则」两栏。
  *
- * 三项里只有「执行成功率」askdb 真的在测；重试恢复率与故障注入需要故障
- * 注入框架，没有就如实空着，不拿线上成功率去顶替 —— 那两个数问的是
- * "坏掉之后能不能自己回来"，跟"平时跑得顺不顺"不是一回事。
+ * 版式照搬，数字不照搬 —— 原型里的 88.5% / 11 12 是设计稿的示意值。
+ * 三格各有各的出处，角标必须写明，不然三个数会被一起读成同一轮离线成绩：
+ *   · 执行成功率 = 离线盲测的非链路失败比例（后端 score.stability）
+ *   · 重试恢复率 = 线上审计里 attempts>1 的任务最终完成的比例
+ *   · 断点恢复率 = 线上审计里断过的线程最终正常收尾的比例
+ * 后两项在离线回归里没有样本、也没有故障注入去造，但线上是真发生过就有 ——
+ * 所以取审计而不是标"未测量"；分母为 0 时报「无样本」，那与 0% 不是一回事。
+ * 线上执行成功率在「运行总览」里有（成功完成 / 中断或失败），这里不再多占一格 ——
+ * 原型这排就是三格，多出来的第四格会掉到下一行，正是版式对不上的地方。
  *
- * 「恢复原则」那张卡是**行为说明**不是测量值，可以照原型的版式做，
- * 但内容必须写 askdb 真实的行为：原型写"已完成调用不重复计费"，
- * 而 graph.resume() 明确另计一次每日配额 —— 照抄就是编。
+ * 「恢复原则」是行为说明不是测量值，三条标题与顺序照原型，右侧写 askdb 的实际
+ * 情况：02「恢复前重新校验」尚未实现；03 原型写"已完成调用不重复计费"，而
+ * graph.resume() 明确另计一次每日配额 —— 照抄就是编。
  */
 function StabilityPanel({ d, live }: { d: OfflineQuality; live: LiveQuality | null }) {
   const b = d.blind!
   // 不在前端重推一遍 —— 后端 /api/eval 的 score.stability 已经按
   // outcomes 里的"链路失败"算过。两处各算各的迟早会对不上。
   const dim = d.score?.dimensions.find(x => x.key === 'stability')
+  // 后两格取**线上审计**：重试与中断都是运行时才发生的事，离线回归里没有样本，
+  // 也没有故障注入去造。分母为 0 时报「无样本」而不是 0% —— 窗口内一次没断过
+  // 与"断了都没恢复"是两回事。角标写明出处，免得被读成离线成绩。
+  const retry = live?.retry
+  const resume = live?.resume
+  const win = live ? (live.days === 1 ? '24H' : `${live.days}D`) : '—'
   return (
     <>
       <div className="eval-metric-grid">
-        <MetricCard label="执行成功率（离线）" status={dim?.source ?? `N=${b.n}`}
-                    value={dim ? `${dim.value}%` : '—'}
-                    note="盲测里没有栽在执行或模型链路上的比例" />
-        <MetricCard label="执行成功率（线上）" status={`AUDIT · ${live?.days ?? '-'}D`}
-                    value={live ? pct((live.runs - live.failed) / Math.max(live.runs, 1)) : '—'}
-                    note={live ? `${live.runs} 次真实调用，${live.failed} 次链路失败` : '读取中'} />
-        <MetricCard label="重试恢复率" status="未测量" value="—"
-                    note="要在评测里注入连接超时与限流，目前没有故障注入" />
-        <MetricCard label="断点续跑成功率" status="未测量" value="—"
-                    note="要先构造中断样本再走 /api/resume，尚未纳入回归" />
+        <MetricCard label="执行成功率" value={dim ? `${dim.value}%` : '—'}
+                    note="数据库、模型与策略节点整体执行成功"
+                    status={dim?.source ?? `N=${b.n}`} />
+        <MetricCard label="重试恢复率"
+                    value={retry?.rate == null ? '—' : pct(retry.rate)}
+                    note="连接超时、限流等瞬时故障自动恢复成功"
+                    wait={!retry?.retried}
+                    status={retry?.retried
+                      ? `线上 ${win} · ${retry.recovered}/${retry.retried}`
+                      : `线上 ${win} · 无样本`} />
+        <MetricCard label="断点恢复率"
+                    value={resume?.rate == null ? '—' : pct(resume.rate)}
+                    note="人工补充或审批后从 CHECKPOINT 精确续跑"
+                    wait={!resume?.interrupted}
+                    status={resume?.interrupted
+                      ? `线上 ${win} · ${resume.recovered}/${resume.interrupted}`
+                      : `线上 ${win} · 无样本`} />
       </div>
 
-      <NotMeasured
-        title="故障注入结果"
-        items={[
-          '数据库连接超时 —— 需要能在评测中断开只读连接',
-          '模型限流 / 超时 —— 需要可控地让 LLM 调用失败',
-          'Schema 漂移 —— 需要在跑批中途改表结构再观察护栏反应',
-        ]}
-        hint="这三类都要故障注入框架才能测，askdb 目前没有，因此上面两格留空而不是填数。"
-      />
+      <div className="eval-two-col">
+        <article className="eval-card">
+          <div className="eval-card-head">
+            <div>
+              <strong>故障注入结果</strong>
+              <small>模拟真实依赖异常验证恢复能力</small>
+            </div>
+            <span className="status wait">未测量</span>
+          </div>
+          <div className="eval-card-body">
+            <Dimension label="数据库超时" pct={0} value="—" />
+            <Dimension label="模型限流" pct={0} value="—" />
+            <Dimension label="Schema 漂移" pct={0} value="—" />
+          </div>
+        </article>
 
-      <article className="eval-card">
-        <div className="eval-card-head">
-          <div>
-            <strong>恢复原则</strong>
-            <small>失败不等于从头重跑 · 以下是 askdb 的实际行为，不是目标</small>
-          </div>
-          <span className="status">graph.resume()</span>
-        </div>
-        <div className="eval-card-body">
-          <div className="eval-run">
-            <span className="eval-run-id">01</span>
+        <article className="eval-card">
+          <div className="eval-card-head">
             <div>
-              <strong>保存最小任务状态</strong>
-              <small>问题原文、org_id 与 R-17 累计计数进检查点；续跑时回种，计数不归零</small>
+              <strong>恢复原则</strong>
+              <small>失败不等于从头重跑</small>
             </div>
-            <span className="eval-pass">已实现</span>
           </div>
-          <div className="eval-run">
-            <span className="eval-run-id">02</span>
-            <div>
-              <strong>从最后一个完成的检查点续跑</strong>
-              <small>线程不变，审计写新的 trace_id，两条经 thread_id 关联</small>
+          <div className="eval-card-body">
+            <div className="eval-run">
+              <span className="eval-run-id">01</span>
+              <div>
+                <strong>保存最小任务状态</strong>
+                <small>问题原文、org_id 与 R-17 累计计数进检查点，续跑时回种</small>
+              </div>
+              <span className="eval-pass">✓</span>
             </div>
-            <span className="eval-pass">已实现</span>
-          </div>
-          <div className="eval-run">
-            <span className="eval-run-id">03</span>
-            <div>
-              <strong>续跑另计一次每日配额</strong>
-              <small>与原型写的"不重复计费"相反 —— 恢复要再走一遍模型调用，就照实计</small>
+            <div className="eval-run">
+              <span className="eval-run-id">02</span>
+              <div>
+                <strong>恢复前重新校验</strong>
+                <small>中断期间权限或表结构变了不会被重新拦</small>
+              </div>
+              <span className="status wait">未实现</span>
             </div>
-            <span className="eval-pass">已实现</span>
-          </div>
-          <div className="eval-run">
-            <span className="eval-run-id">04</span>
-            <div>
-              <strong>恢复前重新校验权限与 Schema</strong>
-              <small>尚未实现：目前直接从检查点状态续跑，中断期间权限或表结构变了不会被重新拦</small>
+            <div className="eval-run">
+              <span className="eval-run-id">03</span>
+              <div>
+                <strong>从失败节点精确续跑</strong>
+                <small>线程不变，已完成节点不重跑；续跑另计一次每日配额</small>
+              </div>
+              <span className="eval-pass">✓</span>
             </div>
-            <span className="status wait">未实现</span>
           </div>
-        </div>
-      </article>
+        </article>
+      </div>
     </>
   )
 }
@@ -1091,15 +1222,26 @@ function PerformancePanel({ d, live }: { d: OfflineQuality; live: LiveQuality | 
   const b = d.blind!
   const nodes = live?.nodes ?? []
   const worst = Math.max(...nodes.map(n => n.p95_ms ?? 0), 1)
+  // 原型的「单任务成本」是每题的钱，结果文件里 cost_cny 是**整轮**的合计
+  const perCase = b.cost_cny / Math.max(b.n, 1)
   return (
     <>
     <div className="eval-metric-grid">
-      <MetricCard label="P95 端到端" status="OFFLINE" value={fmtMs(b.p95_ms)}
-                  note="离线回归环境，与线上不可直接比较" />
-      <MetricCard label="本轮总成本" status={`${b.n} CASES`} value={`¥${b.cost_cny}`}
-                  note="仅模型调用开销，不含数据库资源" />
-      <MetricCard label="单条平均成本" status="AVG" value={`¥${(b.cost_cny / Math.max(b.n, 1)).toFixed(4)}`}
-                  note="用来估算跑一轮全集要花多少" />
+      <MetricCard label="P95 端到端耗时" value={fmtMs(b.p95_ms)}
+                  note="提交问题到生成可信答案的第 95 百分位耗时 · 离线回归环境，与线上不可直接比较"
+                  status={`目标 < ${P95_TARGET_MS / 1000}s`}
+                  danger={b.p95_ms > P95_TARGET_MS} />
+      {/* 原型这枚角标是「↓ 11%」。这里的箭头由**上一轮同源回归**算出来 ——
+          结果文件每跑一轮存一份 .prev.json，出处（库 / 题库 / 模型）对不上后端
+          就不给 prev，页面照实说"没有可比的上一轮"，而不是留一个好看的降幅。 */}
+      <MetricCard label="平均 Token 消耗" value={b.avg_tok?.toLocaleString() ?? '—'}
+                  note="包含 SQL 生成、修复和最终结果解释"
+                  status={delta(b.avg_tok, b.prev?.avg_tok, b.prev?.n ?? 0)
+                    || '首轮 · 无可比上一轮'} />
+      <MetricCard label="单任务成本" value={`¥${perCase.toFixed(4)}`}
+                  note="模型调用与追踪开销，不包含数据库资源成本"
+                  status={`目标 < ¥${COST_TARGET_CNY}`}
+                  danger={perCase > COST_TARGET_CNY} />
     </div>
 
     {/* 原型这里是「P95 阶段耗时拆解」。数据用**线上真实调用**的节点聚合 ——
@@ -1155,13 +1297,16 @@ function NotMeasured({ title, items, hint }: {
   )
 }
 
+/** 场景名按设计稿的说法（业务口径 / 安全拦截 / 多步分析…）。
+ *  设计稿里还有「主动澄清」「故障恢复」两类 —— 本评测集**没有这两类题**，
+ *  所以不列：把没有的场景写进去，覆盖面就是假的。 */
 const CATEGORY_CN: Record<string, string> = {
-  single: '单表',
-  join: '多表连接',
+  single: '常规查询',
+  join: '多表关联',
   metric: '业务口径',
-  window: '窗口函数',
-  multihop: '多跳',
-  reject: '应拒绝',
+  window: '窗口分析',
+  multihop: '多步分析',
+  reject: '安全拦截',
 }
 
 /** 评测集 —— 版式与字段照原型 `[data-eval-panel="datasets"]`：
@@ -1181,7 +1326,7 @@ function DatasetScope({ offline }: { offline: OfflineQuality | null }) {
   // 评测集全量 58 条时不分页也能看，但这套题会长；一次渲染整份文件是
   // 任务中心已经踩过的那个坑（一千四百多行、DOM 高七万像素）。
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(20)
+  const [pageSize, setPageSize] = useState(10)
 
   if (!offline?.available) {
     return (

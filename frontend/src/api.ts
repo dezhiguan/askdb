@@ -855,6 +855,8 @@ export interface LiveQuality {
   sql?: { calls: number; ok: number }
   /** attempts>1 的任务里最终没被拒的占比 */
   retry?: { retried: number; recovered: number; rate: number | null }
+  /** 断过的线程里最终正常收尾的占比。rate 为 null = 窗口内没断过，不是 0% */
+  resume?: { interrupted: number; recovered: number; rate: number | null }
   /** 同一个人在 window_min 分钟内又提交一次的比例。匿名会被并成一个人 —— 会高估 */
   repeat?: { n: number; rate: number | null; window_min: number }
   /** 窗口等分七段的趋势，供 sparkline。空段照样在，不跳过 */
@@ -891,7 +893,16 @@ export interface OfflineQuality {
     multi_misuse: number
     p95_ms: number
     cost_cny: number
+    /** 每题平均 token（输入 + 输出）。老结果文件由后端按逐题记录现算 */
+    avg_tok: number | null
     failure_kinds: Record<string, number>
+    /** 上一轮同源回归的成绩，用来出环比。出处不一致时后端不给这个字段 */
+    prev?: {
+      n: number
+      p95_ms: number | null
+      cost_cny: number | null
+      avg_tok: number | null
+    }
   }
   /** 消融分组 A–F：同一黄金集下逐层加能力的对照 */
   groups?: {
@@ -963,6 +974,36 @@ export interface OfflineQuality {
     /** 是不是当前页面上这一轮 */
     current: boolean
   }[]
+}
+
+/** 一轮回归的实时状态。字段与后端 evalrun.RunState 一一对应。 */
+export interface EvalRunState {
+  status: 'idle' | 'running' | 'done' | 'failed'
+  started_at: string
+  finished_at: string
+  done: number
+  total: number
+  group: string
+  /** 跑在哪个数据源上 —— 成绩离开数据源没有意义，所以它和分数一起回 */
+  datasource: string
+  error: string
+  accuracy: number | null
+  passed: number
+}
+
+export async function fetchEvalRun(): Promise<EvalRunState> {
+  const response = await fetch('/api/eval/run')
+  if (!response.ok) throw new Error(`/api/eval/run ${response.status}`)
+  return response.json()
+}
+
+/** 触发一轮回归。已在跑（409）与本部署不含评测套件（501）都要把后端的
+ *  说明原样带出来 —— 这两种情况页面上的处置完全不同。 */
+export async function startEvalRun(): Promise<EvalRunState> {
+  const response = await fetch('/api/eval/run', { method: 'POST' })
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(body?.detail || `/api/eval/run ${response.status}`)
+  return body
 }
 
 export async function fetchOfflineQuality(): Promise<OfflineQuality> {

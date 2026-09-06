@@ -558,6 +558,8 @@ def quality(path: Path, days: int = 1) -> dict[str, Any]:
                 "ok": nodes.get("execute", {}).get("ok", 0)},
         # 自动重试恢复率：attempts > 1 的任务里，最终没被拒的占多少
         "retry": _retry_of(recent),
+        # 断点恢复率：断过的线程里，最终正常收尾的占多少
+        "resume": _resume_of(recent),
         # 同问题重复查询率 —— 没有"用户觉得答得对不对"的信号时，
         # 短时间内换个问法再问一次是能拿到的最接近的代理指标
         "repeat": _repeat_of(recent),
@@ -595,6 +597,32 @@ def _retry_of(records: list[dict[str, Any]]) -> dict[str, Any]:
         "retried": len(retried),
         "recovered": len(recovered),
         "rate": round(len(recovered) / len(retried), 4) if retried else None,
+    }
+
+
+def _resume_of(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """断点恢复率。分母是**真的断过**的线程（出现过 INTERRUPTED 的 thread_id），
+    分子是这些线程最后已经正常收尾的那些。
+
+    只能按线程判，不能按记录判：续跑写的是新 trace、同一条 thread，
+    按记录数算会把"断了一次又续上"记成一半失败。
+
+    中断本身是故障态（异常逃出执行图），窗口内一次都没断过是常态 ——
+    那时 rate 为 None，页面要显示"无样本"，不是 0%。
+    """
+    threads: dict[str, list[dict[str, Any]]] = {}
+    for r in records:
+        tid = str(r.get("thread_id") or r.get("trace_id") or "")
+        if tid:
+            threads.setdefault(tid, []).append(r)
+    broke = [sorted(rs, key=lambda r: str(r.get("ts", "")))
+             for rs in threads.values()
+             if any(x.get("rejected_by") == "INTERRUPTED" for x in rs)]
+    recovered = [rs for rs in broke if not rs[-1].get("rejected_by")]
+    return {
+        "interrupted": len(broke),
+        "recovered": len(recovered),
+        "rate": round(len(recovered) / len(broke), 4) if broke else None,
     }
 
 

@@ -184,54 +184,94 @@ def _tokens(name: str) -> set[str]:
     return out
 
 
-def _wanted(question: str) -> set[str]:
-    """从提问里解出"想找什么"：英文词原样收，中文词经词典换成英文词。"""
+#: **泛词**：命中它们几乎说明不了什么。
+#:
+#: "记录"映射到 log / record / history，而任何库里都有一堆 *_log、*_history —— 实测
+#: 问"有多少条聊天记录"，靠"记录"二字召回了 security_audit_logs、
+#: user_password_history、tool_execution_log，真正该用的 agent_messages 一张没进。
+#: 更糟的是当时 blind=False：有表得了分，盲选判定就以为召回成功，一句警告都不给。
+#:
+#: 所以泛词只算**弱信号**：加很小的分，且不足以让一次召回摆脱"盲选"这个判定。
+#: 一个问题若只靠泛词得分，它与一张表都没命中在**可信度上是一回事**。
+WEAK_HINTS: frozenset[str] = frozenset({
+    "记录", "日志", "历史", "数据", "信息", "内容", "结果", "状态", "时间", "数量", "金额",
+})
+
+
+def _wanted(question: str) -> tuple[set[str], set[str]]:
+    """从提问里解出"想找什么"，分强弱两档。
+
+    英文词原样收（人直接写了 users 就是强信号），中文词经词典换成英文词；
+    泛词映射出来的那些落到弱档。
+    """
     q = question.lower()
-    out = {w for w in re.split(r"[^0-9A-Za-z]+", q) if len(w) > 1}
+    strong = {w for w in re.split(r"[^0-9A-Za-z]+", q) if len(w) > 1}
+    weak: set[str] = set()
     for cn, ens in CN_HINTS.items():
-        if cn in question:
-            out.update(ens)
-    return out
+        if cn not in question:
+            continue
+        (weak if cn in WEAK_HINTS else strong).update(ens)
+    return strong, weak - strong
 
 
-def _score(t: Table, question: str) -> int:
-    """关键词相关度。表名/别名命中权重最高，其次字段名与字段说明。
+def _score(t: Table, question: str) -> tuple[int, bool]:
+    """关键词相关度，外加**这次得分是不是靠得住**。
 
     命中判定按**词**，不按子串：中文提问对英文标识符做子串匹配恒为 0 分，
     而 0 分并列会让排序退化成白名单顺序 —— 那正是这个函数出过的事故。
+
+    第二个返回值是"有没有强信号"：泛词（见 WEAK_HINTS）加的那点分不算数。
+    全场没有一个强信号，就等同于一张表都没命中，上层照盲选处理。
     """
     s = 0
+    strong_hit = False
     q = question.lower()
-    wanted = _wanted(question)
+    strong, weak = _wanted(question)
     name_tokens = _tokens(t.name)
 
     if t.name.lower() in q:                       # 直接写了表名，最强信号
         s += 10
-    elif name_tokens & wanted:
+        strong_hit = True
+    elif name_tokens & strong:
         # 表名的词被问到（含中文经词典转换）。按命中词数给分，
         # `interview_questions` 对"面试题目"命中两个词，理应压过只命中一个的表。
-        s += 6 * len(name_tokens & wanted)
+        s += 6 * len(name_tokens & strong)
+        strong_hit = True
+    elif name_tokens & weak:
+        s += 1                                    # 泛词：给个排序上的微弱偏好，仅此而已
 
     for a in t.aliases:
         if a and a in question:
             s += 8
+            strong_hit = True
     if t.desc:
         # 表注释是**库里真有的元数据**，权重排在别名之后、字段之前。
         # 中文注释与中文提问同语种，命中它比任何词典都准。
-        s += 4 * sum(1 for w in _desc_words(t.desc) if w in question)
+        hits = sum(1 for w in _desc_words(t.desc) if w in question)
+        if hits:
+            s += 4 * hits
+            strong_hit = True
 
     for c in t.columns.values():
         ctoks = _tokens(c.name)
         if c.name.lower() in q:
             s += 3
-        elif ctoks & wanted:
+            strong_hit = True
+        elif ctoks & strong:
             s += 2
+            strong_hit = True
+        elif ctoks & weak:
+            s += 1
         if c.desc:
-            s += 2 * sum(1 for w in _desc_words(c.desc) if w in question)
+            hits = sum(1 for w in _desc_words(c.desc) if w in question)
+            if hits:
+                s += 2 * hits
+                strong_hit = True
         for e in c.enum:
             if e.lower() in q:
                 s += 2
-    return s
+                strong_hit = True
+    return s, strong_hit
 
 
 def _desc_words(desc: str) -> list[str]:
@@ -253,8 +293,11 @@ def _keyword_pick(question: str, cfg: Config, top_k: int, max_k: int,
     错答案。这个布尔量存在的唯一目的，就是让上层能区分这两件事。
     """
     all_tables = list(cfg.tables.values())
-    scored = sorted(((_score(t, question), t) for t in all_tables), key=lambda x: -x[0])
-    blind = not scored or scored[0][0] <= 0
+    graded = [(_score(t, question), t) for t in all_tables]
+    scored = sorted(((sc, t) for (sc, _), t in graded), key=lambda x: -x[0])
+    # 盲选的判据是**有没有强信号**，不是"有没有表得分"。只靠泛词得的那 1 分
+    # 不足以说明召回对了 —— 让它算数，等于把一次偏掉的召回伪装成成功的召回。
+    blind = not any(strong for (_, strong), _ in graded)
     picked = [t for s, t in scored if s > 0][:max_k]
     if len(picked) < top_k:
         # 召回不足时补齐，宁可多给一张表，也不要让模型无表可用

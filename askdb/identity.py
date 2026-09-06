@@ -174,6 +174,7 @@ TASKS_ALL = "tasks.all"             # T-03 他人任务（仅元数据）
 MEMBERS_READ = "members.read"       # I-02 跨角色成员名册
 MEMBERS_WRITE = "members.write"     # I-03 增删成员
 APPROVE = "approve"                 # Q-08 / S-03~05 审批放行
+EVAL_RUN = "eval.run"               # E-04 触发黄金集回归
 
 #: 读类能力位 —— **每一个角色，包括匿名，都拿到全部这些位。**
 #: 「不同角色看到的内容完全一样」这句话在代码里就是这一行。
@@ -195,6 +196,9 @@ _READ: frozenset[str] = frozenset({
 #: 与中间件的方法判据对齐 —— 两处判据形状一致，才不会各自漂移。
 _WRITE: frozenset[str] = frozenset({
     SOURCES_TEST, SOURCES_SCAN, SOURCES_WRITE,
+    # 跑一轮回归会真的调模型、真的查库，**花钱也压库** —— 判据同 SOURCES_SCAN：
+    # 会不会往外做动作。匿名一律不给。
+    EVAL_RUN,
 })
 
 #: 角色 → 能力位。**固定，不开放配置**：能配的东西就会被配错，

@@ -217,3 +217,11 @@ identity:
   # 连接串走 ASKDB_IDENTITY_DSN（见 .env），不写进仓库
   enabled: true
   password_env: ASKDB_IDENTITY_PG_PASSWORD
+
+# 回归评测跑在哪。**固定一个数据源**，不跟着页面上当前选的源走：
+# 同一套题在不同库上的分数不可比，考场一换，历史成绩之间立刻失去意义。
+# source 可写数据源 id 或名字（名字能跟着仓库走到别的机器上）。
+evaluation:
+  source: "ragforge 本地库"
+  golden: evals/golden-ragforge.jsonl
+  out: evals/results/ragforge-blind.json

@@ -551,10 +551,16 @@ def test_quality_center_invents_no_composite_score():
     for invented in ("92.9", "97.6", "4,286", "126 CASES"):
         assert invented not in src, f"质量中心出现了没有来源的数字或判语：{invented}"
 
-    assert src.count("Agent v") <= 1, "版本号散落成多处字面量，改来源时必然漏改"
+    # 版本字面量只准出现在文件顶部的常量声明里。设计稿的版本选择器要列出
+    # v2.3 / v2.5-rc，所以不能只准出现一次；但**一旦散进 JSX**，接上真实
+    # 版本来源时必然漏改，页面上就会同时出现两个版本号。
     if "Agent v" in src:
         assert "const AGENT_VERSION" in src, (
             "写死的版本号必须收进 AGENT_VERSION 常量，接上真实来源时只改这一处"
+        )
+        body = src[src.index("\nfunction "):]
+        assert "Agent v" not in body, (
+            "版本号写进了组件里：所有字面量必须留在文件顶部的版本常量中"
         )
 
     if "允许发布" in src:

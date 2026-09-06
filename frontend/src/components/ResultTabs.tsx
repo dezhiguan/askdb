@@ -47,30 +47,17 @@ function AnswerCard({ result, onGoTab }: {
     ? `${result.columns![0]}：${fmtValue(result.rows![0][0])}`
     : `查询返回 ${(result.row_count ?? 0).toLocaleString()} 行`
 
-  // 召回盲选 / 脱敏这两件事必须**贴着答案本身**说，不能只写进执行链路页签。
-  // 盲选下的错答与正常答案在页面上长得一模一样，看的人不会主动去点链路；
-  // 而一屏星号若不给出处，第一反应是"库里存的就是这样"。
-  const notices: { tone: 'warn' | 'info'; text: string }[] = []
-  if (result.recall_blind) {
-    notices.push({
-      tone: 'warn',
-      text: result.recall_note
-        || '这次没有任何表命中问题里的关键词，下面用到的表是兜底选的，结果可能答非所问 —— 请核对 SQL，或在问题里直接写出表名。',
-    })
-  } else if (result.recall_note) {
-    notices.push({ tone: 'info', text: result.recall_note })
-  }
-  if (result.mask_degraded) {
-    notices.push({
-      tone: 'info',
-      text: '这条 SQL 的投影来源解析不出，本次结果按整行从严脱敏 —— 星号是系统加的，不是库里的值。',
-    })
-  } else if (result.masked_columns?.length) {
-    notices.push({
-      tone: 'info',
-      text: `个人信息列已脱敏：${result.masked_columns.join('、')}（首尾保留，中间打星）`,
-    })
-  }
+  // 只在**答案可能是错的**时候多说一句，别的都不说。
+  //
+  // 盲选（没有任何表命中问题里的关键词）下的错答，与正常答案在页面上长得
+  // 一模一样 —— 这句提示是这一屏上唯一能把两者区分开的东西，必须贴着答案。
+  // 脱敏就不在这里说了：星号本身已经在结果里，脱了哪几列进执行链路与审计。
+  const warning = result.recall_blind
+    ? (result.recall_note
+       || '这次没有任何表命中问题里的关键词，下面用到的表是兜底选的，结果可能答非所问 —— 请核对 SQL，或在问题里直接写出表名。')
+    : result.mask_degraded
+      ? '这条 SQL 的投影来源解析不出，本次按整行从严脱敏 —— 星号是系统加的，不是库里的值。'
+      : ''
 
   return (
     <div className="answer-card">
@@ -78,9 +65,7 @@ function AnswerCard({ result, onGoTab }: {
         <div>
           <strong>{headline}</strong>
           {result.reasoning && <p>{result.reasoning}</p>}
-          {notices.map(n => (
-            <p key={n.text} className={`answer-notice answer-notice-${n.tone}`}>{n.text}</p>
-          ))}
+          {warning && <p className="answer-warning">{warning}</p>}
         </div>
         <div className="answer-actions">
           <button onClick={() => onGoTab('sql')}>查看原生 SQL</button>

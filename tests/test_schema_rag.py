@@ -67,9 +67,31 @@ def test_est_tokens_counts_cjk_per_char():
 
 def test_score_prefers_name_and_alias(cfg):
     t = cfg.tables["documents"]
-    assert schema_rag._score(t, "documents 有多少") > 0
-    assert schema_rag._score(t, "文档有多少") > 0
-    assert schema_rag._score(t, "完全无关的问题") == 0
+    assert schema_rag._score(t, "documents 有多少")[0] > 0
+    assert schema_rag._score(t, "文档有多少")[0] > 0
+    assert schema_rag._score(t, "完全无关的问题")[0] == 0
+
+
+def test_generic_words_alone_do_not_count_as_a_hit(cfg):
+    """"记录"这种泛词碰上 *_log / *_history 是必然，不是召回成功。
+
+    实测：问"有多少条聊天记录"，靠"记录"二字召回了 security_audit_logs、
+    user_password_history、tool_execution_log，真正该用的 agent_messages 一张
+    没进 —— 而当时 blind=False，一句警告都不给。
+    """
+    from askdb.config import Column, Table
+
+    cfg.raw["schema_rag"]["mode"] = "keyword"
+    cfg.metrics = []
+    cfg.tables = {
+        n: Table(name=n, desc="", aliases=[],
+                 columns={"id": Column("id", "BIGINT")}, tenant_exempt=True)
+        for n in ("security_audit_logs", "tool_execution_log", "user_password_history",
+                  "agent_messages", "agent_sessions", "users", "resumes", "job_matches")
+    }
+    cfg.raw["schema_rag"]["token_budget"] = 60      # 塞不下全库，只能走兜底那条
+    r = schema_rag.recall("有多少条聊天记录", cfg)
+    assert r.blind, "只靠泛词得分，必须仍按盲选处理并示警"
 
 
 def test_table_doc_renders_columns(cfg):

@@ -26,6 +26,7 @@ from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from decimal import Decimal
+from collections.abc import Callable
 from typing import Any
 
 from askdb import graph, guard
@@ -117,6 +118,17 @@ class Report:
         return round(sum(o.cost_cny for o in self.outcomes), 4)
 
     @property
+    def avg_tok(self) -> int:
+        """每道题的平均 token（输入 + 输出）。
+
+        分母是**跑过的题**，不是答对的题：一道题失败照样烧了 token，
+        把它从分母里去掉，平均值就成了"顺利时的花费"，用来估成本会偏低。
+        """
+        if not self.outcomes:
+            return 0
+        return round(sum(o.tok_in + o.tok_out for o in self.outcomes) / len(self.outcomes))
+
+    @property
     def p95_ms(self) -> int:
         xs = sorted(o.elapsed_ms for o in self.outcomes)
         return xs[min(int(len(xs) * 0.95), len(xs) - 1)] if xs else 0
@@ -141,6 +153,7 @@ class Report:
             "accuracy": self.accuracy, "false_reject": self.false_reject,
             "block_rate": self.block_rate, "multi_misuse": self.multi_misuse,
             "avg_steps": self.avg_steps, "cost_cny": self.cost, "p95_ms": self.p95_ms,
+            "avg_tok": self.avg_tok,
             "failure_kinds": self.failure_kinds,
             "outcomes": [asdict(o) for o in self.outcomes],
         }
@@ -334,7 +347,14 @@ def _dsn_brief(dsn: str, upstream: str = "") -> str:
 
 
 def run(cfg: Config, cases: list[Case], group: str = "current",
-        verbose: bool = True, golden: str = "") -> Report:
+        verbose: bool = True, golden: str = "",
+        on_progress: Callable[[int, int], None] | None = None) -> Report:
+    """跑一轮回放。
+
+    on_progress(已完成, 总数) 在**每题判完之后**回调一次，给界面报进度用 ——
+    一轮盲测要几分钟，没有进度的按钮和卡死没有区别。回调里抛错不该带塌整轮，
+    所以调用方自己兜住；这里不加 try，是因为回调只由本仓库内部传入。
+    """
     rep = Report(group=group, n=len(cases),
                  provenance=provenance_of(cfg, cases, golden))
     with Executor(cfg) as ex:
@@ -347,6 +367,8 @@ def run(cfg: Config, cases: list[Case], group: str = "current",
                     id=c.id, category=c.category, blind=c.blind, passed=False,
                     reason="链路异常", detail=str(e)[:160],
                     elapsed_ms=int((time.perf_counter() - t0) * 1000)))
+                if on_progress:
+                    on_progress(i, len(cases))
                 continue
             o = judge(c, r, cfg, ex)
             rep.outcomes.append(o)
@@ -355,6 +377,8 @@ def run(cfg: Config, cases: list[Case], group: str = "current",
                 extra = f"  {o.reason}" if o.reason else ""
                 print(f"  [{i:>2}/{len(cases)}] {mark} {c.id} {c.category:<9}"
                       f"{c.question[:26]:<28}{o.elapsed_ms:>6}ms{extra}")
+            if on_progress:
+                on_progress(i, len(cases))
     return rep
 
 
