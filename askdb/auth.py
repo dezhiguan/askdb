@@ -192,23 +192,49 @@ def authenticate(cfg: Config, username: str, password: str) -> Account:
     return acc
 
 
-def roles_of(cfg: Config, username: str) -> list[str]:
-    """账号的角色：配置内置 ∪ 身份库里管理员登记的。
+def identity_of(cfg: Config, username: str) -> tuple[list[str], str]:
+    """一次查库同时拿到**角色**与**姓名**。
 
-    并集而不是二选一：对外实例只有配置（不需要数据库），真实部署可以在
-    身份库里继续加人，两者互不干扰。
+    两者是同一条并集口径（配置内置 ∪ 身份库里管理员登记的）：对外实例只有
+    配置（不需要数据库），真实部署可以在身份库里继续加人，两者互不干扰。
+    分成两个函数各查一次的话，/api/auth/me 这个每次页面加载都会调的接口，
+    对身份库的往返就翻了一倍 —— 而它俩要的是同一份名单。
+
+    身份库连不上不抛：已登录的人不该因为名册查不到就掉线、顶栏也不该空掉，
+    退化成"只用配置里的那份"。
     """
-    acc = accounts(cfg).get((username or "").strip().lower())
-    out = list(acc.roles) if acc else []
+    name = (username or "").strip()
+    acc = accounts(cfg).get(name.lower())
+    roles = list(acc.roles) if acc else []
+    # accounts() 在没写 display_name 时会拿用户名兜底，那不算"有姓名"
+    display = acc.display_name if acc and acc.display_name != acc.username else ""
 
     from . import identity
 
     if identity.enabled(cfg):
         try:
             for m in identity.list_members(cfg):
-                if m["username"].lower() == (username or "").lower() and m["role_code"] not in out:
-                    out.append(m["role_code"])
+                if m["username"].lower() != name.lower():
+                    continue
+                if m["role_code"] not in roles:
+                    roles.append(m["role_code"])
+                if not display and m.get("display_name"):
+                    display = str(m["display_name"])
         except Exception:
-            # 身份库连不上不该让已登录的人掉线 —— 退化成只用配置里的角色
             pass
-    return out
+    return roles, display
+
+
+def display_name_of(cfg: Config, username: str) -> str:
+    """这个账号的**姓名**。
+
+    界面上要显示的是人，不是网关用户名：后者是账号标识（guandezhi），
+    对同事没有辨识度，也不是这套权限体系要展示的东西。取不到返回空串，
+    由调用方决定退回什么 —— 这里不替它编一个名字。
+    """
+    return identity_of(cfg, username)[1]
+
+
+def roles_of(cfg: Config, username: str) -> list[str]:
+    """账号的角色：配置内置 ∪ 身份库里管理员登记的。"""
+    return identity_of(cfg, username)[0]

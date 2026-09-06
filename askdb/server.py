@@ -1759,13 +1759,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """
         username = _current_user(request)
         scoped = _scoped(request)
-        acc = _auth.accounts(cfg).get((username or "").lower()) if username else None
+        ident = _auth.identity_of(cfg, username) if username else ([], "")
         return {
             "enabled": _auth.enabled(cfg),
             "required": _auth.required(cfg),
             "username": username,
-            "display_name": acc.display_name if acc else "",
-            "roles": _auth.roles_of(cfg, username) if username else [],
+            # 角色与姓名一次取完：这个接口每次页面加载都会调，分两次查等于
+            # 把对身份库的往返翻倍，而它俩要的是同一份名单。
+            # 姓名走并集口径（配置 ∪ 身份库）—— 只查配置的话，身份库里登记的人
+            # 顶栏永远显示网关用户名（guandezhi），而那不是要给人看的东西
+            "display_name": ident[1],
+            "roles": ident[0],
             "scope": {"tables": sorted(scoped.tables), "max_rows": scoped.max_rows},
         }
 

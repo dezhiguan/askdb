@@ -265,3 +265,33 @@ def test_reads_never_create_the_schema(cfg, monkeypatch):
     members = identity.list_members(cfg)
     assert members and all(m["builtin"] for m in members)
 
+def test_display_name_comes_from_config_and_identity_store(cfg, monkeypatch):
+    """顶栏要显示的是**人**，不是网关用户名。
+
+    姓名与角色必须同一条并集口径（配置 ∪ 身份库）：只查配置的话，身份库里
+    由管理员登记的人在界面上永远显示成 guandezhi 这样的账号标识 ——
+    那是登录用的，对同事没有辨识度。
+    """
+    from askdb import auth, identity
+
+    # 配置内置账号：直接给配置里的姓名，不必碰身份库
+    assert auth.display_name_of(cfg, "linxiao") == "林晓"
+
+    # 只登记在身份库里的人：配置里查不到，姓名只能从那里来
+    monkeypatch.setattr(identity, "enabled", lambda _c: True)
+    monkeypatch.setattr(identity, "list_members", lambda _c, role_code="": [
+        {"username": "db_only", "display_name": "库里那个人", "role_code": "SYS_ADMIN"},
+        {"username": "no_name", "display_name": "", "role_code": "DEV"},
+    ])
+    assert auth.display_name_of(cfg, "db_only") == "库里那个人"
+    # 登记了但没写姓名：返回空串，由调用方决定退回什么 —— 不替它编一个
+    assert auth.display_name_of(cfg, "no_name") == ""
+    assert auth.display_name_of(cfg, "查无此人") == ""
+
+    # 身份库连不上不该让顶栏空掉，更不该抛
+    def boom(_c, role_code=""):
+        raise RuntimeError("身份库连不上")
+
+    monkeypatch.setattr(identity, "list_members", boom)
+    assert auth.display_name_of(cfg, "db_only") == ""
+    assert auth.display_name_of(cfg, "linxiao") == "林晓"   # 配置那条不受影响

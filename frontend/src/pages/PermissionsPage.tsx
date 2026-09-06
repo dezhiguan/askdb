@@ -1,7 +1,7 @@
 import { PageHeader } from '../components/AppShell'
 import { useEffect, useState } from 'react'
 import {
-  addMember, fetchMembers, fetchRoles, removeMember,
+  addMember, fetchMembers, fetchRoles, removeMember, Forbidden,
   type RoleInfo, type RoleMember, type RolesResponse,
  type Me,
 } from '../api'
@@ -68,6 +68,9 @@ export function PermissionsPage({ notify, me }: {
   const [data, setData] = useState<RolesResponse | null>(null)
   const [active, setActive] = useState<string>('PRODUCT')
   const [members, setMembers] = useState<RoleMember[] | null>(null)
+  // 名册取不到有两种：没权限看（按设计）和真出错。合成一个 error 会把
+  // 权限边界渲染成红色的「读取失败」，看的人去查一个不存在的故障
+  const [membersDenied, setMembersDenied] = useState(false)
   const [error, setError] = useState('')
   const [reload, setReload] = useState(0)
 
@@ -88,9 +91,16 @@ export function PermissionsPage({ notify, me }: {
   useEffect(() => {
     if (!data?.enabled) return
     let alive = true
+    setMembersDenied(false)
     fetchMembers(active)
-      .then(value => { if (alive) setMembers(value) })
-      .catch(e => { if (alive) setError(String(e.message || e)) })
+      .then(value => { if (alive) { setMembers(value); setMembersDenied(false) } })
+      .catch(e => {
+        if (!alive) return
+        // 完整名册只对数据负责人与系统管理员开放，其余角色只看得到自己那一档。
+        // 这是既定边界，不该报错 —— 在表里说清楚谁能看就够了
+        if (e instanceof Forbidden) { setMembersDenied(true); return }
+        setError(String((e as Error).message || e))
+      })
     return () => { alive = false }
   }, [active, data?.enabled, reload])
 
@@ -188,7 +198,9 @@ export function PermissionsPage({ notify, me }: {
           <h4 className="member-head">
             成员
             <span className="section-note">
-              {data?.enabled ? `${members?.length ?? 0} 人` : '未启用'}
+              {!data?.enabled ? '未启用'
+                : membersDenied ? '不可见'
+                : members ? `${members.length} 人` : '读取中'}
             </span>
           </h4>
 
@@ -229,7 +241,15 @@ export function PermissionsPage({ notify, me }: {
                   {members?.length === 0 && (
                     <tr><td colSpan={6} className="audit-empty">这个角色还没有成员</td></tr>
                   )}
-                  {!members && <tr><td colSpan={6} className="audit-empty">读取中…</td></tr>}
+                  {membersDenied && (
+                    <tr><td colSpan={6} className="audit-empty">
+                      完整成员名册只对数据负责人与系统管理员开放。其余角色看得到的是
+                      自己所属的那一档 —— 登录后按当前角色重新判定。
+                    </td></tr>
+                  )}
+                  {!members && !membersDenied && (
+                    <tr><td colSpan={6} className="audit-empty">读取中…</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>

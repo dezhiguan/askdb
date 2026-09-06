@@ -642,8 +642,23 @@ export async function fetchRoles(): Promise<RolesResponse> {
   return response.json()
 }
 
+/** "按设计不给你看"，不是故障。
+ *
+ *  完整成员名册只对数据负责人与系统管理员开放（设计文档 I-02），别的角色
+ *  只看得到自己所属的那一档。这种 401/403 与"服务坏了"必须分开渲染 ——
+ *  把权限边界画成一条红色的「读取失败」，看的人会去查一个不存在的故障。 */
+export class Forbidden extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'Forbidden'
+  }
+}
+
 export async function fetchMembers(roleCode: string): Promise<RoleMember[]> {
   const response = await fetch(`/api/identity/members?role=${encodeURIComponent(roleCode)}`)
+  if (response.status === 401 || response.status === 403) {
+    throw new Forbidden(`/api/identity/members ${response.status}`)
+  }
   if (!response.ok) throw new Error(`/api/identity/members ${response.status}`)
   return (await response.json()).items
 }
@@ -729,6 +744,10 @@ export interface Task {
   user: string
   /** 这条线程上已经跑过几次（首次 + 每次续跑各算一次） */
   attempts_on_thread: number
+  /** 这条线程跑在哪个数据源上（审计 summary 字段）。老记录可能没有，
+   *  筛选按空串归到"未记录"那一档，不假装它属于默认源。 */
+  source?: string | null
+  source_name?: string | null
   elapsed_ms: number
   cost_cny: number | null
   /** 线程当前状态，看它最后一条记录：
