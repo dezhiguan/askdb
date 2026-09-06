@@ -61,16 +61,38 @@ def _as(client: TestClient, user: str) -> TestClient:
 
 # ---------- 能力位模型本身 ----------
 
-def test_system_admin_can_approve_but_never_query():
-    """自批在**结构上**不可能发生 —— 这条是把审批收敛到系统管理员的全部理由。
+def test_all_roles_have_exactly_the_same_capabilities():
+    """整套权限模型的主张就是这一条（2026-09-06 产品决定）。
 
-    它不靠流程约定，靠的是 SYS_ADMIN 既没有 QUERY 也没有 QUERY_SQL：
-    它永远不可能是查询的发起人，因此不存在"自己批自己"的那条边。
-    哪天有人为了图方便给它加上 QUERY，这条用例就会红。
+    四个数据角色的能力位**逐位相同**。这条用例存在的意义是挡住"给某个角色
+    单独加一位"这种改动 —— 那正是上一版权限体系长成一张解释不清的分档表的
+    起点，而它最后的形态是：产品角色登录之后看到的东西比匿名还少。
     """
-    assert identity.can(["SYS_ADMIN"], identity.APPROVE)
-    assert not identity.can(["SYS_ADMIN"], identity.QUERY)
-    assert not identity.can(["SYS_ADMIN"], identity.QUERY_SQL)
+    base = identity.caps_of(["PRODUCT"])
+    for code in ("DEV", "QA", "DATA_OWNER"):
+        assert identity.caps_of([code]) == base, code
+    assert base                                    # 不是"都为空"这种退化的相等
+
+
+def test_system_admin_differs_only_by_approve_and_member_writes():
+    """唯一的角色差别。多出来的两位各有各的理由，别再多第三位。
+
+    · APPROVE      —— 提出与放行分属两人（V1.1 决定）
+    · MEMBERS_WRITE —— 它是上一条的前提：谁能改成员名单，谁就能把自己加进
+      系统管理员，于是"只有系统管理员能审批"变成一次点击的距离
+    """
+    extra = identity.caps_of(["SYS_ADMIN"]) - identity.caps_of(["PRODUCT"])
+    assert extra == {identity.APPROVE, identity.MEMBERS_WRITE}
+
+
+def test_system_admin_can_query_like_everyone_else():
+    """2026-09-06 起系统管理员也能查数。
+
+    它换掉的是一条结构性保证（查不到数据 → 不可能是发起人 → 自批不可能），
+    补上的是 approvals.decide 里的显式判定。两者一起改的，别只改一半。
+    """
+    assert identity.can(["SYS_ADMIN"], identity.QUERY)
+    assert identity.can(["SYS_ADMIN"], identity.QUERY_SQL)
 
 
 def test_data_owner_proposes_but_cannot_approve():
@@ -79,10 +101,40 @@ def test_data_owner_proposes_but_cannot_approve():
     assert not identity.can(["DATA_OWNER"], identity.APPROVE)
 
 
-def test_system_admin_sees_audit_metadata_but_not_content():
-    """管人的需要知道有没有人在违规访问，不需要知道业务上问了什么。"""
-    assert identity.can(["SYS_ADMIN"], identity.AUDIT_ALL)
-    assert not identity.can(["SYS_ADMIN"], identity.AUDIT_CONTENT)
+def test_audit_surface_is_the_same_for_everyone():
+    """审计可见范围不再按角色分。
+
+    原来系统管理员看得到行、看不到问题原文（职责分离），产品与测试只看得到
+    自己那几行。可见面统一之后这些差别全部消失 —— 匿名本来就有 AUDIT_ALL 与
+    AUDIT_CONTENT，留着那些差别的实际效果只是"登录反而看得更少"。
+    """
+    for code in ("PRODUCT", "DEV", "QA", "DATA_OWNER", "SYS_ADMIN", identity.ANONYMOUS):
+        caps = identity.caps_of([code])
+        assert identity.AUDIT_ALL in caps, code
+        assert identity.AUDIT_CONTENT in caps, code
+
+
+def test_anonymous_reads_everything_and_writes_nothing():
+    """未登录可读不可写，落在能力位上就是这个形状。
+
+    注意这里**不是**安全边界：真正拦住未登录写操作的是 server._gate_writes
+    中间件（按 HTTP 方法拦，新增接口默认落在安全那边）。能力位在这里只是让
+    页面能提前把按钮置灰。两处都要在，少哪一处都不对：只有中间件，用户会
+    点完才知道做不了；只有能力位，新增一个写接口就是敞开的。
+    """
+    anon = identity.caps_of([identity.ANONYMOUS])
+    logged_in = identity.caps_of(["PRODUCT"])
+
+    # 读类：与登录用户**一位不差**
+    assert anon == logged_in - {identity.SOURCES_TEST, identity.SOURCES_SCAN,
+                                identity.SOURCES_WRITE}
+    # 写类：一位都没有
+    assert identity.SOURCES_WRITE not in anon
+    assert identity.APPROVE not in anon
+    assert identity.MEMBERS_WRITE not in anon
+    # 读类里那几个"看起来敏感"的位确实给了匿名 —— 这是对外实例要展示的东西
+    for cap in (identity.AUDIT_CONTENT, identity.REPLAY, identity.QUALITY_READ):
+        assert cap in anon
 
 
 def test_roles_add_up():
@@ -141,41 +193,36 @@ def test_anonymous_instance_keeps_working(zcfg, monkeypatch):
 
 # ---------- 能力位在接口上（矩阵） ----------
 
-def test_product_cannot_touch_data_sources(zcfg, monkeypatch, sources_store):
-    c = _as(_client(zcfg, monkeypatch), "lin")
-    assert c.get("/api/sources").status_code == 200          # 列表能看
-    r = c.post("/api/sources/test", json={"type": "duckdb", "dsn": "x"})
-    assert r.status_code == 403 and "测试数据源连接" in r.json()["detail"]
+def test_data_source_surface_is_open_to_every_logged_in_role(zcfg, monkeypatch,
+                                                             sources_store):
+    """数据源的读与写对所有登录角色一视同仁。
 
-
-def test_qa_can_test_connection_but_not_write(zcfg, monkeypatch):
-    c = _as(_client(zcfg, monkeypatch), "qa")
-    assert c.post("/api/sources/test",
-                  json={"type": "duckdb", "dsn": "x"}).status_code != 403
-    r = c.delete("/api/sources/src_whatever")
-    assert r.status_code == 403 and "删除数据源" in r.json()["detail"]
+    原来这里是三档（产品连测试连接都不行、测试能测不能删、开发全开），
+    档位之间没有业务依据，只有一句"看起来该这样"。
+    """
+    for user in ("lin", "qa", "owner"):
+        c = _as(_client(zcfg, monkeypatch), user)
+        assert c.get("/api/sources").status_code == 200, user
+        # 403 是能力位的拒绝，这里要断言的就是"不再因为角色被拒"。
+        # 连接失败（400/422）是另一回事，与本用例无关。
+        assert c.post("/api/sources/test",
+                      json={"type": "duckdb", "dsn": "x"}).status_code != 403, user
+        assert c.delete("/api/sources/src_whatever").status_code != 403, user
 
 
 def test_refusal_names_the_role_in_plain_language(zcfg, monkeypatch):
     """看到这句话的是业务方，不是读代码的人。
 
-    「PRODUCT lacks sources.test」对他毫无用处，他需要知道的是
+    「PRODUCT lacks approve」对他毫无用处，他需要知道的是
     "我这个角色不行"以及"该找谁"。
+
+    用审批举例是因为它现在是**唯一**一个会撞上角色拒绝的动作。
     """
     c = _as(_client(zcfg, monkeypatch), "lin")
-    detail = c.post("/api/sources/test", json={"type": "duckdb", "dsn": "x"}).json()["detail"]
+    r = c.post("/api/approvals/aaaaaaaaaaaa/decide", json={"approved": True})
+    detail = r.json()["detail"]
+    assert r.status_code == 403
     assert "产品" in detail and "系统管理员" in detail
-
-
-def test_system_admin_refusal_points_at_the_real_problem(zcfg, monkeypatch):
-    """只有系统角色的人查数，要给"你没有数据角色"，而不是"你无权用这个功能"。
-
-    后者会让他去找系统管理员 —— 而他自己就是。这是判定顺序的用例：
-    _require_scope 必须排在能力位之前。
-    """
-    c = _as(_client(zcfg, monkeypatch), "root")
-    r = c.post("/api/sql", json={"sql": "SELECT id FROM orgs"})
-    assert r.status_code == 403 and "数据访问权限" in r.json()["detail"]
 
 
 # ---------- 审计可见范围（A-01） ----------
@@ -197,60 +244,74 @@ def seeded(zcfg):
     return zcfg
 
 
-def test_product_sees_only_own_audit_rows(seeded, monkeypatch):
-    c = _as(_client(seeded, monkeypatch), "lin")
-    body = c.get("/api/audit").json()
-    assert body["total"] == 1
-    assert [i["question"] for i in body["items"]] == ["产品问的"]
+def test_every_role_sees_every_audit_row(seeded, monkeypatch):
+    """审计流水对所有人一样，包括未登录。
 
+    原来产品与测试只看得到自己那几行。取消这条差别是产品决定的一部分；
+    要注意它同时取消的还有"登录反而看得更少"这个后果 —— 匿名一直都有
+    AUDIT_ALL。
+    """
+    for user in ("lin", "dev", "qa", "owner", "root"):
+        c = _as(_client(seeded, monkeypatch), user)
+        assert c.get("/api/audit").json()["total"] == 2, user
 
-def test_dev_sees_everyone(seeded, monkeypatch):
-    c = _as(_client(seeded, monkeypatch), "dev")
-    assert c.get("/api/audit").json()["total"] == 2
+    anon = _client(seeded, monkeypatch)
+    assert anon.get("/api/audit").json()["total"] == 2
 
 
 def test_stats_are_scoped_the_same_way(seeded, monkeypatch):
-    """列表只给本人、统计却给全量，那张按天聚合的成本卡就是一次泄露。
+    """列表与统计必须同源。
 
-    同一道边界只做一半等于没做 —— 这条用例守的就是"两处必须同源"。
+    可见范围现在人人相同，这条用例守的仍是原来那件事：两处若各判各的，
+    哪天再收窄一次列表而漏掉统计，那张按天聚合的成本卡就是一次泄露。
     """
-    c = _as(_client(seeded, monkeypatch), "lin")          # PRODUCT：无 AUDIT_ALL
-    assert c.get("/api/audit").json()["total"] == 1
-    assert c.get("/api/audit/stats").json()["calls"] == 1
-
-    c2 = _as(_client(seeded, monkeypatch), "owner")       # DATA_OWNER：有 AUDIT_ALL
-    assert c2.get("/api/audit").json()["total"] == 2
-    assert c2.get("/api/audit/stats").json()["calls"] == 2
+    for user in ("lin", "owner"):
+        c = _as(_client(seeded, monkeypatch), user)
+        assert c.get("/api/audit").json()["total"] == 2, user
+        assert c.get("/api/audit/stats").json()["calls"] == 2, user
 
 
-def test_own_role_roster_is_visible_without_the_capability(zcfg, monkeypatch):
-    """看自己所属角色的成员不需要 MEMBERS_READ，跨角色才需要。
+def test_roster_is_readable_by_every_role(zcfg, monkeypatch):
+    """成员名册对所有角色可读；**增删**仍然只有系统管理员。
 
-    一个人有权知道自己和谁同组；完整名册是组织结构，属于治理数据。
+    读写在这里是分开的两件事，别一起放开：名单决定谁属于哪个角色，能改它
+    就能把自己加进系统管理员，于是"只有系统管理员能审批"不再是一条约束。
     """
     c = _as(_client(zcfg, monkeypatch), "dev")
-    assert c.get("/api/identity/members", params={"role": "DEV"}).status_code != 403
-    r = c.get("/api/identity/members", params={"role": "DATA_OWNER"})
-    assert r.status_code == 403 and "其他角色" in r.json()["detail"]
-    assert c.get("/api/identity/members").status_code == 403      # 不带参数 = 全量
+    for params in ({"role": "DEV"}, {"role": "DATA_OWNER"}, {}):
+        assert c.get("/api/identity/members", params=params).status_code != 403, params
+
+    assert not identity.can(["DEV"], identity.MEMBERS_WRITE)
+    # 端到端也验一次。这个实例没接身份库，写入会先撞上 404 —— 断言"不成功"
+    # 而不是断言某个具体码，否则这条用例测的就变成了身份库有没有接上。
+    r = c.post("/api/identity/members", json={"role_code": "SYS_ADMIN", "username": "dev"})
+    assert r.status_code not in (200, 201), "任何登录用户都不该能把自己加进系统管理员"
 
 
-def test_system_admin_sees_all_rows_without_the_questions(seeded, monkeypatch):
-    """跨用户可见 + 内容不可见，两件事同时成立才是设计要的那个形状。"""
+def test_system_admin_sees_audit_content_like_everyone_else(seeded, monkeypatch):
+    """系统管理员现在也看得到问题原文。
+
+    原来它只看得到元数据（"管人的不需要知道业务上问了什么"）。可见面统一
+    之后这条差别没有了 —— 保留它的唯一效果会是：同一份审计，管理员看到的
+    比任何一个未登录访客还少。
+    """
     c = _as(_client(seeded, monkeypatch), "root")
     body = c.get("/api/audit").json()
-    assert body["total"] == 2                      # 谁在查，看得到
-    assert all(i["question"] is None for i in body["items"])   # 问了什么，看不到
-    assert body["text_visible"] is False
+    assert body["total"] == 2
+    assert body["text_visible"] is True
+    assert sorted(i["question"] for i in body["items"]) == ["产品问的", "负责人问的"]
 
 
-def test_search_cannot_reach_other_peoples_rows(seeded, monkeypatch):
-    """收敛必须排在搜索之前，否则 total 就是一个预言机。
+def test_search_runs_over_the_same_rows_that_are_listed(seeded, monkeypatch):
+    """搜索的范围必须与列表的范围同源。
 
-    先搜后滤的话，搜"负责人"仍会让命中数变化 —— 那已经把内容说出来了。
+    可见范围人人相同之后，这条不再是"搜不到别人的"，而是"搜的就是列出来的
+    那些"。守的是同一个性质：收敛与搜索一旦分成两处各判各的，total 就会变成
+    一个能问出可见面之外内容的预言机。
     """
     c = _as(_client(seeded, monkeypatch), "lin")
-    assert c.get("/api/audit", params={"q": "负责人问的"}).json()["total"] == 0
+    assert c.get("/api/audit", params={"q": "负责人问的"}).json()["total"] == 1
+    assert c.get("/api/audit", params={"q": "查无此问"}).json()["total"] == 0
 
 
 # ---------- 复放按复放者收窄（D-4） ----------
@@ -278,16 +339,23 @@ def test_replay_refuses_records_touching_invisible_tables(zcfg, monkeypatch):
     assert c.get("/api/replay", params={"trace_id": "c" * 12}).status_code == 200
 
 
-def test_replay_is_denied_to_roles_without_the_capability(zcfg, monkeypatch):
-    """QA 没有 REPLAY 位，且拿到的同样是 404 而不是 403。"""
+def test_replay_is_open_to_every_role(zcfg, monkeypatch):
+    """复放不再按角色分（原来 QA 与产品没有 REPLAY 位）。
+
+    真正拦住复放的那道门仍在，且与角色无关：**按复放者本人可见的表重新收窄**
+    （见上一条用例），越界记录一律 404 —— 403 与 404 的差别本身就会告诉对方
+    "这条记录存在"。
+    """
     zcfg.raw["observability"]["replay_api"] = True
     _seed(Path(zcfg.audit_log), [{
         "trace_id": "d" * 12, "ts": "2026-09-05T10:00:00+08:00", "kind": "sql",
         "user": "qa", "role": "QA", "question": "x", "tables_hit": [],
+        "sql_final": "SELECT 1",
     }])
-    monkeypatch.setattr(server, "_REPLAY_RL", server._RateLimit())
-    c = _as(_client(zcfg, monkeypatch), "qa")
-    assert c.get("/api/replay", params={"trace_id": "d" * 12}).status_code == 404
+    for user in ("qa", "lin", "root"):
+        monkeypatch.setattr(server, "_REPLAY_RL", server._RateLimit())
+        c = _as(_client(zcfg, monkeypatch), user)
+        assert c.get("/api/replay", params={"trace_id": "d" * 12}).status_code == 200, user
 
 
 # ---------- MCP 通道接入角色（D-5） ----------
@@ -323,16 +391,26 @@ def test_roles_are_not_bound_to_data_sources():
     就会变成页面上那种"看起来在拦、其实没拦"的东西，而那正是当初加它
     要消灭的。
 
-    收窄面因此只剩表与行数（护栏 R-03 / R-13），加上期限与脱敏。
+    收窄面因此只剩表与行数（护栏 R-03 / R-13）与期限。
     """
     assert not hasattr(identity.Policy(), "envs"), "Policy 又长回环境维度了"
     for code in ("QA", "PRODUCT", "DEV", "DATA_OWNER", "SYS_ADMIN"):
         p = identity.DEFAULT_POLICIES.get(code, identity.Policy())
         assert not hasattr(p, "envs")
 
-    # 系统管理员的"没有数据权限"不靠环境实现，靠空表集 —— 解绑不能把它放开
-    sys_admin = identity.DEFAULT_POLICIES["SYS_ADMIN"]
-    assert sys_admin.tables == frozenset() and sys_admin.max_rows == 0
+
+def test_no_role_narrows_anything_by_default():
+    """内置默认一条收窄都不写（2026-09-06 产品决定）。
+
+    这条与 test_all_roles_have_exactly_the_same_capabilities 是一对：那条守
+    能力位（进不进得了功能），这条守可见面（查不查得到数据）。两条都在，
+    "所有角色看到的内容完全一样"才是被测住的，而不是一句注释。
+
+    连系统管理员的空表集也撤了 —— 它换来的"自批在结构上不可能"改由
+    approvals.decide 的显式判定接手，见 test_requester_cannot_approve_own_query。
+    """
+    assert identity.DEFAULT_POLICIES == {}
+    assert not hasattr(identity.Policy(), "unmask"), "unmask 又长回来了：脱敏不该可关"
 
 
 def test_any_role_can_pick_any_data_source(zcfg, monkeypatch, tmp_path):
@@ -380,9 +458,12 @@ def test_roles_endpoint_no_longer_advertises_environments(zcfg, monkeypatch):
     roles = {r["code"]: r for r in c.get("/api/identity/roles").json()["roles"]}
     for r in roles.values():
         assert "envs" not in r and "envs_unrestricted" not in r
-    # 仍然给的是真值那几格
-    assert roles["QA"]["max_age_days"] == 180
-    assert roles["DEV"]["unmask"] is True
+    # 也不能再吐脱敏字段：脱敏 2026-09-06 起对所有人无条件生效，
+    # 给一个按角色取值的字段就是在暗示它可调
+    for r in roles.values():
+        assert "unmask" not in r
+    # 数据期限那一格仍是真值，只是内置默认对每个角色都是"不限"
+    assert all(r["max_age_days"] is None for r in roles.values())
 
 
 # ---------- 数据期限（Q-07 / R-19） ----------
@@ -391,7 +472,10 @@ def test_window_predicate_is_injected(cfg):
     """时间窗口复用 R-10 的谓词注入，不新造判定。"""
     from askdb import guard
 
-    scoped = identity.for_roles(cfg, ["QA"])          # 内置默认 180 天
+    # 内置默认不再设窗口（所有角色一致），所以这里显式配一档 ——
+    # 测的是 R-19 这条机制本身，它仍然要能被部署方配起来
+    cfg.raw["role_policies"] = {"QA": {"max_age_days": 180}}
+    scoped = identity.for_roles(cfg, ["QA"])
     g = guard.check("SELECT id FROM documents", scoped,
                     org_id=scoped.default_org, dialect=scoped.dialect)
     assert g.ok, g.reason
@@ -403,6 +487,7 @@ def test_window_does_not_touch_dimension_tables(cfg):
     """维表显式声明 time_exempt，不该被注入 —— 注入了会直接查空。"""
     from askdb import guard
 
+    cfg.raw["role_policies"] = {"QA": {"max_age_days": 180}}
     scoped = identity.for_roles(cfg, ["QA"])
     g = guard.check("SELECT id FROM orgs", scoped,
                     org_id=scoped.default_org, dialect=scoped.dialect)
@@ -419,6 +504,7 @@ def test_undeclared_time_column_is_rejected_not_ignored(cfg):
     from askdb import guard
 
     cfg.tables["documents"].columns["created_at"].time = False    # 模拟漏标
+    cfg.raw["role_policies"] = {"PRODUCT": {"max_age_days": 90}}
     scoped = identity.for_roles(cfg, ["PRODUCT"])
     g = guard.check("SELECT id FROM documents", scoped,
                     org_id=scoped.default_org, dialect=scoped.dialect)
@@ -427,7 +513,7 @@ def test_undeclared_time_column_is_rejected_not_ignored(cfg):
 
 
 def test_no_window_role_is_untouched(cfg):
-    """开发角色没有期限，SQL 不该被动一个字。"""
+    """没配期限的角色（内置默认下就是全部角色），SQL 不该被动一个字。"""
     from askdb import guard
 
     scoped = identity.for_roles(cfg, ["DEV"])
@@ -447,6 +533,7 @@ def test_window_is_disabled_on_scanned_sources(cfg, tmp_path):
     src = S.build(name="x", type_="duckdb", dsn=str(tmp_path / "a.duckdb"))
     derived = S.derive_config(cfg, src)
     assert derived.window_enforceable is False
+    derived.raw["role_policies"] = {"QA": {"max_age_days": 180}}
     scoped = identity.for_roles(derived, ["QA"])
     assert scoped.window_days == 180              # 角色策略照常算出来
     assert scoped.window_enforceable is False     # 但在这个源上落不了地
@@ -454,7 +541,7 @@ def test_window_is_disabled_on_scanned_sources(cfg, tmp_path):
 
 # ---------- 列级脱敏（Q-06 / P03） ----------
 
-def test_sensitive_columns_are_masked_for_roles_without_unmask():
+def test_sensitive_columns_are_masked():
     from askdb.executor import _masked
 
     assert _masked("13800001234") == "1*********4"
@@ -470,18 +557,22 @@ def test_mask_keeps_first_and_last_for_reconciliation():
     assert m.startswith("1") and m.endswith("4") and set(m[1:-1]) == {"*"}
 
 
-def test_unmask_is_additive_across_roles(cfg):
-    """RBAC 是加法：兼任开发的人看得到原值，与 tables 取并集同一个语义。"""
-    assert identity.for_roles(cfg, ["QA"]).unmask is False
-    assert identity.for_roles(cfg, ["DEV"]).unmask is True
-    assert identity.for_roles(cfg, ["QA", "DEV"]).unmask is True
+def test_masking_cannot_be_turned_off_by_anyone(cfg):
+    """脱敏对**所有角色**无条件生效，且没有任何开关能关掉它。
 
+    原来开发与数据负责人有 unmask（看原值），配置写不了、只能改代码。
+    2026-09-06 连这条角色差别也撤了：字段从 Policy 上删除，执行器里那个
+    `if cfg.unmask: return rows` 的出口一并删掉 —— 留一个恒为假的分支，
+    下一个人只要把它改成真就整片放开了。
+    """
+    assert not hasattr(identity.Policy(), "unmask")
+    for code in ("QA", "DEV", "DATA_OWNER", "SYS_ADMIN", identity.ANONYMOUS):
+        scoped = identity.for_roles(cfg, [code])
+        assert not hasattr(scoped, "unmask"), code
 
-def test_unmask_cannot_be_switched_on_by_config(cfg):
-    """脱敏这一位有意不从配置读 —— 能配的东西就会被配错，
-    而这一位配错等于把个人信息交出去。"""
+    # 配置也塞不进来：这个键根本没有读它的代码
     cfg.raw["role_policies"] = {"QA": {"unmask": True}}
-    assert identity.policy_for(cfg, "QA").unmask is False
+    assert not hasattr(identity.policy_for(cfg, "QA"), "unmask")
 
 
 # ---------- 高成本查询审批（Q-08 / P07） ----------
@@ -626,12 +717,26 @@ def test_double_decision_is_refused(tight, monkeypatch):
     assert r.status_code == 409
 
 
-def test_system_admin_can_never_be_the_requester(tight, monkeypatch):
-    """自批在**结构上**不可能：审批人没有查询能力，永远提不出申请。
+def test_requester_cannot_approve_own_query(tight, monkeypatch):
+    """自批被显式拒绝。
 
-    这是把审批收敛到系统管理员最主要的收益，用一条端到端用例钉住。
+    **这条用例接替的是一条结构性保证。** 2026-09-06 之前系统管理员一张表都
+    查不到，因此永远提不出申请，自批在结构上不可能发生，不需要判。现在它也
+    能查数了，同一个人既能开出审批单又是唯一有 APPROVE 的角色 —— 挡住这件事
+    的只剩 approvals.decide 里那一行。它被删掉或被重构掉的时候，红的必须是
+    这条用例。
     """
     c = _as(_client(tight, monkeypatch), "root")
-    r = c.post("/api/sql", json={"sql": "SELECT id FROM orgs"})
-    assert r.status_code == 403                       # 连查询都发不出去
-    assert c.get("/api/approvals").json()["items"] == []
+    r = c.post("/api/sql", json={"sql": "SELECT id FROM orgs"}).json()
+    assert r["ok"] is False and r["approval_id"], "系统管理员现在也该能提出申请"
+
+    decide = c.post(f"/api/approvals/{r['approval_id']}/decide", json={"approved": True})
+    assert decide.status_code == 403
+    assert "自己" in decide.json()["detail"]
+
+    # 而别人发起的那一条，它照批不误 —— 只测拒绝会把功能测没
+    other = _as(_client(tight, monkeypatch), "qa")
+    aid = _ask_sql(other, "SELECT id FROM orgs")["approval_id"]
+    root = _as(_client(tight, monkeypatch), "root")
+    assert root.post(f"/api/approvals/{aid}/decide",
+                     json={"approved": True}).status_code == 200

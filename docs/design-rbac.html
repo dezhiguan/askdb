@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>askdb 角色与权限设计 V1.2</title>
+<title>askdb 角色与权限设计 V1.4</title>
 <style>
 :root{
   color-scheme: light;
@@ -143,7 +143,7 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
     <div class="doc-sub">askdb 把「页面上宣称的权限」与「运行时真正执行的权限」对齐</div>
     <dl class="meta">
       <div><dt>拟制日期</dt><dd>2026-09-05</dd></div>
-      <div><dt>版本</dt><dd>V1.2</dd></div>
+      <div><dt>版本</dt><dd>V1.4</dd></div>
       <div><dt>最近修订</dt><dd>2026-09-05</dd></div>
       <div><dt>状态</dt><dd><span class="status">待评审</span></dd></div>
       <div><dt>拟制</dt><dd>官德志（架构）</dd></div>
@@ -182,6 +182,8 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
     <tbody>
       <tr><td class="mono">V1.0</td><td class="mono">2026-09-05</td>
         <td>首版。基于现有 8 个功能页与 29 个接口，定义 27 个权限点与 5 角色矩阵，给出四阶段落地路径。</td></tr>
+      <tr><td class="mono">V1.4</td><td class="mono">2026-09-06</td>
+        <td><b>角色之间不再有可见面差异</b>（产品决定）。撤掉按角色分档的可见表、行上限、数据期限与脱敏：所有角色（含匿名）看到的内容完全相同，唯一的角色差别是审批（仅系统管理员，另加成员增删）；未登录可读不可写。系统管理员改为也能查数，随之失去「自批在结构上不可能」这条保证，补入 <code>approvals.decide</code> 的<b>发起人不得自批</b>显式判定。第四节矩阵按此重写，第五节人员对照同步。</td></tr>
       <tr><td class="mono">V1.2</td><td class="mono">2026-09-05</td>
         <td>移除矩阵中的「匿名」列 —— 未登录不作为设计中的一种身份。同步补入 2026-09-05 对本机实例的实测数据，
           D-3 由代码推断升级为实测确认。</td></tr>
@@ -211,7 +213,7 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
     <span class="lbl">V1.1 决定 · 全部审批闸门收敛到系统管理员</span>
     它带来一条结构性保证：系统管理员的内置策略是 <code>Policy(tables=frozenset(), max_rows=0)</code>，
     <b>永远不可能是查询的发起人，因此自批在结构上不可能发生</b> —— 这不靠流程约定，靠的是已经写死在
-    <code>DEFAULT_POLICIES</code> 里的零表默认。
+    <code>DEFAULT_POLICIES</code> 里的零表默认。<b>V1.4（2026-09-06）：这条结构性保证已经不存在</b> —— 系统管理员改为也能查数，自批改由 <code>approvals.decide</code> 的显式判定（发起人 == 审批人则 403）挡住。
   </div>
   <div class="note warn">
     <span class="lbl">代价</span>
@@ -419,110 +421,74 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
 
 <section id="s4">
   <h2><span class="n">4</span>角色权限矩阵</h2>
-  <p><span class="y">✅</span> 全量 ｜ <span class="p">◐</span> 受限（见脚注） ｜ <span class="n">✕</span> 拒绝</p>
-  <div class="note"><span class="lbl">前提 · 未登录不作为一种身份</span>
-    矩阵只描述已登录用户按角色能做什么；未登录一律拦截（<code>auth.required: true</code>）。
-    这个前提当前<b>尚未完全成立</b>，见 D-3 —— 阶段一第 2 条就是让它成立。</div>
+
+  <div class="note"><span class="lbl">V1.4 · 2026-09-06 · 这一节整张矩阵被一条规则取代</span>
+    原矩阵按五个角色 × 27 个权限点分档。落地后暴露出两个问题：一是差别解释不清
+    （为什么产品能看 90 天而测试是 180 天，没有业务依据）；二是它把登录做成了<b>降权</b> ——
+    产品角色登录后看到的东西比匿名还少（匿名有 <code>QUERY_SQL</code>、<code>AUDIT_ALL</code>、
+    <code>INTROSPECT</code>，产品没有）。产品决定推倒这套分档。</div>
+
+  <h3>4.1 现行模型</h3>
   <div class="tablewrap"><table>
-    <thead><tr><th>权限点</th><th class="c">产品</th><th class="c">测试</th><th class="c">开发</th>
-      <th class="c">数据负责人</th><th class="c">系统管理员</th></tr></thead>
+    <thead><tr><th>身份</th><th>可见面（表 / 行上限 / 期限 / 脱敏）</th><th>读类能力位</th><th>写类能力位</th><th>审批</th></tr></thead>
     <tbody>
-      <tr><td>Q-01 自然语言查询</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>Q-02 直查 SQL</td><td class="c n">✕<span class="fn">1</span></td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>Q-03 可见表</td><td class="c p">◐<span class="fn">2</span></td><td class="c p">◐<span class="fn">3</span></td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>Q-04 行上限</td><td class="c">1000</td><td class="c">500</td><td class="c">实例默认</td><td class="c">实例默认</td><td class="c">0</td></tr>
-      <tr><td>Q-05 可用环境</td><td class="c">仅 <code>prod_ro</code></td><td class="c">仅 <code>test</code></td><td class="c"><code>test</code>+<code>dev</code><span class="fn">15</span></td><td class="c">全部</td><td class="c n">✕</td></tr>
-      <tr><td>Q-06 敏感列</td><td class="c">强制脱敏</td><td class="c">强制脱敏</td><td class="c">部分脱敏<span class="fn">4</span></td><td class="c">申请后放开<span class="fn">5</span></td><td class="c">—</td></tr>
-      <tr><td>Q-07 时间窗口</td><td class="c">90 天</td><td class="c">180 天</td><td class="c">不限（非生产）</td><td class="c">365 天</td><td class="c">—</td></tr>
-      <tr><td>Q-08 高成本查询</td><td class="c">需审批</td><td class="c">需审批</td><td class="c">需审批</td><td class="c">需审批</td><td class="c appr">审批人</td></tr>
-      <tr><td>T-01 本人任务</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>T-02 断点续跑</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>T-03 他人任务</td><td class="c n">✕</td><td class="c n">✕</td><td class="c p">◐<span class="fn">6</span></td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>S-01 数据源列表</td><td class="c p">◐<span class="fn">7</span></td><td class="c p">◐<span class="fn">7</span></td><td class="c p">◐<span class="fn">7</span></td><td class="c y">✅</td><td class="c y">✅<span class="fn">8</span></td></tr>
-      <tr><td>S-02 测试连接</td><td class="c n">✕</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>S-03 新增数据源</td><td class="c n">✕</td><td class="c n">✕</td><td class="c p">◐<span class="fn">9</span></td><td class="c">提出<span class="fn">16</span></td><td class="c appr">审批人</td></tr>
-      <tr><td>S-04 改表白名单</td><td class="c n">✕</td><td class="c n">✕</td><td class="c p">◐<span class="fn">9</span></td><td class="c">提出<span class="fn">16</span></td><td class="c appr">审批人</td></tr>
-      <tr><td>S-05 删除数据源</td><td class="c n">✕</td><td class="c n">✕</td><td class="c p">◐<span class="fn">9</span></td><td class="c">提出<span class="fn">16</span></td><td class="c appr">审批人</td></tr>
-      <tr><td>S-06 元数据扫描</td><td class="c n">✕</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>G-01 查看口径</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>G-02 口径校验</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>G-03 编辑口径</td><td class="c n">✕<span class="fn">10</span></td><td class="c n">✕</td><td class="c p">◐<span class="fn">11</span></td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>E-01 质量中心</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅<span class="fn">8</span></td></tr>
-      <tr><td>E-02 运行时自检</td><td class="c n">✕</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅<span class="fn">8</span></td></tr>
-      <tr><td>E-03 库结构内省</td><td class="c n">✕</td><td class="c p">◐<span class="fn">3</span></td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>E-04 触发评测</td><td class="c n">✕</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>A-01 审计流水</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c y">✅</td><td class="c y">✅</td><td class="c p">◐<span class="fn">12</span></td></tr>
-      <tr><td>A-05 待审批队列</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c appr">✅</td></tr>
-      <tr><td>A-02 审计统计</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td></tr>
-      <tr><td>A-03 查询复放</td><td class="c n">✕</td><td class="c n">✕</td><td class="c y">✅<span class="fn">13</span></td><td class="c y">✅<span class="fn">13</span></td><td class="c n">✕</td></tr>
-      <tr><td>A-04 执行追踪</td><td class="c">仅本人</td><td class="c">仅本人</td><td class="c y">✅</td><td class="c y">✅</td><td class="c n">✕</td></tr>
-      <tr><td>I-01 角色定义</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td><td class="c y">✅</td></tr>
-      <tr><td>I-02 成员名册</td><td class="c">仅本角色</td><td class="c">仅本角色</td><td class="c">仅本角色</td><td class="c y">✅</td><td class="c y">✅</td></tr>
-      <tr><td>I-03 增删成员</td><td class="c n">✕</td><td class="c n">✕</td><td class="c n">✕</td><td class="c n">✕</td><td class="c y">✅</td></tr>
-      <tr><td>I-04 策略配置</td><td class="c">只读</td><td class="c">只读</td><td class="c">只读</td><td class="c y">✅</td><td class="c">只读<span class="fn">14</span></td></tr>
+      <tr><td>未登录（<code>ANONYMOUS</code>）</td><td>与登录用户相同</td>
+        <td class="c"><span class="y">✅</span> 全部</td><td class="c"><span class="n">✕</span></td><td class="c"><span class="n">✕</span></td></tr>
+      <tr><td>产品 / 测试 / 开发 / 数据负责人</td><td>相同</td>
+        <td class="c"><span class="y">✅</span> 全部</td><td class="c"><span class="y">✅</span> 全部</td><td class="c"><span class="n">✕</span></td></tr>
+      <tr><td>系统管理员</td><td>相同</td>
+        <td class="c"><span class="y">✅</span> 全部</td><td class="c"><span class="y">✅</span> 全部</td><td class="c"><span class="y">✅</span> <b>唯一</b></td></tr>
     </tbody>
   </table></div>
 
-  <h3 id="s4-1"><span class="n">4.1</span>脚注</h3>
-  <ol class="foots">
-    <li>直查绕过模型与业务口径层。产品角色的价值恰恰在口径归口，给它一条绕开口径的通道会让「指标以谁为准」失去落点。
-      这是职责收敛，不是安全考虑 —— 直查同样过全部护栏。</li>
-    <li>业务表可见，成本与用量类表（token、计费、模型调用明细）不可见 —— 沿用 <code>config/public.yaml</code> 已确立的口径：「产品角色看业务不看账」。</li>
-    <li>仅测试库与模拟数据表，不含任何承载生产语义的表。</li>
-    <li>开发角色只作用于非生产环境，环境本身已无真实个人信息；对从生产只读镜像同步来的样本表仍强制脱敏。</li>
-    <li>数据负责人对高成本查询与敏感字段同样<b>需要申请</b>，由系统管理员放行（V1.1）。全域可见不等于无需审批 —— 前者是范围，后者是闸门。</li>
-    <li>开发角色可见他人任务的<b>元数据</b>（发起人、状态、耗时、失败原因），不可见问题原文与结果集 —— 排障需要的是前者。</li>
-    <li>仅列出本角色环境范围内的数据源。列表本身就是信息：不该让测试角色知道生产只读镜像的存在与连接目标。</li>
-    <li>系统管理员可见运维健康面（连通性、自检、质量指标），<b>不可见任何业务数据与查询内容</b>。
-      这是对内置 <code>Policy(tables=frozenset(), max_rows=0)</code> 的补充说明，不是放宽。</li>
-    <li>开发角色仅对 <code>env ∈ {dev, test}</code> 的数据源可增删改；生产只读镜像的任何变更一律走审批链。</li>
-    <li>产品角色是口径的<b>业务归口</b>，但口径落地为配置文件，变更走评审。产品提出、数据负责人确认、代码评审合入 —— 页面不提供编辑入口是有意的。</li>
-    <li>开发角色中承担口径与黄金集维护职责者（赵珂）可提交口径变更，仍需数据负责人确认。</li>
-    <li><b>分两种场景，可见范围不同（V1.1 修订）</b>：
-      <ul>
-        <li><b>日常审计浏览</b>：仅见操作元数据（谁、何时、走哪个源、被哪条规则拦下、扫了多少行），不见 <code>question</code> 与 <code>sql_final</code>。</li>
-        <li><b>审批待办</b>：对进入待审批队列的那一条，可见 <code>question</code>、<code>sql_final</code>、<code>explain_rows</code>、涉及表 ——
-          不看这些无法判断该不该放行，一个盲批的审批人比没有审批更糟。</li>
-      </ul>
-      两种场景下都<b>不可见结果集</b>（<code>rows</code> 本就从不写入审计文件，见第七节）。审批动作本身留痕，事后可核「管理员看过哪些查询内容」。</li>
-    <li><b>复放必须按复放者本人的角色重新收窄，不得沿用原记录的角色</b>（见 D-4）。</li>
-    <li>系统管理员对策略只读，不可写。管人的角色若能改数据策略，等于绕一圈拿到数据权限 —— 这与内置的零表默认是同一条原则。</li>
-    <li>现有 <code>env</code> 枚举只有 <code>test</code> / <code>prod_ro</code> 两值，撑不起开发与测试的区分。需扩为
-      <code>dev</code> / <code>test</code> / <code>prod_ro</code> 三值，开发角色取前两者、测试角色仅取 <code>test</code>；
-      在枚举扩展落地前，开发与测试在环境维度上等价。</li>
-    <li>数据负责人负责判断变更在业务上是否成立（这张表该不该开、这个源该不该接），系统管理员负责放行。
-      <b>提出与放行分属两人</b>，任何一次数据可见范围的扩张都需要两个人同意 —— 这是 V1.1 把审批收敛到系统管理员后最直接的收益。</li>
+  <ol>
+    <li><b>所有角色的可见面完全相同</b>，包括匿名。<code>DEFAULT_POLICIES</code> 是空字典，
+      仓库里没有任何一份配置写 <code>role_policies</code>。</li>
+    <li><b>唯一的角色差别是 <code>APPROVE</code></b>，只有系统管理员有。它另外还持有
+      <code>MEMBERS_WRITE</code>（增删角色成员）—— 这不是第二条差别，而是第一条的前提：
+      谁能改成员名单，谁就能把自己加进系统管理员。</li>
+    <li><b>未登录可读不可写。</b>这一条<b>不由角色表达</b>：真正的边界是
+      <code>server._gate_writes</code> 中间件，按 HTTP 方法拦下所有未登录的
+      <code>POST/PUT/PATCH/DELETE</code>，新增接口默认落在安全那边。能力位里把写类从匿名身上摘掉，
+      只是让页面能提前置灰。</li>
   </ol>
+
+  <h3>4.2 脱敏与数据期限</h3>
+  <ul>
+    <li><b>脱敏</b>：个人信息列在执行器返回前无条件脱敏，<b>没有任何角色能关掉</b>。
+      原先的 <code>Policy.unmask</code> 已整位删除（原来给开发与数据负责人）。</li>
+    <li><b>数据期限</b>：内置默认不设窗口，对所有角色都是「不限」。护栏 R-19 的机制保留并仍有测试覆盖，
+      部署方可在 <code>role_policies</code> 里手工收紧 —— 但那是一个会让角色之间重新出现差别的决定。</li>
+  </ul>
+
+  <h3>4.3 保留下来的收窄机制</h3>
+  <p><code>identity.policy_for</code> / <code>narrow</code> / <code>combine</code> 全部保留，
+    「只能收窄不能放宽」这条不变量仍由 <code>narrow()</code> 保证并有测试覆盖。
+    删的是<b>取值</b>，不是机制：配置写什么都不可能放宽，这一点比「现在没人配」更重要。</p>
 </section>
 
 <section id="s5">
   <h2><span class="n">5</span>人员到权限的落地对照</h2>
   <p>现有 10 名内置人员，归属不变。</p>
+
+  <div class="note"><span class="lbl">V1.4 · 2026-09-06 · 这张表原来按角色列「能做什么 / 明确不能做」，现在它只剩两行</span>
+    可见面统一之后，人员之间不再有可见面差别；逐人列一遍等于把同一句话抄十遍，
+    而抄十遍的东西改一次就会漏一处。</div>
+
   <div class="tablewrap"><table>
-    <thead><tr><th>姓名</th><th>账号</th><th>角色</th><th>能做什么</th><th>明确不能做</th></tr></thead>
+    <thead><tr><th>谁</th><th>能做什么</th><th>明确不能做</th></tr></thead>
     <tbody>
-      <tr><td>林晓</td><td class="mono">linxiao</td><td>产品</td>
-        <td>在生产只读镜像上问业务问题、看口径词典、看质量中心、看自己的审计记录</td>
-        <td>直查 SQL、碰数据源、看他人查询、看成本用量表</td></tr>
-      <tr><td>官德志</td><td class="mono">guandezhi</td><td>开发</td>
-        <td>开发与测试环境全量查询与直查、非生产数据源增删改、全量审计与复放、自检与内省</td>
-        <td>连接生产只读镜像、改口径定稿、增删角色成员</td></tr>
-      <tr><td>周琪</td><td class="mono">zhouqi</td><td>开发</td><td>同上，侧重数据源接入与自检</td><td>同上</td></tr>
-      <tr><td>陈昊</td><td class="mono">chenhao</td><td>开发</td><td>同上，侧重计划生成与检索链路排障</td><td>同上</td></tr>
-      <tr><td>李文博</td><td class="mono">liwenbo</td><td>开发</td><td>同上，前端所需的审计与追踪只读面</td><td>同上</td></tr>
-      <tr><td>赵珂</td><td class="mono">zhaoke</td><td>开发</td><td>同上，另可提交口径与黄金集变更（脚注 11）</td><td>口径变更自行定稿</td></tr>
-      <tr><td>苏晚</td><td class="mono">suwan</td><td>测试</td>
-        <td>测试库查询与直查、跑护栏用例与离线回归、触发评测、看自己的审计</td>
-        <td>接触任何生产或开发数据、改数据源、复放他人查询</td></tr>
-      <tr><td>郑铭</td><td class="mono">zhengming</td><td>测试</td><td>同上，另可读自检与质量中心做性能并发验证</td><td>同上</td></tr>
-      <tr><td>何静</td><td class="mono">hejing</td><td>数据负责人</td>
-        <td>全域查询、策略配置、口径定稿、全量审计与复放、<b>提出</b>数据源与白名单变更</td>
-        <td>增删角色成员、放行任何审批（含自己发起的高成本查询）</td></tr>
-      <tr><td>徐婷</td><td class="mono">xuting</td><td>系统管理员</td>
-        <td>增删角色成员、看运维健康面与审计元数据、<b>放行全部审批</b>（高成本查询、敏感字段申请、数据源与白名单变更）</td>
-        <td>任何业务数据、任何结果集、任何策略变更；日常浏览审计时不可见问题原文与 SQL</td></tr>
+      <tr><td>林晓、官德志、周琪、陈昊、李文博、赵珂、苏晚、郑铭、何静<br><span class="n">（产品 / 开发 / 测试 / 数据负责人）</span></td>
+        <td>平台可见面内的全部读与写：自然语言查询与直查 SQL、数据源增删改与连接测试、口径查看与校验、
+          质量中心与自检内省、全量审计与追踪与复放</td>
+        <td>审批任何申请；增删角色成员</td></tr>
+      <tr><td>徐婷<br><span class="n">（系统管理员）</span></td>
+        <td>以上全部，<b>另加</b>：放行全部审批（高成本查询、数据源与白名单变更）、增删角色成员</td>
+        <td>审批<b>自己发起</b>的查询（<code>approvals.decide</code> 显式拒绝）</td></tr>
     </tbody>
   </table></div>
+
+  <p>未登录访客拿到的是上表第一行的<b>读</b>的部分，一个写位都没有。</p>
 
   <h3 id="s5-1"><span class="n">5.1</span>两个必须先确认的问题</h3>
   <div class="note crit">
@@ -533,7 +499,8 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
   </div>
   <div class="note warn">
     <span class="lbl">单点风险 · V1.1 后位置变了</span>
-    审批不再压在何静身上，而是全部压在系统管理员上。核实完成后若确认系统管理员实为徐婷一人，需要一名备份审批人。
+    审批不再压在何静身上，而是全部压在系统管理员上。<b>V1.4 之后这个角色还多了数据可见权与成员增删权</b> ——
+    同一个未经核实的账号现在既能查数、又能放行审批、又能改成员名单。核实完成后若确认系统管理员实为徐婷一人，需要一名备份审批人。
     可用 RBAC 的加法语义（<code>identity.combine</code> 已支持多角色叠加）给某位成员叠加 <code>SYS_ADMIN</code> ——
     <b>不新增角色、不调整人员</b>，只在成员表里多一条登记。
     备份人选<b>不能是何静</b>：她是数据源变更的提出方，兼任放行方会让「提出与放行分属两人」失效。
@@ -590,7 +557,7 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
     <li>R-11 已在执行前用 EXPLAIN 估算扫描行数，阈值判定的输入现成。</li>
     <li>超阈值不再直接拒绝，而是把任务置为「待审批」落入任务中心 —— 任务中心已有断点续跑的执行线程模型，挂起与恢复是同一套机制。</li>
     <li><b>系统管理员</b>在待审批队列审批（V1.1）。通过则以<b>发起人的角色</b>恢复执行 ——
-      不是审批人的角色，也不可能是：审批人内置零表，用它的角色恢复只会立刻撞上 <code>_require_scope</code>。</li>
+      不是审批人的角色。<b>V1.4 修订：</b>原文接着写「也不可能是：审批人内置零表」—— 零表默认已撤，这条推理不再成立。</li>
     <li>审批动作独立留痕，记录审批人、时间、决定，以及<b>审批人查看了哪条查询的原文</b>。</li>
     <li>同一批次落地另外两条审批链：敏感字段按需放开（Q-06）、数据源与白名单变更（S-03/04/05）。三条链共用同一个待审批队列与同一套留痕。</li>
   </ol>
@@ -629,7 +596,7 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
         <td>收窄与并集语义原样扩展，不改结构。<code>DATA_OWNER</code> 的 desc 现写「配置策略、审批高风险与高成本查询」，
           V1.1 后它不再审批；<code>SYS_ADMIN</code> 的 desc 需补上审批职责。
           <b>不改就又是一处「页面宣称与实际不符」，正是本设计要消灭的东西</b>。
-          <code>DEFAULT_POLICIES</code> 的零表默认不动 —— 审批权不是数据权</td></tr>
+          <s><code>DEFAULT_POLICIES</code> 的零表默认不动</s> —— V1.4 已撤，<code>DEFAULT_POLICIES</code> 现在是空字典</td></tr>
       <tr><td><code>askdb/server.py</code></td><td>登录判据前移；按矩阵为各接口设门</td>
         <td>影响面最大的一处，但都是新增拦截，不改业务逻辑</td></tr>
       <tr><td><code>askdb/sources.py</code></td><td><code>env</code> 枚举扩为三值并接入鉴权</td>

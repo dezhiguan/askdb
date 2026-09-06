@@ -28,7 +28,7 @@ askdb **不设账号体系** —— 设计文档 §1.1 写明"数据库连接本
 
    | 层 | 做法 | 挡什么 |
    |---|---|---|
-   | 便宜的模型 | `deepseek-v4-flash`，约 ¥0.0009 / 次 | 单价 |
+   | 便宜的模型 | `qwen3.8-flash`，约 ¥0.0011 / 次 | 单价 |
    | 每日配额 | `daily_quota: 500`，**按模型调用次数计** | 总量 |
    | 共享计数 | 计数存 Redis（`ASKDB_REDIS_URL`） | 多副本各算各的 |
    | 入口限流 | nginx 对**其余接口**限 5r/s（突发 10） | 脚本刷直查链路 |
@@ -271,7 +271,8 @@ done
 curl -s https://askdb.ragforge.net/api/auth/me | python3 -m json.tool
 ```
 
-应看到 `enabled: true`、`required: false`（匿名可用，登录不是门）、
+应看到 `enabled: true`、`required: false`（匿名可用，登录不是门 ——
+2026-09-06 起登录也不放宽可见面，只放开写）、
 `demo_accounts` 非空、`scope.tables` 非空。若 `enabled` 是 `false`，
 去建 `askdb-auth`（见上文），不是代码问题。
 

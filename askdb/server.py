@@ -987,7 +987,18 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """设置白名单。字段名与类型在这里落库 —— R-04 与 R-05 靠它判定。"""
         _require_cap(request, _identity.SOURCES_WRITE, "修改表白名单")
         _sources_gate(request)
-        src = _sources.get_source(cfg, sid)
+        # id 不合法与 id 不存在合并成同一个 404。分开说没有意义（两种情况下
+        # 调用方要做的事完全一样），而 _sources.get_source 对非法 id 抛的是
+        # SourceError —— 这里不接住就是一个 500。
+        #
+        # 这条路径 2026-09-06 之前**测不到**：产品角色没有 SOURCES_WRITE，
+        # 在能力位那一步就被 403 挡下了。可见面统一之后任何登录用户都能走到
+        # 这里，它才暴露出来 —— 这类"被上一道门挡住所以从没被执行过"的分支，
+        # 是这次放开权限最值得警惕的一类。
+        try:
+            src = _sources.get_source(cfg, sid)
+        except _sources.SourceError as e:
+            raise HTTPException(status_code=404, detail="数据源不存在") from e
         if src is None:
             raise HTTPException(status_code=404, detail="数据源不存在")
         derived = _sources.derive_config(cfg, src)
@@ -1525,14 +1536,20 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """放行或驳回。**只有系统管理员**（设计文档 Q-08 / V1.1）。
 
         数据负责人有意不在此列：数据源变更由它提出，兼任放行方会让
-        「提出与放行分属两人」失效。而系统管理员的 Policy 是空表集，
-        永远不可能是发起人，所以自批在结构上不可能发生。
+        「提出与放行分属两人」失效。
+
+        自批此前是结构上不可能的（系统管理员查不到任何数据，因而不可能是
+        发起人）；2026-09-06 它也能查数之后，改由 approvals.decide 显式拒绝，
+        在这里落成 403。
         """
         _require_login(request)
         _require_cap(request, _identity.APPROVE, "审批高成本查询")
-        rec = _approvals.decide(cfg, approval_id,
-                                approver=_current_user(request) or "",
-                                approved=bool(req.approved), note=req.note)
+        try:
+            rec = _approvals.decide(cfg, approval_id,
+                                    approver=_current_user(request) or "",
+                                    approved=bool(req.approved), note=req.note)
+        except _approvals.SelfApproval as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
         if rec is None:
             # 不存在与"已经批过"合并成同一句：重复决策不是错误，
             # 但也不该悄悄覆盖前一个人的结论。
@@ -1549,10 +1566,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         正常情况下永远是空的。可续跑的那些由 resumable 字段标出来，
         续跑入口只对它们开放。
 
-        **按发起人收窄**，登录与匿名同一条规则：匿名看到的是匿名发起的线程，
-        看不到任何登录用户的。收窄没有被放松 —— 放松的只是"匿名有没有资格
-        看自己那一档"。归属口径与 /api/resume 完全一致（有主的只有主人能续跑），
-        所以不会出现"列得出来、续不了"。
+        **可见范围按 TASKS_ALL 能力位，不再按发起人**（2026-09-06）。
+
+        原来这一页只列当前账号发起的线程。可见面统一之后那条收窄站不住 ——
+        它的实际效果是：审计中心列着所有人的记录（未登录访客也看得到全部
+        原文），而登录用户打开任务中心是空的。同一份审计流水，两页两套口径，
+        且方向正好相反。这次改动要消灭的就是这个形状。
+
+        **看得见不等于动得了**：续跑（/api/resume）的归属校验一行没改，
+        别人的线程列得出来但续不了，前端据 owner 字段把入口置灰 ——
+        与"未登录可读不可写"是同一条轴。
         """
         username = _current_user(request) or ""
         from .audit import tasks as _tasks
@@ -1560,7 +1583,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         # 阈值传进去做风险折算（审计里没有风险字段，见 audit._risk 的说明）
         items = _tasks(
-            cfg.audit_log, username,
+            cfg.audit_log,
+            None if _can(request, _identity.TASKS_ALL) else username,
             max_rows=cfg.max_rows,
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
         )
@@ -1572,7 +1596,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 state = is_resumable(str(it.get("thread_id") or ""), cfg)
                 if state is not None:
                     it["resumable"] = state
-        return {"items": items, "user": username}   # 匿名时为空串，页面据此显示「匿名」
+        # user 是**当前账号**，不是过滤条件：页面拿它与每条的 owner 比，
+        # 判断哪些是自己的、续跑入口对谁开。匿名时为空串。
+        return {"items": items, "user": username}
 
     @app.post("/api/resume")
     def resume_task(req: ResumeRequest, request: Request) -> JSONResponse:
@@ -1799,10 +1825,15 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         response.delete_cookie(_auth.COOKIE_NAME, path="/")
         return {"ok": True}
 
-    #: 「完全没有数据权限」的统一措辞（系统管理员就是这个状态：内置空表集）。
-    #: 撞上它的现在只有表白名单那一道 —— 环境判定已于 2026-09-06 撤掉。
-    _NO_DATA_ROLE = ("当前角色没有数据访问权限。系统管理员只管理成员，"
-                     "要查数需另行加入某个数据角色。")
+    #: 「一张表都看不到」的统一措辞。
+    #:
+    #: 2026-09-06 之后**内置默认不会再让人落到这里**：角色不再收窄可见面，
+    #: 系统管理员那份空表集也撤了。剩下两条路还能到达：实例白名单本身是空的，
+    #: 或者部署方在 role_policies 里手工收窄成了空集。措辞因此改为指向配置，
+    #: 而不是指向角色 —— 原来那句"系统管理员只管理成员，要查数需另行加入
+    #: 数据角色"现在是假话。
+    _NO_DATA_ROLE = ("当前没有任何可查的表。请检查实例的表白名单配置，"
+                     "或联系系统管理员。")
 
     def _cfg_for(source: str, request: Request | None = None) -> Config:
         """按数据源 id 取配置。空 / "builtin" 走启动配置。

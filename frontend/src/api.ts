@@ -610,13 +610,13 @@ export interface RoleInfo {
   name: string
   scope: string
   desc: string
-  /** 系统角色只管人不看数据（职责分离），页面要把它和数据角色区分开 */
+  /** 系统角色额外持有审批权，页面要把它和其他角色区分开。
+   *  它**不再**意味着"只管人不看数据"—— 2026-09-06 起系统管理员照样能查数。 */
   system: boolean
   members: number
-  /** 数据期限（天）。null = 不限 */
+  /** 数据期限（天）。null = 不限。内置默认对所有角色都是 null；
+   *  只有部署方在 role_policies 里手工收窄时才不是。 */
   max_age_days: number | null
-  /** 能否看到个人信息列的原值 */
-  unmask: boolean
 }
 
 export interface RolesResponse {
@@ -768,10 +768,15 @@ export interface Task {
   /** 只有 interrupted 的线程能续跑。列表列全部线程，续跑入口只对它们开放 ——
    *  给已收尾的线程也挂一个续跑按钮，点了必然失败 */
   resumable: boolean
+  /** 发起人。空串 = 匿名发起，不是"没记录"。
+   *  续跑只有主人能做（服务端校验），页面据此置灰入口 —— 列表列全部线程，
+   *  能不能动是另一回事。 */
+  owner: string
 }
 
-/** 任务列表按发起人收窄，登录与匿名同一条规则 —— 匿名看到的是匿名发起的线程。
- *  user 为空串即匿名。 */
+/** 任务列表列**全部**线程（2026-09-06 起不再按发起人收窄）。
+ *  user 是当前账号，不是过滤条件：页面拿它与每条的 owner 比，决定续跑入口
+ *  对谁开。空串即匿名。 */
 export interface TasksResult {
   items: Task[]
   user: string

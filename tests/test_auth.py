@@ -134,16 +134,16 @@ def test_login_widens_scope_versus_anonymous(client):
     assert set(named["tables"]) > set(anon["tables"])
 
 
-def test_system_admin_only_user_gets_a_clear_refusal(client):
-    """只有系统角色的人查数，要给一句能懂的话。
+def test_system_admin_can_query_like_everyone_else(client):
+    """系统管理员查数不再被拒（2026-09-06 产品决定）。
 
-    否则他会撞上 R-03「用到了没有开放的表」—— 那句措辞是给"表没开放"准备的，
-    用在"你没有数据角色"上会把人引向完全错误的排查方向。
+    这条用例原来断言的是相反的事：只有系统角色的人查数会拿到一句
+    「当前角色没有数据访问权限」。可见面统一之后它和其他角色一样能查 ——
+    留着原来那条会把一个已经撤掉的承诺继续钉在测试里。
     """
     client.post("/api/auth/login", json={"username": "root", "password": "root-pw"})
     r = client.post("/api/sql", json={"sql": "SELECT id FROM orgs"})
-    assert r.status_code == 403
-    assert "数据访问权限" in r.json()["detail"]
+    assert r.status_code == 200, r.text
 
 
 def test_required_mode_rejects_anonymous(acfg, monkeypatch):
@@ -158,20 +158,16 @@ def test_required_mode_rejects_anonymous(acfg, monkeypatch):
     assert c.post("/api/sql", json={"sql": "SELECT id FROM orgs"}).status_code == 200
 
 
-def test_product_role_cannot_use_direct_sql(client):
-    """产品角色不给直查（设计文档 Q-02 脚注 1）。
+def test_direct_sql_is_open_to_every_role(client):
+    """直查对所有角色开放（2026-09-06 产品决定）。
 
-    直查绕过模型与业务口径层，而口径归口正是产品角色的职责所在 ——
-    给它一条绕开口径的通道，「指标以谁为准」就失去了落点。
-    这是**职责收敛，不是安全考虑**：直查同样过全部护栏。
+    原来产品角色没有 QUERY_SQL，理由是"直查绕开业务口径层，而口径归口正是
+    产品角色的职责"。那是一条职责收敛，不是安全判定 —— 而它的实际效果是
+    产品经理登录之后比未登录的访客还少一条路（匿名一直有 QUERY_SQL）。
     """
     client.post("/api/auth/login", json={"username": "alice", "password": "alice-pw"})
-    # 自然语言那条路照常开着 —— 拦的是"绕开口径"，不是"查数"
     assert client.get("/api/schema").status_code == 200
-
-    r = client.post("/api/sql", json={"sql": "SELECT id FROM orgs"})
-    assert r.status_code == 403
-    assert "直查" in r.json()["detail"]
+    assert client.post("/api/sql", json={"sql": "SELECT id FROM orgs"}).status_code == 200
 
 
 def test_login_disabled_without_secret(acfg, monkeypatch):

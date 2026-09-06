@@ -254,8 +254,9 @@ def _risk(rec: dict[str, Any], max_rows: int, max_scan_rows: int) -> tuple[str, 
     return "LOW", "只读单步查询，未触及任何边界"
 
 
-def tasks(path: Path, user: str, *, max_rows: int = 0, max_scan_rows: int = 0) -> list[dict[str, Any]]:
-    """某个账号名下的**全部执行线程**，新的在前。
+def tasks(path: Path, only_user: str | None = None, *,
+          max_rows: int = 0, max_scan_rows: int = 0) -> list[dict[str, Any]]:
+    """执行线程，新的在前。``only_user=None`` 给全部，字符串只给这个人发起的。
 
     askdb 没有任务表，任务这个概念完全落在审计流水与检查点上：
     一次提问开一条线程（thread_id），续跑写新 trace 但线程不变。
@@ -266,12 +267,18 @@ def tasks(path: Path, user: str, *, max_rows: int = 0, max_scan_rows: int = 0) -
     只列中断等于这一页正常情况下永远是空的 —— 实际就是这么空了。
     可续跑的那些由 ``resumable`` 字段标出来，续跑入口只对它们开放。
 
-    **按发起人收窄**，登录与匿名同一条规则：user 就是"谁"，空串是匿名这一档。
-    所以匿名看到的是匿名发起的线程，看不到任何登录用户的 —— 收窄本身没有
-    被放松，放松的只是"匿名有没有资格看自己那一档"。
+    **可见范围与归属是两件事，2026-09-06 起在这里分开。**
 
-    这与 /api/resume 的归属校验是同一条口径（有主的线程只有主人能续跑，
-    无主的凭 thread_id 续跑）。两处必须一致，否则会出现"列得出来、续不了"。
+    原来这两件事是同一件：只列出 user 名下的线程，理由是"列得出来就该续得了"。
+    可见面统一之后那条捆绑站不住 —— 它的实际效果是审计中心列着所有人的记录
+    （连未登录访客都看得到全部原文），任务中心却因为按发起人过滤而空着一页，
+    登录用户看到的比匿名还少。这正是这次要消灭的形状。
+
+    现在：**可见范围**由调用方给的 only_user 决定（server 按 TASKS_ALL 能力位
+    算，人人都有 → None → 全部可见）；**归属**由每条记录上的 ``owner`` 字段
+    如实标出，续跑仍然只有主人能做（/api/resume 的校验一行没改）。
+    页面据 owner 把别人的线程标出来并置灰续跑入口 —— 与"未登录可读不可写"
+    是同一条轴：看得见不等于动得了。
     """
     threads: dict[str, list[dict[str, Any]]] = {}
     for rec in read_records(path):
@@ -283,7 +290,8 @@ def tasks(path: Path, user: str, *, max_rows: int = 0, max_scan_rows: int = 0) -
     for tid, recs in threads.items():
         # 归属看这条线程的**第一条**记录：续跑会写新 trace，但发起人不变。
         # 按最后一条判会让"谁续跑谁就成了主人"。
-        if (recs[0].get("user") or "") != user:
+        owner = recs[0].get("user") or ""
+        if only_user is not None and owner != only_user:
             continue
         last = recs[-1]
         item = _summary(last)
@@ -293,6 +301,8 @@ def tasks(path: Path, user: str, *, max_rows: int = 0, max_scan_rows: int = 0) -
         item["question"] = recs[0].get("question") or last.get("question") or ""
         item["status"] = _thread_status(last)
         item["resumable"] = item["status"] == "interrupted"
+        # 归属如实给出去。空串 = 匿名发起，不是"丢了" —— 页面要能说清这一点。
+        item["owner"] = owner
         # 风险档是折算出来的，不是记录里的字段 —— 理由一并给出，页面可解释
         item["risk"], item["risk_why"] = _risk(last, max_rows, max_scan_rows)
         out.append(item)
@@ -304,7 +314,9 @@ def tasks(path: Path, user: str, *, max_rows: int = 0, max_scan_rows: int = 0) -
 def resumable(path: Path, user: str) -> list[dict[str, Any]]:
     """某个账号名下**尚可续跑**的任务 —— tasks() 里状态仍为中断的那些。
 
-    /api/resume 按 thread_id 从断点继续。归属与匿名的约束同 tasks()。
+    /api/resume 按 thread_id 从断点继续，只有主人能续 —— 所以这里**仍按
+    发起人过滤**，与 tasks() 的"全部可见"有意不同：这个函数回答的是
+    "我能续跑哪些"，不是"有哪些线程"。
     """
     return [t for t in tasks(path, user) if t["resumable"]]
 

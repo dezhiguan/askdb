@@ -22,10 +22,11 @@ function fmtDate(ts: string): string {
  *  后端 Role 只有 scope 一个短字段，副标题是设计稿文案，按角色码对齐；
  *  设计稿未覆盖的角色（如系统管理员）退回真实 scope。 */
 const ROLE_SUBTITLE: Record<string, string> = {
-  PRODUCT: '生产只读、默认脱敏',
-  DEV: '开发及测试环境',
-  QA: '测试环境与模拟数据',
-  DATA_OWNER: '策略配置与审批',
+  PRODUCT: '与其他角色同一可见面',
+  DEV: '与其他角色同一可见面',
+  QA: '与其他角色同一可见面',
+  DATA_OWNER: '与其他角色同一可见面',
+  SYS_ADMIN: '同一可见面 + 审批',
 }
 
 /** 原型 permissionData 的标题（第 3921–3924 行）。 */
@@ -48,10 +49,6 @@ const ROLE_TITLE: Record<string, string> = {
  *  可施加的位置**，写一个值上去就是在承诺一件做不到的事。 */
 function ageLabel(role: RoleInfo): string {
   return role.max_age_days == null ? '不限' : `${role.max_age_days} DAYS`
-}
-
-function maskLabel(role: RoleInfo): string {
-  return role.unmask ? '原值可见' : 'MASKED'
 }
 
 export function PermissionsPage({ notify, me }: {
@@ -299,30 +296,33 @@ function RoleDetail({ role, notify, guard }: {
         <h3>{ROLE_TITLE[role.code] ?? `${role.name} · ${role.code}`}</h3>
         <p>{role.desc}</p>
       </div>
-      {/* 三个维度**全部是真值**，由 identity.Policy 算出来。
+      {/* 剩下的几格**全部是真值**，由 identity.Policy 算出来。
           此前它们是照设计稿写死的，而后端根本没有对应字段 —— 那比
           "看不出有没有生效"更糟：它显示了一个从未生效过的值。
-          原来还有一格「环境范围」，2026-09-06 角色与数据源解绑后撤掉：
-          不再据此拦截，就不能继续挂在页面上。 */}
+          撤过两格，都是同一个理由（不再据此拦截就不能继续挂在页面上）：
+            · 环境范围 —— 2026-09-06 角色与数据源解绑
+            · 敏感字段 —— 2026-09-06 脱敏改为对所有人无条件生效，
+              这一格从此对每个角色都是同一个值，留着只会让人以为它是可调的 */}
       <div className="permission-grid three">
         <div className="permission-cell">
           <span>数据期限</span>
-          <strong title="护栏 R-18 按此注入时间窗口谓词">{ageLabel(role)}</strong>
+          <strong title="护栏 R-19 按此注入时间窗口谓词">{ageLabel(role)}</strong>
         </div>
         <div className="permission-cell">
           <span>敏感字段</span>
-          <strong title="个人信息列在返回结果中是否脱敏">{maskLabel(role)}</strong>
+          <strong title="个人信息列一律脱敏，没有角色能关掉">一律脱敏</strong>
         </div>
         <div className="permission-cell">
           <span>成员</span><strong>{role.members} 人</strong>
         </div>
       </div>
-      {role.system && (
-        <p className="drawer-note policy-note">
-          职责分离：系统角色只管成员，<b>不因此获得任何数据访问权</b>。
-          管理员本人要查数，须另行加入某个数据角色，且这一动作同样留痕。
-        </p>
-      )}
+      <p className="drawer-note policy-note">
+        {role.system
+          ? <>系统管理员是<b>唯一多出权限的角色</b>：多出来的只有审批。
+              可见面与其他角色完全相同，且不能审批自己发起的查询。</>
+          : <>可见面与其他角色<b>完全相同</b>。角色之间唯一的差别是审批，
+              只有系统管理员有；未登录可以浏览与查询，但不能写。</>}
+      </p>
       <RolePolicyRules notify={notify} guard={guard} />
     </>
   )
@@ -343,7 +343,8 @@ const POLICY_RULES: { code: string; title: string; desc: string; live: boolean }
   {
     code: 'P03', title: '个人信息默认脱敏',
     desc: '手机号、姓名、证件号、地址必须经过列级脱敏。',
-    live: false,
+    // 2026-09-06 起这条是真的：脱敏在执行层无条件生效，没有角色能关掉。
+    live: true,
   },
   {
     code: 'P07', title: '高成本查询二次确认',
@@ -366,12 +367,12 @@ function RolePolicyRules({ notify, guard }: {
     () => Object.fromEntries(POLICY_RULES.map(rule => [rule.code, true] as const)),
   )
 
-  const flip = (rule: { code: string; live: boolean }) => {
+  const flip = (rule: { code: string; title: string; live: boolean }) => {
     const next = !on[rule.code]
     setOn(state => ({ ...state, [rule.code]: next }))
     if (next) { notify('策略已启用'); return }
     notify(rule.live
-      ? '生产只读由执行层强制，页面开关不会放开写操作'
+      ? `${rule.title}由执行层强制，页面开关关不掉它`
       : '策略已停用（该策略尚未接入后端执行）')
   }
 

@@ -574,8 +574,10 @@ class Executor:
         （WHERE phone = '138...' 仍能试探）。后者要靠表白名单收窄，
         不是靠这一层 —— 两件事别混。
         """
-        if self.cfg.unmask:
-            return rows
+        # 2026-09-06 起**没有任何角色能关掉脱敏**：原来这里有一个
+        # `if self.cfg.unmask: return rows` 的出口，供 DEV / DATA_OWNER 看原值。
+        # 产品决定所有角色可见面一致后，那个位失去了承载它的角色差别，
+        # 与其留一个恒为假的分支，不如让脱敏成为无条件的。
         sensitive = {c.lower()
                      for t in self.cfg.tables.values() for c in t.sensitive_columns}
         if not sensitive:

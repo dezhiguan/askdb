@@ -217,11 +217,6 @@ class Config:
         return bool(self.raw.get("_scan_waiver", False))
 
     @property
-    def unmask(self) -> bool:
-        """当前角色能否看到个人信息列的原值。默认否 —— 漏配要落在安全那边。"""
-        return bool(self.raw.get("_role_unmask", False))
-
-    @property
     def tenant_column(self) -> str:
         return self.raw["tenant"]["column"]
 

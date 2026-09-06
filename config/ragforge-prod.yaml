@@ -117,25 +117,18 @@ metrics_file: ./config/ragforge-prod-metrics.yaml
 # 会话密钥走 ASKDB_SESSION_SECRET（见 .env），不入配置。
 # ---------------------------------------------------------------------------
 
-# 收窄语义：有效表 = 实例白名单 ∩ 这里列的表，行上限取小。只能收窄不能放宽。
-role_policies:
-  ANONYMOUS:
-    tables: [organizations, knowledge_bases]
-    max_rows: 20
-  QA:
-    tables: [organizations, knowledge_bases, documents]
-    max_rows: 50
-  PRODUCT:
-    # 不含 model_usage_daily：token 与成本是内部经营数据
-    tables: [organizations, knowledge_bases, documents, retrieval_logs]
-    max_rows: 100
-  DATA_OWNER:
-    tables: [organizations, knowledge_bases, documents, retrieval_logs, model_usage_daily]
-    max_rows: 200
-
+# 2026-09-06：**此处原有 role_policies，已整块撤掉**（产品决定）。
+#
+# 它按角色收窄可见表与行上限（匿名 2 张表 20 行 … 数据负责人 5 张表 200 行），
+# 与「所有角色看到的内容完全一样」直接冲突，而且是这套差别里最实质的一处 ——
+# 能力位只决定进不进得了页面，这里决定查得到查不到。
+#
+# 机制本身没删：identity.policy_for 仍读这个键，narrow() 仍保证只能收窄
+# 不能放宽。要给某个部署收紧可见面，在这里写回来即可；但那是一个会让角色
+# 之间重新出现差别的决定，别顺手做。
 auth:
   enabled: true
-  required: false          # 匿名可查，登录只放宽可见范围（与开发库一致）
+  required: false          # 匿名可查；登录不放宽可见面，只放开写（与开发库一致）
   cookie_secure: false     # 本机 http 调试；对外入口的配置在 public.yaml
   accounts:
     - username: linxiao
@@ -186,7 +179,7 @@ auth:
     - username: xuting
       display_name: 徐婷
       roles: [SYS_ADMIN]
-      note: 平台管理员，只管角色成员、不查数据
+      note: 平台管理员，负责角色成员与审批
       password_hash: "scrypt$16384$8$1$TNdu6mU8cKCIFdJomXLPrg==$XuUzOS9EtRdATBE37Tgw/4ynuFi5da4uIOcqS6QV084="
 
     - username: product

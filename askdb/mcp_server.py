@@ -169,8 +169,12 @@ def build_server(cfg: Config, role: str = identity.ANONYMOUS):
 def main() -> None:
     ap = argparse.ArgumentParser(description="askdb MCP 服务端（stdio）")
     ap.add_argument("-c", "--config", default="config/askdb.yaml")
-    # 这条通道没有登录，角色只能由启动方声明。默认取最保守的那一个 ——
-    # 要放宽是部署方的显式决定，而不是忘了写参数的副作用。
+    # 这条通道没有登录，角色只能由启动方声明。
+    #
+    # 默认 ANONYMOUS 曾经意味着"最保守的那一档"；2026-09-06 角色之间不再有
+    # 可见面差别之后，**换哪个角色都不会让 MCP 看到更多或更少的表** ——
+    # 想收紧只有两条路：改实例白名单，或在 role_policies 里显式配一档。
+    # 参数保留：它仍决定审计里记的是哪个角色，且收窄机制随时可以配起来。
     ap.add_argument("--role", default=identity.ANONYMOUS,
                     help="以哪个角色的可见范围运行（默认 ANONYMOUS）")
     a = ap.parse_args()

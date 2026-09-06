@@ -265,8 +265,8 @@ export function TasksPage({ onNavigate, notify, me }: {
 
   const detail = useMemo<TaskDetailView | null>(() => {
     if (modal.kind !== 'result' && modal.kind !== 'reason' && modal.kind !== 'clarify') return null
-    return buildDetail(modal.task, replay)
-  }, [modal, replay])
+    return buildDetail(modal.task, replay, result?.user ?? '')
+  }, [modal, replay, result])
 
   const resume = async (task: Task) => {
     setBusy(task.thread_id)
@@ -340,7 +340,8 @@ export function TasksPage({ onNavigate, notify, me }: {
           <div className="card-head">
             <div>
               <strong>查询任务</strong>
-              <p>每个任务拥有独立状态、执行轨迹和审计记录。{result.user ? `账号 ${result.user}` : '匿名发起'} · 共 {items.length} 条。</p>
+              <p>每个任务拥有独立状态、执行轨迹和审计记录。共 {items.length} 条（全部发起人）
+                  {result.user ? ` · 当前账号 ${result.user}，只有自己发起的线程能续跑` : ' · 未登录，可以浏览但不能续跑'}。</p>
             </div>
             <div className="card-actions">
               <div className="status-select" ref={statusRef}>
@@ -430,11 +431,11 @@ export function TasksPage({ onNavigate, notify, me }: {
 
           {matched.length === 0 && (
             <div className="task-empty">
-              <strong>{items.length ? '当前筛选条件下没有任务。' : '这个账号名下还没有执行记录。'}</strong>
+              <strong>{items.length ? '当前筛选条件下没有任务。' : '还没有任何执行记录。'}</strong>
               <span>
                 {items.length
-                  ? '换个状态，或在筛选里重置数据源、发起人与时间再看；列表只包含当前账号发起的线程。'
-                  : '任务由提问产生 —— 登录后到查询 Agent 问一次，或在这里创建任务，这里就会出现对应的线程。历史记录若是匿名发起的，不会归到任何账号名下。'}
+                  ? '换个状态，或在筛选里重置数据源、发起人与时间再看。'
+                  : '任务由提问产生 —— 到查询 Agent 问一次，或在这里创建任务，这里就会出现对应的线程。这一页列全部发起人的线程，不只是当前账号的。'}
               </span>
             </div>
           )}
@@ -520,7 +521,12 @@ export function TasksPage({ onNavigate, notify, me }: {
 }
 
 /** 把 /api/tasks 的一行 + /api/replay 的回放拼成弹窗要的视图对象。 */
-function buildDetail(task: Task, replay: Replay | null): TaskDetailView {
+function buildDetail(task: Task, replay: Replay | null, currentUser: string): TaskDetailView {
+  /* 列得出来 ≠ 动得了。这一页 2026-09-06 起列全部发起人的线程，但续跑仍然
+     只有主人能做（服务端 /api/resume 校验归属）。不在这里判一次的话，别人的
+     中断线程会挂着一个「补充信息并恢复」的按钮，点下去必然 404 —— 那正是
+     原来"只列自己的"想避免的「列得出来、续不了」，方向反过来而已。 */
+  const mine = (task.owner || '') === currentUser
   const statusLabel = STATUS_LABEL[task.status]
   const wait = STATUS_WAIT[task.status]
   const duration = fmtDuration(task.elapsed_ms)
@@ -567,11 +573,16 @@ function buildDetail(task: Task, replay: Replay | null): TaskDetailView {
         node: replay?.snapshots?.map(item => (item.next ?? []).join(' / ')).filter(Boolean).slice(-1)[0] || 'INTERRUPT',
         detail: '任务在生成 SQL 前暂停等待补充条件，现场已经写进检查点。',
         policy: `${task.kind} · ${task.role}`,
-        nextStep: task.resumable
-          ? '补充条件后从断点继续执行；checkpoint 之前已完成的节点不会重跑。'
-          : '这条线程已经收尾，没有可续的断点。',
-        action: task.resumable ? ('clarify' as const) : ('none' as const),
-        actionLabel: task.resumable ? '补充信息并恢复' : '无可续的断点',
+        nextStep: !task.resumable
+          ? '这条线程已经收尾，没有可续的断点。'
+          : mine
+            ? '补充条件后从断点继续执行；checkpoint 之前已完成的节点不会重跑。'
+            : `这条线程由${task.owner ? ` ${task.owner} ` : '匿名访客'}发起，只有发起人能从断点继续。`
+              + '执行轨迹与审计记录仍然可以查看。',
+        action: task.resumable && mine ? ('clarify' as const) : ('none' as const),
+        actionLabel: !task.resumable
+          ? '无可续的断点'
+          : mine ? '补充信息并恢复' : '仅发起人可续跑',
       }
       : null
 
@@ -580,7 +591,8 @@ function buildDetail(task: Task, replay: Replay | null): TaskDetailView {
     statusLabel,
     wait,
     question: task.question || '（无问题文本）',
-    description: `线程 ${task.thread_id} · 发起人 ${task.user} · 已执行 ${task.attempts_on_thread} 次`,
+    description: `线程 ${task.thread_id} · 发起人 ${task.owner || '匿名'}`
+      + `${mine ? '（本人）' : ''} · 已执行 ${task.attempts_on_thread} 次`,
     source,
     executedAt: fmtFull(task.ts),
     duration,

@@ -55,19 +55,32 @@ class Role:
 # 治理动作上，而不是"你只能连哪个库"。原来 scope 那一列写的是环境档位
 # （PROD-RO / STAGING），既然不再据此拦截，就不能继续挂在页面上 ——
 # 一个不再执行的承诺比没有承诺更危险。
+#
+# 2026-09-06（同日，第二步）：**角色之间不再有可见面差异**（产品决定）。
+# 上一步撤掉的是"能连哪个库"，这一步撤掉的是"能看哪些表、多少行、多久以内、
+# 看不看得到原值"。理由同上：共享平台上大家做的是同一件事，按角色分档位
+# 只制造了一批解释不清的差别 —— 最刺眼的一处是产品角色登录之后看到的东西
+# 比不登录还少。
+#
+# 现在整套模型只剩三条，别再往回加第四条：
+#   1. 所有角色的可见面**完全相同**（含匿名）。
+#   2. 唯一的角色差别是 APPROVE（审批）—— 只有系统管理员有。
+#   3. 未登录可读不可写。这一条**不由角色表达**，由 server._gate_writes
+#      按 HTTP 方法统一拦截；能力位这里只是把写类能力从匿名身上摘掉，
+#      让页面能提前置灰，不是安全边界本身。
 ROLES: tuple[Role, ...] = (
-    Role("PRODUCT", "产品", "业务只读",
-         "查询业务数据。敏感字段按脱敏策略返回，不可见原始个人信息。"),
-    Role("DEV", "开发", "全量可查",
-         "全量可查，用于排障与验证；看得到个人信息原值。"),
-    Role("QA", "测试", "业务只读",
-         "查询业务数据，返回行上限与数据期限更紧；敏感字段按脱敏策略返回。"),
-    Role("DATA_OWNER", "数据负责人", "口径与审批",
-         "配置策略、审批高风险与高成本查询。"),
-    # 职责分离：管人的不自动获得看数据的权限。
-    # 把两者合在一起，等于让管理员可以给自己开任意数据权限而不留痕。
-    Role("SYS_ADMIN", "系统管理员", "SYSTEM",
-         "管理角色成员。**不因此获得任何数据访问权** —— 需要查数须另行加入数据角色。",
+    Role("PRODUCT", "产品", "平台可见面",
+         "查询业务数据。可见面与其他角色相同；个人信息列一律脱敏。"),
+    Role("DEV", "开发", "平台可见面",
+         "查询业务数据，用于排障与验证。可见面与其他角色相同；个人信息列一律脱敏。"),
+    Role("QA", "测试", "平台可见面",
+         "查询业务数据，用于验证。可见面与其他角色相同；个人信息列一律脱敏。"),
+    Role("DATA_OWNER", "数据负责人", "平台可见面",
+         "配置口径与数据源。可见面与其他角色相同；审批由系统管理员放行，"
+         "提出与放行分属两人。"),
+    Role("SYS_ADMIN", "系统管理员", "平台可见面 + 审批",
+         "管理角色成员，并审批高成本查询与数据源变更。"
+         "**这是唯一一个多出权限的角色**，多出来的只有审批这一项。",
          system=True),
 )
 
@@ -90,47 +103,42 @@ class Policy:
     两个维度都落在既有判定上：tables/max_rows 落在护栏 R-03 与 R-13，
     不需要新造任何规则。
 
-    **曾经有第三个维度 envs（角色可连哪些环境的数据源），2026-09-06 撤掉。**
-    共享平台上大家用的是同一批数据源，按角色挡"能连哪个库"与这个前提冲突。
-    撤的是整条判定，不是留个不生效的字段 —— 留着它就会变成页面上那种
-    "看起来在拦、其实没拦"的字段，而那正是当初加它要消灭的东西。
+    **这个结构现在默认全空**：见 DEFAULT_POLICIES 那段注释 —— 产品决定是
+    所有角色可见面相同，因此内置默认一条收窄都不写。留下机制而不留下取值，
+    是因为"只能收窄不能放宽"这条不变量本身仍然要被守住：部署方在
+    role_policies 里写什么都不可能放宽，这一点由 narrow() 保证并有测试覆盖。
+
+    **曾经有过两个维度，都已撤掉，别加回来：**
+      · envs（角色可连哪些环境的数据源）—— 2026-09-06 撤，角色不与数据源绑定。
+      · unmask（能否看到个人信息原值）—— 2026-09-06 撤，脱敏对**所有人**生效，
+        不再是一个可以按角色放开的位。它当初就注明"能配的东西就会被配错，
+        而这一位配错等于把个人信息交出去"；现在它连按角色开的余地也没有了。
+    撤的都是整条判定，不是留个不生效的字段。
     """
     tables: frozenset[str] | None = None
     max_rows: int | None = None
     #: 可见数据的时间窗口（天）。None = 不限。落在护栏 R-19 的谓词注入上，
     #: 与租户谓词（R-10）是同一类动作 —— 都是行级收窄，都靠往 SQL 里加条件。
+    #: 内置默认不设窗口（所有角色一致）；部署方要收紧仍可在 role_policies 里配。
     max_age_days: int | None = None
-    #: 能不能看到个人信息列的**原值**。默认 False = 看脱敏值。
-    #: 这一位与其他维度方向相反（其他是"收窄"，它是"放开"），所以
-    #: combine 取或、且**不开放配置** —— 能配的东西就会被配错，
-    #: 而这一位配错等于把个人信息交出去。
-    unmask: bool = False
 
 
 #: 内置默认。配置可以在此基础上**继续收窄**，不能放宽。
 #:
-#: 除系统角色外一律不额外收窄 —— 默认行为与没有角色时完全一致，
-#: 接入角色不会悄悄改变任何现有实例的可查范围。要收窄是部署方的显式决定。
-DEFAULT_POLICIES: dict[str, Policy] = {
-    # 职责分离在这里落到实处：管人的角色拿不到任何数据。
-    # 这不是配置项，是内置默认 —— 忘了配也不会漏。
-    "SYS_ADMIN": Policy(tables=frozenset(), max_rows=0),
-
-    # 数据期限是**内置的**，不是配置项：能配的东西就会被配错，
-    # 而这一位配错等于把更早的数据交出去。要改必须改代码、走评审 ——
-    # 与 ROLES 固定不开放自定义同一个理由。取设计文档矩阵 Q-07 的值。
-    #
-    # unmask 只给两个角色，各有各的理由：
-    #   · DEV —— 排障要看到真实取值，在开发口径上脱敏只会妨碍定位。
-    #     （角色与数据源解绑后，这一条不再有"它只连合成数据"作依据，
-    #      是一个明确的放开决定，不是推论出来的结论。）
-    #   · DATA_OWNER —— 它是数据的归口人，判断口径本身就需要看到原值。
-    # 产品与测试一律看脱敏值：矩阵 Q-06 写的就是"强制脱敏"。
-    "PRODUCT": Policy(max_age_days=90),
-    "DEV": Policy(unmask=True),
-    "QA": Policy(max_age_days=180),
-    "DATA_OWNER": Policy(max_age_days=365, unmask=True),
-}
+#: **空字典是有意的，不是漏写。** 2026-09-06 产品决定：所有角色（含匿名）
+#: 的可见面完全相同，唯一的角色差别是审批。因此这里一条内置收窄都没有 ——
+#: 角色不再改变任何人的可查范围。
+#:
+#: 这里原来有四条，一并记下撤掉的理由，省得下次又照着"看起来很专业"加回来：
+#:   · PRODUCT 90 天 / QA 180 天 / DATA_OWNER 365 天的数据期限 —— 档位差别
+#:     解释不清，且与"大家做同一件事"的前提冲突。
+#:   · DEV / DATA_OWNER 的 unmask —— 脱敏改为对所有人生效，见 Policy 注释。
+#:   · SYS_ADMIN 的空表集（tables=∅, max_rows=0）—— 那是靠"管理员查不到数据"
+#:     换来的"自批在结构上不可能"。产品决定系统管理员也要能查数，这条结构性
+#:     保证随之消失，改由 approvals 的**发起人不得自批**判定顶上（见
+#:     _approvals.decide）。用一条显式判定换一条隐式保证，是这次改动里
+#:     唯一需要盯住的地方。
+DEFAULT_POLICIES: dict[str, Policy] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +166,7 @@ GLOSSARY_READ = "glossary.read"     # G-01/G-02 口径查看与校验
 QUALITY_READ = "quality.read"       # E-01 质量中心
 SELFCHECK = "selfcheck"             # E-02 运行时自检
 INTROSPECT = "introspect"           # E-03 库结构内省
-AUDIT_READ = "audit.read"           # A-01/A-02 审计（默认只有本人的）
+AUDIT_READ = "audit.read"           # A-01/A-02 审计
 AUDIT_ALL = "audit.all"             # A-01 跨用户查看
 AUDIT_CONTENT = "audit.content"     # A-01 看得到 question 与 sql_final
 REPLAY = "replay"                   # A-03 查询复放
@@ -167,58 +175,56 @@ MEMBERS_READ = "members.read"       # I-02 跨角色成员名册
 MEMBERS_WRITE = "members.write"     # I-03 增删成员
 APPROVE = "approve"                 # Q-08 / S-03~05 审批放行
 
-#: 角色 → 能力位。**固定，不开放配置**，理由同 ROLES 那段注释：
-#: 能配的东西就会被配错，而这一层配错等于开门。
+#: 读类能力位 —— **每一个角色，包括匿名，都拿到全部这些位。**
+#: 「不同角色看到的内容完全一样」这句话在代码里就是这一行。
+_READ: frozenset[str] = frozenset({
+    QUERY, QUERY_SQL, SOURCES_READ, GLOSSARY_READ, QUALITY_READ,
+    SELFCHECK, INTROSPECT,
+    AUDIT_READ, AUDIT_ALL, AUDIT_CONTENT, REPLAY, TASKS_ALL, MEMBERS_READ,
+})
+
+#: 写类能力位 —— 登录用户都有，匿名一个都没有。
 #:
-#: 三条要点，改之前先读：
-#:   1. SYS_ADMIN 有 APPROVE 但没有 QUERY —— 它的 Policy 是空表集，
-#:      永远不可能是查询发起人，所以**自批在结构上不可能发生**。
-#:      这是把审批收敛到系统管理员最主要的收益，别为了"方便"给它加 QUERY。
-#:   2. SYS_ADMIN 有 AUDIT_READ + AUDIT_ALL 但**没有 AUDIT_CONTENT** ——
-#:      管人的需要知道有没有人在违规访问，不需要知道业务上问了什么。
-#:      审批场景是唯一例外，走单独的判定（见 server 的待审批队列）。
-#:   3. DATA_OWNER 没有 APPROVE：数据源变更由它提出、由系统管理员放行，
-#:      提出与放行分属两人。给它 APPROVE 就等于自己批自己。
+#: 这里摘掉匿名的写位，**不是**安全边界：真正的边界是 server._gate_writes
+#: 中间件，它按 HTTP 方法拦下所有未登录的 POST/PUT/PATCH/DELETE，新增接口
+#: 默认落在安全那边。能力位在这里的作用是让页面**提前**把按钮置灰，
+#: 而不是让人点完才知道做不了（前端 writeGuard 同一件事的另一半）。
+#:
+#: SOURCES_TEST / SOURCES_SCAN 归在写类：它们不改数据，但都是 POST，
+#: 且都会对目标库发起真实连接与扫描。判据取"会不会往外做动作"，
+#: 与中间件的方法判据对齐 —— 两处判据形状一致，才不会各自漂移。
+_WRITE: frozenset[str] = frozenset({
+    SOURCES_TEST, SOURCES_SCAN, SOURCES_WRITE,
+})
+
+#: 角色 → 能力位。**固定，不开放配置**：能配的东西就会被配错，
+#: 而这一层配错等于开门。
+#:
+#: 结构就是下面这三行，别再长回一张按角色分档的表：
+#:   · 所有登录角色 = _READ | _WRITE，**完全相同**
+#:   · SYS_ADMIN 额外多 APPROVE 与 MEMBERS_WRITE
+#:   · ANONYMOUS = _READ，未登录可读不可写
+#:
+#: **MEMBERS_WRITE 为什么也只给系统管理员**（它看起来像是那条"唯一差别"的
+#: 例外，其实是它的前提）：成员名单决定谁属于哪个角色。把增删成员开给所有
+#: 登录用户，任何人都可以把自己加进 SYS_ADMIN，于是"只有系统管理员能审批"
+#: 这条就不再是一条约束，而是一次点击的距离。守住 APPROVE 的唯一性，就必须
+#: 同时守住"谁能改成员名单"。它另有一道 ASKDB_ADMIN_TOKEN 的门，两道是与的
+#: 关系，不是互相替代。
+#:
+#: 关于 APPROVE 只给系统管理员：数据源变更由数据负责人提出、由系统管理员
+#: 放行，提出与放行分属两人。这条分离过去还有第二层保证 —— SYS_ADMIN 的
+#: 策略是空表集，永远不可能是查询发起人，于是自批在结构上不可能。
+#: 2026-09-06 系统管理员改为也能查数，那层保证没有了，自批改由
+#: _approvals.decide 里的**发起人不得自批**显式判定挡住。改动审批链路前
+#: 先读那一处：它现在是唯一一道门。
 CAPABILITIES: dict[str, frozenset[str]] = {
-    "PRODUCT": frozenset({
-        QUERY, SOURCES_READ, GLOSSARY_READ, QUALITY_READ,
-        AUDIT_READ, AUDIT_CONTENT,          # 只有本人的：没有 AUDIT_ALL
-    }),
-    "DEV": frozenset({
-        QUERY, QUERY_SQL, SOURCES_READ, SOURCES_TEST, SOURCES_WRITE, SOURCES_SCAN,
-        GLOSSARY_READ, QUALITY_READ, SELFCHECK, INTROSPECT,
-        AUDIT_READ, AUDIT_ALL, AUDIT_CONTENT, REPLAY, TASKS_ALL,
-    }),
-    "QA": frozenset({
-        QUERY, QUERY_SQL, SOURCES_READ, SOURCES_TEST, SOURCES_SCAN,
-        GLOSSARY_READ, QUALITY_READ, SELFCHECK, INTROSPECT,
-        AUDIT_READ, AUDIT_CONTENT,          # 只有本人的
-    }),
-    "DATA_OWNER": frozenset({
-        QUERY, QUERY_SQL, SOURCES_READ, SOURCES_TEST, SOURCES_WRITE, SOURCES_SCAN,
-        GLOSSARY_READ, QUALITY_READ, SELFCHECK, INTROSPECT,
-        AUDIT_READ, AUDIT_ALL, AUDIT_CONTENT, REPLAY, TASKS_ALL,
-        MEMBERS_READ,
-    }),
-    "SYS_ADMIN": frozenset({
-        MEMBERS_READ, MEMBERS_WRITE, APPROVE,
-        SOURCES_READ, QUALITY_READ, SELFCHECK,
-        AUDIT_READ, AUDIT_ALL,              # 元数据可见，AUDIT_CONTENT 不给
-    }),
-    # 匿名只在 auth.required=false 的实例上出现 —— 那是部署方明确选择的
-    # "对外可看"状态，不是漏配。它保留今天的可见面，因为收紧它等于把
-    # 一个以展示护栏与审计为目的的实例整个关掉。要锁就把 required 打开。
-    ANONYMOUS: frozenset({
-        QUERY, QUERY_SQL, SOURCES_READ, GLOSSARY_READ, QUALITY_READ,
-        # AUDIT_CONTENT 在这里是**产品决定**（2026-09-06）：审计与追踪两页
-        # 要讲的是"这套东西在真实调用上如何运转"，问题原文一律遮掉的话
-        # 这两页就没有可读性了。对外实例上那正是要展示的东西。
-        #
-        # 与系统管理员**看不到**原文并不矛盾：那一条是职责分离（管人的不该
-        # 翻业务问题），这一条是对外展示。两者约束的是不同的人和不同的目的。
-        AUDIT_READ, AUDIT_ALL, AUDIT_CONTENT,
-        INTROSPECT, SELFCHECK,
-    }),
+    "PRODUCT": _READ | _WRITE,
+    "DEV": _READ | _WRITE,
+    "QA": _READ | _WRITE,
+    "DATA_OWNER": _READ | _WRITE,
+    "SYS_ADMIN": _READ | _WRITE | {APPROVE, MEMBERS_WRITE},
+    ANONYMOUS: _READ,
 }
 
 
@@ -271,9 +277,7 @@ def policy_for(cfg: Config, role_code: str) -> Policy:
         want_age = int(spec["max_age_days"])
         age = want_age if age is None else min(age, want_age)
 
-    # unmask 有意不从配置读：见 Policy.unmask 那段注释。
-    return Policy(tables=tables, max_rows=max_rows,
-                  max_age_days=age, unmask=base.unmask)
+    return Policy(tables=tables, max_rows=max_rows, max_age_days=age)
 
 
 def combine(policies: list[Policy]) -> Policy:
@@ -283,9 +287,8 @@ def combine(policies: list[Policy]) -> Policy:
     行上限取大 —— 但每个策略本身都已经是实例白名单的子集，所以并集
     仍然是子集，「只能收窄」这条不变量不受影响。
 
-    这个语义顺带把职责分离表达对了：SYS_ADMIN 的策略是空表集，
-    与任何数据角色取并集都等于那个数据角色 —— 当管理员既不增加也不减少
-    数据权限。只有 SYS_ADMIN 的人则并集为空，一张表也看不到。
+    内置默认现在是空的，所以这个函数在默认部署上恒等于"不收窄"；
+    它仍然要正确，因为部署方配了 role_policies 时走的就是这条路。
     """
     if not policies:
         return Policy()
@@ -304,9 +307,7 @@ def combine(policies: list[Policy]) -> Policy:
     ages = [p.max_age_days for p in policies]
     max_age = None if any(a is None for a in ages) else max(ages)
 
-    return Policy(tables=tables, max_rows=max_rows,
-                  max_age_days=max_age,
-                  unmask=any(p.unmask for p in policies))
+    return Policy(tables=tables, max_rows=max_rows, max_age_days=max_age)
 
 
 def for_roles(cfg: Config, role_codes: list[str], user: str = "") -> Config:
@@ -339,8 +340,7 @@ def narrow(cfg: Config, policy: Policy, role_code: str = ANONYMOUS) -> Config:
         raw = {**cfg.raw, "guard": {**cfg.raw["guard"], "max_rows": policy.max_rows}}
     # 与 max_rows 走同一条路：塞进 raw，护栏与执行器照常从 cfg 取值，
     # 因此它们一行都不用知道"角色"这个概念的存在。
-    raw = {**raw, "_role_window_days": policy.max_age_days,
-           "_role_unmask": policy.unmask}
+    raw = {**raw, "_role_window_days": policy.max_age_days}
 
     # 口径引用的表若已不可见，一并摘掉 —— 留着只会让模型照口径写出
     # 引用不可见表的 SQL，然后被 R-03 拦下，报错指向一个用户无法理解的地方
@@ -479,8 +479,7 @@ def roles_with_counts(cfg: Config) -> list[dict[str, Any]]:
          # 于是「数据期限 90 DAYS」在后端根本没有对应字段时也照样显示 ——
          # 权限体系最怕的就是"配了但看不出有没有生效"，而这比看不出更糟：
          # 它显示了一个从未生效过的值。
-         "max_age_days": policy_for(cfg, r.code).max_age_days,
-         "unmask": policy_for(cfg, r.code).unmask}
+         "max_age_days": policy_for(cfg, r.code).max_age_days}
         for r in ROLES
     ]
 

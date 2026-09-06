@@ -80,18 +80,23 @@ def test_roles_are_fixed_and_cover_the_agreed_set():
     assert len(set(codes)) == len(codes)
 
 
-def test_system_admin_gets_no_data_scope():
-    """职责分离：管人的不自动获得看数据的权限。
+def test_system_admin_is_still_marked_as_a_system_role():
+    """系统角色的标记要留着，但它的含义变了（2026-09-06）。
 
-    两者合一，管理员就能给自己开任意数据权限而不留痕 —— 这类越权
-    在审计里看起来完全合规，是最难发现的一种。
+    原来 system=True 意味着"只管人、不看数据"，页面据此渲染一段职责分离说明。
+    现在它意味着"额外持有审批与成员增删"—— 可见面与其他角色完全相同。
+    标记本身仍然有用（页面要把唯一多出权限的那个角色标出来），但任何据它
+    推断"这个角色查不到数据"的代码都是错的。
     """
     admin = identity.ROLE_BY_CODE["SYS_ADMIN"]
     assert admin.system is True
-    assert admin.scope == "SYSTEM"
+    assert [r.code for r in identity.ROLES if r.system] == ["SYS_ADMIN"]
 
-    data_scopes = {r.scope for r in identity.ROLES if not r.system}
-    assert admin.scope not in data_scopes
+    # 可见面相同这件事在 scope 这一格上也要如实反映：它现在是给人看的文案，
+    # 不能再写成一个暗示"另一档范围"的值（原来是 "SYSTEM"）。
+    assert "平台可见面" in admin.scope
+    for r in identity.ROLES:
+        assert r.scope.startswith("平台可见面"), r.code
 
 
 # ---------- 未启用时的行为 ----------

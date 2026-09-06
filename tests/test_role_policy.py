@@ -50,19 +50,31 @@ def test_role_can_narrow_tables(cfg):
 
 # ---------- 内置默认 ----------
 
-def test_system_admin_has_no_data_access_by_default(cfg):
-    """职责分离是内置默认，不是配置项 —— 忘了配也不会漏。"""
+def test_no_role_is_narrowed_by_default(cfg):
+    """内置默认对**每一个角色**都是"不收窄"（2026-09-06 产品决定）。
+
+    这里原来有两条用例，钉的是系统管理员的空表集（tables=∅, max_rows=0）——
+    职责分离的落点，也是"自批在结构上不可能"的依据。产品决定所有角色可见面
+    一致后两条一并撤掉；自批改由 approvals.decide 的显式判定挡住，见
+    test_authz.test_requester_cannot_approve_own_query。
+    """
     cfg.raw.pop("role_policies", None)
-    narrowed = identity.narrow(cfg, identity.policy_for(cfg, "SYS_ADMIN"))
-    assert narrowed.tables == {}
-    assert narrowed.max_rows == 0
+    for code in ("PRODUCT", "DEV", "QA", "DATA_OWNER", "SYS_ADMIN", identity.ANONYMOUS):
+        narrowed = identity.narrow(cfg, identity.policy_for(cfg, code))
+        assert narrowed.tables == cfg.tables, code
+        assert narrowed.max_rows == cfg.max_rows, code
 
 
-def test_config_cannot_grant_data_access_to_system_admin(cfg):
-    """即便配置试图给系统角色开表，也必须无效 —— 内置默认与配置取交集。"""
-    narrowed = _spec(cfg, "SYS_ADMIN", tables=list(cfg.tables), max_rows=999)
-    assert narrowed.tables == {}
-    assert narrowed.max_rows == 0
+def test_config_can_still_narrow_any_role(cfg):
+    """收窄机制保留：删的是取值，不是机制。
+
+    "只能收窄不能放宽"这条不变量仍然要成立 —— 见本文件其余用例。部署方在
+    role_policies 里写回一档，角色之间就会重新出现差别；那是一个决定，
+    不是一次配置微调。
+    """
+    narrowed = _spec(cfg, "SYS_ADMIN", tables=["orgs"], max_rows=3)
+    assert set(narrowed.tables) == {"orgs"}
+    assert narrowed.max_rows == 3
 
 
 def test_unconfigured_role_changes_nothing(cfg):

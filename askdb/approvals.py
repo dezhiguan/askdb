@@ -9,10 +9,14 @@ R-11 此前对超阈值查询直接打回，附一句"缩小时间范围"。对�
 
 **为什么审批人是系统管理员**
 
-它的 Policy 是空表集，永远不可能是查询的发起人，因此**自批在结构上不可能
-发生** —— 不靠流程约定，靠的是 identity.DEFAULT_POLICIES 里那一行。
-数据负责人反而不能批：数据源变更由它提出，兼任放行方会让"提出与放行分属
-两人"失效。
+数据负责人不能批：数据源变更由它提出，兼任放行方会让"提出与放行分属两人"
+失效。所以放行方收敛到一个不提需求的角色上。
+
+自批过去是**结构上不可能**的：系统管理员的 Policy 是空表集，一张表都查不到，
+因此不可能是任何一条审批单的发起人。2026-09-06 产品决定所有角色可见面一致、
+系统管理员也能查数，那个前提没有了 —— 自批改由 decide() 里的显式判定挡住。
+一条隐式保证换成了一条显式判定，后者会被绕过、前者不会，所以改审批链路前
+先读那一处。
 
 **存储为什么是 JSONL**
 
@@ -125,6 +129,10 @@ def request(cfg: Config, *, trace_id: str, user: str, roles: list[str],
     return rec
 
 
+class SelfApproval(RuntimeError):
+    """发起人试图审批自己的查询。见 decide() 里那段注释。"""
+
+
 def decide(cfg: Config, aid: str, *, approver: str, approved: bool,
            note: str = "") -> dict[str, Any] | None:
     """放行或驳回。只有系统管理员走得到这里（准入在 server 层判）。
@@ -135,6 +143,17 @@ def decide(cfg: Config, aid: str, *, approver: str, approved: bool,
     cur = state(cfg).get(aid)
     if cur is None or cur.get("status") != REQUESTED:
         return None                      # 不存在，或已经有过结论：不可重复决策
+    # 发起人不得自批。
+    #
+    # 这条判定 2026-09-06 才补上，补的是一个刚刚消失的结构性保证：此前
+    # SYS_ADMIN 的策略是空表集（一张表都查不到），因此它**不可能**是任何
+    # 一条审批单的发起人，自批在结构上不成立，不需要判。产品决定系统管理员
+    # 也能查数之后，那个前提没有了 —— 同一个人现在既能触发 R-11 开出审批单，
+    # 又是唯一有 APPROVE 的角色。
+    #
+    # 返回 None 与"审批单不存在"同一条出路：不向调用方区分这两种情形。
+    if (cur.get("user") or "") and (cur.get("user") or "") == approver:
+        raise SelfApproval("不能审批自己发起的查询。请由另一位系统管理员处理。")
     rec = {
         "id": aid, "status": APPROVED if approved else REJECTED,
         "decided_ts": now_iso(), "approver": approver, "note": note,

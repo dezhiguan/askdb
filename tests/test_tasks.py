@@ -106,12 +106,16 @@ def client(acfg, monkeypatch):
     return TestClient(server.create_app("ignored.yaml"))
 
 
-def test_anonymous_sees_only_anonymous_threads(client, acfg):
-    """匿名能读任务列表，但**只看得到匿名发起的**。
+def test_anonymous_sees_every_thread_but_owns_none(client, acfg):
+    """匿名列得出全部线程，但一条也续不了（2026-09-06）。
 
-    2026-09-05 由「匿名一律 401」改为开放。放松的只是"匿名有没有资格看自己
-    那一档"，收窄本身一点没动 —— 这条用例钉的就是后半句：列表里绝不能出现
-    任何登录用户发起的线程，那才是设计 §4.2 真正要挡的东西。
+    这条用例原来断言的是相反的事：匿名只看得到匿名发起的。可见面统一之后
+    那条收窄站不住 —— 它的实际后果是登录用户打开任务中心是空的，而同一份
+    审计流水在审计中心里连未登录访客都看得到全部原文。同一批数据两页两套
+    口径，方向还正好相反。
+
+    **放开的只是"看得见"**：归属仍然逐条如实标在 owner 上，续跑校验一行没改
+    （见下一条用例）。
     """
     _write(acfg.audit_log, [
         _rec("a1", "t1", user="alice", rejected="INTERRUPTED", ts=_now()),
@@ -119,7 +123,9 @@ def test_anonymous_sees_only_anonymous_threads(client, acfg):
     ])
     body = client.get("/api/tasks").json()
     assert body["user"] == ""
-    assert [t["thread_id"] for t in body["items"]] == ["t9"]
+    assert sorted(t["thread_id"] for t in body["items"]) == ["t1", "t9"]
+    # 归属必须跟着出去，否则页面无从判断续跑入口对谁开
+    assert {t["thread_id"]: t["owner"] for t in body["items"]} == {"t1": "alice", "t9": ""}
 
 
 def test_anonymous_cannot_resume_an_owned_thread(client, acfg):
@@ -129,7 +135,11 @@ def test_anonymous_cannot_resume_an_owned_thread(client, acfg):
     assert client.post("/api/resume", json={"thread_id": "a1"}).status_code == 404
 
 
-def test_tasks_endpoint_scopes_to_caller(client, acfg):
+def test_tasks_endpoint_lists_everyone(client, acfg):
+    """登录用户同样列得出全部线程，user 字段给的是**当前账号**而不是过滤条件。
+
+    页面拿 user 与每条的 owner 比，决定续跑入口对谁开 —— 服务端不替它过滤。
+    """
     _write(acfg.audit_log, [
         _rec("a1", "t1", user="alice", rejected="INTERRUPTED", ts=_now()),
         _rec("b1", "t2", user="bob", rejected="INTERRUPTED", ts=_now()),
@@ -137,7 +147,8 @@ def test_tasks_endpoint_scopes_to_caller(client, acfg):
     client.post("/api/auth/login", json={"username": "alice", "password": "pw"})
     body = client.get("/api/tasks").json()
     assert body["user"] == "alice"
-    assert [t["thread_id"] for t in body["items"]] == ["t1"]
+    assert sorted(t["thread_id"] for t in body["items"]) == ["t1", "t2"]
+    assert {t["thread_id"]: t["owner"] for t in body["items"]} == {"t1": "alice", "t2": "bob"}
 
 
 def test_resume_refuses_someone_elses_task(client, acfg):

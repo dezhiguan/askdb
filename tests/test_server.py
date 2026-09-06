@@ -441,6 +441,10 @@ def test_schema_endpoint_is_scoped_to_the_caller(cfg, monkeypatch):
     # required: true（它连的是真实库），匿名会被读门直接 401，够不着收窄那一步。
     # 关掉 required 才能拿匿名当"最窄的角色"用 —— 收窄逻辑本身与登录无关。
     public.raw["auth"] = {**(public.raw.get("auth") or {}), "required": False}
+    # 2026-09-06 起仓库里的配置都不写 role_policies（所有角色可见面一致），
+    # 所以这里显式配一档把匿名收窄成"最窄的角色"—— 测的是**收窄这条链路**
+    # 有没有作用到这个接口上，不是某份配置当下的取值。
+    public.raw["role_policies"] = {"ANONYMOUS": {"tables": ["knowledge_bases"]}}
     monkeypatch.setattr(server, "load", lambda _p: public)
     c = TestClient(server.create_app("ignored.yaml"))
 
