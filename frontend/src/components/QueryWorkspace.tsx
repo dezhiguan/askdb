@@ -364,7 +364,9 @@ function Welcome({ mode, schema, usable, sourceName, recent, guard, onFill, onDe
         desc: t.desc || '直查这张表的前几列',
       }))
     }
-    const out = schema.metrics.slice(0, 2).map(m => ({
+    // 只拿当前角色**问得出数**的口径当示例 —— 口径列表本身不再按角色收窄
+    // （业务口径中心要能整本读），但示例点了就得能跑
+    const out = schema.metrics.filter(m => m.queryable).slice(0, 2).map(m => ({
       title: m.name,
       text: `${m.name}是多少`,
       desc: m.scope.length ? `已确认口径 · 涉及 ${m.scope.join('、')}` : '使用已确认的业务口径',

@@ -31,6 +31,9 @@ export function GlossaryPage({ onNavigate, notify, me }: {
   }, [])
 
   const metrics = schema?.metrics ?? []
+  // 口径一律列出来（词典是给人读的），但「核对区分度」要按真实数据跑 ——
+  // 当前角色一条都查不了时它跑出来必然是 0 条，那就该说清楚而不是让人点空
+  const checkable = metrics.filter(m => m.queryable).length
   const tableNames = useMemo(
     () => (schema?.tables ?? []).map(t => t.name),
     [schema?.tables],
@@ -74,7 +77,13 @@ export function GlossaryPage({ onNavigate, notify, me }: {
         description="统一指标定义，让模型、开发、测试和产品使用同一种业务语言。"
         action={
           <div className="card-actions">
-            <button className="secondary" disabled={checking || !metrics.length} onClick={runCheck}>
+            <button
+              className="secondary"
+              disabled={checking || !checkable}
+              title={checkable ? undefined
+                : '核对要按真实数据跑，而当前角色可查的口径为 0'}
+              onClick={runCheck}
+            >
               {checking ? '核对中…' : '核对区分度'}
             </button>
             <button className="primary" {...guard.props}
@@ -87,11 +96,10 @@ export function GlossaryPage({ onNavigate, notify, me }: {
 
       {schema && metrics.length === 0 ? (
         <section className="card notice-card">
-          <h3>当前没有可见的业务口径</h3>
+          <h3>这份配置没有定义业务口径</h3>
           <p>
-            可能是这份配置没有定义口径，也可能是当前角色看不到口径所依赖的表 ——
-            口径引用的表若不可见，口径会一并摘掉。留着只会让模型照口径写出引用
-            不可见表的 SQL，然后被 R-03 拦下，报错指向一个无法理解的地方。
+            口径写在 metrics_file 指向的文件里，数据库 schema 里一个字都没有 ——
+            没有它，模型只能靠字段名猜"文档数"是什么，而猜错时输出仍然看起来合理。
           </p>
           <div className="nr-act">
             <button className="secondary" onClick={() => onNavigate('sources')}>看当前可见的表 →</button>
@@ -123,7 +131,13 @@ export function GlossaryPage({ onNavigate, notify, me }: {
                         {m.aliases.length} 个同义词
                       </small>
                     </span>
-                    {check?.status === 'ok' && (
+                    {!m.queryable && (
+                      <span
+                        className="status wait"
+                        title="这条口径引用的表在当前角色下不可见，定义可读但问不出数"
+                      >不可查</span>
+                    )}
+                    {m.queryable && check?.status === 'ok' && (
                       check.differs
                         ? <span className="status">有区分度</span>
                         : <span
@@ -171,6 +185,18 @@ function MetricDetail({ metric, check, onNavigate }: {
       <p>{metric.note || '这条口径没有写说明。'}</p>
 
       <div className="formula">{metric.definition || '—'}</div>
+
+      {/* 词典可读 ≠ 问得出数。不标出来的话，看完定义去问一句，
+          拿到的是 R-03 拦截，报错指向一个跟这一页对不上的地方 */}
+      {!metric.queryable && (
+        <div className="notice warn">
+          <div className="t">当前角色不可查</div>
+          <div className="why">
+            这条口径引用的表（{metric.scope.join('、') || '未声明'}）在当前角色下不可见 ——
+            定义可以读，但按它提问会被 R-03 拦下。登录后按角色重新判定。
+          </div>
+        </div>
+      )}
 
       {/* 粒度是硬约束，单独一块 —— 它管的不是表达式对不对，
           而是这个表达式能不能被放进别的聚合语境 */}

@@ -446,6 +446,7 @@
 .notice { padding: 11px 13px; border-radius: 7px; border: 1px solid var(--line); }
 .notice.bad { border-color: #d4aaa3; background: var(--red-wash); }
 .notice.info { border-color: #b7c9d8; background: var(--blue-wash); }
+.notice.warn { border-color: #d7b995; background: var(--amber-wash); }
 .notice .t { display: flex; align-items: center; gap: 7px; font-size: 9px; font-weight: 700; }
 .notice .why { margin-top: 6px; color: var(--ink-2); font-size: 7.5px; line-height: 1.7; }
 .notice .fix { margin-top: 8px; font-size: 7.5px; line-height: 1.7; }

@@ -508,13 +508,23 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     def schema(request: Request) -> dict[str, Any]:
         """当前调用方**眼里的** schema。
 
-        必须按角色收窄。用未收窄的 cfg 会让人看到自己查不了的表连同字段 ——
+        **表按角色收窄**：用未收窄的 cfg 会让人看到自己查不了的表连同字段。
         实测：public.yaml 下匿名角色只能查 knowledge_bases / orgs，
         这个接口却把 documents、model_usage 的全部字段一起吐出来。
-        既是信息泄露，也让业务口径页列出一批用了就被 R-03 拦的口径。
+
+        **口径不收窄，改为逐条标 queryable**（产品决定，2026-09-06）。
+        原来跟着表一起摘掉，理由是"别列出一批用了就被 R-03 拦的口径"——
+        但那件事该由**喂给模型的那份**负责，而喂模型走的是 ask 链路里的
+        _scoped(cfg).metrics，与这个接口无关。收窄这里挡不住 R-03，
+        只会让业务口径中心对低权限角色整页空白：匿名在 ragforge.yaml 下
+        一条都看不到，而这一页是给人读的词典，不是给模型的提示词。
+        代价说清楚：口径定义里带着表达式，因此低权限角色能看到自己查不了的
+        那些表上的列名（parse_status、latency_ms 这类）。要收回来就是把
+        metrics 换回 scoped.metrics。
         """
         _require_cap(request, _identity.GLOSSARY_READ, "查看业务口径")
-        cfg = _scoped(request)
+        scoped = _scoped(request)
+        visible_tables = {t.lower() for t in scoped.tables}
         return {
             "tables": [
                 {
@@ -528,10 +538,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                         for c in t.columns.values()
                     ],
                 }
-                for t in cfg.tables.values()
+                for t in scoped.tables.values()
             ],
             "metrics": [
                 {"name": m.name, "aliases": m.aliases, "scope": m.scope,
+                 # 这条口径在**当前角色**下能不能真的用：它引用的表得都可见。
+                 # 页面据此把不可查的那些标出来，而不是让人以为问了就能出数
+                 "queryable": all(str(t).lower() in visible_tables for t in m.scope),
                  "definition": m.expr or m.predicate or "", "note": m.note,
                  # 口径写错会让模型给出"看起来合理"的错答案，找谁核对是刚需
                  "owner": m.owner,

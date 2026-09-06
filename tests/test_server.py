@@ -389,12 +389,16 @@ def test_health_reports_config_path(client):
 
 
 def test_schema_endpoint_is_scoped_to_the_caller(cfg, monkeypatch):
-    """/api/schema 必须按角色收窄。
+    """/api/schema 的表必须按角色收窄，口径则一律给出、逐条标 queryable。
 
-    用未收窄的配置，会让人看到自己查不了的表连同全部字段 —— 实测 public.yaml
-    下匿名角色只能查 knowledge_bases / orgs，这个接口却把 documents 与
-    model_usage 的字段一起吐出来。既是信息泄露，也会让业务口径页列出一批
-    用了就被 R-03 拦的口径。
+    表收窄：用未收窄的配置，会让人看到自己查不了的表连同全部字段 —— 实测
+    public.yaml 下匿名角色只能查 knowledge_bases / orgs，这个接口却把
+    documents 与 model_usage 的字段一起吐出来。
+
+    口径不收窄（2026-09-06 产品决定）：原来跟着表一起摘掉，理由是别让模型
+    照着写出被 R-03 拦下的 SQL —— 但喂模型的是 ask 链路里的 scoped.metrics，
+    与这个接口无关，收窄这里挡不住 R-03，只会让业务口径中心对低权限角色
+    整页空白。改为逐条标 queryable，页面据此把问不出数的那些标出来。
     """
     from pathlib import Path
 
@@ -413,9 +417,15 @@ def test_schema_endpoint_is_scoped_to_the_caller(cfg, monkeypatch):
     allowed = set(public.raw["role_policies"]["ANONYMOUS"]["tables"])
     assert seen <= allowed, f"匿名看到了不可查的表：{sorted(seen - allowed)}"
 
-    # 口径引用的表不可见时整条摘掉，否则模型会照它写出被 R-03 拦下的 SQL
-    for m in c.get("/api/schema").json()["metrics"]:
-        assert set(m["scope"]) <= seen, f"口径「{m['name']}」引用了不可见的表"
+    # 口径全给，但 queryable 必须与"引用的表是否都可见"逐条对得上 ——
+    # 标错比不标更糟：看完定义去问一句，拿到的是一个跟这一页对不上的 R-03
+    metrics = c.get("/api/schema").json()["metrics"]
+    assert metrics, "匿名角色下业务口径中心不该是空的"
+    for m in metrics:
+        assert m["queryable"] is (set(m["scope"]) <= seen), \
+            f"口径「{m['name']}」的 queryable 与可见表对不上：scope={m['scope']} 可见={sorted(seen)}"
+    # 这份配置里确实存在匿名查不了的口径，否则上面那条断言是空转
+    assert any(not m["queryable"] for m in metrics)
 
 
 def test_metrics_check_reports_discrimination(client):
