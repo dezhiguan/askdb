@@ -326,9 +326,10 @@ jobs:
           import json, sys
           d = json.load(open(sys.argv[1]))
           assert d["enabled"] is True, f"登录未启用 —— 多半是没建 askdb-auth Secret：{d}"
-          # 2026-09-03 起对外实例直连生产主库，登录**必须**是门 ——
-          # 库里是真数据，至少要让调用方在审计里有名有姓
-          assert d["required"] is True, f"连真实库的实例必须强制登录：{d}"
+          # 2026-09-07 起 required 改回 false（未登录可读，见 config/public.yaml）。
+          # 这里断言的是 false 而不是"随便什么值"：线上跑的必须是 public.yaml，
+          # 挂错配置（比如挂成内网试点那份）同样是一次要红的事故。
+          assert d["required"] is False, f"对外实例应为未登录可读，线上挂的配置不对：{d}"
           print("登录已启用，当前匿名可见范围：", d["scope"])
           PY
           # 配置开关为真只说明"打算开"。再打一次错口令：401 才说明登录这条路
@@ -341,28 +342,41 @@ jobs:
           [[ "${CODE}" == "401" ]] || {
             echo "::error::错口令登录返回 ${CODE}，期望 401 —— 登录路径没通"; exit 1; }
 
-      - name: Login gate is actually closed to anonymous
+      - name: Anonymous can read, and the write gate is actually closed
         env:
           BASE: ${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}
         run: |
-          # required: true 说的是"该拦"，这一步验的是"真拦住了"。不需要任何口令，
-          # 所以它**无条件跑** —— 下面那几步没有 secret 时会降级，这一步不会。
+          # 2026-09-07 required 改回 false 之后，这一步验的边界跟着换了一条：
+          # 原来验"读也要登录"（匿名一律 401），现在验的是**读开、写关**。
+          # 两个方向都要验，缺一个都会让一次事故看着像正常：
+          #   · 只验写关：读门被谁改回 required 也不会红，而站点对访客全白
+          #   · 只验读开：写门哪天失效，公网就能改数据源、改成员
           #
-          # 401 而不是 404：前者是登录门在起作用，后者说明入口把整条路由挡掉了
-          # （2026-08-25 放开内省之前就是 404）。两者混在一起会让"入口被回滚"
-          # 伪装成"登录门生效"。
+          # 不需要任何口令，所以它**无条件跑** —— 下面那步没有 secret 时会降级，
+          # 这一步不会。
           set -euo pipefail
           BASE="${BASE%/}"
-          CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' \
-            -X POST "${BASE}/api/sql" -H 'Content-Type: application/json' \
-            -d '{"sql":"SELECT 1"}')"
-          [[ "${CODE}" == "401" ]] || {
-            echo "::error::匿名直查返回 ${CODE}，期望 401 —— 连真实库的实例没把门关上"; exit 1; }
-          for p in /api/introspect /api/selfcheck; do
-            CODE="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${BASE}${p}")"
-            [[ "${CODE}" == "401" ]] || {
-              echo "::error::${p} 匿名返回 ${CODE}，期望 401（404 说明入口把路由挡了）"; exit 1; }
+
+          # 读：匿名必须真的读得到。200 而不是 401/404 ——
+          # 401 说明读门又被打开了，404 说明入口把整条路由挡掉了
+          # （2026-08-25 放开内省之前就是 404），两者混一起会互相伪装。
+          for p in /api/schema /api/introspect /api/selfcheck; do
+            CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' "${BASE}${p}")"
+            [[ "${CODE}" == "200" ]] || {
+              echo "::error::${p} 匿名返回 ${CODE}，期望 200 —— 对外实例该让访客读得到"; exit 1; }
           done
+
+          # 写：未登录一律拦下。POST /api/sources 走的是 server._gate_writes，
+          # 中间件在路由之前跑，所以这个空 body **不会**落到任何处理函数上，
+          # 线上不会因此多出一条数据源。
+          CODE="$(curl -s -o /tmp/gate.json --max-time 20 -w '%{http_code}' \
+            -X POST "${BASE}/api/sources" -H 'Content-Type: application/json' -d '{}')"
+          [[ "${CODE}" == "401" ]] || {
+            echo "::error::匿名写返回 ${CODE}，期望 401 —— 写门没关，公网能改配置"; exit 1; }
+          # code 要看：login_required 才是"要登录"；login_unavailable 说明
+          # 会话密钥没配、登录整体关闭，此时虽然也是 401，但没有人登得进来。
+          grep -q '"code":"login_required"' /tmp/gate.json || {
+            echo "::error::写门返回的不是 login_required：$(cat /tmp/gate.json)"; exit 1; }
 
       - name: Guardrail and default tenant, proven server-side
         env:

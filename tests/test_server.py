@@ -484,9 +484,10 @@ def test_schema_endpoint_is_scoped_to_the_caller(cfg, monkeypatch):
 
     root = Path(__file__).resolve().parent.parent
     public = load(root / "config" / "public.yaml")
-    # 这条测的是**按角色收窄**，不是登录门。public.yaml 自 2026-09 起
-    # required: true（它连的是真实库），匿名会被读门直接 401，够不着收窄那一步。
-    # 关掉 required 才能拿匿名当"最窄的角色"用 —— 收窄逻辑本身与登录无关。
+    # 这条测的是**按角色收窄**，不是登录门。public.yaml 当下就是 required: false
+    # （2026-09-07 改回），这里仍然显式关一次：required 是产品取舍、翻过两次，
+    # 一旦再翻回 true，匿名会被读门直接 401、够不着收窄那一步，而失败信息会指向
+    # 登录，跟这条用例要测的收窄逻辑毫无关系。收窄本身与登录无关。
     public.raw["auth"] = {**(public.raw.get("auth") or {}), "required": False}
     # 2026-09-06 起仓库里的配置都不写 role_policies（所有角色可见面一致），
     # 所以这里显式配一档把匿名收窄成"最窄的角色"—— 测的是**收窄这条链路**

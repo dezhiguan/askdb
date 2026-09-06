@@ -183,16 +183,18 @@ def test_login_disabled_without_secret(acfg, monkeypatch):
 
 # ---------- 演示实例的配置意图 ----------
 
-def test_anonymous_access_only_survives_on_a_synthetic_database():
-    """匿名可查与"连的是什么库"必须绑在一起判，不能各自漂。
+def test_anonymous_read_on_a_real_database_keeps_its_replacement_boundaries():
+    """匿名可读与"连的是什么库"必须绑在一起判，不能各自漂。
 
-    这条原来断言 required 恒为 false，理由是：站里要给人看的是护栏与审计，
-    登录页是访客流失最大的一处。那个理由成立的前提是**库里是合成数据**。
-    2026-09-03 对外实例改连 ragforge 生产主库，前提没了。
+    这条断言翻过两次，两次都是**产品取舍**改了，不是安全判据松了：
+      · 2026-09-03 实例从合成样例库改连 ragforge 生产主库，同日 required 改
+        为 true，这条测试随之写成"连真实库就必须强制登录"。
+      · 2026-09-07 按 @guandezhi 决定 required 改回 false：登录页是访客流失
+        最大的一处，而对外实例存在的意义就是让人不登录也能把整条链路走一遍。
 
-    所以不是把断言翻个面，而是把规则写进去：连真实库就必须强制登录。
-    将来若有人把某个实例改回样例库，匿名可查会自动重新变得合法 ——
-    规则跟着事实走，不用再改一次测试。
+    所以这条测试现在钉的不是"要不要登录"（那是产品决定，会再变），而是
+    **翻转必须成对**：在真实库上放开匿名读，就得同时拿得出接替登录的那几层。
+    改回 required: true 时这条自动不再约束什么 —— 规则跟着事实走。
     """
     from pathlib import Path
 
@@ -203,13 +205,22 @@ def test_anonymous_access_only_survives_on_a_synthetic_database():
     required = bool((c.raw.get("auth") or {}).get("required"))
 
     synthetic = c.db_type == "duckdb" and c.raw["datasource"].get("path", "").endswith("sample.duckdb")
-    if synthetic:
-        assert not required, "连合成样例库时不必强制登录 —— 登录页会白挡掉访客"
-    else:
-        assert required, (
-            f"这个实例连的是真实库（{c.db_type}），必须强制登录 —— "
-            f"库里是真数据，至少要让调用方在审计里有名有姓"
-        )
+    if required or synthetic:
+        return
+
+    # 真实库 + 匿名可读：登录不再是门，下面这几层就是全部的门。
+    assert (c.raw.get("auth") or {}).get("enabled") is True, (
+        "匿名可读的实例仍必须启用登录 —— 写操作要靠它认人，审计要靠它记名"
+    )
+    assert "user=askdb_ro" in c.raw["datasource"].get("dsn", ""), (
+        "匿名可读就必须连只读库账号：护栏拦在应用层，库账号是被绕过之后的最后一道"
+    )
+    assert c.tenant_enabled and c.raw["tenant"]["mode"] == "rls_and_predicate", (
+        "匿名可读就必须双层租户隔离，应用层谓词被绕过时库侧 RLS 仍在"
+    )
+    assert c.raw["observability"]["replay_api"] is False, (
+        "回放返回 SQL 全文，匿名可读时等于把库结构透给任何访客"
+    )
 
 
 def test_public_instance_stores_no_plaintext_password():

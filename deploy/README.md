@@ -271,10 +271,24 @@ done
 curl -s https://askdb.ragforge.net/api/auth/me | python3 -m json.tool
 ```
 
-应看到 `enabled: true`、`required: false`（匿名可用，登录不是门 ——
-2026-09-06 起登录也不放宽可见面，只放开写）、
-`demo_accounts` 非空、`scope.tables` 非空。若 `enabled` 是 `false`，
-去建 `askdb-auth`（见上文），不是代码问题。
+应看到 `enabled: true`、`required: false`（匿名可读，登录不是读的门 ——
+2026-09-06 起登录也不放宽可见面，只放开写；2026-09-03～09-07 之间这里一度是
+`required: true`，那段时间的旧记录按 `false` 去核会误判）、`scope.tables` 非空。
+若 `enabled` 是 `false`，去建 `askdb-auth`（见上文），不是代码问题。
+
+> `demo_accounts` 已随 61f4a8b「登录落地」下线（一键体验改为纯前端跳过登录，
+> 不再有内置演示账号），旧版本这里要求它非空，按那句话去核会误判成配置坏了。
+
+写门是否还在（未登录不该改得动配置）：
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://askdb.ragforge.net/api/sources \
+  -H 'Content-Type: application/json' -d '{}'   # 期望 401
+```
+
+> 中间件在路由之前跑，所以这个空 body 不会落到任何处理函数上，不会多出数据源。
+> 期望 401 且 `code` 为 `login_required`；若是 `login_unavailable`，说明会话密钥
+> 没配、登录整体关闭 —— 门关着，但也没人进得来。
 
 护栏是否生效：
 

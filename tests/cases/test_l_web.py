@@ -73,10 +73,15 @@ def test_public_instance_config_is_safe():
     整套安全论证的地基。按 @guandezhi 决定改为直连 ragforge 生产主库之后，
     那条地基没了，断言必须跟着换 —— **不是放宽，是换到新的边界上**。
 
-    现在挡在公网与真实数据之间的只剩三样，这条测试逐条钉住：
-      1. 必须登录（auth.required）—— 至少让调用方在审计里有名有姓
-      2. 只读连接 + 租户隔离（应用层谓词 + 库侧 RLS 双层）
-      3. 回放关闭 —— 它会返回 SQL 全文，等于把库结构透给任何登录用户
+    2026-09-07 再变一次：按 @guandezhi 决定，auth.required 改回 false（未登录
+    可读）。登录从此**不再是**挡在公网与真实数据之间的那一层，于是剩下的每一层
+    都变成承重的 —— 这条测试的清单跟着换，不是把某一条删掉了事。
+
+    现在挡在公网与真实数据之间的是这几样，这条测试逐条钉住：
+      1. 只读连接 askdb_ro + 租户隔离（应用层谓词 + 库侧 RLS 双层）
+      2. 写门 —— 未登录不能改配置。落在配置上就是 auth.enabled 必须为真：
+         关掉它连登录都没有，写操作只剩一把 ASKDB_ADMIN_TOKEN 挡着
+      3. 回放关闭 —— 它会返回 SQL 全文，等于把库结构透给任何访客
     加上原有的成本边界：每日配额 + 单价不高于开发配置。
     """
     from askdb.config import load
@@ -85,8 +90,11 @@ def test_public_instance_config_is_safe():
     dev = load(ROOT / "config" / "askdb.yaml")
 
     # ---- 数据边界 ----
-    # 连的是真实库，所以每一层都必须在
-    assert c.raw["auth"]["required"] is True, "连真实库的对外实例必须强制登录"
+    # 连的是真实库、且未登录也能读，所以每一层都必须在
+    assert c.raw["auth"]["enabled"] is True, \
+        "登录不能关：它是写操作唯一的身份来源，关掉就只剩管理员令牌挡着"
+    assert "user=askdb_ro" in c.raw["datasource"].get("dsn", ""), \
+        "匿名可读的实例必须连只读库账号 —— 护栏是应用层的，库账号是最后一道"
     assert c.tenant_enabled, "租户隔离不能关"
     assert c.raw["tenant"]["mode"] == "rls_and_predicate", \
         "对外实例要双层隔离：应用层被绕过时库侧 RLS 仍在"
