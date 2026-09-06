@@ -1233,7 +1233,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
     @app.get("/api/audit")
     def audit_list(request: Request, page: int = 1, page_size: int = 10,
-                   q: str = "", kind: str = "") -> dict[str, Any]:
+                   q: str = "", kind: str = "", status: str = "",
+                   source: str | None = None) -> dict[str, Any]:
         """审计流水（摘要分页）。列表有意不含 SQL 文本与结果行 ——
         细节只经 /api/replay 的白名单+开关出去。
 
@@ -1255,10 +1256,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         _require_cap(request, _identity.AUDIT_READ, "查看审计流水")
         from .audit import list_audits
 
+        # status 只认这三档：非法值当"不筛"处理会让人以为筛过了，直接拒
+        wanted = status.strip()
+        if wanted and wanted not in ("ok", "rejected", "interrupted"):
+            raise HTTPException(status_code=400,
+                                detail="status 只能是 ok / rejected / interrupted")
         return list_audits(cfg.audit_log, page=page, page_size=page_size,
                            q=q.strip(), kind=kind.strip(),
                            with_text=_can(request, _identity.AUDIT_CONTENT),
-                           only_user=_audit_owner_filter(request))
+                           only_user=_audit_owner_filter(request),
+                           status=wanted,
+                           source=None if source is None else source.strip())
 
     @app.get("/api/audit/stats")
     def audit_stats(request: Request, days: int = 30) -> dict[str, Any]:
@@ -1535,7 +1543,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         from .audit import tasks as _tasks
         from .graph import is_resumable
 
-        items = _tasks(cfg.audit_log, username)
+        # 阈值传进去做风险折算（审计里没有风险字段，见 audit._risk 的说明）
+        items = _tasks(
+            cfg.audit_log, username,
+            max_rows=cfg.max_rows,
+            max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
+        )
         # 审计只知道这条线程上次以 INTERRUPTED 收尾，不知道现场有没有真的
         # 落盘、也不知道后来是不是已被续跑跑完 —— 只按审计标 resumable，
         # 会出现"这里说能续、点下去 404"。以检查点为准再核一遍。

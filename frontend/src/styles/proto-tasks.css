@@ -24,15 +24,56 @@
 .tasks-page .card.task-card { border: 1px solid var(--line); border-radius: 9px; background: rgba(250,249,245,.88); box-shadow: var(--shadow); overflow: hidden; }
 .tasks-page > .card.task-card { margin-bottom: 12px; padding: 0; }
 .tasks-page .card-head { padding: 12px 13px; background: var(--paper-2); }
+/* 卡片头的两颗按钮：原型里是**实白**底，与米色卡头明显分层。全局 .ghost 用的是
+   45% 白，落在这块 paper-2 上会被底色染成米灰，看着像禁用态。 */
 .tasks-page .card-actions { gap: 6px; }
+.tasks-page .card-actions .ghost { background: #fff; }
 .tasks-page .card-actions .ghost.on { border-color: var(--green); color: var(--green); background: var(--green-wash); }
 
-.tasks-page .task-filter { display: flex; gap: 7px; padding: 9px 13px; border-bottom: 1px solid #e1ded5; background: rgba(255,255,255,.4); }
-.tasks-page .task-filter input {
-  flex: 1; padding: 7px 8px; border: 1px solid var(--line); border-radius: 6px;
-  outline: 0; background: white; font-size: 8px;
+/* 状态筛选下拉。原来是"点一下换一档"的循环按钮：七档以后循环意味着要盲点六次才能
+   回到想要的那档，且看不到有哪些档 —— 改成明示全部选项的菜单。
+   菜单画在 body 上（React portal + position:fixed，坐标由 TasksPage 现算）：任务卡
+   是 overflow:hidden 的，菜单留在卡片里会被裁掉半截，列表被筛空时更是只剩四档可见。
+   坐标只在展开的那一刻量一次，滚动即关 —— 不做跟随，省得踩 shell.css 里记的
+   transform 包含块那类坑。 */
+.tasks-page .status-select { position: relative; display: inline-flex; }
+.tasks-page .status-select .ghost { display: inline-flex; align-items: center; gap: 3px; }
+.tasks-page .status-select .caret { font-style: normal; font-size: 7px; line-height: 1; transform: translateY(-1px); }
+
+.task-status-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: white;
+  box-shadow: 0 10px 26px rgba(31,41,36,.14);
+  animation: statusMenuIn .14s ease both;
 }
-.tasks-page .task-filter input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(11,97,57,.08); }
+@keyframes statusMenuIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+.task-status-menu button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink-2);
+  font-size: 8px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+.task-status-menu button b { color: var(--muted); font: 6.5px var(--mono); font-weight: 400; letter-spacing: .04em; }
+.task-status-menu button:hover { background: var(--paper-2); }
+.task-status-menu button.on { color: var(--green); background: var(--green-wash); font-weight: 700; }
+.task-status-menu button.on b { color: var(--green); }
+
 
 .tasks-page .task-row {
   display: grid;
@@ -91,33 +132,41 @@
 
 .task-create-modal .modal-head,
 .task-detail-modal .modal-head,
-.clarify-modal .modal-head {
+.clarify-modal .modal-head,
+.task-filter-modal .modal-head {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
   padding: 16px; color: white; background: var(--dark);
 }
 .task-create-modal .modal-head h3,
 .task-detail-modal .modal-head h3,
-.clarify-modal .modal-head h3 { margin: 0; font-family: var(--serif); font-size: 16px; }
+.clarify-modal .modal-head h3,
+.task-filter-modal .modal-head h3 { margin: 0; font-family: var(--serif); font-size: 16px; }
 .task-create-modal .modal-head p,
 .task-detail-modal .modal-head p,
-.clarify-modal .modal-head p { margin: 4px 0 0; color: #9eafa5; font-size: 7px; line-height: 1.5; }
+.clarify-modal .modal-head p,
+.task-filter-modal .modal-head p { margin: 4px 0 0; color: #9eafa5; font-size: 7px; line-height: 1.5; }
 .task-create-modal .modal-head .eyebrow,
 .task-detail-modal .modal-head .eyebrow,
-.clarify-modal .modal-head .eyebrow { color: #7edda8; }
+.clarify-modal .modal-head .eyebrow,
+.task-filter-modal .modal-head .eyebrow { color: #7edda8; }
 .task-create-modal .modal-head .eyebrow::before,
 .task-detail-modal .modal-head .eyebrow::before,
-.clarify-modal .modal-head .eyebrow::before { background: #7edda8; }
+.clarify-modal .modal-head .eyebrow::before,
+.task-filter-modal .modal-head .eyebrow::before { background: #7edda8; }
 .task-create-modal .modal-close,
 .task-detail-modal .modal-close,
-.clarify-modal .modal-close { border: 0; color: white; background: transparent; font-size: 16px; cursor: pointer; }
+.clarify-modal .modal-close,
+.task-filter-modal .modal-close { border: 0; color: white; background: transparent; font-size: 16px; cursor: pointer; }
 
 .task-create-modal .modal-body,
 .task-detail-modal .modal-body,
-.clarify-modal .modal-body { padding: 15px 16px 17px; }
+.clarify-modal .modal-body,
+.task-filter-modal .modal-body { padding: 15px 16px 17px; }
 
 .task-create-modal .form-row,
 .task-detail-modal .form-row,
-.clarify-modal .form-row { margin-top: 10px; }
+.clarify-modal .form-row,
+.task-filter-modal .form-row { margin-top: 10px; }
 .task-create-modal .form-row label { display: block; margin-bottom: 4px; color: var(--ink-2); font-size: 8px; }
 .task-create-modal .form-row input,
 .task-create-modal .form-row select,
@@ -137,10 +186,39 @@
 .task-create-modal .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .task-create-modal .modal-actions,
 .task-detail-modal .modal-actions,
-.clarify-modal .modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+.clarify-modal .modal-actions,
+.task-filter-modal .modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin-top: 14px; }
 .task-create-modal .modal-actions button:disabled,
 .task-detail-modal .modal-actions button:disabled,
-.clarify-modal .modal-actions button:disabled { opacity: .55; cursor: default; transform: none; }
+.clarify-modal .modal-actions button:disabled,
+.task-filter-modal .modal-actions button:disabled { opacity: .55; cursor: default; transform: none; }
+
+/* ---------------- 筛选查询任务 ---------------- */
+
+.task-filter-modal { width: min(470px, calc(100vw - 32px)); }
+.task-filter-modal .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 10px; }
+.task-filter-modal .form-row { margin-top: 0; }
+.task-filter-modal .form-row label { display: block; margin-bottom: 4px; color: var(--ink-2); font-size: 8px; }
+.task-filter-modal .form-row select {
+  width: 100%; margin-top: 0; padding: 8px 9px;
+  border: 1px solid var(--line); border-radius: 6px; outline: 0;
+  background: white; color: var(--ink); font-size: 8px;
+}
+.task-filter-modal .form-row select:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(11,97,57,.08); }
+/* 禁用档（风险等级：后端没有这个字段）要一眼看出点不了，别和可用的下拉长一样 */
+.task-filter-modal .form-row select:disabled { color: var(--muted); background: var(--paper-2); cursor: not-allowed; }
+
+.task-filter-modal .task-filter-note {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--green);
+  border-radius: 0 6px 6px 0;
+  background: var(--green-wash);
+  color: var(--ink-2);
+  font-size: 8px;
+  line-height: 1.7;
+}
+.task-filter-modal .modal-actions .ghost { background: #fff; }
 
 /* ---------------- 创建任务 ---------------- */
 

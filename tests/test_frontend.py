@@ -212,9 +212,11 @@ def test_rejection_codes_all_have_plain_language():
         codes |= set(re.findall(r'"rejected_by":\s*"([A-Z0-9_-]+)"', text))
     assert codes, "没扫到任何拦截码，正则或代码结构变了"
 
-    src = RESULT_TABS.read_text(encoding="utf-8")
+    # 词表已抽到 src/rules.ts —— 结果页与任务中心显示的是同一个 rejected_by，
+    # 各存一份必然漂
+    src = (FRONTEND_SRC / "rules.ts").read_text(encoding="utf-8")
     block = re.search(r"const RULES[^{]*\{(.*?)\n\}", src, re.S)
-    assert block, "ResultTabs 里找不到 RULES"
+    assert block, "src/rules.ts 里找不到 RULES"
     known = set(re.findall(r"^\s*'?([A-Z0-9_-]+)'?:", block.group(1), re.M))
 
     missing = sorted(codes - known)

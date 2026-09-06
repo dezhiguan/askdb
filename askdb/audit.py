@@ -95,7 +95,7 @@ def _summary(rec: dict[str, Any]) -> dict[str, Any]:
 def list_audits(
     path: Path, page: int = 1, page_size: int = 10,
     q: str = "", kind: str = "", with_text: bool = True,
-    only_user: str | None = None,
+    only_user: str | None = None, status: str = "", source: str | None = None,
 ) -> dict[str, Any]:
     """流水分页，新记录在前。q 同时匹配 trace_id 与问题文本。
 
@@ -109,19 +109,44 @@ def list_audits(
     审计的：只看自己的）。**这一层过滤排在 q 与分页之前**，理由和上面那条
     完全一样 —— 先搜后滤会让 total 泄露别人有多少条命中，那也是一个预言机。
     空串是合法取值：它表示"只看没有发起人的记录"，不是"不过滤"。
+
+    status / source 是执行追踪页的两个下拉：
+      · status ∈ {ok, rejected, interrupted} —— 按记录自身的收尾判定，
+        与 _thread_status 同一口径（线程看最后一条，这里看这一条）
+      · source —— 记录里的数据源 id。None 才是"不筛"，空串是合法取值
+        （"未记录数据源"那一档）—— 用空串当哨兵的话，老记录那一档永远选不中
+    返回里额外给一个 sources：**当前可见记录里真出现过的**数据源，
+    在其余筛选之前算 —— 否则选中某个源之后，下拉里就只剩这一个选项，
+    人就退不回去了。
     """
     recs = read_records(path)
     recs.reverse()
     if only_user is not None:
         recs = [r for r in recs if (r.get("user") or "") == only_user]
+
+    seen: dict[str, str] = {}
+    for r in recs:
+        sid = str(r.get("source") or "")
+        if sid not in seen:
+            seen[sid] = str(r.get("source_name") or r.get("source") or "（未记录数据源）")
+    sources = [{"id": sid, "name": name} for sid, name in seen.items()]
+
     if kind:
         recs = [r for r in recs if r.get("kind", "ask") == kind]
+    if status:
+        recs = [r for r in recs if _record_status(r) == status]
+    # None = 不筛；空串是**合法取值**，表示"未记录数据源"那一档
+    if source is not None:
+        recs = [r for r in recs if str(r.get("source") or "") == source]
     if q:
         ql = q.strip().lower()
         recs = [
             r for r in recs
             if ql in str(r.get("trace_id", "")).lower()
+            # 发起人与问题原文同属"内容"，一起受 with_text 管：只抹显示、
+            # 仍允许按它搜，等于留了一个预言机（见上面那段）
             or (with_text and ql in str(r.get("question", "")).lower())
+            or (with_text and ql in str(r.get("user", "")).lower())
         ]
     page = max(int(page), 1)
     page_size = min(max(int(page_size), 1), 100)
@@ -131,6 +156,7 @@ def list_audits(
         "items": [_redact(_summary(r), with_text) for r in recs[start:start + page_size]],
         # 页面据此显示遮蔽提示，而不是让人以为这些记录本来就没有问题文本
         "text_visible": with_text,
+        "sources": sources,
     }
 
 
@@ -149,6 +175,17 @@ def _redact(item: dict[str, Any], with_text: bool) -> dict[str, Any]:
     return {**item, "question": None, "user": ""}
 
 
+def _record_status(rec: dict[str, Any]) -> str:
+    """单条记录怎么收尾的 —— ok / rejected / interrupted。
+
+    与 _thread_status 是同一套判定，区别只在看谁：线程看最后一条，这里看这一条。
+    两处都从 rejected_by 读，别在别处再写第三份。
+    """
+    if rec.get("rejected_by") == "INTERRUPTED":
+        return "interrupted"
+    return "rejected" if rec.get("rejected_by") else "ok"
+
+
 def _thread_status(last: dict[str, Any]) -> str:
     """一条线程现在处于什么状态 —— 看它**最后一条**记录。
 
@@ -162,7 +199,62 @@ def _thread_status(last: dict[str, Any]) -> str:
     return "done"
 
 
-def tasks(path: Path, user: str) -> list[dict[str, Any]]:
+# ---- 风险分档 ----------------------------------------------------------------
+# 审计里**没有**"风险等级"这个字段，也不该有一个模型给出的主观打分。
+# 这里的分档是对已记录事实的**确定性折算**，规则写在代码里、理由随值一起返回
+# （risk_why），页面上鼠标停上去就能看到凭什么是这一档 —— 一个说不出理由的
+# 风险标签，比不标更糟。
+#
+# 分档看"这次查询碰到了哪条边界"，不看它失败没失败：
+#   HIGH   越权 / 触碰不该碰的数据：写操作、未开放表、跨库、危险函数、
+#          租户不明、超出可见期限
+#   MEDIUM 成本与扫描：扫描超阈值、笛卡尔积、成本上限、配额耗尽；
+#          以及虽未被拦下、但确实是大扫描 / 结果被上限截断 / 走了多步链路的查询
+#   LOW    其余：写法问题（多语句、字段名错、SELECT *）、环境故障，
+#          以及正常的小查询 —— 它们没有碰到任何数据边界
+_RISK_HIGH = {"R-02", "R-03", "R-06", "R-07", "R-10", "R-19"}
+_RISK_MEDIUM = {"R-08", "R-11", "R-17", "QUOTA"}
+
+_RISK_WHY = {
+    "R-02": "含写入意图，被只读护栏拦下",
+    "R-03": "用到未开放的表",
+    "R-06": "跨 schema / 跨库引用",
+    "R-07": "用到被禁用的函数",
+    "R-10": "无法确定所属租户",
+    "R-19": "超出该角色可见的数据期限",
+    "R-08": "出现笛卡尔积",
+    "R-11": "预估扫描量超阈值",
+    "R-17": "累计成本达上限",
+    "QUOTA": "调用配额已用完",
+}
+
+
+def _risk(rec: dict[str, Any], max_rows: int, max_scan_rows: int) -> tuple[str, str]:
+    """一条线程最后一次执行的风险档 + 理由。
+
+    阈值取**当前配置**：历史记录不带当时的阈值，拿今天的口径折算是明摆着的
+    近似 —— 但比不给强，也比凭空编一个等级诚实。
+    """
+    rejected = str(rec.get("rejected_by") or "")
+    if rejected in _RISK_HIGH:
+        return "HIGH", _RISK_WHY[rejected]
+    if rejected in _RISK_MEDIUM:
+        return "MEDIUM", _RISK_WHY[rejected]
+    if rejected:
+        return "LOW", f"被 {rejected} 拦下，未触及数据边界"
+
+    scan = rec.get("explain_rows")
+    if isinstance(scan, int) and max_scan_rows > 0 and scan >= max_scan_rows // 2:
+        return "MEDIUM", f"预估扫描 {scan:,} 行，已达阈值的一半以上"
+    rows = rec.get("rows_returned")
+    if isinstance(rows, int) and max_rows > 0 and rows >= max_rows:
+        return "MEDIUM", f"结果达行数上限 {max_rows}，可能已被截断"
+    if rec.get("multi_step"):
+        return "MEDIUM", "走了多步执行链路"
+    return "LOW", "只读单步查询，未触及任何边界"
+
+
+def tasks(path: Path, user: str, *, max_rows: int = 0, max_scan_rows: int = 0) -> list[dict[str, Any]]:
     """某个账号名下的**全部执行线程**，新的在前。
 
     askdb 没有任务表，任务这个概念完全落在审计流水与检查点上：
@@ -201,6 +293,8 @@ def tasks(path: Path, user: str) -> list[dict[str, Any]]:
         item["question"] = recs[0].get("question") or last.get("question") or ""
         item["status"] = _thread_status(last)
         item["resumable"] = item["status"] == "interrupted"
+        # 风险档是折算出来的，不是记录里的字段 —— 理由一并给出，页面可解释
+        item["risk"], item["risk_why"] = _risk(last, max_rows, max_scan_rows)
         out.append(item)
 
     out.sort(key=lambda r: str(r.get("ts", "")), reverse=True)
