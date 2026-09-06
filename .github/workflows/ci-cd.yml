@@ -322,6 +322,29 @@ jobs:
           [[ "${CODE}" == "401" ]] || {
             echo "::error::错口令登录返回 ${CODE}，期望 401 —— 登录路径没通"; exit 1; }
 
+      - name: Login gate is actually closed to anonymous
+        env:
+          BASE: ${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}
+        run: |
+          # required: true 说的是"该拦"，这一步验的是"真拦住了"。不需要任何口令，
+          # 所以它**无条件跑** —— 下面那几步没有 secret 时会降级，这一步不会。
+          #
+          # 401 而不是 404：前者是登录门在起作用，后者说明入口把整条路由挡掉了
+          # （2026-08-25 放开内省之前就是 404）。两者混在一起会让"入口被回滚"
+          # 伪装成"登录门生效"。
+          set -euo pipefail
+          BASE="${BASE%/}"
+          CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' \
+            -X POST "${BASE}/api/sql" -H 'Content-Type: application/json' \
+            -d '{"sql":"SELECT 1"}')"
+          [[ "${CODE}" == "401" ]] || {
+            echo "::error::匿名直查返回 ${CODE}，期望 401 —— 连真实库的实例没把门关上"; exit 1; }
+          for p in /api/introspect /api/selfcheck; do
+            CODE="$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' "${BASE}${p}")"
+            [[ "${CODE}" == "401" ]] || {
+              echo "::error::${p} 匿名返回 ${CODE}，期望 401（404 说明入口把路由挡了）"; exit 1; }
+          done
+
       - name: Sign in for the authenticated checks
         env:
           BASE: ${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}
@@ -341,10 +364,14 @@ jobs:
           set -euo pipefail
           BASE="${BASE%/}"
           if [[ -z "${SMOKE_PASSWORD}" ]]; then
+            # 直接红，不降级。匿名侧那半上面已经硬跑过，但少了会话票就验不到
+            # 三件事：带票进去之后护栏还在不在、默认租户下真查不查得到数据、
+            # 内省带票可不可达。缺了它们只发一条 warning 的话，任务照样绿 ——
+            # "全绿但什么都没验"正是这套冒烟反复要挡住的病根。
             echo "::error::缺少仓库 secret ASKDB_SMOKE_PASSWORD —— 冒烟拿不到会话，" \
-                 "后面三步（护栏拦写 / 默认租户有数 / 内省可达）全都验不了。" \
-                 "补法：gh secret set ASKDB_SMOKE_PASSWORD（账号见 config/public.yaml 的 auth.accounts，" \
-                 "默认用 owner，可用 vars.ASKDB_SMOKE_USER 换）"
+                 "护栏拦写 / 默认租户有数 / 内省带票可达三步全都验不了。" \
+                 "补法：gh secret set ASKDB_SMOKE_PASSWORD -R <repo>（账号见 config/public.yaml" \
+                 "的 auth.accounts，默认 owner，可用 vars.ASKDB_SMOKE_USER 换）"
             exit 1
           fi
           jq -n --arg u "${SMOKE_USER}" --arg p "${SMOKE_PASSWORD}" \
@@ -402,9 +429,9 @@ jobs:
           # 那是登录门在起作用，不是入口被回滚 —— 两者要分开，所以顺带钉住
           # 匿名确实是 401 而不是 404。
           BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
+          # 匿名侧那半（401 而不是 404）已由「Login gate is actually closed to
+          # anonymous」无条件跑过，这里只补带票能不能真进去。
           for p in /api/introspect /api/selfcheck; do
             CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -b /tmp/ck.txt "${BASE}${p}")"
             [[ "${CODE}" == "200" ]] || { echo "${p} 带会话期望 200，实得 ${CODE}"; exit 1; }
-            ANON="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE}${p}")"
-            [[ "${ANON}" == "401" ]] || { echo "${p} 匿名期望 401（登录门），实得 ${ANON}"; exit 1; }
           done
