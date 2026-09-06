@@ -914,6 +914,19 @@ export interface OfflineQuality {
   replay_config?: string
   /** 当前默认配置对应的消融组 */
   shipped?: string
+  /** 本轮结果文件的最后写入时间（评测报告里没有开跑/收工时间戳） */
+  ran_at?: string
+  /** 同一数据源下跑过的历次盲测，新的在前。**没有 Agent 版本号这回事** ——
+   *  结果文件不记版本，所以行标题是结果文件名，不是 v2.4 这种编出来的版本 */
+  runs?: {
+    file: string
+    n: number
+    ran_at: string
+    overall: number
+    pass: boolean
+    /** 是不是当前页面上这一轮 */
+    current: boolean
+  }[]
 }
 
 export async function fetchOfflineQuality(): Promise<OfflineQuality> {

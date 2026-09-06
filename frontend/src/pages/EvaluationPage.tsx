@@ -537,7 +537,7 @@ function OfflineScope({ category, onCategory, onDataset, offline, live }: {
 
   return (
     <section className="eval-scope-panel active" aria-label="离线回归">
-      <Provenance p={offline.provenance} />
+      <OfflineContext d={offline} />
       <div className="eval-tabs" role="tablist">
         {CATEGORIES.map(item => (
           <button
@@ -557,31 +557,65 @@ function OfflineScope({ category, onCategory, onDataset, offline, live }: {
   )
 }
 
-/** 成绩的出处。**这组数字算不算数全看它** ——
- *  同一份代码会部署成多个实例，拿别的库跑出来的成绩当本实例的，
- *  比没有成绩更糟。 */
-function Provenance({ p }: { p: OfflineQuality['provenance'] }) {
-  if (!p) return null
-  const same = p.matches_current
+/** 本轮回归的抬头。版式照原型 `#evalContext`：左边一枚标记 + 标题与构成，
+ *  右边是最近评测时间、模型与状态角标。
+ *
+ *  原型标题写的是「核心问数黄金集 · V12」、副标题「126 个问题 · 6 类场景」——
+ *  数字与版本号都照真值来：评测集没有版本号，题数与场景数按黄金集文件算。
+ *
+ *  **出处仍然是这张卡最重要的一件事**：同一份代码会部署成多个实例，
+ *  拿别的库跑出来的成绩当本实例的，比没有成绩更糟。所以数据源不一致时，
+ *  右侧角标从 READY 变成「换库需重跑」，副标题直接写明跑于哪、现在连的是哪。
+ */
+function OfflineContext({ d }: { d: OfflineQuality }) {
+  const p = d.provenance
+  const g = d.golden
+  const same = p?.matches_current === true
+  const cats = Object.keys(g?.by_category ?? {}).length
+  const total = g?.total ?? d.blind?.n ?? 0
+
   return (
-    <div className={`notice ${same ? 'info' : 'bad'} grain-note`}>
-      <div className="t">{same ? '成绩出自当前数据源' : '成绩出自另一个数据源'}</div>
-      <div className="why">
-        跑于 <span className="mono">{p.datasource || '—'}</span>
-        ，配置 <span className="mono">{p.config || '—'}</span>
-        ，模型 <span className="mono">{p.model || '—'}</span>。
-        {!same && <> 当前连的是 <span className="mono">{p.current_datasource || '—'}</span> ——
-          <b>这组分数不能代表本实例</b>，换库后需要重跑。</>}
+    <div className="eval-context">
+      <div className="eval-context-copy">
+        <i className="eval-context-mark">QA</i>
+        <div>
+          <strong>黄金评测集 · {g?.path?.split('/').pop() || '未知文件'}</strong>
+          <small>
+            {total} 个问题{cats ? ` · ${cats} 类场景` : ''} · 真实模型与工具执行
+            {!same && p && (
+              <> · ⚠ 跑于 {p.datasource || '—'}，当前连的是 {p.current_datasource || '—'}，
+                这组分数不能代表本实例</>
+            )}
+          </small>
+        </div>
+      </div>
+      <div className="eval-context-meta">
+        <span>最近评测 <b>{d.ran_at ? fmtRunTime(d.ran_at) : '—'}</b></span>
+        <span>模型 <b>{p?.model || '—'}</b></span>
+        <span className={`status ${same ? '' : 'bad'}`}>{same ? 'READY' : '换库需重跑'}</span>
       </div>
     </div>
   )
+}
+
+/** 评测时间的短写法，照原型的「今天 17:40」。跨天的显示 MM-DD HH:MM ——
+ *  只写时分会让上周跑的那轮看起来像刚跑完。 */
+function fmtRunTime(iso: string): string {
+  const t = new Date(iso)
+  if (Number.isNaN(t.getTime())) return iso.slice(0, 16).replace('T', ' ')
+  const hm = `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
+  const now = new Date()
+  const sameDay = t.toDateString() === now.toDateString()
+  return sameDay
+    ? `今天 ${hm}`
+    : `${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')} ${hm}`
 }
 
 function OverviewPanel({ d, onDataset }: { d: OfflineQuality; onDataset: () => void }) {
   const b = d.blind!
   const sc = d.score
   const passed = Math.round(b.accuracy * b.n)
-  const kinds = Object.entries(b.failure_kinds || {})
+  const runs = d.runs ?? []
   const linkFail = b.failure_kinds?.['链路失败'] ?? 0
 
   return (
@@ -643,64 +677,39 @@ function OverviewPanel({ d, onDataset }: { d: OfflineQuality; onDataset: () => v
 
         <article className="eval-card">
           <div className="eval-card-head">
-            <div><strong>本轮失败聚类</strong><small>按失败原因归类 · 逐条可复现</small></div>
+            <div><strong>最近回归记录</strong><small>同一数据源下的历次结果</small></div>
             <button className="ghost" type="button" onClick={onDataset}>查看评测集</button>
           </div>
-          {kinds.length ? (
+          {runs.length ? (
             <div className="eval-card-body">
-              {kinds.map(([k, n]) => (
-                <Dimension key={k} label={`${k} · ${n} 条`}
-                           pct={Math.round(n / b.n * 100)} value={String(n)} />
+              {runs.map((r, i) => (
+                <div className="eval-run" key={r.file}>
+                  {/* 原型这里是版本号（2.4 / 2.3 / 2.2）。结果文件不记 Agent 版本，
+                      askdb 也没有别的地方记它 —— 编三行版本号就是编，改成轮次序号 */}
+                  <i className="eval-run-id">{String(runs.length - i).padStart(2, '0')}</i>
+                  <div>
+                    <strong>{r.file.replace(/\.json$/, '')}{r.current ? ' · 本轮' : ''}</strong>
+                    <small>{r.n} CASES · {fmtRunTime(r.ran_at)}</small>
+                  </div>
+                  <span className={`eval-run-score ${r.pass ? 'eval-pass' : 'eval-fail'}`}>
+                    {r.overall} {r.pass ? 'PASS' : 'FAIL'}
+                  </span>
+                </div>
               ))}
             </div>
-          ) : <p className="drawer-note">本轮没有失败样本。</p>}
+          ) : <p className="drawer-note">只有本轮结果，没有可比的历史记录。</p>}
           {d.golden && (
             <div className="eval-card-body eval-gate-note">
               <small>
                 评测集全集 {d.golden.total} 条，本轮盲测实跑 {d.golden.blind_n} 条 ——
-                两个数一起看才不会误判覆盖面。
+                两个数一起看才不会误判覆盖面。历次结果按同一套门禁权重现算，
+                时间取结果文件的最后写入时间。
               </small>
             </div>
           )}
         </article>
       </div>
-
-      <FailureTable d={d} />
     </>
-  )
-}
-
-/** 待改进样本。每条都带 trace_id 与复现命令 ——
- *  设计稿写着"点击 Trace 可定位具体节点"，那条能力必须真的给出入口，
- *  否则就是说有而不给用。 */
-function FailureTable({ d }: { d: OfflineQuality }) {
-  const rows = d.failures ?? []
-  if (!rows.length) return null
-  return (
-    <article className="eval-card">
-      <div className="eval-card-head">
-        <div><strong>待改进样本</strong><small>{rows.length} 条 · 每条可按 trace 原样复现</small></div>
-      </div>
-      <div className="eval-table-wrap">
-        <table>
-          <thead><tr><th>评测问题</th><th>类别</th><th>失败原因</th><th>复现</th></tr></thead>
-          <tbody>
-            {rows.map(f => (
-              <tr key={f.id}>
-                <td className="audit-question" title={f.question}>{f.question || f.id}</td>
-                <td>{CATEGORY_CN[f.category] ?? f.category}</td>
-                <td title={f.detail}>{f.reason}</td>
-                <td className="mono">
-                  {f.trace_id
-                    ? <code>askdb replay {f.trace_id}{d.replay_config ? ` -c ${d.replay_config}` : ''}</code>
-                    : '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </article>
   )
 }
 

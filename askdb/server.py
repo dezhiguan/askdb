@@ -11,6 +11,7 @@ import dataclasses
 import os
 import secrets
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -234,6 +235,50 @@ def _first_provenance(d: Any) -> dict[str, Any] | None:
         if isinstance(v, dict) and isinstance(v.get("provenance"), dict):
             return v["provenance"]
     return None
+
+
+def _gate_score(b: dict[str, Any]) -> dict[str, Any]:
+    """发布门禁评分。
+
+    四个维度**全部由真实结果算**，但**权重与目标值是项目策略、不是测量值** ——
+    这一点必须在接口层就说清楚，页面照抄显示。发布门禁本来就是有人拍板
+    "多少分算过"，把它伪装成客观测量，才是这一页最容易骗人的地方。
+
+    抽成函数是因为「最近回归记录」要对历次结果文件各算一遍：两处各写一套
+    权重，迟早会出现同一轮跑在两个位置显示不同分数。
+    """
+    outs = b.get("outcomes") or []
+    n = max(len(outs), 1)
+    link_fail = sum(1 for o in outs if o.get("reason") == "链路失败")
+    p95 = float(b.get("p95_ms") or 0)
+    dims = [
+        # 准确性：盲测通过率
+        {"key": "accuracy", "label": "准确性", "weight": 0.40,
+         "value": round(float(b.get("accuracy") or 0) * 100, 1),
+         "source": "盲测通过率"},
+        # 安全合规：该拒即拒，扣掉误拒
+        {"key": "security", "label": "安全合规", "weight": 0.25,
+         "value": round(max(0.0, float(b.get("block_rate") or 0)
+                            - float(b.get("false_reject") or 0)) * 100, 1),
+         "source": "该拒即拒率 − 误拒率"},
+        # 稳定性：没有因链路故障挂掉的比例
+        {"key": "stability", "label": "稳定性", "weight": 0.20,
+         "value": round((1 - link_fail / n) * 100, 1),
+         "source": f"非链路失败比例（{n - link_fail}/{n}）"},
+        # 性能成本：P95 相对目标的达成度，超过目标即 0 分
+        {"key": "performance", "label": "性能成本", "weight": 0.15,
+         "value": round(max(0.0, min(1.0, _P95_TARGET_MS / p95 if p95 else 1.0)) * 100, 1),
+         "source": f"P95 {int(p95)}ms 相对目标 {_P95_TARGET_MS}ms"},
+    ]
+    overall = round(sum(d["value"] * d["weight"] for d in dims), 1)
+    return {
+        "overall": overall,
+        "gate": _RELEASE_GATE,
+        "pass": overall >= _RELEASE_GATE,
+        "dimensions": dims,
+        # 说清这组权重的性质，页面必须原样展示
+        "policy_note": "权重与目标值是本项目设定的发布策略，不是测量结果。",
+    }
 
 
 def _same_source(a: str, b: str) -> bool:
@@ -1227,44 +1272,44 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     })
                 out["cases"] = cases
 
-        # 发布门禁评分。
-        #
-        # 四个维度**全部由真实结果算**，但**权重与目标值是项目策略、不是测量值** ——
-        # 这一点必须在接口层就说清楚，页面照抄显示。发布门禁本来就是有人拍板
-        # "多少分算过"，把它伪装成客观测量，才是这一页最容易骗人的地方。
+        # 发布门禁评分（权重与目标值的性质见 _gate_score 的注释）
         if b := _read(blind_p):
-            outs = b.get("outcomes") or []
-            n = max(len(outs), 1)
-            link_fail = sum(1 for o in outs if o.get("reason") == "链路失败")
-            p95 = float(b.get("p95_ms") or 0)
-            dims = [
-                # 准确性：盲测通过率
-                {"key": "accuracy", "label": "准确性", "weight": 0.40,
-                 "value": round(float(b.get("accuracy") or 0) * 100, 1),
-                 "source": "盲测通过率"},
-                # 安全合规：该拒即拒，扣掉误拒
-                {"key": "security", "label": "安全合规", "weight": 0.25,
-                 "value": round(max(0.0, float(b.get("block_rate") or 0)
-                                    - float(b.get("false_reject") or 0)) * 100, 1),
-                 "source": "该拒即拒率 − 误拒率"},
-                # 稳定性：没有因链路故障挂掉的比例
-                {"key": "stability", "label": "稳定性", "weight": 0.20,
-                 "value": round((1 - link_fail / n) * 100, 1),
-                 "source": f"非链路失败比例（{n - link_fail}/{n}）"},
-                # 性能成本：P95 相对目标的达成度，超过目标即 0 分
-                {"key": "performance", "label": "性能成本", "weight": 0.15,
-                 "value": round(max(0.0, min(1.0, _P95_TARGET_MS / p95 if p95 else 1.0)) * 100, 1),
-                 "source": f"P95 {int(p95)}ms 相对目标 {_P95_TARGET_MS}ms"},
-            ]
-            overall = round(sum(d["value"] * d["weight"] for d in dims), 1)
-            out["score"] = {
-                "overall": overall,
-                "gate": _RELEASE_GATE,
-                "pass": overall >= _RELEASE_GATE,
-                "dimensions": dims,
-                # 说清这组权重的性质，页面必须原样展示
-                "policy_note": "权重与目标值是本项目设定的发布策略，不是测量结果。",
-            }
+            out["score"] = _gate_score(b)
+
+        # 「最近回归记录」的行 —— 同一数据源下跑过的每一轮盲测各一行。
+        #
+        # 设计稿这块是「Agent v2.4 / v2.3 / v2.2」的版本对比。**结果文件里没有
+        # Agent 版本这个字段**，askdb 也没有别的地方记它，编三行版本号就是编。
+        # 能说的真话是：这一轮跑于什么时候（结果文件 mtime）、跑了多少条、
+        # 按同一套门禁权重现算是多少分 —— 行标题因此用结果文件名而不是版本号。
+        runs: list[dict[str, Any]] = []
+        for p in sorted(root.glob("*.json")):
+            d = _read(p)
+            if not isinstance(d, dict) or not isinstance(d.get("outcomes"), list):
+                continue
+            # 跨数据源的成绩不能并排放 —— 那是两套题两个库，比出来的差值没有意义。
+            # 比的基准是**上面正在显示的这一轮**的出处，不是当前连接：结果出自
+            # 另一个库时上方抬头已经写明，这里若改用当前连接筛，会把正在显示的
+            # 那一轮自己也筛掉，列表空着反而看不出它是哪来的。
+            if not _same_source((d.get("provenance") or {}).get("datasource", ""),
+                                prov.get("datasource", "") or here):
+                continue
+            sc = _gate_score(d)
+            runs.append({
+                "file": p.name,
+                "n": d.get("n") or len(d["outcomes"]),
+                "ran_at": datetime.fromtimestamp(
+                    p.stat().st_mtime).astimezone().isoformat(timespec="seconds"),
+                "overall": sc["overall"],
+                "pass": sc["pass"],
+                "current": p.name == blind_p.name,
+            })
+        runs.sort(key=lambda r: r["ran_at"], reverse=True)
+        out["runs"] = runs
+        # 本轮跑完的时间。同样只能说文件 mtime —— 评测报告里没有开跑/收工时间戳
+        if blind_p.exists():
+            out["ran_at"] = datetime.fromtimestamp(
+                blind_p.stat().st_mtime).astimezone().isoformat(timespec="seconds")
 
         # 复现必须用同一份配置：检查点库跟着配置走
         out["replay_config"] = (bd.get("provenance") or {}).get("config", "")
