@@ -1160,15 +1160,42 @@ function AccuracyPanel({ d, onNavigate }: {
 
 /** 原型「安全场景覆盖」的四类场景。评测集目前只有一类笼统的 reject 用例，
  *  分不出这四格各自跑了多少 —— 四行一起占位，不把 reject 拆着填。 */
-const SECURITY_SCENARIOS = ['写入与 DDL', '跨角色越权', '敏感信息', '提示注入']
+/** 安全场景覆盖的四行。key 与 evals/golden_ragforge.py 里的 scene 一一对应 ——
+ *  两处分开写，就会出现"页面上有这一行、评测里没有这类题"，而那正是这张卡
+ *  最不该出现的错。顺序照原型。 */
+const SECURITY_SCENARIOS: { key: string; label: string }[] = [
+  { key: 'write_ddl', label: '写入与 DDL' },
+  { key: 'escalation', label: '跨角色越权' },
+  { key: 'sensitive', label: '敏感信息' },
+  { key: 'injection', label: '提示注入' },
+]
 
-/** 安全合规。版式照原型 [data-eval-panel="security"]：红线说明 + 三张指标卡 +
- *  「安全场景覆盖」。
+/** 安全合规。版式、指标名、指标描述与目标全部照原型
+ *  [data-eval-panel="security"]，三项指标各自有真实分母：
  *
- *  只有危险 SQL 拦截率是真的在测。越权与敏感数据泄漏各自要成套用例（跨角色、
- *  跨数据域；逐列核脱敏），评测集里还没有，按卡片形状占位。 */
+ *    危险 SQL 拦截率 = 写入 / DDL / 绕过变体里被拦下的比例
+ *    越权率         = 跨租户、跨库用例里真的取回了越界数据的比例
+ *    敏感数据泄漏率 = 个人信息用例里返回了明文的比例
+ *
+ *  三个数都由 evals/replay.py 按链路自己记下的事实判定（rejected_by /
+ *  rules_fired / masked_columns 与返回值本身），不经模型判分。
+ *
+ *  分母为 0 时后端给 null，这里显示「—·未覆盖」而不是 0% —— 一道题都没考
+ *  与一次都没漏，在这一页上是完全相反的两件事。 */
 function SecurityPanel({ d }: { d: OfflineQuality }) {
   const b = d.blind!
+  const scenes = b.scenes ?? {}
+  // 分子分母从本轮结果现算，用来写卡片下面那行说明 —— 原型那句
+  // "28 / 28 个 UPDATE、DELETE、DDL 与绕过变体已拦截"里的两个数，
+  // 必须是本轮真实的题数，不能是常量。
+  const tally = (key: string) => scenes[key] ?? [0, 0]
+  const [wOk, wN] = tally('write_ddl')
+  const [eOk, eN] = tally('escalation')
+  const [pOk, pN] = tally('sensitive')
+  // 角标取四行之和，不取评测集里的安全题总数：判不动的题（例如跨租户题
+  // 跑在没有租户维度的源上）不进任何一行，角标写总数就会比四行加起来大，
+  // 那个差额没有任何地方解释得了。
+  const total = SECURITY_SCENARIOS.reduce((n, sc) => n + tally(sc.key)[1], 0)
   return (
     <>
       <div className="eval-note">
@@ -1176,22 +1203,40 @@ function SecurityPanel({ d }: { d: OfflineQuality }) {
         <div>
           <strong>安全指标采用红线门禁</strong>
           <small>
-            该拒未拒是红线，不用综合高分抵消 —— 一次放行危险 SQL，
-            比准确率低几个点严重得多。
+            敏感数据泄漏或未拦截高危写入是红线，不用综合高分抵消 ——
+            一次放行危险 SQL，比准确率低几个点严重得多。
           </small>
         </div>
       </div>
       <div className="eval-metric-grid">
-        <MetricCard label="危险 SQL 拦截率" value={pct(b.block_rate)}
-                    note="应当被拦的 UPDATE、DELETE、DDL 与绕过变体里实际拦下的比例"
-                    status={b.block_rate < 1 ? '红线未过' : '红线通过'}
-                    wait={b.block_rate < 1} danger={b.block_rate < 1} />
-        <MetricCard label="越权率" value="—" wait
-                    note="跨角色、跨数据域测试是否发生越权访问"
-                    status="目标 = 0" />
-        <MetricCard label="敏感数据泄漏率" value="—" wait
-                    note="手机号、证件号、地址等字段是否完成阻断或脱敏"
-                    status="目标 = 0" />
+        <MetricCard
+          label="危险 SQL 拦截率"
+          value={b.danger_block_rate == null ? '—' : pct(b.danger_block_rate)}
+          note={wN
+            ? `${wOk} / ${wN} 个 UPDATE、DELETE、DDL 与绕过变体已拦截`
+            : '本轮没有写入类用例'}
+          status={b.danger_block_rate == null ? '未覆盖'
+            : b.danger_block_rate < 1 ? '红线未过' : '红线通过'}
+          wait={b.danger_block_rate == null || b.danger_block_rate < 1}
+          danger={b.danger_block_rate != null && b.danger_block_rate < 1} />
+        <MetricCard
+          label="越权率"
+          value={b.escalation_rate == null ? '—' : pct(b.escalation_rate)}
+          note={eN
+            ? `${eN - eOk} / ${eN} 个跨角色、跨数据域测试发生越权访问`
+            : '本轮没有越权用例'}
+          status={b.escalation_rate == null ? '未覆盖' : '目标 = 0'}
+          wait={b.escalation_rate == null}
+          danger={!!b.escalation_rate} />
+        <MetricCard
+          label="敏感数据泄漏率"
+          value={b.leak_rate == null ? '—' : pct(b.leak_rate)}
+          note={pN
+            ? `手机号、证件号、地址等字段 ${pOk} / ${pN} 完成阻断或脱敏`
+            : '本轮没有个人信息用例'}
+          status={b.leak_rate == null ? '未覆盖' : '目标 = 0'}
+          wait={b.leak_rate == null}
+          danger={!!b.leak_rate} />
       </div>
       <article className="eval-card">
         <div className="eval-card-head">
@@ -1199,15 +1244,25 @@ function SecurityPanel({ d }: { d: OfflineQuality }) {
             <strong>安全场景覆盖</strong>
             <small>不仅测试关键词，还包含 SQL 变体、提示注入与权限边界</small>
           </div>
-          <span className="status wait">待接入</span>
+          <span className={`status ${total ? '' : 'wait'}`}>
+            {total ? `${total} CASES` : '待接入'}
+          </span>
         </div>
         <div className="eval-card-body">
-          {SECURITY_SCENARIOS.map(s => <Dimension key={s} label={s} pct={0} value="—" />)}
+          {SECURITY_SCENARIOS.map(sc => {
+            const [ok, n] = tally(sc.key)
+            return (
+              <Dimension key={sc.key} label={sc.label}
+                         pct={n ? Math.round(ok / n * 100) : 0}
+                         value={n ? `${ok}/${n}` : '—'} />
+            )
+          })}
         </div>
       </article>
     </>
   )
 }
+
 /* 稳定性。版式严格照原型（trusted-data-agent-prototype.html
  * [data-eval-panel="stability"]）：三张指标卡 + 「故障注入结果 / 恢复原则」两栏。
  *
@@ -1402,6 +1457,16 @@ const CATEGORY_CN: Record<string, string> = {
   window: '窗口分析',
   multihop: '多步分析',
   reject: '安全拦截',
+  security: '安全边界',
+}
+
+/** 安全题在「场景」那一列显示到哪一面被考。安全拦截与安全边界各有四种攻击面，
+ *  只写"安全拦截"看不出这 34 道题考的是同一件事还是四件事。 */
+const SCENE_CN: Record<string, string> = {
+  write_ddl: '写入与 DDL',
+  escalation: '跨角色越权',
+  sensitive: '敏感信息',
+  injection: '提示注入',
 }
 
 /** 评测集 —— 版式与字段照原型 `[data-eval-panel="datasets"]`：
@@ -1523,12 +1588,16 @@ function DatasetScope({ offline }: { offline: OfflineQuality | null }) {
                   <td className="mono" title={`评测集内 id：${c.id}`}>
                     {evCode((current - 1) * pageSize + i)}
                   </td>
-                  <td>{CATEGORY_CN[c.category] ?? c.category}</td>
+                  <td title={c.scene ? CATEGORY_CN[c.category] ?? c.category : undefined}>
+                    {(c.scene && SCENE_CN[c.scene]) || CATEGORY_CN[c.category] || c.category}
+                  </td>
                   <td className="eval-case-question" title={c.question}>{c.question}</td>
                   <td className="dim" title={c.expect}>{c.expect || '—'}</td>
                   <td>
                     {c.passed === null
                       ? <span className="status wait" title="本轮盲测未跑到，不是通过">未跑</span>
+                      : c.graded === false
+                        ? <span className="status wait" title={c.reason || '本轮跑到了，但在这个数据源上判不动'}>未判定</span>
                       : c.passed
                         ? <span className="eval-pass">PASS</span>
                         : <span className="eval-fail" title={c.reason}>FAIL</span>}

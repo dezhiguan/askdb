@@ -891,6 +891,13 @@ export interface OfflineQuality {
     false_reject: number
     block_rate: number
     multi_misuse: number
+    /** 安全三项。**可能为 null** —— 那是"这一轮没有这类用例"，不是 0：
+     *  0% 泄漏是测出来的结论，没考过是没有结论，页面上必须分开显示。 */
+    danger_block_rate?: number | null
+    escalation_rate?: number | null
+    leak_rate?: number | null
+    /** 安全场景覆盖 {场景: [守住, 总数]}。老结果文件里没有这个键。 */
+    scenes?: Record<string, [number, number]>
     /** 业务口径命中率。null = 本轮没有判得动的题（或结果文件早于这项判定） */
     metric_hit_rate: number | null
     /** 参与口径命中判定的题数 —— 分母必须跟着率一起给 */
@@ -969,6 +976,8 @@ export interface OfflineQuality {
   cases?: {
     id: string
     category: string
+    /** 安全场景（非安全题为空）：write_ddl | escalation | sensitive | injection */
+    scene?: string
     question: string
     in_blind: boolean
     /** 标准答案：判分实际拿什么对（标准 SQL + 约束，或应拒规则） */
@@ -976,6 +985,8 @@ export interface OfflineQuality {
     /** 这条题有没有标准答案。汇总那格「标准答案 X / Y」按它算 */
     has_answer: boolean
     passed: boolean | null
+    /** 跑到了但判不动（安全题遇上没有该维度的数据源）。false 时不显示 PASS。 */
+    graded?: boolean
     reason: string
     trace_id: string
   }[]
