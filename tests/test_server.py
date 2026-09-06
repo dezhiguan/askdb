@@ -78,8 +78,56 @@ def test_health_probe_proves_guard_and_tenant(client):
     p = client.get("/api/health", params={"probe": 1}).json()["probe"]
     assert p["write_blocked"] is True and p["default_tenant_has_rows"] is True
     assert p["ok"] is True
-    # 只回布尔值：多少行、什么行都不出接口 —— 这个端点匿名可读
-    assert set(p) == {"ok", "table", "org_id", "write_blocked", "default_tenant_has_rows"}
+    # 只回布尔值与名字：多少行、什么行都不出接口 —— 这个端点匿名可读，
+    # 且 auth.required 打开之后它是**唯一**匿名可达的接口，边界只会更要紧。
+    # tenant_enforced 是布尔，source 是数据源名（不是连接串，见 sources.to_public）。
+    assert set(p) == {"ok", "table", "org_id", "write_blocked",
+                      "default_tenant_has_rows", "tenant_enforced", "source"}
+    # 有内置源时租户照旧生效，org_id 照旧报出来 —— 回落逻辑不能顺手把它关了
+    assert p["tenant_enforced"] is True and p["org_id"] == 65 and p["source"] == ""
+
+
+def test_health_probe_falls_back_to_a_runtime_source(cfg, monkeypatch):
+    """内置源撤掉之后，部署后实证不能跟着消失。
+
+    2026-09-07 起 config/public.yaml 一条数据源都不在配置里（两个库都走运行时
+    注册表）。探针若在 has_default_source 为假时直接返回，冒烟里那两条断言会
+    永远拿到 None —— 而**"实证没跑"和"实证跑了没过"必须报成两件事**，
+    否则前者会伪装成后者，把排查引到护栏上去。
+    """
+    from askdb import sources
+
+    db_path = cfg.raw.pop("datasource")["path"]
+    src = sources.Source(
+        id="src_0123456789ab", name="样例库", type="duckdb", dsn=db_path,
+        tables=[{"name": "documents", "columns": {"id": {"type": "BIGINT"}}}],
+    )
+    monkeypatch.setattr(server._sources, "list_sources", lambda _c: [src])
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+
+    p = TestClient(server.create_app("x")).get(
+        "/api/health", params={"probe": 1}).json()["probe"]
+    assert p["source"] == "样例库" and p["table"] == "documents"
+    assert p["write_blocked"] is True and p["default_tenant_has_rows"] is True
+    assert p["ok"] is True
+    # 运行时源上租户是关的（derive_config 写死）。org_id 必须跟着报 None ——
+    # 报一个不参与过滤的组织号出去，正是这轮改动最容易造成的误读。
+    assert p["tenant_enforced"] is False and p["org_id"] is None
+
+
+def test_health_probe_says_so_when_there_is_nothing_to_prove(cfg, monkeypatch):
+    """注册表空了要给 reason，而不是让护栏那条断言去背锅。
+
+    没有这一条，"元数据库连不上"和"护栏失效"在流水线上是同一句报错。
+    """
+    cfg.raw.pop("datasource")
+    monkeypatch.setattr(server._sources, "list_sources", lambda _c: [])
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+
+    p = TestClient(server.create_app("x")).get(
+        "/api/health", params={"probe": 1}).json()["probe"]
+    assert p["ok"] is False and p["write_blocked"] is None
+    assert "注册表" in p["reason"]
 
 
 def test_health_probe_catches_a_default_tenant_with_no_data(cfg, monkeypatch):

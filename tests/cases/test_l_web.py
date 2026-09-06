@@ -73,12 +73,19 @@ def test_public_instance_config_is_safe():
     整套安全论证的地基。按 @guandezhi 决定改为直连 ragforge 生产主库之后，
     那条地基没了，断言必须跟着换 —— **不是放宽，是换到新的边界上**。
 
-    2026-09-07 再变一次：按 @guandezhi 决定，auth.required 改回 false（未登录
-    可读）。登录从此**不再是**挡在公网与真实数据之间的那一层，于是剩下的每一层
-    都变成承重的 —— 这条测试的清单跟着换，不是把某一条删掉了事。
+    2026-09-07 当天变两次，最终落在"读也要登录"：
 
-    现在挡在公网与真实数据之间的是这几样，这条测试逐条钉住：
-      1. 只读连接 askdb_ro + 租户隔离（应用层谓词 + 库侧 RLS 双层）
+      · 先按 @guandezhi 决定把 auth.required 改回 false（未登录可读）。
+      · 同日又撤掉内置数据源，ragforge 与 careermate 两个库改走运行时注册表。
+        **这两条合起来才是真正的变化**：运行时源上 derive_config 写死关租户，
+        行级边界整个消失，于是"匿名可读"的实际含义变成任何访客可查 ragforge
+        全部组织 + careermate 生产库全部数据（含手机号、简历、口令哈希）。
+        因此 required 改回 true —— 用登录换回租户隔离让出的那一层。
+
+    这条测试的清单跟着换，不是把某一条删掉了事。现在挡在公网与真实数据之间的
+    是这几样，逐条钉住：
+      1. **读要登录**（auth.required）—— 撤掉租户隔离之后，它是唯一挡住
+         "全表 + 无租户"这个组合的东西
       2. 写门 —— 未登录不能改配置。落在配置上就是 auth.enabled 必须为真：
          关掉它连登录都没有，写操作只剩一把 ASKDB_ADMIN_TOKEN 挡着
       3. 回放关闭 —— 它会返回 SQL 全文，等于把库结构透给任何访客
@@ -90,20 +97,22 @@ def test_public_instance_config_is_safe():
     dev = load(ROOT / "config" / "askdb.yaml")
 
     # ---- 数据边界 ----
-    # 连的是真实库、且未登录也能读，所以每一层都必须在
     assert c.raw["auth"]["enabled"] is True, \
         "登录不能关：它是写操作唯一的身份来源，关掉就只剩管理员令牌挡着"
-    assert "user=askdb_ro" in c.raw["datasource"].get("dsn", ""), \
-        "匿名可读的实例必须连只读库账号 —— 护栏是应用层的，库账号是最后一道"
-    assert c.tenant_enabled, "租户隔离不能关"
-    assert c.raw["tenant"]["mode"] == "rls_and_predicate", \
-        "对外实例要双层隔离：应用层被绕过时库侧 RLS 仍在"
-    assert c.raw["tenant"]["on_unresolved"] == "reject", "定不出租户归属时必须拒绝，不能放行"
+    # 这一条是这份清单里现在最要紧的。它和"撤掉内置源"是一对改动：
+    # 谁把 required 改回 false 而没先把行级边界补回去，公网就读得到两个生产库。
+    assert c.raw["auth"]["required"] is True, \
+        "运行时数据源上没有租户隔离，读必须要求登录 —— 要改回 false，先把行级边界补回去"
+    # 内置源已撤。它若哪天配回来，仍然必须是只读账号 + 口令走环境变量：
+    # 断言写成条件式而不是删掉，是为了让"配回来但配错"照样红。
+    ds = c.raw.get("datasource")
+    assert ds is None or "user=askdb_ro" in ds.get("dsn", ""), \
+        "内置源若配回来，必须连只读库账号 —— 护栏是应用层的，库账号是最后一道"
+    if ds is not None:
+        assert ds.get("password_env"), "数据库口令必须走环境变量"
+        assert "password=" not in ds.get("dsn", ""), "连接串里不得写明文口令"
     assert c.raw["observability"]["replay_api"] is False, \
         "回放会返回 SQL 全文，连真实库时必须关"
-    # 口令只走环境变量，任何形式的明文都不该出现在仓库里
-    assert c.raw["datasource"].get("password_env"), "数据库口令必须走环境变量"
-    assert "password=" not in c.raw["datasource"].get("dsn", ""), "连接串里不得写明文口令"
 
     # ---- 成本边界 ----
     assert 0 < c.daily_quota <= 500, f"每日配额必须设置且不得过宽：{c.daily_quota}"

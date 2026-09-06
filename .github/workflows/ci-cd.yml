@@ -326,11 +326,18 @@ jobs:
           import json, sys
           d = json.load(open(sys.argv[1]))
           assert d["enabled"] is True, f"登录未启用 —— 多半是没建 askdb-auth Secret：{d}"
-          # 2026-09-07 起 required 改回 false（未登录可读，见 config/public.yaml）。
-          # 这里断言的是 false 而不是"随便什么值"：线上跑的必须是 public.yaml，
-          # 挂错配置（比如挂成内网试点那份）同样是一次要红的事故。
-          assert d["required"] is False, f"对外实例应为未登录可读，线上挂的配置不对：{d}"
-          print("登录已启用，当前匿名可见范围：", d["scope"])
+          # 2026-09-07 同日两改，最终是 true（读也要登录，见 config/public.yaml）：
+          # 内置数据源撤掉、两个库改走运行时注册表之后，运行时源上租户隔离是关的，
+          # 匿名可读的实际含义变成"任何访客可查 ragforge 全部组织 + careermate
+          # 生产库全部数据"。登录是现在唯一挡住那个组合的东西。
+          #
+          # 断言的是 true 而不是"随便什么值"，有两个理由，缺一不可：
+          #   · 线上跑的必须是 public.yaml，挂错配置同样是一次要红的事故
+          #   · **这一条现在是安全断言**。谁把 required 改回 false 而没同时把
+          #     行级边界补回去，公网就能读到上面那两份数据 —— 必须在这里红。
+          assert d["required"] is True, \
+              f"对外实例必须要求登录（运行时源上没有租户隔离），线上挂的配置不对：{d}"
+          print("登录已启用且读需登录 ✓")
           PY
           # 配置开关为真只说明"打算开"。再打一次错口令：401 才说明登录这条路
           # 真的通到了账号表 —— 缺 ASKDB_SESSION_SECRET 时这里会是 404。
@@ -342,29 +349,41 @@ jobs:
           [[ "${CODE}" == "401" ]] || {
             echo "::error::错口令登录返回 ${CODE}，期望 401 —— 登录路径没通"; exit 1; }
 
-      - name: Anonymous can read, and the write gate is actually closed
+      - name: Anonymous is locked out of both reads and writes
         env:
           BASE: ${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}
         run: |
-          # 2026-09-07 required 改回 false 之后，这一步验的边界跟着换了一条：
-          # 原来验"读也要登录"（匿名一律 401），现在验的是**读开、写关**。
-          # 两个方向都要验，缺一个都会让一次事故看着像正常：
-          #   · 只验写关：读门被谁改回 required 也不会红，而站点对访客全白
-          #   · 只验读开：写门哪天失效，公网就能改数据源、改成员
+          # 这一步验的边界在 2026-09-07 当天翻了两次，最终回到"读写都要登录"：
+          # 撤掉内置数据源之后运行时源上没有租户隔离，匿名读会直接漏出
+          # ragforge 全部组织与 careermate 生产库的全部数据（含手机号、简历、
+          # 口令哈希）。于是读门从"该开着"变成**必须关着**。
+          #
+          # 两个方向仍然都要验，缺一个都会让一次事故看着像正常：
+          #   · 只验写关：读门哪天被改回 required: false，上面那两份数据就对
+          #     公网敞开了，而流水线不会有任何反应
+          #   · 只验读关：写门哪天失效，公网就能改数据源、改成员
           #
           # 不需要任何口令，所以它**无条件跑** —— 下面那步没有 secret 时会降级，
           # 这一步不会。
           set -euo pipefail
           BASE="${BASE%/}"
 
-          # 读：匿名必须真的读得到。200 而不是 401/404 ——
-          # 401 说明读门又被打开了，404 说明入口把整条路由挡掉了
-          # （2026-08-25 放开内省之前就是 404），两者混一起会互相伪装。
+          # 读：匿名必须被拦。401 而不是 200/404 ——
+          # 200 说明读门开了（这是要防的那件事），404 说明入口把整条路由挡掉了，
+          # 两者混一起会互相伪装：路由 404 时"读不到"看着也像"拦住了"。
           for p in /api/schema /api/introspect /api/selfcheck; do
-            CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' "${BASE}${p}")"
-            [[ "${CODE}" == "200" ]] || {
-              echo "::error::${p} 匿名返回 ${CODE}，期望 200 —— 对外实例该让访客读得到"; exit 1; }
+            CODE="$(curl -s -o /tmp/read.json --max-time 20 -w '%{http_code}' "${BASE}${p}")"
+            [[ "${CODE}" == "401" ]] || {
+              echo "::error::${p} 匿名返回 ${CODE}，期望 401 —— 读门没关，公网能读生产数据"; exit 1; }
+            grep -q '"code":"login_required"' /tmp/read.json || {
+              echo "::error::${p} 返回的不是 login_required：$(cat /tmp/read.json)"; exit 1; }
           done
+
+          # /api/health 必须仍然匿名可达：它是 readiness/liveness 探针，
+          # 跟着一起关掉会让 Pod 起不来，而症状是 rollout 超时、与读门无关。
+          CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' "${BASE}/api/health")"
+          [[ "${CODE}" == "200" ]] || {
+            echo "::error::/api/health 匿名返回 ${CODE} —— 探针路径被读门带走了"; exit 1; }
 
           # 写：未登录一律拦下。POST /api/sources 走的是 server._gate_writes，
           # 中间件在路由之前跑，所以这个空 body **不会**落到任何处理函数上，
@@ -378,7 +397,7 @@ jobs:
           grep -q '"code":"login_required"' /tmp/gate.json || {
             echo "::error::写门返回的不是 login_required：$(cat /tmp/gate.json)"; exit 1; }
 
-      - name: Guardrail and default tenant, proven server-side
+      - name: Guardrail and probe data, proven server-side
         env:
           BASE: ${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}
         run: |
@@ -388,8 +407,14 @@ jobs:
           # 验证就整段消失，而"验证消失"和"系统正常"在流水线上长得一模一样
           # （2026-09-06 就是这么红的）。结论改由服务端给：/api/health?probe=1。
           #
-          # 放宽的只是两个布尔值，不是数据：写操作实探只回成败，租户探针只回
+          # 放宽的只是两个布尔值，不是数据：写操作实探只回成败，数据探针只回
           # "有没有行"。探针默认不跑（页面加载调的是不带 probe 的那条），有独立限流。
+          #
+          # 2026-09-07：内置数据源撤掉、两个库改走运行时注册表之后，探针改为
+          # 回落到注册表里第一个开了表的源（server._post_deploy_probe）。两条
+          # 断言因此照旧成立，但含义变了：租户在运行时源上是关的，
+          # default_tenant_has_rows 退化成"探针表里有没有行"。键名有意没改 ——
+          # 历史记录认它；真实语义由 tenant_enforced 那一格给出。
           set -euo pipefail
           BASE="${BASE%/}"
           curl --fail --silent --show-error --max-time 30 \
@@ -397,12 +422,20 @@ jobs:
           python3 - /tmp/probe.json <<'PY'
           import json, sys
           p = json.load(open(sys.argv[1]))["probe"]
+          # 探针得真的跑在某个源上。没有这一条，"注册表空了"或"元数据库连不上"
+          # 会让实证整段消失 —— 而 write_blocked=None 断言失败时报的是护栏，
+          # 排查方向完全跑偏。先把"有没有得验"和"验没验过"分开报。
+          assert p.get("reason") is None, f"实证没跑起来：{p.get('reason')}｜{p}"
           # 护栏：R-02 非只读语句。配置说"只读"不算数，要它真的拦下一条 DELETE
           assert p["write_blocked"] is True, f"护栏没拦住写操作：{p}"
-          # 默认租户：2026-08-25 把 default_ctx 改成了库里不存在的组织，站点
-          # 从此查什么都是 0 行，而且全链路不报错（护栏照常注入租户谓词，只是
-          # 匹配不到行），冒烟一路全绿，三天后才由人肉发现。
+          # 探针表有没有数据：2026-08-25 把 default_ctx 改成了库里不存在的组织，
+          # 站点从此查什么都是 0 行，而且全链路不报错（护栏照常注入租户谓词，
+          # 只是匹配不到行），冒烟一路全绿，三天后才由人肉发现。换成运行时源
+          # 之后同一个坑仍在，只是换了个形状：源连得上、表也扫出来了，但连的
+          # 是空库或错库 —— 一样不报错，一样查什么都没有。
           assert p["default_tenant_has_rows"] is True, \
-              f"默认租户 org_id={p.get('org_id')} 在表 {p.get('table')} 上一行都没有 —— 页面等于查不到任何东西：{p}"
-          print(f"实证通过：护栏拦写 ✓，默认租户 org_id={p['org_id']} 在 {p['table']} 上有数据 ✓")
+              f"探针表 {p.get('table')} 上一行都没有 —— 页面等于查不到任何东西：{p}"
+          scope = (f"org_id={p['org_id']}" if p.get("tenant_enforced")
+                   else f"数据源「{p.get('source') or '内置'}」（租户未生效）")
+          print(f"实证通过：护栏拦写 ✓，{scope} 在 {p['table']} 上有数据 ✓")
           PY
