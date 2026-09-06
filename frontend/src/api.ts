@@ -604,9 +604,6 @@ export interface RoleInfo {
   /** 系统角色只管人不看数据（职责分离），页面要把它和数据角色区分开 */
   system: boolean
   members: number
-  /** 生效的环境档位。envs_unrestricted 为真时不额外收窄（数据负责人） */
-  envs: string[]
-  envs_unrestricted: boolean
   /** 数据期限（天）。null = 不限 */
   max_age_days: number | null
   /** 能否看到个人信息列的原值 */

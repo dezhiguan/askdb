@@ -50,6 +50,8 @@
   border: 0;
   background: var(--line);
 }
+/* 角色与数据源解绑后「环境范围」那格撤掉，剩三格 */
+.permission-grid.three { grid-template-columns: repeat(3, 1fr); }
 .permission-grid > .permission-cell { padding: 10px; background: var(--paper); }
 .permission-grid > .permission-cell span { display: block; color: var(--muted); font-size: 6px; }
 .permission-grid > .permission-cell strong { display: block; margin-top: 3px; font: 7px var(--mono); }

@@ -853,35 +853,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     def _visible_sources(request: Request) -> list[dict[str, Any]]:
         """列表按角色的环境档位过滤。
 
-        列表本身就是信息：不该让测试角色知道生产只读镜像的存在与连接目标
-        （设计文档脚注 7）。过滤放在这里而不是前端 —— 只灰按钮的话，
-        curl 一下照样把主机名和库名全拿到。
+        **2026-09-06 起不再按角色过滤。** 原来测试角色看不到生产只读镜像那张卡
+        （设计文档脚注 7）；askdb 是共享平台，大家用的是同一批数据源，
+        按角色藏卡与这个前提冲突。能不能查仍然由表白名单与护栏决定，
+        那两层没有放松。
         """
         builtin = _builtin_card()
-        cards = ([builtin] if builtin else []) + [
+        return ([builtin] if builtin else []) + [
             _sources.to_public(s) for s in _sources.list_sources(cfg)]
-        out = []
-        for card in cards:
-            env = str(card.get("env") or "test")
-            # 内置源那张卡的 env 是哨兵 "builtin"（前端据此显示 READ-ONLY
-            # 而不是环境名），判定时要翻回它真正的档位，否则它会被过滤掉 ——
-            # 那是"权限把功能测没了"的典型。
-            if env == "builtin":
-                env = _env_of(None)
-            if not env or _env_visible(request, env):
-                out.append(card)
-        return out
-
-    def _env_visible(request: Request, env: str) -> bool:
-        """列表过滤用的软判定。与 _require_env 是同一个策略，只是不抛异常。
-
-        两处必须同源：能列出来却连不上，或者连得上却列不出来，
-        都会让人以为是 bug 而不是权限 —— 而排查权限问题最耗时的
-        恰恰是"看起来像坏了"的那种表现。
-        """
-        policy = _identity.combine(
-            [_identity.policy_for(cfg, c) for c in _roles(request)])
-        return policy.envs is None or env in policy.envs
 
     def _probe(src: "_sources.Source") -> dict[str, Any]:
         """建连 + 自检 + 列表扫描。三件事一次做完 —— 分成三个接口就意味着
@@ -1792,59 +1771,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         response.delete_cookie(_auth.COOKIE_NAME, path="/")
         return {"ok": True}
 
-    #: 「完全没有数据权限」的统一措辞。环境判定与表白名单判定都可能先撞上
-    #: 这个状态，两处各写一句就会出现"同一个原因两种说法" —— 而排查权限问题时
-    #: 最耗时的恰恰是分不清撞的是哪道门。
+    #: 「完全没有数据权限」的统一措辞（系统管理员就是这个状态：内置空表集）。
+    #: 撞上它的现在只有表白名单那一道 —— 环境判定已于 2026-09-06 撤掉。
     _NO_DATA_ROLE = ("当前角色没有数据访问权限。系统管理员只管理成员，"
                      "要查数需另行加入某个数据角色。")
-
-    def _env_of(src: "_sources.Source | None") -> str:
-        """数据源的环境档位。内置源未声明时返回空串 = **不参与环境判定**。
-
-        运行时源在 sources.build() 里必然有 env（非法值回退 test），所以
-        "未声明"只可能出现在配置文件里那个内置源上。
-
-        为什么不给它猜一个默认值：猜 test 会把产品角色在所有现有部署上
-        直接锁死（它只能连 prod_ro），猜 prod_ro 则会把开发与测试角色锁死。
-        两种猜法都是拿一个我们并不知道的事实去拦人。
-
-        更要紧的是诚实：对着一个没声明归属的库宣称"已按环境鉴权"，
-        正是这次要消灭的那类"看起来在拦、其实没拦"。声明 datasource.env
-        才是打开这一层的开关 —— 收窄是部署方的显式决定，与 role_policies 同理。
-        """
-        if src is not None:
-            return src.env
-        return str((cfg.raw.get("datasource") or {}).get("env") or "").strip()
-
-    def _require_env(request: Request, src: "_sources.Source | None") -> None:
-        """角色能不能连这个环境的库（设计文档 Q-05 / D-1）。
-
-        **这一层必须在选源时判，不能交给护栏。** 护栏只看 SQL 文本，
-        它没有"这条连接通向哪台机器"这个信息 —— 表白名单拦得住"查哪张表"，
-        拦不住"查哪个库的同名表"。生产只读镜像与测试库的表结构往往一模一样，
-        那正是这个洞最危险的地方：SQL 一字不差，数据完全不同。
-        """
-        policy = _identity.combine(
-            [_identity.policy_for(cfg, c) for c in _roles(request)])
-        if policy.envs is None:                      # 角色不额外收窄
-            return
-        env = _env_of(src)
-        if not env:                                  # 数据源未声明归属，见 _env_of
-            return
-        if env in policy.envs:
-            return
-        # 一个档位都没有 = 压根没有数据权限，那是"你没有数据角色"而不是
-        # "你够不着这个环境"。后者会让系统管理员去找系统管理员。
-        if not policy.envs:
-            raise HTTPException(status_code=403, detail=_NO_DATA_ROLE)
-        names = "、".join(
-            _identity.ROLE_BY_CODE[c].name for c in _roles(request)
-            if c in _identity.ROLE_BY_CODE) or "未登录"
-        raise HTTPException(
-            status_code=403,
-            detail=f"当前角色（{names}）不能访问 "
-                   f"{_sources.ENV_LABEL.get(env, env)} 环境的数据源。",
-        )
 
     def _cfg_for(source: str, request: Request | None = None) -> Config:
         """按数据源 id 取配置。空 / "builtin" 走启动配置。
@@ -1853,8 +1783,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         所以任何数据源都逃不过角色策略。反过来先收窄再换源，
         换源那一步会把收窄结果整个替掉，等于绕开权限。
 
-        环境归属的校验也在这里：它依赖"选中了哪个源"，所以只能在选完之后判，
-        而且必须在返回之前判 —— 返回了就等于这条连接已经交出去了。
+        **这里曾经还判一层"角色能不能连这个环境的库"，2026-09-06 撤掉**
+        （见 identity.Policy 的说明）：共享平台上大家用的是同一批数据源。
         """
         sid = (source or "").strip()
         if not sid or sid == "builtin":
@@ -1864,14 +1794,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     detail="本实例未配置默认数据源，查询必须指定数据源。"
                            "到「数据源」页选一个已添加的源再发起。",
                 )
-            if request is not None:
-                _require_env(request, None)
             return cfg
         src = _sources.get_source(cfg, sid)
         if src is None:
             raise HTTPException(status_code=404, detail="数据源不存在")
-        if request is not None:
-            _require_env(request, src)
         if not src.tables:
             raise HTTPException(
                 status_code=400,

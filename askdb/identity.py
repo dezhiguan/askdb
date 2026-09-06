@@ -49,14 +49,20 @@ class Role:
 # 权限模型的每一条都要能对应到护栏上的一个具体行为；让人随手新建角色，
 # 就会出现一批没有任何执行含义的名字，看着像有权限体系，实际什么也没约束。
 # 新增角色应当是一次带设计的改动，不是一次点击。
+#
+# 2026-09-06：**角色不再与数据源绑定**（产品决定）。askdb 是一个共享平台，
+# 大家在同一批数据源上工作、看到的东西基本一致；角色的差别落在审批一类的
+# 治理动作上，而不是"你只能连哪个库"。原来 scope 那一列写的是环境档位
+# （PROD-RO / STAGING），既然不再据此拦截，就不能继续挂在页面上 ——
+# 一个不再执行的承诺比没有承诺更危险。
 ROLES: tuple[Role, ...] = (
-    Role("PRODUCT", "产品", "PROD-RO",
-         "在生产只读镜像上查询业务数据。敏感字段按脱敏策略返回，不可见原始个人信息。"),
-    Role("DEV", "开发", "DEV + STAGING",
-         "开发与测试环境全量可查，用于排障与验证。"),
-    Role("QA", "测试", "STAGING",
-         "仅测试环境与模拟数据，不接触任何生产数据。"),
-    Role("DATA_OWNER", "数据负责人", "DOMAIN ALL",
+    Role("PRODUCT", "产品", "业务只读",
+         "查询业务数据。敏感字段按脱敏策略返回，不可见原始个人信息。"),
+    Role("DEV", "开发", "全量可查",
+         "全量可查，用于排障与验证；看得到个人信息原值。"),
+    Role("QA", "测试", "业务只读",
+         "查询业务数据，返回行上限与数据期限更紧；敏感字段按脱敏策略返回。"),
+    Role("DATA_OWNER", "数据负责人", "口径与审批",
          "配置策略、审批高风险与高成本查询。"),
     # 职责分离：管人的不自动获得看数据的权限。
     # 把两者合在一起，等于让管理员可以给自己开任意数据权限而不留痕。
@@ -76,22 +82,21 @@ ANONYMOUS = "ANONYMOUS"
 class Policy:
     """一个角色能看到什么。
 
-    三个维度，都是**收窄**语义：
+    两个维度，都是**收窄**语义：
       · tables   —— 可见表。None 表示不额外收窄（用实例白名单）
       · max_rows —— 返回行上限。None 表示不额外收窄（用实例配置）
-      · envs     —— 可用数据源的环境档位。None 表示不额外收窄
 
     刻意不做"允许列表"之外的能力位 —— 那些是 CAPABILITIES 的事。
-    这三个维度都落在既有判定上：tables/max_rows 落在护栏 R-03 与 R-13，
-    envs 落在选源那一步，不需要新造任何规则。
+    两个维度都落在既有判定上：tables/max_rows 落在护栏 R-03 与 R-13，
+    不需要新造任何规则。
 
-    envs 与另外两个的区别值得记一笔：tables/max_rows 收窄的是"查到的东西"，
-    envs 收窄的是"连哪个库"。后者必须在选源时判，不能等进了护栏 ——
-    护栏只看 SQL，它没有"这条连接通向哪台机器"这个信息。
+    **曾经有第三个维度 envs（角色可连哪些环境的数据源），2026-09-06 撤掉。**
+    共享平台上大家用的是同一批数据源，按角色挡"能连哪个库"与这个前提冲突。
+    撤的是整条判定，不是留个不生效的字段 —— 留着它就会变成页面上那种
+    "看起来在拦、其实没拦"的字段，而那正是当初加它要消灭的东西。
     """
     tables: frozenset[str] | None = None
     max_rows: int | None = None
-    envs: frozenset[str] | None = None
     #: 可见数据的时间窗口（天）。None = 不限。落在护栏 R-19 的谓词注入上，
     #: 与租户谓词（R-10）是同一类动作 —— 都是行级收窄，都靠往 SQL 里加条件。
     max_age_days: int | None = None
@@ -109,22 +114,21 @@ class Policy:
 DEFAULT_POLICIES: dict[str, Policy] = {
     # 职责分离在这里落到实处：管人的角色拿不到任何数据。
     # 这不是配置项，是内置默认 —— 忘了配也不会漏。
-    "SYS_ADMIN": Policy(tables=frozenset(), max_rows=0, envs=frozenset()),
+    "SYS_ADMIN": Policy(tables=frozenset(), max_rows=0),
 
-    # 环境档位是**内置的**，不是配置项：它就是 Role.scope 那一行字的执行含义。
-    # 放进配置意味着可以把测试角色配到生产只读镜像上，而那恰恰是
-    # 「仅测试环境与模拟数据，不接触任何生产数据」这句话承诺过不会发生的事。
-    # 要改这几行必须改代码、走评审 —— 与 ROLES 固定不开放自定义同一个理由。
-    # 数据期限取设计文档矩阵 Q-07 的值。它们是内置的，理由同 envs。
+    # 数据期限是**内置的**，不是配置项：能配的东西就会被配错，
+    # 而这一位配错等于把更早的数据交出去。要改必须改代码、走评审 ——
+    # 与 ROLES 固定不开放自定义同一个理由。取设计文档矩阵 Q-07 的值。
     #
     # unmask 只给两个角色，各有各的理由：
-    #   · DEV —— 它只连 dev/test（见上面的 envs），那些环境里本就没有真实
-    #     个人信息；在合成数据上脱敏只会妨碍排障，拦不住任何东西。
+    #   · DEV —— 排障要看到真实取值，在开发口径上脱敏只会妨碍定位。
+    #     （角色与数据源解绑后，这一条不再有"它只连合成数据"作依据，
+    #      是一个明确的放开决定，不是推论出来的结论。）
     #   · DATA_OWNER —— 它是数据的归口人，判断口径本身就需要看到原值。
     # 产品与测试一律看脱敏值：矩阵 Q-06 写的就是"强制脱敏"。
-    "PRODUCT": Policy(envs=frozenset({"prod_ro"}), max_age_days=90),
-    "DEV": Policy(envs=frozenset({"dev", "test"}), unmask=True),
-    "QA": Policy(envs=frozenset({"test"}), max_age_days=180),
+    "PRODUCT": Policy(max_age_days=90),
+    "DEV": Policy(unmask=True),
+    "QA": Policy(max_age_days=180),
     "DATA_OWNER": Policy(max_age_days=365, unmask=True),
 }
 
@@ -262,18 +266,13 @@ def policy_for(cfg: Config, role_code: str) -> Policy:
         cap = int(spec["max_rows"])
         max_rows = cap if max_rows is None else min(max_rows, cap)
 
-    envs = base.envs
-    if spec.get("envs") is not None:
-        want_envs = frozenset(str(e).strip().lower() for e in spec["envs"])
-        envs = want_envs if envs is None else (envs & want_envs)
-
     age = base.max_age_days
     if spec.get("max_age_days") is not None:
         want_age = int(spec["max_age_days"])
         age = want_age if age is None else min(age, want_age)
 
     # unmask 有意不从配置读：见 Policy.unmask 那段注释。
-    return Policy(tables=tables, max_rows=max_rows, envs=envs,
+    return Policy(tables=tables, max_rows=max_rows,
                   max_age_days=age, unmask=base.unmask)
 
 
@@ -301,18 +300,11 @@ def combine(policies: list[Policy]) -> Policy:
     caps = [p.max_rows for p in policies]
     max_rows = None if any(c is None for c in caps) else max(caps)
 
-    envs: frozenset[str] | None = frozenset()
-    for p in policies:
-        if p.envs is None:
-            envs = None
-            break
-        envs |= p.envs
-
     # 期限取**最长**：与 max_rows 取大同一个道理，身兼两职看得到两者之和
     ages = [p.max_age_days for p in policies]
     max_age = None if any(a is None for a in ages) else max(ages)
 
-    return Policy(tables=tables, max_rows=max_rows, envs=envs,
+    return Policy(tables=tables, max_rows=max_rows,
                   max_age_days=max_age,
                   unmask=any(p.unmask for p in policies))
 
@@ -483,12 +475,7 @@ def roles_with_counts(cfg: Config) -> list[dict[str, Any]]:
     return [
         {"code": r.code, "name": r.name, "scope": r.scope, "desc": r.desc,
          "system": r.system, "members": counts.get(r.code, 0),
-         # envs 是 scope 那行字的**执行值**。一并给出去，前端的「环境范围」
-         # 就不再是照抄设计稿的字符串，而是这套部署真正在拦的东西 ——
-         # 权限体系最怕的是"配了但看不出有没有生效"。
-         "envs": sorted(policy_for(cfg, r.code).envs or ()),
-         "envs_unrestricted": policy_for(cfg, r.code).envs is None,
-         # 另外两格同理给真值。页面此前把这三格写死成设计稿取值，
+         # 两格给真值。页面此前把这三格写死成设计稿取值，
          # 于是「数据期限 90 DAYS」在后端根本没有对应字段时也照样显示 ——
          # 权限体系最怕的就是"配了但看不出有没有生效"，而这比看不出更糟：
          # 它显示了一个从未生效过的值。

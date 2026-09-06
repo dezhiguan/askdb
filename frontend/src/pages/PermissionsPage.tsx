@@ -46,12 +46,6 @@ const ROLE_TITLE: Record<string, string> = {
  *  「导出权限」没有列进来：askdb 没有后端导出接口，审计与追踪的导出都是
  *  浏览器端把已拉取的数据拼字符串下载。在那种架构下这一维度**没有任何
  *  可施加的位置**，写一个值上去就是在承诺一件做不到的事。 */
-function envLabel(role: RoleInfo): string {
-  if (role.envs_unrestricted) return 'ALL'
-  if (!role.envs.length) return '—'
-  return role.envs.map(e => e.toUpperCase().replace('_', '-')).join(' + ')
-}
-
 function ageLabel(role: RoleInfo): string {
   return role.max_age_days == null ? '不限' : `${role.max_age_days} DAYS`
 }
@@ -305,14 +299,12 @@ function RoleDetail({ role, notify, guard }: {
         <h3>{ROLE_TITLE[role.code] ?? `${role.name} · ${role.code}`}</h3>
         <p>{role.desc}</p>
       </div>
-      {/* 四个维度**全部是真值**，由 identity.Policy 算出来。
-          此前后三项是照设计稿写死的，而后端根本没有对应字段 ——
-          那比"看不出有没有生效"更糟：它显示了一个从未生效过的值。 */}
-      <div className="permission-grid">
-        <div className="permission-cell">
-          <span>环境范围</span>
-          <strong title="角色可连接的数据源环境档位，选源时强制校验">{envLabel(role)}</strong>
-        </div>
+      {/* 三个维度**全部是真值**，由 identity.Policy 算出来。
+          此前它们是照设计稿写死的，而后端根本没有对应字段 —— 那比
+          "看不出有没有生效"更糟：它显示了一个从未生效过的值。
+          原来还有一格「环境范围」，2026-09-06 角色与数据源解绑后撤掉：
+          不再据此拦截，就不能继续挂在页面上。 */}
+      <div className="permission-grid three">
         <div className="permission-cell">
           <span>数据期限</span>
           <strong title="护栏 R-18 按此注入时间窗口谓词">{ageLabel(role)}</strong>

@@ -313,30 +313,34 @@ def test_mcp_refuses_unknown_role(cfg):
         mcp_server.build_server(cfg, role="TYPO")
 
 
-# ---------- 环境范围（Q-05 / D-1） ----------
+# ---------- 角色与数据源解绑（2026-09-06 产品决定） ----------
 
-def test_role_scope_is_now_enforced_not_decorative():
-    """角色详情第一格从展示字符串变成真判定。
+def test_roles_are_not_bound_to_data_sources():
+    """角色策略里**不再有环境维度**。
 
-    此前 sources.py 里 env 的注释明写「仅用于界面区分，不参与鉴权」，
-    而角色卡上却写着 STAGING —— 页面上唯一一个看起来是真值、实际不成立的
-    字段，比纯占位更有误导性。
+    askdb 是共享平台：大家在同一批数据源上工作，按角色挡"能连哪个库"
+    与这个前提冲突。撤的是整条判定，不是留一个不生效的字段 —— 留着它
+    就会变成页面上那种"看起来在拦、其实没拦"的东西，而那正是当初加它
+    要消灭的。
+
+    收窄面因此只剩表与行数（护栏 R-03 / R-13），加上期限与脱敏。
     """
-    def envs(code: str):
-        return identity.DEFAULT_POLICIES.get(code, identity.Policy()).envs
+    assert not hasattr(identity.Policy(), "envs"), "Policy 又长回环境维度了"
+    for code in ("QA", "PRODUCT", "DEV", "DATA_OWNER", "SYS_ADMIN"):
+        p = identity.DEFAULT_POLICIES.get(code, identity.Policy())
+        assert not hasattr(p, "envs")
 
-    assert envs("QA") == frozenset({"test"})
-    assert envs("PRODUCT") == frozenset({"prod_ro"})
-    assert envs("DEV") == frozenset({"dev", "test"})
-    assert envs("DATA_OWNER") is None                  # 跨全域，不额外收窄
-    assert envs("SYS_ADMIN") == frozenset()            # 一个都不给
+    # 系统管理员的"没有数据权限"不靠环境实现，靠空表集 —— 解绑不能把它放开
+    sys_admin = identity.DEFAULT_POLICIES["SYS_ADMIN"]
+    assert sys_admin.tables == frozenset() and sys_admin.max_rows == 0
 
 
-def test_qa_cannot_reach_the_production_mirror(zcfg, monkeypatch, tmp_path):
-    """测试角色连不上生产只读镜像 —— 这是 QA 角色描述里承诺过的那句话。
+def test_any_role_can_pick_any_data_source(zcfg, monkeypatch, tmp_path):
+    """测试角色照样能选标着 prod_ro 的源，列表里也看得到它。
 
-    表白名单拦不住这个：生产镜像与测试库的表结构往往一模一样，
-    SQL 一字不差、数据完全不同。所以必须在选源时判。
+    这条**推翻了**此前的 test_qa_cannot_reach_the_production_mirror ——
+    那是按"角色绑环境"写的，现在的产品口径是共享平台。能不能查出东西
+    仍由表白名单与护栏决定，那两层没有放松（下面一并验）。
     """
     from askdb import sources as S
 
@@ -348,28 +352,37 @@ def test_qa_cannot_reach_the_production_mirror(zcfg, monkeypatch, tmp_path):
     c = _client(zcfg, monkeypatch)
 
     _as(c, "qa")
+    # 列表：不再按角色藏卡
+    assert src.id in [i["id"] for i in c.get("/api/sources").json()["items"]]
+    # 选源：不再因为环境档位被 403 挡回
     r = c.post("/api/sql", json={"sql": "SELECT 1", "source": src.id})
-    assert r.status_code == 403 and "PROD-RO" in r.json()["detail"]
-    # 列表里也看不到它：列表本身就是信息
-    assert [i["id"] for i in c.get("/api/sources").json()["items"]] == ["builtin"]
+    assert r.status_code != 403 or "环境" not in r.json().get("detail", "")
 
-    _as(c, "owner")                                   # 数据负责人跨全域
+    _as(c, "owner")
     assert src.id in [i["id"] for i in c.get("/api/sources").json()["items"]]
 
 
 def test_env_falls_back_to_the_conservative_value(tmp_path):
-    """拼错 env 的后果必须是"看得更少"，不能是"看得更多"。"""
+    """拼错 env 只影响界面标签的取值，仍然要落在保守的那一档。
+
+    解绑之后它不再参与鉴权，但顶栏据它告诉人"当前连的是哪一档" ——
+    同一台机器上同时跑多个实例，说错一次就会有人拿着另一个库的结论下判断。
+    """
     from askdb import sources as S
     src = S.build(name="x", type_="duckdb", dsn=str(tmp_path / "a.duckdb"), env="PRODUCTION")
     assert src.env == "test"
 
 
-def test_roles_endpoint_exposes_the_effective_envs(zcfg, monkeypatch):
-    """前端那一格要读真值，否则又是一处"配了但看不出有没有生效"。"""
+def test_roles_endpoint_no_longer_advertises_environments(zcfg, monkeypatch):
+    """接口不能再吐环境字段：页面据它渲染「环境范围」那一格，
+    留着就会继续对人宣称一件不再执行的事。"""
     c = _client(zcfg, monkeypatch)
     roles = {r["code"]: r for r in c.get("/api/identity/roles").json()["roles"]}
-    assert roles["QA"]["envs"] == ["test"]
-    assert roles["DATA_OWNER"]["envs_unrestricted"] is True
+    for r in roles.values():
+        assert "envs" not in r and "envs_unrestricted" not in r
+    # 仍然给的是真值那几格
+    assert roles["QA"]["max_age_days"] == 180
+    assert roles["DEV"]["unmask"] is True
 
 
 # ---------- 数据期限（Q-07 / R-19） ----------
