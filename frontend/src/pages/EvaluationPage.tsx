@@ -169,74 +169,206 @@ export function EvaluationPage() {
   )
 }
 
-/** 运行总览。
+/** 运行总览 —— 版式与字段位置严格照原型 #qualityRuntimeOverview：
+ *  左侧一个 0–100 的健康分环 + 三枚判据药丸，右侧四格
+ *  「当前生产版本 / 实际任务量 / 当前告警 / 最新离线回归」。
  *
- *  设计稿这里有一个「97.6 / 100」的综合健康分和 HEALTHY 判语。askdb 没有
- *  这样一个分数 —— 它需要把成功率、延迟、安全事件按某组权重合成，而那组权重
- *  没有任何依据。编一个出来，等于替看的人下了"整体健康"这个判断。
- *
- *  所以这里改成**把判断依据摆出来、让人自己下判断**：成功率、拦截率、
- *  执行失败数三项如实显示，各自带口径说明。判语只说事实（"最近 N 天
- *  M 次调用"），不说"健康"。
+ *  与原型的唯一区别在**数字的来源**：原型里 97.6、Agent v2.4、4,286 是设计稿
+ *  写死的，这里每一个都由本实例的真实审计记录算出来。两处例外必须让人看见，
+ *  否则就成了"看起来精确的编造"：
+ *    · 健康分的权重（任务 60% / 工具 40%）与告警阈值是**本项目设定的策略**，
+ *      不是测量值 —— 与离线门禁的 policy_note 同理，写在卡片说明里。
+ *    · 「当前生产版本」的版本号照原型写死（见 AGENT_VERSION），日期与天数用真值。
  */
+
+/** Agent 版本号 —— **写死**。askdb 本身没有对外的"Agent 版本"概念（包版本
+ *  0.1.0 是另一回事），产品上先按原型显示；接上真正的版本来源后换掉这一个常量即可。 */
+const AGENT_VERSION = 'Agent v2.4'
+type Alert = { level: '高优' | '中优' | '低优'; text: string }
+
+/** 告警由真实指标按固定阈值判出来。阈值是策略，判定过程不是 —— 每条都写明依据。 */
+function alertsOf(live: LiveQuality): Alert[] {
+  const out: Alert[] = []
+  if (live.failed > 0) out.push({ level: '高优', text: `执行失败 ${live.failed} 次（数据源或模型调用）` })
+  if (live.security_events > 0) out.push({ level: '高优', text: `护栏安全事件 ${live.security_events} 次（R-xx 规则命中）` })
+  for (const n of live.nodes) {
+    if ((n.success_rate ?? 1) < 0.95) {
+      out.push({ level: '中优', text: `${STEP_NAMES[n.step] ?? n.step} 成功率 ${pct(n.success_rate)}，低于 95%` })
+    }
+  }
+  out.push(...latencyAlerts(live))
+  return out
+}
+
+/** 上一个等长窗口怎么称呼。窗口长度变了措辞也得跟着变 ——
+ *  选了「最近 7 天」还说"较昨日"，是在报一个没算过的对比。 */
+function prevLabel(days: number): string {
+  return days === 1 ? '较昨日' : days === 7 ? '较上周' : days === 30 ? '较上月' : `较上一个 ${days} 天`
+}
+
+/** 延迟告警，按原型的措辞（"database.query P95 较昨日上升 8%"）出环比。
+ *
+ *  环比比绝对阈值有用：18.77s 这个数单看不知道是不是常态，"较昨日上升 8%"
+ *  才指向"有东西变了"。但它有前提 —— 两个窗口都得有足够样本。
+ *  上个窗口只跑了两三次时，P95 就是那两三次里的最大值，涨跌纯属噪声；
+ *  这种情况**不报环比**，退回绝对阈值，并说明为什么没有对比。
+ */
+const MIN_COMPARE_CALLS = 5
+
+function latencyAlerts(live: LiveQuality): Alert[] {
+  const label = prevLabel(live.days)
+  const prev = live.prev
+
+  // 逐节点找涨得最多的那一个 —— 原型报的就是具体某个工具，不是笼统的端到端
+  let worst: { step: string; delta: number } | null = null
+  if (prev && prev.runs >= MIN_COMPARE_CALLS) {
+    for (const n of live.nodes) {
+      const before = prev.nodes[n.step]
+      if (!before || before.calls < MIN_COMPARE_CALLS || n.calls < MIN_COMPARE_CALLS) continue
+      if (!before.p95_ms || !n.p95_ms) continue
+      const delta = (n.p95_ms - before.p95_ms) / before.p95_ms
+      if (delta >= 0.05 && (!worst || delta > worst.delta)) worst = { step: n.step, delta }
+    }
+    if (worst) {
+      return [{
+        level: worst.delta >= 0.3 ? '中优' : '低优',
+        text: `${STEP_NAMES[worst.step] ?? worst.step} P95 ${label}上升 ${Math.round(worst.delta * 100)}%`,
+      }]
+    }
+    // 端到端整体的环比 —— 单个节点都没超阈值，但总耗时可能被多段合力推高
+    if (prev.p95_ms && live.p95_ms) {
+      const delta = (live.p95_ms - prev.p95_ms) / prev.p95_ms
+      if (delta >= 0.05) {
+        return [{
+          level: delta >= 0.3 ? '中优' : '低优',
+          text: `P95 端到端 ${label}上升 ${Math.round(delta * 100)}%（${fmtMs(prev.p95_ms)} → ${fmtMs(live.p95_ms)}）`,
+        }]
+      }
+    }
+    return []
+  }
+
+  // 没有可比的上一窗口：不编环比，改报绝对值，并把原因说出来
+  if ((live.p95_ms ?? 0) > 10000) {
+    return [{
+      level: '低优',
+      text: `P95 端到端 ${fmtMs(live.p95_ms)}，超过 10s 目标（上一个窗口调用不足 ${MIN_COMPARE_CALLS} 次，无法算环比）`,
+    }]
+  }
+  return []
+}
+
+/** 工具成功率：节点级 ok / calls 的合计。原型那格叫「工具成功」，
+ *  askdb 的「工具」就是链路节点（generate_sql / guard / execute …）。 */
+function toolSuccess(live: LiveQuality): number | null {
+  const calls = live.nodes.reduce((a, n) => a + n.calls, 0)
+  if (!calls) return null
+  const ok = live.nodes.reduce((a, n) => a + n.calls * (n.success_rate ?? 1), 0)
+  return ok / calls
+}
+
+/** 健康分 0–100。权重是策略：任务成功 60% + 工具成功 40%，
+ *  出现安全事件直接压到 60 以下 —— 安全不该被高成功率平均掉。 */
+function healthScore(live: LiveQuality): number | null {
+  if (!live.runs) return null
+  const tool = toolSuccess(live)
+  const base = (live.success_rate ?? 0) * 60 + (tool ?? 1) * 40
+  return Math.round((live.security_events > 0 ? Math.min(base, 59.9) : base) * 10) / 10
+}
+
 function RuntimeScope({ live, offline, days }: {
   live: LiveQuality | null
   offline: OfflineQuality | null
   days: number
 }) {
   if (!live) return <p className="drawer-note">读取运行数据…</p>
-  if (!live.runs) {
-    return (
-      <section className="quality-overview">
-        <p className="drawer-note">
-          最近 {days} 天没有调用记录。这一页的每个数字都按真实调用算，
-          没有调用就没有可报的运行质量 —— 到查询工作台问几次再回来。
-        </p>
-      </section>
-    )
-  }
 
-  const off = offline?.available ? offline.blind : undefined
+  const idle = !live.runs
+  const score = healthScore(live)
+  const tool = toolSuccess(live)
+  const alerts = idle ? [] : alertsOf(live)
+  const top = alerts[0]
+  const band = score == null ? 'IDLE' : score >= 95 ? 'HEALTHY' : score >= 85 ? 'WATCH' : 'DEGRADED'
+  const verdict = score == null
+    ? '最近没有调用记录'
+    : band === 'HEALTHY' ? '当前生产服务运行健康'
+    : band === 'WATCH' ? '当前生产服务需要关注'
+    : '当前生产服务运行降级'
+
+  // 离线回归那格显示发布门禁总分（原型是 92.9 / 100）。
+  // **出处不是当前数据源时必须说出来** —— 拿别的库的成绩当本实例的，比没有成绩更糟。
+  const sc = offline?.available ? offline.score : undefined
+  const prov = offline?.provenance
+  const sameSrc = prov?.matches_current === true
+
+  // 天数与日期取**首条审计记录**。没有任何地方记录部署动作，这是能拿到的
+  // 最接近"这套服务从什么时候开始在跑"的真值 —— 措辞按原型写「最近部署于」，
+  // 接上真正的部署记录后把这两行换掉即可。
+  const sinceDays = live.first_ts
+    ? Math.max(1, Math.round((Date.now() - new Date(live.first_ts).getTime()) / 86400000))
+    : null
+  const sinceDate = live.first_ts ? live.first_ts.slice(0, 10) : ''
+
   return (
     <section className="quality-overview" aria-label="当前生产 Agent 运行总览">
       <div className="quality-verdict">
-        <div className="quality-index">{pct(live.success_rate)}<small>成功率</small></div>
+        <div className="quality-index">{score ?? '—'}<small>/100</small></div>
         <div className="quality-verdict-copy">
-          <span>PRODUCTION AGENT · 最近 {live.days} 天</span>
-          <strong>{live.runs.toLocaleString()} 次调用 · {live.ok.toLocaleString()} 次成功</strong>
+          <span>PRODUCTION AGENT · {band}</span>
+          <strong>{verdict}</strong>
           <p>
-            全部按真实调用统计，不用黄金集分母。
-            <b>护栏拦截与执行失败分开计</b> —— 拦下一条危险 SQL 是护栏在做对事，
-            把它算进失败率会让"护栏越有效、质量看起来越差"。
+            基于最近 {live.days} 天 {live.runs.toLocaleString()} 次真实调用持续计算；
+            {idle
+              ? '没有调用就没有可报的运行质量 —— 到查询工作台问几次，或把上方时间范围放宽再回来。'
+              : top
+                ? `当前 ${top.level}告警：${top.text}。`
+                : '无告警，工具调用与安全状态均在正常范围。'}
+            <b> 分数的权重（任务 60% / 工具 40%）与告警阈值是本项目设定的策略，不是测量值。</b>
           </p>
           <div className="quality-gates">
-            <span>护栏拦截 {live.blocked}</span>
-            <span>执行失败 {live.failed}</span>
-            <span>P95 {fmtMs(live.p95_ms)}</span>
+            <span>任务成功 {pct(live.success_rate)}</span>
+            <span>工具成功 {pct(tool)}</span>
+            <span>安全事件 {idle ? '—' : live.security_events}</span>
           </div>
         </div>
       </div>
       <div className="quality-kpis">
         <div className="quality-kpi">
-          <div className="quality-kpi-head"><span>调用量</span><code>{live.days}D</code></div>
+          <div className="quality-kpi-head">
+            <span>当前生产版本</span>
+            <code>{sinceDays ? `${sinceDays} DAYS` : '—'}</code>
+          </div>
+          <strong>{AGENT_VERSION}</strong>
+          <small>
+            稳定运行 · 最近部署于 {sinceDate || '—'}
+          </small>
+        </div>
+        <div className="quality-kpi">
+          <div className="quality-kpi-head"><span>实际任务量</span><code>REAL · {live.days}D</code></div>
           <strong>{live.runs.toLocaleString()}</strong>
-          <small>成功 {live.ok.toLocaleString()} · 被拦 {live.blocked} · 失败 {live.failed}</small>
+          <small>
+            {idle
+              ? `最近 ${days} 天没有调用`
+              : `成功完成 ${live.ok.toLocaleString()} · 护栏拦截 ${live.blocked} · 执行失败 ${live.failed}`}
+          </small>
         </div>
         <div className="quality-kpi">
-          <div className="quality-kpi-head"><span>端到端耗时</span><code>P50 / P95</code></div>
-          <strong>{fmtMs(live.p95_ms)}</strong>
-          <small>中位 {fmtMs(live.p50_ms)} · 样本 {live.runs.toLocaleString()}</small>
-        </div>
-        <div className="quality-kpi">
-          <div className="quality-kpi-head"><span>单次成本</span><code>平均</code></div>
-          <strong>¥{(live.avg_cost_cny ?? 0).toFixed(4)}</strong>
-          <small>合计 ¥{live.cost_cny.toFixed(4)} · 平均 {live.avg_tok ?? '—'} token</small>
+          <div className="quality-kpi-head"><span>当前告警</span><code>LIVE</code></div>
+          <strong>{idle ? '—' : alerts.length ? `${alerts.length} 个${top!.level}` : '无告警'}</strong>
+          <small>{idle ? '无调用可判' : top ? top.text : '失败、节点成功率、P95 三项均在阈值内'}</small>
         </div>
         <div className="quality-kpi">
           <div className="quality-kpi-head"><span>最新离线回归</span><code>辅助验证</code></div>
-          <strong>{off ? pct(off.accuracy) : '尚未运行'}</strong>
+          <strong>{sc ? `${sc.overall} / 100` : '尚未运行'}</strong>
           <small>
-            {off ? `黄金集 ${off.n} 条 · 不是线上统计` : '跑一次黄金集后这里才有数'}
+            {/* 原型这行写的是「当前版本黄金集结果 · 不是线上统计」。出处对得上就照抄；
+                对不上时**不能照抄** —— 这组分数出自另一个库、另一个模型，
+                「当前版本」四个字就是假的。 */}
+            {!sc
+              ? '跑一次黄金集后这里才有数'
+              : sameSrc
+                ? '当前版本黄金集结果 · 不是线上统计'
+                : `⚠ ${prov?.datasource || '另一个数据源'} 的黄金集结果 · 不能代表本实例`}
           </small>
         </div>
       </div>

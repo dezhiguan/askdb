@@ -650,7 +650,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         # 窗口按天，上限 90 —— 审计是全量读文件，放开会让这个接口变成慢查询
         days = max(1, min(int(days), 90))
-        return _quality(cfg.audit_log, days=days)
+        out = _quality(cfg.audit_log, days=days)
+        # 「当前生产版本」那一格要有真东西可显示：包版本 + 实际应答的模型。
+        # 这两项不是从审计里算的，而是本进程此刻的事实，所以在这里补 ——
+        # 审计层不该知道自己跑在哪个版本上。
+        from importlib.metadata import PackageNotFoundError, version as _pkg_version
+        try:
+            app_version = _pkg_version("askdb")
+        except PackageNotFoundError:
+            app_version = ""
+        out["service"] = {
+            "version": app_version,
+            "model": str(cfg.raw.get("llm", {}).get("model") or ""),
+            "config": Path(cfg.path).name if cfg.path else "",
+        }
+        return out
 
     @app.get("/api/metrics/check")
     def metrics_check(request: Request) -> dict[str, Any]:

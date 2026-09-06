@@ -246,10 +246,8 @@ export function PermissionsPage({ notify, me }: {
             </div>
           )}
 
-          {data?.enabled && (
-            data.writable
-              ? (
-                <div className="member-form">
+          {data?.enabled && data.writable && (
+            <div className="member-form">
                   <div className="form-note">
                     成员写接口要按网关身份授权，而 auth-gateway 对接尚未落地，暂由部署方
                     持有的管理员令牌兜底。令牌只留在内存里，刷新页面即失效。
@@ -267,15 +265,7 @@ export function PermissionsPage({ notify, me }: {
                       加入「{role?.name}」
                     </button>
                   </div>
-                </div>
-              )
-              : (
-                <div className="form-note">
-                  未配置 <span className="mono">ASKDB_ADMIN_TOKEN</span>，成员写入整体关闭 —— 本页只读。
-                  这是有意的默认值：登录未接入前，写接口没有任何请求方身份可依据，
-                  开着就等于任何能打开页面的人都能给自己加角色。
-                </div>
-              )
+            </div>
           )}
         </section>
         </div>

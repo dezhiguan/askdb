@@ -460,8 +460,20 @@ def quality(path: Path, days: int = 1) -> dict[str, Any]:
     把拦截混进失败率，会让"护栏越有效、质量看起来越差"。
     """
     cutoff = datetime.now().astimezone() - timedelta(days=days)
-    recent = [r for r in read_records(path)
-              if (t := _parse_ts(str(r.get("ts", "")))) is not None and t >= cutoff]
+    # 上一个等长窗口。告警要能说"较昨日上升 8%"这种话 —— 而"上升"只能由
+    # 两个窗口相减得出，绝对阈值（P95 > 10s）说不出它。两个窗口必须等长，
+    # 否则拿 24 小时比 7 天，涨跌全是窗口长度造成的。
+    prev_cutoff = cutoff - timedelta(days=days)
+    all_records = read_records(path)
+    recent, previous = [], []
+    for r in all_records:
+        t = _parse_ts(str(r.get("ts", "")))
+        if t is None:
+            continue
+        if t >= cutoff:
+            recent.append(r)
+        elif t >= prev_cutoff:
+            previous.append(r)
 
     runs = len(recent)
     blocked = sum(1 for r in recent if r.get("rejected_by"))
@@ -474,18 +486,7 @@ def quality(path: Path, days: int = 1) -> dict[str, Any]:
     costs = [float(r.get("cost_cny") or 0) for r in recent]
 
     # ---- 按节点聚合 ----
-    nodes: dict[str, dict[str, Any]] = {}
-    for r in recent:
-        for s in (r.get("steps") or []):
-            name = str(s.get("step", ""))
-            if not name:
-                continue
-            e = nodes.setdefault(name, {"calls": 0, "ok": 0, "ms": [], "tok": 0})
-            e["calls"] += 1
-            if s.get("status") == "ok":
-                e["ok"] += 1
-            e["ms"].append(int(s.get("ms") or 0))
-            e["tok"] += int(s.get("tok_in") or 0) + int(s.get("tok_out") or 0)
+    nodes = _nodes_of(recent)
 
     node_rows = [
         {
@@ -519,5 +520,49 @@ def quality(path: Path, days: int = 1) -> dict[str, Any]:
         "by_rule": dict(sorted(
             Counter(str(r["rejected_by"]) for r in recent if r.get("rejected_by")).items(),
             key=lambda kv: -kv[1])),
+        # 安全事件 ≠ 全部拦截。NO_SQL（模型没写出 SQL）是链路结果，不是安全事件；
+        # 只有护栏规则 R-xx 命中才算 —— 混在一起报会让"安全事件"这一项永远不为 0，
+        # 从而失去它唯一的用处：出现就该有人去看。
+        "security_events": sum(
+            1 for r in recent if str(r.get("rejected_by") or "").upper().startswith("R-")),
+        # 本实例开始有审计记录的时间。用来回答"这套服务跑了多久" ——
+        # 它不是部署时间（没有任何地方记部署），措辞上必须写成"有记录以来"。
+        "first_ts": _first_ts(all_records),
+        # 上一个等长窗口的同口径值，供页面算环比。**样本量一并给出** ——
+        # 上个窗口只有两三次调用时，P95 的涨跌没有意义，页面据此决定报不报。
+        "prev": {
+            "runs": len(previous),
+            "p95_ms": _pctl_of([int(r.get("elapsed_ms") or 0) for r in previous], 0.95),
+            "nodes": {
+                name: {"calls": e["calls"], "p95_ms": _pctl_of(e["ms"], 0.95)}
+                for name, e in _nodes_of(previous).items()
+            },
+        },
         "nodes": node_rows,
     }
+
+
+def _nodes_of(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """按节点把 steps 聚起来。两个窗口共用同一套口径 —— 环比只有在
+    分子分母算法逐字相同的前提下才成立。"""
+    nodes: dict[str, dict[str, Any]] = {}
+    for r in records:
+        for st in (r.get("steps") or []):
+            name = str(st.get("step", ""))
+            if not name:
+                continue
+            e = nodes.setdefault(name, {"calls": 0, "ok": 0, "ms": [], "tok": 0})
+            e["calls"] += 1
+            if st.get("status") == "ok":
+                e["ok"] += 1
+            e["ms"].append(int(st.get("ms") or 0))
+            e["tok"] += int(st.get("tok_in") or 0) + int(st.get("tok_out") or 0)
+    return nodes
+
+
+def _first_ts(records: list[dict[str, Any]]) -> str | None:
+    """最早一条审计记录的时间戳。文件按写入顺序追加，取第一条可解析的即可。"""
+    for r in records:
+        if _parse_ts(str(r.get("ts", ""))) is not None:
+            return str(r.get("ts"))
+    return None

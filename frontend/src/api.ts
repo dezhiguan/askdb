@@ -818,6 +818,19 @@ export interface LiveQuality {
   cost_cny: number
   avg_cost_cny: number | null
   by_rule: Record<string, number>
+  /** 护栏规则 R-xx 命中次数。**不等于 blocked** —— NO_SQL 这类是链路结果，
+   *  混进来会让"安全事件"永远不为 0，也就失去了它唯一的用处 */
+  security_events: number
+  /** 有审计记录以来最早的一条。用来说"跑了多久"——不是部署时间，措辞要写清 */
+  first_ts: string | null
+  /** 本进程此刻的事实，不是从审计算出来的 */
+  service?: { version: string; model: string; config: string }
+  /** 上一个等长窗口的同口径值，供页面算环比。runs 少时涨跌没有意义 —— 页面据此决定报不报 */
+  prev?: {
+    runs: number
+    p95_ms: number | null
+    nodes: Record<string, { calls: number; p95_ms: number | null }>
+  }
   nodes: QualityNode[]
 }
 

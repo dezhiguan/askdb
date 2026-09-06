@@ -535,16 +535,27 @@ def test_quality_center_is_wired_to_real_endpoints():
 def test_quality_center_invents_no_composite_score():
     """设计稿有「离线质量分 92.9/100」「综合健康分 97.6/100」与「允许发布」门禁。
 
-    那几个数在设计稿里是**写死的**，没有任何来源。版本号（v2.4 / v2.3）同理：
-    askdb 没有版本概念，结果文件里也没有该字段。
+    那几个数在设计稿里是**写死的**，没有任何来源，页面上的同名指标必须由
+    真实数据算出来。
+
+    版本号是**有意的例外**（2026-09-06 产品决定）：askdb 没有对外的 Agent 版本
+    概念，但这一格要按设计稿显示。例外的代价是它随时可能与实际跑的东西对不上，
+    所以约束改成"只准有一处、且集中声明" —— 版本号必须是 AGENT_VERSION 这个
+    单一常量，不许散落成字面量。接上真正的版本来源时只需要换掉那一个常量。
 
     「允许发布」不在禁用之列，但有条件：它现在由 /api/eval 的 score.pass
     算出来（overall 与门禁比大小），页面只是显示。所以这里不禁字面量，
     而是钉住那条绑定 —— 一旦有人把它改回常量，判语又变成凭空下的结论。
     """
     src = _code_only(EVALUATION_PAGE)
-    for invented in ("92.9", "97.6", "4,286", "126 CASES", "v2.4", "v2.3"):
+    for invented in ("92.9", "97.6", "4,286", "126 CASES"):
         assert invented not in src, f"质量中心出现了没有来源的数字或判语：{invented}"
+
+    assert src.count("Agent v") <= 1, "版本号散落成多处字面量，改来源时必然漏改"
+    if "Agent v" in src:
+        assert "const AGENT_VERSION" in src, (
+            "写死的版本号必须收进 AGENT_VERSION 常量，接上真实来源时只改这一处"
+        )
 
     if "允许发布" in src:
         assert "sc.pass ?" in src or ".pass ?" in src, (
