@@ -2,7 +2,7 @@ import { PageHeader } from '../components/AppShell'
 import { useEffect, useMemo, useState } from 'react'
 import {
   fetchAudit, fetchAuditStats, fetchReplay, tracingLink, tracingReachable,
-  type AuditItem, type AuditList, type AuditStats, type Replay, type ReplayResult,
+  type AuditItem, type AuditList, type AuditStats, type Me, type Replay, type ReplayResult,
 } from '../api'
 import { KIND_NAMES, STEP_NAMES } from '../traceSteps'
 
@@ -28,7 +28,11 @@ type Drawer =
   | { mode: 'cost' }
   | null
 
-export function AuditPage() {
+export function AuditPage({ me }: { me: Me | null }) {
+  // 导出是**把数据带出这套系统**，比在页面上看一眼重一档：带走的那份文件
+  // 之后谁看、存在哪里，审计里都记不到。所以这一个动作要求登录，
+  // 与页面上原文可见与否（那是 text_visible 说了算）是两条独立的判据。
+  const signedIn = !!me?.username
   // 原文可见与否**以后端返回的 text_visible 为准**，不用 me 自己推。
   // 前端推一遍就多一处判据，两处迟早分叉 —— 而这一处分叉的后果是
   // 页面显示"已遮蔽"、接口却照样把原文发了出来。
@@ -112,15 +116,18 @@ export function AuditPage() {
           <div className="card-actions">
             {/* 成本分布原来挂在统计卡上，那一排撤掉后入口挪到这里 —— 抽屉本身是真功能 */}
             <button className="ghost" onClick={() => setDrawer({ mode: 'cost' })}>成本分布</button>
-            {/* 导出的就是问题原文 CSV。未登录时表格里本来也没有原文，
-                让他导出一份全是空列的文件，不如直接说清为什么 */}
+            {/* 导出的就是问题原文 CSV。未登录一律禁用：文件一旦落地就脱离了
+                这套系统的审计，至少要让带走它的人有名有姓。原文在页面上是否
+                可见另有 text_visible 管，两者都不满足就都不给导 */}
             <button
               className="ghost"
               onClick={exportReport}
-              disabled={!list || list.items.length === 0 || !textVisible(list)}
-              title={list && !textVisible(list)
-                ? '导出内容包含各条记录的问题原文，登录后才能导出；未登录可以看统计、护栏结果与耗时成本'
-                : undefined}
+              disabled={!signedIn || !list || list.items.length === 0 || !textVisible(list)}
+              title={!signedIn
+                ? '导出审计报告需要登录：文件带走后不再受这套系统的审计约束；未登录可以看统计、护栏结果与耗时成本'
+                : (list && !textVisible(list)
+                  ? '导出内容包含各条记录的问题原文，当前身份看不到原文，因此不能导出'
+                  : undefined)}
             >
               导出审计报告
             </button>

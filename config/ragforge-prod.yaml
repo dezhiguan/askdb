@@ -103,3 +103,109 @@ observability:
 
 tables_file: ./config/ragforge-prod-tables.yaml
 metrics_file: ./config/ragforge-prod-metrics.yaml
+
+# ---------------------------------------------------------------------------
+# 2026-09-06 补：登录、角色收窄、身份库。
+#
+# 这三段原本只在 config/ragforge.yaml 与 config/public.yaml 里有，这份主库配置
+# 漏了 auth 段 —— auth.enabled(cfg) 是「配置里开 且 有会话密钥」两个条件相与，
+# 少一个就整体 fail-closed，前端显示「登录未启用」。
+# 主库连的是真数据，比开发库更需要审计里有名有姓，不该是三份配置里唯一关着的。
+#
+# 账号名单与口令哈希与 config/ragforge.yaml、config/askdb.yaml 是同一份 ——
+# 账号跟着配置文件分裂，会出现「在这台登得进、换一台就说账号不存在」。
+# 会话密钥走 ASKDB_SESSION_SECRET（见 .env），不入配置。
+# ---------------------------------------------------------------------------
+
+# 收窄语义：有效表 = 实例白名单 ∩ 这里列的表，行上限取小。只能收窄不能放宽。
+role_policies:
+  ANONYMOUS:
+    tables: [organizations, knowledge_bases]
+    max_rows: 20
+  QA:
+    tables: [organizations, knowledge_bases, documents]
+    max_rows: 50
+  PRODUCT:
+    # 不含 model_usage_daily：token 与成本是内部经营数据
+    tables: [organizations, knowledge_bases, documents, retrieval_logs]
+    max_rows: 100
+  DATA_OWNER:
+    tables: [organizations, knowledge_bases, documents, retrieval_logs, model_usage_daily]
+    max_rows: 200
+
+auth:
+  enabled: true
+  required: false          # 匿名可查，登录只放宽可见范围（与开发库一致）
+  cookie_secure: false     # 本机 http 调试；对外入口的配置在 public.yaml
+  accounts:
+    - username: linxiao
+      display_name: 林晓
+      roles: [PRODUCT]
+      note: 产品经理，业务指标口径归口
+      password_hash: "scrypt$16384$8$1$vhM1HzHuJ4V5YetlwLXg8g==$iVlam6v03ZhIpmT1uNZMQw/xfckpssmwOgGNgc1Fflg="
+    - username: guandezhi
+      display_name: 官德志
+      roles: [DEV]
+      note: 架构师，护栏与执行链路
+      password_hash: "scrypt$16384$8$1$0EPKO7jCOIU+Wvv0rwv1zg==$wSpq+eYhL7CZ/TC55IiUZxmo1SZdPaG+MXHg/BC0BSU="
+    - username: zhouqi
+      display_name: 周琪
+      roles: [DEV]
+      note: 后端开发，数据源接入与自检
+      password_hash: "scrypt$16384$8$1$GJyZxxXZr/xLN1ZnnHkBmA==$SLzHvBGX3y5Q+hVDpCD1DXs5bxR5yuMNFNHTB6G/OSU="
+    - username: chenhao
+      display_name: 陈昊
+      roles: [DEV]
+      note: 后端开发，计划生成与检索
+      password_hash: "scrypt$16384$8$1$Ma8mAidkyNUn+qSndlAKgQ==$0dq3YHjPh8ZDBU0m64BJq3M5/yKvhS7K13TCceRk4lc="
+    - username: liwenbo
+      display_name: 李文博
+      roles: [DEV]
+      note: 前端开发，工作台与审计页
+      password_hash: "scrypt$16384$8$1$D01liqR8pQyF5zoDlanPuw==$J9EOYtR0AmUX9ZOU2Nbj1ZSgxG5Fh5D9jlb9rbfBfn4="
+    - username: zhaoke
+      display_name: 赵珂
+      roles: [DEV]
+      note: 数据开发，口径与黄金集维护
+      password_hash: "scrypt$16384$8$1$KTG29CNFpLcEGQGUEoHMxQ==$rogDG8OaBmAYiGm9h7fOxcwxRBU9nfUlHS8IuHPmQ5k="
+    - username: suwan
+      display_name: 苏晚
+      roles: [QA]
+      note: 测试工程师，护栏用例与离线回归
+      password_hash: "scrypt$16384$8$1$7DMSY1m93H4pyz9XVVlSBw==$pSkRItnDZpfs/3HaAvQMD4WV3zk6KHwOTm2+f8vctJs="
+    - username: zhengming
+      display_name: 郑铭
+      roles: [QA]
+      note: 测试工程师，性能与并发验证
+      password_hash: "scrypt$16384$8$1$D62U06Gm1UyXXGj3eqSdGA==$pCGagkth4g5QitF0iTp+9b5lHGeR6Iqef+EmY4tTge0="
+    - username: hejing
+      display_name: 何静
+      roles: [DATA_OWNER]
+      note: 数据负责人，审批高风险与高成本查询
+      password_hash: "scrypt$16384$8$1$wJUO73t8GXgjGSOpTvUqPg==$bx0EVzIFzA4xGrxw3y9Tv9pxMZ/My0tZTbQWdm9Egqc="
+    - username: xuting
+      display_name: 徐婷
+      roles: [SYS_ADMIN]
+      note: 平台管理员，只管角色成员、不查数据
+      password_hash: "scrypt$16384$8$1$TNdu6mU8cKCIFdJomXLPrg==$XuUzOS9EtRdATBE37Tgw/4ynuFi5da4uIOcqS6QV084="
+
+    - username: product
+      display_name: 产品角色
+      roles: [PRODUCT]
+      note: 看业务数据，不看 token 与成本
+      password_hash: "scrypt$16384$8$1$BXRPaoFjVz+u5NN5hPIZ0w==$m8kDCduTe+hR4xMIEAR8R8WPQJmfdG2vY6EFwEFsSGc="
+    - username: qa
+      display_name: 测试角色
+      roles: [QA]
+      note: 可见表更少、返回行上限更低
+      password_hash: "scrypt$16384$8$1$eLDdXb9uFjW/CfrHBgfQGg==$rq3O/fMjtndHe6sevcR7obmmWYYq/zi2MbPmY30brAU="
+    - username: owner
+      display_name: 数据负责人
+      roles: [DATA_OWNER]
+      note: 实例白名单内全部可见
+      password_hash: "scrypt$16384$8$1$39p9hx2CGTD3qLeQFcsSQQ==$w5wEOTvqtU/64iFbEG3Cda6D28Ck0jAOJd8tnPD+8dQ="
+
+identity:
+  # 连接串走 ASKDB_IDENTITY_DSN（见 .env），不写进仓库
+  enabled: true
+  password_env: ASKDB_IDENTITY_PG_PASSWORD

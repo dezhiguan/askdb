@@ -92,10 +92,10 @@ function App() {
     if (view === 'permissions') return <PermissionsPage notify={notify} me={me} />
     if (view === 'glossary') return <GlossaryPage onNavigate={setView} notify={notify} me={me} />
     if (view === 'approvals') return <ApprovalsPage notify={notify} />
-    if (view === 'audit') return <AuditPage />
+    if (view === 'audit') return <AuditPage me={me} />
     if (view === 'evaluation') return <EvaluationPage />
     if (view === 'traces') return <TracesPage onNavigate={setView} onOpenModal={setModal} me={me} />
-    return <AuditPage />
+    return <AuditPage me={me} />
   })()
 
   return (
