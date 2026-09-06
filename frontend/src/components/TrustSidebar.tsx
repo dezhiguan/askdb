@@ -6,7 +6,8 @@ import { useSqlDigest } from './ResultTabs'
 /** 右栏三块：能不能执行、按什么策略执行、执行完拿什么复核。
  *
  *  版式、标签与文案一律照原型（trusted-data-agent-prototype.html 第 2196-2216 行）。
- *  格子里的值取真实数据；askdb 没有对应维度的（数据时间窗口）按原型排版留「—」。
+ *  格子里的值一律取真实数据 —— 原型上的 90 DAYS / 15 SEC 是稿上的示意值，
+ *  照抄等于在可信侧栏上宣称一条并未执行的策略。
  *  评分环照原型固定显示 96 —— askdb 没有"结果可信度"这个口径，它是设计稿上的
  *  展示值，等真有准入评分再接。
  */
@@ -14,7 +15,7 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
   health: HealthState
   /** 工作台当前选中的数据源。切源时「本次执行策略」要跟着变 —— 护栏与
    *  租户是实例级、切源不变（原型亦如此），真正随源变的只有数据源身份这一项。 */
-  source?: { name: string; dialect: string; env?: string }
+  source?: { id?: string; name: string; dialect: string; env?: string }
   result: AskResult | null
   /** 「身份」一格要的当前登录态 */
   me?: Me | null
@@ -26,6 +27,11 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
   const canAsk = canExecute && !!ready?.llm.ok
   // 与结论卡上的摘要同源同算法：两处显示同一条 SQL 的哈希，不能各算各的
   const hash = useSqlDigest(result?.sql_final || result?.sql_raw || '')
+
+  // 数据期限。运行时源上时间窗口无法落地（sources.derive_config 显式关闭），
+  // 而 me.scope 算的是内置源 —— 选了运行时源就不能拿它去宣称一条窗口。
+  const windowDays = source?.id ? null : (me?.scope.max_age_days ?? null)
+  const windowLabel = windowDays == null ? '不限' : `最近 ${windowDays} DAYS`
 
   const admission = !ready ? { label: '读取中', tone: 'wait' }
     : !ready.datasource.ok ? { label: '数据源不可用', tone: 'bad' }
@@ -76,10 +82,10 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
             <span>数据源 / 环境</span>
             <strong>{source ? `${source.name} · 只读` : (ready?.datasource.detail ?? '—')}</strong>
           </div>
-          {/* 原型第二格是「允许数据范围 · 最近 90 DAYS」。askdb 没有数据时间窗口
-              这一策略维度，按原型排版留「—」，接入后再填 */}
-          <div className="policy-chip" title="askdb 尚未接入数据时间窗口策略">
-            <span>允许数据范围</span><strong>—</strong>
+          {/* 数据期限取真值，口径与权限页 ageLabel 逐字一致（未收窄即「不限」）——
+              同一件事在两页显示成两个样子，比显示得不好看更糟 */}
+          <div className="policy-chip" title="护栏 R-19 按此注入时间窗口谓词">
+            <span>允许数据范围</span><strong>{windowLabel}</strong>
           </div>
           <div className="policy-chip">
             <span>返回上限</span><strong>{ready ? `${ready.guard.max_rows} ROWS` : '—'}</strong>

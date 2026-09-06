@@ -2060,7 +2060,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 顶栏永远显示网关用户名（guandezhi），而那不是要给人看的东西
             "display_name": ident[1],
             "roles": ident[0],
-            "scope": {"tables": sorted(scoped.tables), "max_rows": scoped.max_rows},
+            # 数据期限与 tables / max_rows 同一个理由：配了要看得见生效。
+            # 给的是**生效值**而不是策略值 —— 运行时源上时间窗口落不了地
+            # （sources.derive_config 显式关闭），那里报一个天数就是在宣称
+            # 一条并未执行的策略，正是这套界面要消灭的东西。
+            "scope": {"tables": sorted(scoped.tables), "max_rows": scoped.max_rows,
+                      "max_age_days": scoped.window_days if scoped.window_enforceable else None},
         }
 
     @app.post("/api/auth/login")

@@ -723,8 +723,10 @@ export interface Me {
   username: string | null
   display_name: string
   roles: string[]
-  /** 当前身份的**生效边界**。权限体系最怕「配了但看不出有没有生效」。 */
-  scope: { tables: string[]; max_rows: number }
+  /** 当前身份的**生效边界**。权限体系最怕「配了但看不出有没有生效」。
+   *  max_age_days = 数据期限（天），null = 不限。取的是**生效值**：
+   *  运行时源上时间窗口落不了地，后端在那种情况下一律给 null。 */
+  scope: { tables: string[]; max_rows: number; max_age_days: number | null }
 }
 
 export async function fetchMe(): Promise<Me> {
