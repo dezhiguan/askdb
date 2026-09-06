@@ -935,6 +935,20 @@ export interface OfflineQuality {
     trace_id: string
     question: string
   }[]
+  /** 故障注入结果（evals/chaos.py）。没跑过就没有这个字段 —— 页面据此显示
+   *  「未测量」，不拿 0 顶替。rate 为 null = 这一类一次都没注入成功。 */
+  chaos?: {
+    /** 这一轮跑在哪个库上 */
+    datasource: string
+    /** 出处与当前连接是否一致。false 时页面必须标出来，不能当本实例的成绩读 */
+    matches_current: boolean
+    n_cases: number
+    /** 基线就没跑通、被排除在分母外的题数 */
+    skipped: number
+    ran_at: string
+    faults: { key: string; label: string; injected: number; recovered: number
+              rate: number | null }[]
+  }
   /** 发布门禁评分。四个维度由真实结果算，
    *  但 weight 与 gate 是**项目策略、不是测量值** —— policy_note 必须原样显示 */
   score?: {

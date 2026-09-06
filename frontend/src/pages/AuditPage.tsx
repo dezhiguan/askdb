@@ -310,6 +310,11 @@ function AuditRow({ item, stats, textVisible, onReplay }: {
 function GuardBadge({ item }: { item: AuditItem }) {
   if (item.ok) return <span className="status">通过</span>
   if (item.rejected_by === 'INTERRUPTED') return <span className="status wait">中断 · 可续跑</span>
+  // 续跑前置校验没过（权限收窄 / 库连不上 / 表结构变了）。**不是拦截也不是终态** ——
+  // 检查点还在，条件恢复后这条线程照样能续，措辞上不能和护栏拦截混为一谈。
+  if (item.rejected_by === 'RESUME_BLOCKED') {
+    return <span className="status wait">续跑校验未过 · 可重试</span>
+  }
   return <span className="status bad">{item.rejected_by} 拦截</span>
 }
 

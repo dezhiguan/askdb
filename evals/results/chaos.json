@@ -1,0 +1,98 @@
+{
+  "n_cases": 2,
+  "skipped": 8,
+  "faults": [
+    {
+      "key": "db_timeout",
+      "label": "数据库超时",
+      "injected": 2,
+      "recovered": 2,
+      "cases": [
+        {
+          "id": "s01",
+          "fired": true,
+          "recovered": true,
+          "detail": "注入后仍拿到与基线一致的结果",
+          "elapsed_ms": 2975
+        },
+        {
+          "id": "s06",
+          "fired": true,
+          "recovered": true,
+          "detail": "注入后仍拿到与基线一致的结果",
+          "elapsed_ms": 10175
+        }
+      ],
+      "rate": 1.0
+    },
+    {
+      "key": "llm_rate_limit",
+      "label": "模型限流",
+      "injected": 2,
+      "recovered": 0,
+      "cases": [
+        {
+          "id": "s01",
+          "fired": true,
+          "recovered": false,
+          "detail": "没能回来：LLM",
+          "elapsed_ms": 19
+        },
+        {
+          "id": "s06",
+          "fired": true,
+          "recovered": false,
+          "detail": "没能回来：LLM",
+          "elapsed_ms": 18
+        }
+      ],
+      "rate": 0.0
+    },
+    {
+      "key": "schema_drift",
+      "label": "Schema 漂移",
+      "injected": 2,
+      "recovered": 2,
+      "cases": [
+        {
+          "id": "s01",
+          "fired": true,
+          "recovered": true,
+          "detail": "明确失败而不是编造：EXEC",
+          "elapsed_ms": 1208
+        },
+        {
+          "id": "s06",
+          "fired": true,
+          "recovered": true,
+          "detail": "明确失败而不是编造：EXEC",
+          "elapsed_ms": 1337
+        }
+      ],
+      "rate": 1.0
+    }
+  ],
+  "provenance": {
+    "config": "config/sample.yaml",
+    "datasource": "duckdb:sample.duckdb",
+    "synthetic": true,
+    "org_id": 2,
+    "golden": "evals/golden.jsonl",
+    "n_cases": 10,
+    "model": "qwen3.8-flash",
+    "tables": [
+      "documents",
+      "knowledge_bases",
+      "model_usage_daily",
+      "organizations",
+      "retrieval_logs"
+    ],
+    "metrics": [
+      "文档数",
+      "卡住的文档",
+      "失败率",
+      "模型调用次数",
+      "平均检索耗时"
+    ]
+  }
+}

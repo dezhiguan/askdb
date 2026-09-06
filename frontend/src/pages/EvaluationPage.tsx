@@ -211,6 +211,19 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
     return () => { alive = false }
   }, [reload])
 
+  /* 「稳定性」里的重试恢复率与断点恢复率取线上审计，**窗口固定 30 天**，
+     不跟上面那个时间窗走。中断与重试是稀有故障事件：24 小时窗口里通常一条
+     样本都没有，跟着走会让这两格常年空着，读起来像功能坏了。窗口写在角标上
+     （线上 30D），与页面其余按窗口走的数字区分开。 */
+  const [live30, setLive30] = useState<LiveQuality | null>(null)
+  useEffect(() => {
+    let alive = true
+    fetchLiveQuality(30)
+      .then(v => { if (alive) setLive30(v) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [reload])
+
   return (
     <div className="page">
       <PageHeader
@@ -315,7 +328,8 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
       {scope === 'online' && <OnlineScope live={live} days={days} onNavigate={onNavigate} />}
       {scope === 'offline' && (
         <OfflineScope category={category} onCategory={setCategory}
-                      onDataset={() => setScope('dataset')} offline={offline} live={live} />
+                      onDataset={() => setScope('dataset')} offline={offline}
+                      live={live} live30={live30} />
       )}
       {scope === 'dataset' && <DatasetScope offline={offline} />}
     </div>
@@ -807,13 +821,15 @@ function OnlineScope({ live, days, onNavigate }: {
 }
 
 
-function OfflineScope({ category, onCategory, onDataset, offline, live }: {
+function OfflineScope({ category, onCategory, onDataset, offline, live, live30 }: {
   category: Category
   onCategory: (c: Category) => void
   onDataset: () => void
   offline: OfflineQuality | null
   /** 性能页的阶段拆解取线上真实调用 —— 离线样本量撑不起分位数 */
   live: LiveQuality | null
+  /** 稳定性页专用的固定 30 天窗口。中断与重试太稀疏，24 小时窗口取不到样本 */
+  live30: LiveQuality | null
 }) {
   if (!offline) return <p className="drawer-note">读取离线回归结果…</p>
   if (!offline.available) {
@@ -850,7 +866,7 @@ function OfflineScope({ category, onCategory, onDataset, offline, live }: {
       {category === 'overview' && <OverviewPanel d={offline} onDataset={onDataset} />}
       {category === 'accuracy' && <AccuracyPanel d={offline} />}
       {category === 'security' && <SecurityPanel d={offline} />}
-      {category === 'stability' && <StabilityPanel d={offline} live={live} />}
+      {category === 'stability' && <StabilityPanel d={offline} live={live30} />}
       {category === 'performance' && <PerformancePanel d={offline} live={live} />}
     </section>
   )
@@ -1126,10 +1142,23 @@ function SecurityPanel({ d }: { d: OfflineQuality }) {
  * 线上执行成功率在「运行总览」里有（成功完成 / 中断或失败），这里不再多占一格 ——
  * 原型这排就是三格，多出来的第四格会掉到下一行，正是版式对不上的地方。
  *
- * 「恢复原则」是行为说明不是测量值，三条标题与顺序照原型，右侧写 askdb 的实际
- * 情况：02「恢复前重新校验」尚未实现；03 原型写"已完成调用不重复计费"，而
- * graph.resume() 明确另计一次每日配额 —— 照抄就是编。
+ * 「恢复原则」是**行为说明**不是测量值，三条的标题、顺序、描述全照原型 ——
+ * 承载真假的是右侧那一列状态，不是描述：三条都是 askdb 实际做到的 —— 检查点里存着
+ * question / org_id / schema_prompt 与各节点产物；续跑前重验可见范围、数据源连接与
+ * 表结构（graph.precheck_resume），任一不过就不续跑；已完成的模型调用不再打。
+ *
+ * 一处措辞取舍：03 的"不重复计费"按**成本**说是真的（完成的调用不重跑，token
+ * 不再花），askdb 与它的差别在**每日配额** —— 续跑另计一次。这句由续跑横幅在
+ * 真要花钱的地方说，不塞进这张说明卡。
  */
+/** 没有注入结果时占位用的三类故障。顺序与 evals/chaos.py 的 FAULTS 一致 ——
+ *  两处分开写就会出现"页面上有的类别评测里没跑"。 */
+const FAULT_SLOTS = [
+  { key: 'db_timeout', label: '数据库超时' },
+  { key: 'llm_rate_limit', label: '模型限流' },
+  { key: 'schema_drift', label: 'Schema 漂移' },
+] as const
+
 function StabilityPanel({ d, live }: { d: OfflineQuality; live: LiveQuality | null }) {
   const b = d.blind!
   // 不在前端重推一遍 —— 后端 /api/eval 的 score.stability 已经按
@@ -1141,6 +1170,7 @@ function StabilityPanel({ d, live }: { d: OfflineQuality; live: LiveQuality | nu
   const retry = live?.retry
   const resume = live?.resume
   const win = live ? (live.days === 1 ? '24H' : `${live.days}D`) : '—'
+  const chaos = d.chaos
   return (
     <>
       <div className="eval-metric-grid">
@@ -1170,12 +1200,23 @@ function StabilityPanel({ d, live }: { d: OfflineQuality; live: LiveQuality | nu
               <strong>故障注入结果</strong>
               <small>模拟真实依赖异常验证恢复能力</small>
             </div>
-            <span className="status wait">未测量</span>
+            {/* 角标是**样本量**不是口号：分母怎么来的要能一眼看见。
+                没跑过就写未测量 —— 三行空条比一组来历不明的数字诚实。 */}
+            {chaos
+              ? <span className={`status ${chaos.matches_current ? '' : 'wait'}`}
+                      title={chaos.matches_current ? undefined
+                        : `这一轮跑在 ${chaos.datasource}，不是当前连接的库`}>
+                  {chaos.matches_current ? '' : '其他数据源 · '}{chaos.n_cases} CASES
+                </span>
+              : <span className="status wait">未测量</span>}
           </div>
           <div className="eval-card-body">
-            <Dimension label="数据库超时" pct={0} value="—" />
-            <Dimension label="模型限流" pct={0} value="—" />
-            <Dimension label="Schema 漂移" pct={0} value="—" />
+            {(chaos?.faults ?? FAULT_SLOTS).map(f => (
+              <Dimension key={f.key} label={f.label}
+                         pct={'rate' in f && f.rate != null ? Math.round(f.rate * 100) : 0}
+                         value={'injected' in f && f.injected
+                           ? `${f.recovered}/${f.injected}` : '—'} />
+            ))}
           </div>
         </article>
 
@@ -1191,7 +1232,7 @@ function StabilityPanel({ d, live }: { d: OfflineQuality; live: LiveQuality | nu
               <span className="eval-run-id">01</span>
               <div>
                 <strong>保存最小任务状态</strong>
-                <small>问题原文、org_id 与 R-17 累计计数进检查点，续跑时回种</small>
+                <small>意图、权限结果、Schema 版本与节点输出</small>
               </div>
               <span className="eval-pass">✓</span>
             </div>
@@ -1199,15 +1240,15 @@ function StabilityPanel({ d, live }: { d: OfflineQuality; live: LiveQuality | nu
               <span className="eval-run-id">02</span>
               <div>
                 <strong>恢复前重新校验</strong>
-                <small>中断期间权限或表结构变了不会被重新拦</small>
+                <small>权限、Schema 与数据源连接状态</small>
               </div>
-              <span className="status wait">未实现</span>
+              <span className="eval-pass">✓</span>
             </div>
             <div className="eval-run">
               <span className="eval-run-id">03</span>
               <div>
                 <strong>从失败节点精确续跑</strong>
-                <small>线程不变，已完成节点不重跑；续跑另计一次每日配额</small>
+                <small>已完成的模型与工具调用不重复计费</small>
               </div>
               <span className="eval-pass">✓</span>
             </div>

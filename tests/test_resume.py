@@ -66,3 +66,70 @@ def test_resume_endpoint_uniform_404_and_success(cfg, ex, monkeypatch):
     d = client.post("/api/resume", json={"thread_id": r1.thread_id}).json()
     assert d["ok"] is True and d["thread_id"] == r1.thread_id
     assert d["trace_id"] != r1.trace_id
+
+
+# ---------------------------------------------------------------- 恢复前重新校验
+
+
+def _blocked(cfg, ex, monkeypatch, tweak) -> tuple[graph.AskResult, graph.AskResult]:
+    """先制造一次中断，再按 tweak 改变续跑时的前提，返回（中断、续跑）两次结果。"""
+    r1 = _interrupted_ask(cfg, ex, monkeypatch)
+    tweak()
+    r2 = graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    assert r2 is not None
+    return r1, r2
+
+
+def test_resume_blocked_when_table_no_longer_visible(cfg, ex, monkeypatch):
+    """中断期间表被移出可见范围 —— 续跑必须停在校验，不能拿旧前提接着跑。"""
+    def revoke() -> None:
+        for name in list(cfg.tables):
+            cfg.tables.pop(name)
+
+    _, r2 = _blocked(cfg, ex, monkeypatch, revoke)
+    assert r2.ok is False and r2.rejected_by == graph.RESUME_BLOCKED
+    assert "可见范围" in r2.error
+    # 一次模型调用都不该花：校验在配额与图执行之前
+    assert r2.tok_in == 0 and r2.tok_out == 0
+
+
+def test_resume_blocked_on_schema_drift(cfg, ex, monkeypatch):
+    """白名单声明的列在库里没了 —— 检查点里那条 SQL 的前提已经不成立。"""
+    def drift() -> None:
+        from askdb.config import Column
+
+        t = next(iter(cfg.tables.values()))
+        t.columns["column_that_never_existed"] = Column(
+            name="column_that_never_existed", type="TEXT")
+
+    _, r2 = _blocked(cfg, ex, monkeypatch, drift)
+    assert r2.ok is False and r2.rejected_by == graph.RESUME_BLOCKED
+    assert "表结构" in r2.error
+
+
+def test_blocked_resume_keeps_the_task_resumable(cfg, ex, monkeypatch):
+    """被挡下不是终态：检查点还在，条件恢复后照样能续 —— 任务中心也得这么看。"""
+    from askdb.audit import tasks
+
+    r1 = _interrupted_ask(cfg, ex, monkeypatch)
+    saved = dict(cfg.tables)
+    cfg.tables.clear()
+    blocked = graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    assert blocked is not None and blocked.rejected_by == graph.RESUME_BLOCKED
+
+    row = next(t for t in tasks(cfg.audit_log, None) if t["thread_id"] == r1.thread_id)
+    assert row["status"] == "interrupted" and row["resumable"] is True
+
+    cfg.tables.update(saved)          # 条件恢复，续跑应当照常完成
+    ok = graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    assert ok is not None and ok.ok is True
+
+
+def test_blocked_resume_is_audited(cfg, ex, monkeypatch):
+    """挡下来这件事必须留痕，否则"我点了续跑没反应"事后查不出原因。"""
+    r1 = _interrupted_ask(cfg, ex, monkeypatch)
+    cfg.tables.clear()
+    r2 = graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    rec = get_audit(cfg.audit_log, r2.trace_id)
+    assert rec["kind"] == "resume" and rec["rejected_by"] == graph.RESUME_BLOCKED
+    assert rec["thread_id"] == r1.thread_id

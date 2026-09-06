@@ -725,6 +725,81 @@ def _interrupt_hint(cfg: Config, thread_id: str) -> str:
             "请重新提问。")
 
 
+#: 续跑被前置校验挡下时写进审计的 rejected_by。**不是终态** ——
+#: 检查点还在，条件恢复之后这条线程仍然可以续跑，所以任务状态里它
+#: 与 INTERRUPTED 同档（见 audit._thread_status）。
+RESUME_BLOCKED = "RESUME_BLOCKED"
+
+
+@dataclass
+class ResumeBlock:
+    """续跑前置校验没过的原因。code 进审计，error/hint 给人看。"""
+
+    code: str
+    error: str
+    hint: str
+
+
+def precheck_resume(cfg: Config, values: dict[str, Any],
+                    ex: Executor) -> ResumeBlock | None:
+    """续跑前重新校验权限、Schema 与数据源连接状态，都过才返回 None。
+
+    三项的顺序是有意的：先判不需要 IO 的权限，再判连接（连不上后面两项
+    都问不出来），最后比对表结构。
+
+    **权限**看的是**现在**的可见范围：cfg 已经按调用方当前角色收窄过
+    （server._scoped），中断期间被收回的表在这里就落不到白名单里。
+    **Schema** 比对白名单声明的列与库里实际的列：中断期间改过表结构的话，
+    检查点里那条 SQL 引用的列可能已经不存在 —— 直接跑下去要么报错，
+    要么更糟：列名被复用成了别的语义，跑通了但答的是另一件事。
+    """
+    hit = [str(t) for t in (values.get("tables_hit") or [])]
+
+    revoked = [t for t in hit if t not in cfg.tables]
+    if revoked:
+        return ResumeBlock(
+            code=RESUME_BLOCKED,
+            error=f"续跑前校验未通过：这条任务用到的表现在不在可见范围内（{'、'.join(revoked)}）",
+            hint="权限或白名单在中断期间收窄了。恢复权限后可以再续跑，检查点仍然保留。",
+        )
+
+    try:
+        ex.connect()
+    except DataSourceError as e:
+        return ResumeBlock(
+            code=RESUME_BLOCKED,
+            error=f"续跑前校验未通过：数据源当前连不上（{e}）",
+            hint=e.hint or "数据源恢复后可以再续跑，检查点仍然保留。",
+        )
+
+    if hit:
+        try:
+            actual = ex.describe(hit)
+        except Exception as e:        # noqa: BLE001 —— 取不到结构就不放行
+            return ResumeBlock(
+                code=RESUME_BLOCKED,
+                error=f"续跑前校验未通过：读不到表结构（{e}）",
+                hint="数据源恢复后可以再续跑，检查点仍然保留。",
+            )
+        drift: list[str] = []
+        for name in hit:
+            cols = {str(c.get("name")) for c in (actual.get(name) or [])}
+            if not cols:
+                drift.append(f"{name}（表已不存在）")
+                continue
+            gone = [c for c in cfg.tables[name].columns if c not in cols]
+            if gone:
+                drift.append(f"{name}.{'、'.join(gone)}")
+        if drift:
+            return ResumeBlock(
+                code=RESUME_BLOCKED,
+                error=f"续跑前校验未通过：表结构在中断期间变了（{'；'.join(drift)}）",
+                hint="检查点里的执行计划基于旧结构，续跑会答错。请重新提问，"
+                     "或把白名单与库对齐后再续跑。",
+            )
+    return None
+
+
 def _audit_of(result: AskResult, cfg: Config, kind: str,
               explain_rows: Any = None) -> dict[str, Any]:
     """审计记录统一在这里成形 —— ask / resume / 中断三条路共用一个形状。"""
@@ -922,6 +997,28 @@ def resume(
     question = str(snap.values.get("question", ""))
     org = int(snap.values.get("org_id", cfg.default_org))
     trace_id = uuid.uuid4().hex[:12]
+
+    # 恢复前重新校验（§恢复原则 02）。中断与续跑之间隔着任意长的时间，
+    # 检查点里存的是**中断那一刻**的前提；不重验就是拿旧前提接着跑，
+    # 而已经过了 guard 的那条 SQL 在续跑里不会再过一次 guard。
+    own_exec = executor is None
+    ex = executor or Executor(cfg)
+    try:
+        block = precheck_resume(cfg, snap.values, ex)
+    finally:
+        if own_exec:
+            ex.close()
+    if block is not None:
+        result = AskResult(
+            ok=False, question=question, trace_id=trace_id, org_id=org,
+            thread_id=thread_id, rejected_by=block.code,
+            error=block.error, hint=block.hint,
+            steps=[{"step": "resume_precheck", "status": "blocked",
+                    "ms": 0, "note": block.error}],
+        )
+        write_audit(cfg.audit_log, _audit_of(result, cfg, "resume"))
+        return result
+
     return _execute(cfg, question=question, org=org, trace_id=trace_id,
                     thread_id=thread_id, kind="resume",
                     executor=executor, llm=llm, init=None)

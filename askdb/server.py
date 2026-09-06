@@ -1454,6 +1454,36 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             out["ran_at"] = datetime.fromtimestamp(
                 blind_p.stat().st_mtime).astimezone().isoformat(timespec="seconds")
 
+        # 故障注入结果（evals/chaos.py 跑出来的）。**同样按出处挑** ——
+        # 注入跑在哪个库上决定了这组数字说的是谁的恢复能力；出处对不上就不给，
+        # 页面那张卡退回"未测量"，而不是把别的实例的成绩摆上去。
+        chaos_p = root / "chaos.json"
+        cd = _read(chaos_p if chaos_p.exists() else None)
+        if isinstance(cd, dict) and isinstance(cd.get("faults"), list):
+            cprov = (cd.get("provenance") or {}).get("datasource", "")
+            # 出处与当前连接对不上时**照给、但标出来** —— 与上面盲测成绩
+            # 同一套口径（matches_current）。直接藏掉的话，跑在样例库上的
+            # 那一轮就永远没地方看；而这个实例根本没有默认数据源，
+            # "对得上"这件事在这里从来不会为真。
+            out["chaos"] = {
+                    "datasource": cprov,
+                    "matches_current": _same_source(cprov, here),
+                    "n_cases": cd.get("n_cases") or 0,
+                    # 基线没跑通而被排除的题数照实给出去：只报 11/12 不说分母
+                    # 怎么来的，那个比例读起来就比实际可信
+                    "skipped": cd.get("skipped") or 0,
+                    "ran_at": datetime.fromtimestamp(
+                        chaos_p.stat().st_mtime).astimezone().isoformat(
+                            timespec="seconds"),
+                    "faults": [
+                        {"key": f.get("key", ""), "label": f.get("label", ""),
+                         "injected": f.get("injected") or 0,
+                         "recovered": f.get("recovered") or 0,
+                         "rate": f.get("rate")}
+                        for f in cd["faults"]
+                    ],
+            }
+
         # 复现必须用同一份配置：检查点库跟着配置走
         out["replay_config"] = (bd.get("provenance") or {}).get("config", "")
         out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）

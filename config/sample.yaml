@@ -1,0 +1,277 @@
+# 裁剪样例库配置 —— 不连任何真实库，跑评测与故障注入用。
+#
+# 与 config/askdb.yaml 的区别只有两处，都因为这里的数据源是 DuckDB：
+#   · 显式声明默认数据源（askdb.yaml 有意不声明，查询必须指定运行时源）
+#   · tenant.mode 用 predicate（rls 只有 PostgreSQL 有）
+#
+# 故障注入按这份配置跑：
+#   python -m evals.chaos -c config/sample.yaml --limit 10 \
+#       --out evals/results/chaos.json
+datasource:
+  type: duckdb
+  path: ./data/sample.duckdb
+  read_only: true
+
+# askdb 主配置 —— 对应技术设计说明书 V1.1 附录 A
+# 拟制日期 2026-08-11
+
+tenant:
+  column: org_id
+  # 2026-09-03 换库后改为 2。库里 443 个知识库中有 427 个 org_id 为 NULL，
+  # 任何租户都看不到它们 —— 这是对的（无归属数据不该被任一租户读到），
+  # 但也意味着换默认租户前要先确认该组织确实有数据，否则页面正常、结果恒空。
+  default_ctx: 2                     # P0 由 CLI --org 覆盖；后续由调用方上下文传入
+  # ragforge 库已对 askdb_ro 建好按 app.org_id 过滤的 RLS 策略，
+  # 与 executor.py 注入的 session 变量同名 —— 库侧兜底 + 谓词双保险。
+  mode: predicate            # predicate | rls | rls_and_predicate（rls 需 PostgreSQL）
+  on_unresolved: reject              # 无法确定租户归属时拒绝，不放行
+
+guard:
+  max_rows: 1000                     # R-13
+  max_scan_rows: 500000              # R-11（P1 接入 EXPLAIN 后生效）
+  statement_timeout_ms: 8000         # R-12（PostgreSQL 生效；DuckDB 见 executor 说明）
+  max_retry: 2                       # R-14，按步重置
+  allow_select_star: false           # R-05
+  allowed_schemas: [public, main]    # R-06：其余 schema 与跨库引用一律拒绝
+  deny_functions:                    # R-07
+    - read_csv
+    - read_parquet
+    - read_json
+    - glob
+    # 下面几个在 DuckDB 下不存在，仍然列上：白名单式配置一旦换库就该直接可用，
+    # 不该依赖"换库时记得补齐"（§4.1 R-07 点名要求 pg_sleep / pg_ls_dir）
+    - pg_read_file
+    - pg_ls_dir
+    - lo_import
+    - dblink
+    - pg_sleep
+
+planner:
+  # 多步是兜底路径不是默认路径。默认关闭 —— 首轮消融显示成本 +109%
+  # 而多跳准确率未提升，按 §6.3 的规则回退为开关。
+  # 2026-09-03 本机复测：C 组 14 条多跳全部被判「单步可答」，multi_step 一次未触发，
+  # 每问白付一次模型调用 +4.5s。关回 false。
+  enabled: false
+  max_steps: 3                       # R-16 总步数上限
+  max_carry_rows: 50                 # R-15 中间结果规模上限，超限即收敛
+  carry_columns_only: true           # 仅下传标识列，不下传整行（§5.3.2 / §10.1）
+  cost_cap_tokens: 12000             # R-17 单次问答累计 token 上限，0 表示不限
+  on_cap_reached: converge           # converge | fail —— 触顶后收敛作答并标注，不静默返回
+
+schema_rag:
+  # 运行时添加的数据源（/api/sources）无法携带表 desc/aliases，keyword 打分对中文
+  # 问题会全部得 0 分，退化成"恒定返回白名单前 top_k 张表"，表现为静默答错。
+  # 本机测试实例改走全量注入：32 张表整体约 3178 token，成本可接受。
+  mode: all                        # keyword（P0）| all | vector（P1）
+  top_k: 3
+  max_k: 5
+  token_budget: 12000
+  # 以下仅 mode: vector 生效
+  embedding_model: text-embedding-v4
+  min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求
+                         # 「召回 Top-K（默认 3）表」，所以过线的表不足 top_k 张时，
+                         # 会按相似度补齐到 top_k —— 宁可多给一张，也不让模型无表可用。
+                         # 想让它成为硬阈值，得先改设计文档里的 Top-K 约定。
+  max_metrics: 2         # 口径是强约束（"必须用此定义"），塞多了会误导模型
+
+llm:
+  provider: dashscope
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: qwen3.8-flash
+  temperature: 0
+  api_key_env: DASHSCOPE_API_KEY     # 仅走环境变量，禁止写入配置文件
+  price_input_per_1k: 0.0008        # 0.8 元/百万 Token（2026-09-06 核对官方单价）
+  price_output_per_1k: 0.0027       # 2.7 元/百万 Token
+  # 百炼的上下文缓存要显式创建，命中按标准输入价的 10% 计。实测本链路
+  # cache_read 恒为 0（没建显式缓存），所以这个价目前用不上，写在这里是为了
+  # 一旦启用显式缓存，账立刻就是对的，不必回头再改代码。
+  price_cached_input_per_1k: 0.00008
+  # 百炼无峰谷计费 —— 不配 peak_windows，倍率恒为 1.0。
+  thinking: false                   # 该模型默认开思考，必须显式关（见 llm.py _build）
+
+  # 备选模型：仅在主模型「调用失败」时兜底一次（限流 / 超时 / 厂商故障）。
+  # 生成的 SQL 不对不会切备选 —— 那是反思重试的职责，两者不要混。
+  # 未列出的字段沿用上面的主配置。
+  fallback:
+    provider: deepseek
+    base_url: "https://api.deepseek.com"
+    model: deepseek-v4-flash
+    api_key_env: DEEPSEEK_API_KEY
+    # DeepSeek 直连单价（官网 2026-09-06 核对）。备选的单价必须写全：
+    # 兜底触发时按**这里**结算，不再沿用主模型的价。
+    # 按高峰填，空闲由 offpeak_multiplier 向下打折 —— 漏配时偏贵不偏便宜。
+    price_input_per_1k: 0.003          # 未命中：高峰 3 元/1M（空闲 1.5）
+    price_output_per_1k: 0.009         # 高峰 9 元/1M（空闲 4.5）
+    price_cached_input_per_1k: 0.0001  # 命中：高峰 0.10 元/1M（空闲 0.05）
+    offpeak_multiplier: 0.5
+    peak_windows: ["09:00-12:00", "14:00-18:00"]   # 北京时间
+    peak_weekdays_only: true
+    peak_utc_offset_hours: 8
+
+  # ---- DeepSeek 直连单价（api-docs.deepseek.com 官方页，2026-09-06 核对）----
+  # 原先此处写的 1 元 / 2 元**不是 DeepSeek 直连价** —— 那是百炼转售
+  # deepseek-v4-flash 的价格。直连按峰谷两档计费，且差 2 倍：
+  #
+  #   deepseek-v4-flash   输入(未命中)  空闲 1.5 元/1M   高峰 3.0 元/1M
+  #                       输入(已命中)  空闲 0.05 元/1M  高峰 0.10 元/1M
+  #                       输出          空闲 4.5 元/1M   高峰 9.0 元/1M
+  #   deepseek-v4-pro     上述各档的 3 倍
+  #
+  # 高峰 = 北京时间周一至周五 9:00-12:00、14:00-18:00 —— 正好是工作时段，
+  # 所以对外服务的常态就是高峰价，估成本要按高峰估，不能拿空闲价自我安慰。
+  #
+  # 走百炼调 deepseek-v4-flash 反而更便宜（1 元 / 2 元，无峰谷）。这里仍然
+  # 直连，是拿钱换厂商隔离：备选跟主模型同挂百炼的话，百炼整体故障两级一起
+  # 死。差价只在兜底真的触发时才付，值得。
+
+observability:
+  audit_log: ./data/audit.jsonl
+  checkpoint_db: ./data/checkpoints.sqlite   # 失败样本原样复现，供 P3 评测归因
+  # 判定链路回放（设计说明 §5.2）。开着才有节点级明细：每一步的耗时、token、
+  # 护栏改写了什么、最终执行的是哪条 SQL。
+  #
+  # 默认关是因为**回放会返回 SQL 全文**，而 SQL 里带着表名列名与筛选条件。
+  # 这份配置现在连的是本机 ragforge 真实库，开启前提是它只监听 127.0.0.1、
+  # 只有本机能访问 —— 换到任何对外可达的实例上，这一项要重新掂量。
+  # （结果行与注入提示词仍不出接口：那是 audit.REPLAY_FIELDS 的字段白名单挡的，
+  #  与这颗开关无关。）
+  replay_api: true
+  # 每日**模型调用**上限（不是提问数），防循环调用导致成本失控。
+  # 内置样例库这份配置同时用于跑评测：一轮六组消融就是 240 次调用，
+  # 再加盲测集，500 会在中途触顶把剩余题目判为 QUOTA 失败、污染成绩。
+  # 生产配置（ragforge*.yaml）仍按 100～200 从严。
+  daily_quota: 3000
+
+tables_file: ./config/tables-ragforge.yaml
+metrics_file: ./config/metrics-ragforge.yaml
+
+# 运行时添加只读数据源。开着的时候，服务端会按界面填入的地址主动建连 ——
+# askdb 不设账号体系，所以这等于把出站建连的能力交给任何能打开页面的人。
+# 本机开发实例开启；任何对外可达的实例必须显式关闭（见 config/public.yaml）。
+# 内置数据源若要参与「环境范围」鉴权，在 datasource 段声明 env（dev / test / prod_ro）。
+# **不声明就不参与判定** —— 对着一个没声明归属的库宣称"已按环境鉴权"，
+# 等于在权限页上写一句不成立的话。运行时源在添加时必填，因此一律参与。
+# 这套部署没有内置源（只用运行时源），所以这里没有 datasource 段。
+datasources:
+  allow_runtime_add: true
+
+# ---------------------------------------------------------------------------
+# 身份与权限（可选）
+#
+# 只存"谁属于哪个角色"。认证不在这里 —— 谁是谁交给 auth-gateway，
+# 它已经有 JWKS、OAuth token-exchange、应用级 membership 那一整套。
+#
+# 不配 dsn 或 enabled=false 时功能整体关闭，接口返回 404。
+# **对外开放实例必须保持关闭**：askdb 的登录是固定账号、不携带网关身份，
+# 写接口没有可依据的请求方身份，只能靠部署方持有的 ASKDB_ADMIN_TOKEN 兜底。
+#
+# 这里指向的是 askdb 自己的元数据库，与 datasource 是两个库：
+# datasource 是只读的业务数据源，绝不能往里写。
+# ---------------------------------------------------------------------------
+identity:
+  # 打开开关即可；连接串走环境变量 ASKDB_IDENTITY_DSN，不写在仓库里 ——
+  # 这里写死某台机器的库名和账号，别人克隆下来只会看到 503。
+  #
+  #   createdb askdb_identity
+  #   echo 'ASKDB_IDENTITY_DSN=host=127.0.0.1 port=5432 dbname=askdb_identity user=你的用户名' >> .env
+  #
+  # 没有这个环境变量时功能自动关闭（enabled 为真也一样），页面显示「未启用」，
+  # 不会报错 —— 身份不是跑通 askdb 的必要条件。
+  enabled: true
+  password_env: ASKDB_IDENTITY_PG_PASSWORD
+
+# ---------------------------------------------------------------------------
+# 登录（本机开发）
+#
+# required: false —— 未登录能只读查询，登录页是可以跳过的落地页。
+# 敢这么放是因为写入面另有一道独立的门（写入中间件默认拒绝），
+# 匿名手里只剩"读"这一件事。
+#
+# **本文件里的账号只走口令登录，没有任何免口令账号。**
+# 十个内置人员各带 password_hash，口令统一 88888888（本机开发实例，
+# 对外部署必须换掉：`askdb hash-password` 重新生成哈希填进来）。
+# 登录页上的「一键体验」不是某个账号，而是跳过登录 —— 跳过之后就是未登录
+# 身份本身，因此不会出现"陌生访客的查询记在某个身份名下"这种伪造记录。
+#
+# 会话是无状态签名票，密钥走 ASKDB_SESSION_SECRET（`askdb session-secret` 生成）。
+# 没配这个环境变量则登录整体关闭 —— fail-closed 是有意的：自动生成随机密钥会让
+# 每个副本各签各的，表现是"刷新几次就掉线"，比登不上更难查。
+# ---------------------------------------------------------------------------
+auth:
+  enabled: true
+  # false = 未登录可以只读查询。登录页仍然是落地页（前端在未登录时先显示它），
+  # 但它是一扇**可以跳过**的门，跳过后就是未登录状态本身。
+  #
+  # 匿名可查在这里是安全的，前提是写入面被独立锁死：server.py 的写入中间件
+  # 默认拒绝一切 POST/PUT/PATCH/DELETE，只有查询与认证在豁免表里。
+  # 这两项是一对，改任何一个之前先看另一个。
+  required: false
+  session_ttl_days: 30             # 见 auth.py DEFAULT_TTL_DAYS 那段代价说明
+  cookie_secure: false             # 本机 http 调试，置 true 会导致 cookie 发不出去
+  # 内置人员名册。**固定十个人，没有自助注册、没有找回密码** ——
+  # 见 auth.py 顶部那段边界说明：这里只核对口令、发一张会话票。
+  # 口令统一 88888888，scrypt 哈希各带各的盐（同口令不同哈希，
+  # 泄露一份也推不出另一份）。
+  #
+  # 没有免口令账号。一键体验不是"以某个账号进入"，而是**跳过登录**：
+  # 未登录身份本身就能只读查询（required: false），而一切改动配置的操作
+  # 由 server.py 的写入中间件统一拦下。不造一个体验账号，就不会出现
+  # "陌生访客的查询记在某个身份名下"这种伪造的操作记录。
+  accounts:
+    - username: linxiao
+      display_name: 林晓
+      roles: [PRODUCT]
+      note: 产品经理，业务指标口径归口
+      password_hash: "scrypt$16384$8$1$vhM1HzHuJ4V5YetlwLXg8g==$iVlam6v03ZhIpmT1uNZMQw/xfckpssmwOgGNgc1Fflg="
+    - username: guandezhi
+      display_name: 官德志
+      roles: [DEV]
+      note: 架构师，护栏与执行链路
+      password_hash: "scrypt$16384$8$1$0EPKO7jCOIU+Wvv0rwv1zg==$wSpq+eYhL7CZ/TC55IiUZxmo1SZdPaG+MXHg/BC0BSU="
+    - username: zhouqi
+      display_name: 周琪
+      roles: [DEV]
+      note: 后端开发，数据源接入与自检
+      password_hash: "scrypt$16384$8$1$GJyZxxXZr/xLN1ZnnHkBmA==$SLzHvBGX3y5Q+hVDpCD1DXs5bxR5yuMNFNHTB6G/OSU="
+    - username: chenhao
+      display_name: 陈昊
+      roles: [DEV]
+      note: 后端开发，计划生成与检索
+      password_hash: "scrypt$16384$8$1$Ma8mAidkyNUn+qSndlAKgQ==$0dq3YHjPh8ZDBU0m64BJq3M5/yKvhS7K13TCceRk4lc="
+    - username: liwenbo
+      display_name: 李文博
+      roles: [DEV]
+      note: 前端开发，工作台与审计页
+      password_hash: "scrypt$16384$8$1$D01liqR8pQyF5zoDlanPuw==$J9EOYtR0AmUX9ZOU2Nbj1ZSgxG5Fh5D9jlb9rbfBfn4="
+    - username: zhaoke
+      display_name: 赵珂
+      roles: [DEV]
+      note: 数据开发，口径与黄金集维护
+      password_hash: "scrypt$16384$8$1$KTG29CNFpLcEGQGUEoHMxQ==$rogDG8OaBmAYiGm9h7fOxcwxRBU9nfUlHS8IuHPmQ5k="
+    - username: suwan
+      display_name: 苏晚
+      roles: [QA]
+      note: 测试工程师，护栏用例与离线回归
+      password_hash: "scrypt$16384$8$1$7DMSY1m93H4pyz9XVVlSBw==$pSkRItnDZpfs/3HaAvQMD4WV3zk6KHwOTm2+f8vctJs="
+    - username: zhengming
+      display_name: 郑铭
+      roles: [QA]
+      note: 测试工程师，性能与并发验证
+      password_hash: "scrypt$16384$8$1$D62U06Gm1UyXXGj3eqSdGA==$pCGagkth4g5QitF0iTp+9b5lHGeR6Iqef+EmY4tTge0="
+    - username: hejing
+      display_name: 何静
+      roles: [DATA_OWNER]
+      note: 数据负责人，审批高风险与高成本查询
+      password_hash: "scrypt$16384$8$1$wJUO73t8GXgjGSOpTvUqPg==$bx0EVzIFzA4xGrxw3y9Tv9pxMZ/My0tZTbQWdm9Egqc="
+    - username: xuting
+      display_name: 徐婷
+      roles: [SYS_ADMIN]
+      note: 平台管理员，负责角色成员与审批
+      password_hash: "scrypt$16384$8$1$TNdu6mU8cKCIFdJomXLPrg==$XuUzOS9EtRdATBE37Tgw/4ynuFi5da4uIOcqS6QV084="
+
+# 这份配置**有意不写 role_policies** —— 2026-09-06 起，仓库里**没有一份配置**
+# 再写它：所有角色（含匿名）看到的内容完全一样，唯一的角色差别是审批。
+#
+# 不额外收窄时，每个角色看到的就是实例白名单本身，与"没有角色"完全一致。
+# 机制仍在（identity.policy_for 读这个键，只能收窄不能放宽），但在这里写回
+# 任何一条，都是让角色之间重新出现差别的决定，不是一次配置微调。

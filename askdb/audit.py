@@ -175,13 +175,20 @@ def _redact(item: dict[str, Any], with_text: bool) -> dict[str, Any]:
     return {**item, "question": None, "user": ""}
 
 
+#: 这两个收尾码都表示「现场还在检查点里」：INTERRUPTED 是执行中断，
+#: RESUME_BLOCKED 是续跑前置校验没过（权限收窄 / 库连不上 / 表结构变了）。
+#: 后者**不是终态** —— 条件恢复后这条线程照样能续，所以判定上与中断同档。
+#: 归成 rejected 的话，任务中心会把它当"已收尾"，续跑入口跟着消失。
+_OPEN_CODES = frozenset({"INTERRUPTED", "RESUME_BLOCKED"})
+
+
 def _record_status(rec: dict[str, Any]) -> str:
     """单条记录怎么收尾的 —— ok / rejected / interrupted。
 
     与 _thread_status 是同一套判定，区别只在看谁：线程看最后一条，这里看这一条。
     两处都从 rejected_by 读，别在别处再写第三份。
     """
-    if rec.get("rejected_by") == "INTERRUPTED":
+    if rec.get("rejected_by") in _OPEN_CODES:
         return "interrupted"
     return "rejected" if rec.get("rejected_by") else "ok"
 
@@ -192,7 +199,7 @@ def _thread_status(last: dict[str, Any]) -> str:
     续跑写新 trace 但 thread 不变，所以线程的当前状态永远由最后一条决定；
     归属才看第一条（见 tasks 的说明）。
     """
-    if last.get("rejected_by") == "INTERRUPTED":
+    if last.get("rejected_by") in _OPEN_CODES:
         return "interrupted"              # 现场还在检查点里，可续跑
     if last.get("rejected_by"):
         return "rejected"                 # 被护栏拦下，已收尾
@@ -617,7 +624,7 @@ def _resume_of(records: list[dict[str, Any]]) -> dict[str, Any]:
             threads.setdefault(tid, []).append(r)
     broke = [sorted(rs, key=lambda r: str(r.get("ts", "")))
              for rs in threads.values()
-             if any(x.get("rejected_by") == "INTERRUPTED" for x in rs)]
+             if any(x.get("rejected_by") in _OPEN_CODES for x in rs)]
     recovered = [rs for rs in broke if not rs[-1].get("rejected_by")]
     return {
         "interrupted": len(broke),

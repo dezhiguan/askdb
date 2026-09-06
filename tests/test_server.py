@@ -291,6 +291,53 @@ def test_eval_exposes_real_results(cfg, tmp_path, monkeypatch):
     assert d["shipped"] == "E"
 
 
+def _eval_root(tmp_path, blind_extra: dict | None = None):
+    """一个最小可用的结果目录，供 /api/eval 用例复用。"""
+    import json
+
+    res = tmp_path / "evals" / "results"
+    res.mkdir(parents=True, exist_ok=True)
+    (res / "blind.json").write_text(json.dumps({
+        "n": 4, "accuracy": 1.0, "false_reject": 0.0, "block_rate": 1.0,
+        "multi_misuse": 0.0, "p95_ms": 1200, "cost_cny": 0.01,
+        "failure_kinds": {}, **(blind_extra or {})}), encoding="utf-8")
+    return res
+
+
+def test_eval_marks_chaos_from_another_datasource(cfg, tmp_path, monkeypatch):
+    """故障注入结果照给，但**出处必须标出来**。
+
+    它回答的是"这套部署坏了以后能不能自己回来"，换个库答案就不是同一个 ——
+    所以 matches_current 要如实给到页面。直接藏掉不行：有的实例（如生产那台）
+    压根没有默认数据源，"对得上"永远不会为真，藏掉就等于这张卡永远空着。
+    口径与上面盲测成绩的 provenance.matches_current 完全一致。
+    """
+    import copy
+    import json
+
+    res = _eval_root(tmp_path)
+    chaos = {"n_cases": 3, "skipped": 1,
+             "faults": [{"key": "db_timeout", "label": "数据库超时",
+                         "injected": 3, "recovered": 2, "rate": 0.6667}],
+             "provenance": {"datasource": "duckdb:not-this-one.duckdb"}}
+    (res / "chaos.json").write_text(json.dumps(chaos), encoding="utf-8")
+
+    c = copy.copy(cfg)
+    c.root = tmp_path
+    monkeypatch.setattr(server, "load", lambda _p: c)
+    d = TestClient(server.create_app("x")).get("/api/eval").json()
+    assert d["chaos"]["matches_current"] is False      # 页面据此标"其他数据源"
+    assert d["chaos"]["datasource"] == "duckdb:not-this-one.duckdb"
+
+    chaos["provenance"]["datasource"] = f"duckdb:{cfg.db_path.name}"
+    (res / "chaos.json").write_text(json.dumps(chaos), encoding="utf-8")
+    d = TestClient(server.create_app("x")).get("/api/eval").json()
+    assert d["chaos"]["matches_current"] is True
+    assert d["chaos"]["faults"][0]["recovered"] == 2
+    # 分母怎么来的必须一起给：被跳过的题数不能只留在结果文件里
+    assert d["chaos"]["skipped"] == 1 and d["chaos"]["n_cases"] == 3
+
+
 def test_sql_endpoint_renders_decimal_readably(client):
     """PostgreSQL 的高标度 numeric 用 str() 会变成 0E-20，人认不出那是 0。
 
