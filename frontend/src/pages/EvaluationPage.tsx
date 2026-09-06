@@ -627,7 +627,15 @@ function OnlineScope({ live, days, onNavigate }: {
                       {pct(n.success_rate)}
                     </td>
                     <td className="num">{fmtMs(n.p95_ms)}</td>
-                    <td>{n.fail_reason || '—'}</td>
+                    <td>
+                      {/* 原因来自模型自己给的理由，长短不受控（"给定的表 A / B / C 中都没有
+                          城市字段…"）。限宽后换行显示，不截断 —— 截断省略号看着干净，
+                          但要看清死在什么上就得悬停，等于把主要信息藏起来了。
+                          表名这类长串没有空格，overflow-wrap 让它也能断行 */}
+                      <span className="eval-fail-reason">
+                        {n.fail_reason || '—'}
+                      </span>
+                    </td>
                   </tr>
                 ))}
               </tbody>

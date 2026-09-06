@@ -106,6 +106,7 @@
 .eval-dataset-stat span { display: block; color: var(--muted); font-size: 7px; }
 .eval-dataset-stat strong { display: block; margin-top: 5px; font-family: var(--serif); font-size: 18px; }
 .eval-dataset-stat small { display: block; margin-top: 3px; color: var(--green); font-size: 6px; }
+.eval-fail-reason { display: block; max-width: 420px; white-space: normal; overflow-wrap: anywhere; line-height: 1.55; }
 .online-health-grid { min-width: 0; display: grid; grid-template-columns: 1fr; gap: 10px; }
 .online-health-grid > * { min-width: 0; }
 .online-signal-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 0; }
