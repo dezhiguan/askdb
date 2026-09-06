@@ -95,3 +95,48 @@ def test_anonymous_replay_is_indistinguishable_from_not_found(cfg, monkeypatch):
     assert anon.status_code == 404
     assert anon.text == missing.text          # 逐字节一致
 
+
+
+def test_trace_of_a_runtime_source_record_is_visible(cfg, monkeypatch):
+    """跑在运行时数据源上的记录，执行链路必须打得开。
+
+    2026-09-07：这里原来拿**启动配置**的白名单判可见性。多数据源之后，
+    任何运行时源上的记录都不可能是它的子集 —— careermate 源的记录
+    （users / resume_versions）在 ragforge 实例上一律 404，成功的、被拦下的
+    全都点不开右半屏。表现是"任务列得出来、点进去空白"，最容易被读成
+    "被拦截的没有执行链路"，而这跟拦不拦截根本无关。
+    """
+    import dataclasses
+    import json
+
+    from askdb.config import Column, Table
+
+    client = _client(cfg, monkeypatch, replay_api=True)
+    other = {"users": Table(name="users", desc="", aliases=[],
+                            columns={"id": Column("id", "BIGINT")}, tenant_exempt=True)}
+    # 一条"别的库上的"审计记录：它命中的表不在本实例白名单里，正是出问题的形状
+    rec = {"trace_id": "cc11cc11cc11", "thread_id": "cc11cc11cc11", "kind": "ask",
+           "ts": "2026-09-07T03:15:02+08:00", "user": "ops", "role": "DATA_OWNER",
+           "source": "src_other", "source_name": "另一个库",
+           "tables_hit": ["users"], "rejected_by": "NO_SQL", "attempts": 1,
+           "steps": [{"step": "generate_sql", "ms": 12, "status": "ok",
+                      "note": "生成 1 条 SELECT"}]}
+    with open(cfg.audit_log, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+    import types
+
+    stub = types.SimpleNamespace(id="src_other", name="另一个库",
+                                 tables=[{"name": "users"}])
+    monkeypatch.setattr(
+        server._sources, "get_source",
+        lambda _cfg, sid: stub if sid == "src_other" else None)
+    monkeypatch.setattr(
+        server._sources, "derive_config",
+        lambda base, _src: dataclasses.replace(base, tables=other,
+                                               source_id="src_other",
+                                               source_name="另一个库"))
+
+    r = client.get("/api/trace?trace_id=cc11cc11cc11")
+    assert r.status_code == 200, r.json()
+    assert r.json()["steps"], "链路节点必须真的出来，不能是空壳 200"

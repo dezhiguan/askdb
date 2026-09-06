@@ -1597,7 +1597,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         if rec is None:
             return not_found
 
-        scoped = _scoped(request)
+        scoped = _scoped(request, _cfg_of_record(rec, request))
         hit = {str(t).lower() for t in (rec.get("tables_hit") or [])}
         if hit and not hit <= {t.lower() for t in scoped.tables}:
             return not_found
@@ -1647,7 +1647,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 判据用记录里的 tables_hit 与本人此刻可见表取子集关系：
         # 记录是历史，权限是现在，一个人今天被移出某个角色，
         # 昨天的记录就该跟着看不见了。
-        scoped = _scoped(request)
+        # 收窄按**记录自己的数据源**取，理由见 _cfg_of_record ——
+        # 拿内置配置判，多源之后等于把运行时源上的记录整片挡在门外。
+        scoped = _scoped(request, _cfg_of_record(rec, request))
         hit = {str(t).lower() for t in (rec.get("tables_hit") or [])}
         if hit and not hit <= {t.lower() for t in scoped.tables}:
             return not_found
@@ -2126,6 +2128,30 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                        "白名单同时是安全边界与准确率边界。",
             )
         return _sources.derive_config(cfg, src)
+
+    def _cfg_of_record(rec: dict[str, Any], request: Request) -> Config:
+        """一条审计记录**当初跑在哪个源上**，就按那个源的配置判可见性。
+
+        用内置配置去判，是 2026-09-07 查出来的一个静默失效：执行追踪与复放
+        都写着"判据用 tables_hit 与本人此刻可见表取子集"，而"此刻可见表"取的是
+        启动配置的白名单。多数据源之后，任何跑在运行时源上的记录都不可能是
+        它的子集 —— careermate 源上的记录（users / resume_versions）在
+        ragforge-prod 实例上一律 404，成功的、被拦的，全都点不开右半屏。
+        表现是"列得出来、点进去空白"，最容易被读成"这条没有链路"。
+
+        判据本身不放宽：它守的是"表被移出白名单后，旧记录跟着看不见"，
+        按记录自己的源来判，这一条照样成立。角色自 2026-09-06 起不与数据源
+        绑定，所以这里不存在"换个源就能越权"的口子。
+
+        源被删了、记录没记源、或元数据库这会儿连不上，一律退回内置配置 ——
+        与改动前同一行为（那条记录看不到），不引入新的放行路径。
+        这里连 StoreUnavailable 一起吞：读一条历史链路不该因为数据源注册表
+        临时不可用而变成 503，那是**写**数据源时才需要报的错。
+        """
+        try:
+            return _cfg_for(str(rec.get("source") or ""), request)
+        except Exception:
+            return cfg
 
     @app.post("/api/ask")
     def ask(req: AskRequest, request: Request) -> JSONResponse:
