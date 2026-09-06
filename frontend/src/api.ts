@@ -81,6 +81,9 @@ export interface AuditList {
   /** 问题原文是否可见。未登录时后端不返回原文，且搜索只匹配 trace_id ——
    *  页面据此显示遮蔽提示，而不是让人以为这些记录本来就没问过问题。 */
   text_visible: boolean
+  /** 可见记录里真出现过的数据源（在其余筛选之前算），供下拉直接用。
+   *  空 id 是"未记录数据源"那一档，不是"全部"。 */
+  sources?: { id: string; name: string }[]
 }
 
 export interface Tracing {
@@ -174,6 +177,10 @@ export async function fetchAudit(params: {
   pageSize: number
   q: string
   kind: string
+  /** ok / rejected / interrupted，空串是不筛。非法值后端直接 400 */
+  status?: string
+  /** 数据源 id。'' 是合法取值（未记录数据源），所以"不筛"用 undefined 表示 */
+  source?: string
 }): Promise<AuditList> {
   const query = new URLSearchParams({
     page: String(params.page),
@@ -181,6 +188,8 @@ export async function fetchAudit(params: {
     q: params.q,
     kind: params.kind,
   })
+  if (params.status) query.set('status', params.status)
+  if (params.source !== undefined) query.set('source', params.source)
   const response = await fetch(`/api/audit?${query}`)
   if (!response.ok) throw new Error(`/api/audit ${response.status}`)
   return response.json()
@@ -750,6 +759,12 @@ export interface Task {
   /** 线程当前状态，看它最后一条记录：
    *  interrupted=现场还在检查点里 / rejected=被护栏拦下 / done=正常收尾 */
   status: 'interrupted' | 'rejected' | 'done'
+  /** 被哪条护栏规则拦下（R-03 / R-11 / EXEC …）。未被拦下为 null。 */
+  rejected_by?: string | null
+  /** 风险档与理由。审计里没有这个字段，是后端按已记录事实**折算**出来的
+   *  （见 askdb/audit.py 的 _risk）—— 所以理由必须跟着走，页面要能解释。 */
+  risk?: 'HIGH' | 'MEDIUM' | 'LOW' | null
+  risk_why?: string | null
   /** 只有 interrupted 的线程能续跑。列表列全部线程，续跑入口只对它们开放 ——
    *  给已收尾的线程也挂一个续跑按钮，点了必然失败 */
   resumable: boolean

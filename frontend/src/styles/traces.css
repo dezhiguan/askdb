@@ -65,6 +65,49 @@
 .trace-list .trace-item code { flex: none; white-space: nowrap; }
 .trace-list .audit-empty { padding: 14px 8px; }
 
+/* ---------- 左栏筛选条（原型：搜索 + 状态 + 数据源） ---------- */
+.traces-page .trace-filters {
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255,255,255,.45);
+}
+.traces-page .trace-search { position: relative; display: block; }
+.traces-page .trace-search i {
+  position: absolute; top: 50%; left: 8px; transform: translateY(-50%);
+  color: var(--muted); font-size: 8px; font-style: normal;
+}
+.traces-page .trace-search input {
+  width: 100%; padding: 8px 8px 8px 20px;
+  border: 1px solid var(--line); border-radius: 7px; outline: 0;
+  background: white; color: var(--ink); font-size: 8px;
+}
+.traces-page .trace-search input::placeholder { color: var(--muted); }
+.traces-page .trace-search input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(11,97,57,.08); }
+.traces-page .trace-filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.traces-page .trace-filter-row select {
+  width: 100%; padding: 7px 8px;
+  border: 1px solid var(--line); border-radius: 7px; outline: 0;
+  background: white; color: var(--ink-2); font-size: 8px;
+}
+.traces-page .trace-filter-row select:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(11,97,57,.08); }
+
+/* ---------- 滚动分页 ---------- */
+/* 列表自己滚而不是整页滚：右栏的节点链要一直看得见，否则每翻一次都得滚回去。
+   高度写死一屏半，不用 vh —— 卡片上面还有统计卡，vh 在矮屏上会把页脚顶出去。 */
+.traces-page .trace-list { max-height: 408px; overflow-y: auto; }
+.traces-page .trace-loading { padding: 9px; color: var(--muted); font-size: 7px; text-align: center; }
+.traces-page .trace-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 9px;
+  border-top: 1px solid var(--line);
+  background: var(--paper-2);
+  color: var(--muted); font-size: 7px;
+}
+.traces-page .trace-foot .ghost { padding: 6px 9px; background: #fff; font-size: 7px; }
+.traces-page .trace-foot .ghost:disabled { color: var(--muted); background: var(--paper-2); }
+
 /* ---------- 顶部动作 ---------- */
 /* 禁用态要说清为什么不可用，而不是让按钮看着能点 */
 .page-head button:disabled { color: var(--muted); background: var(--paper-2); box-shadow: none; cursor: not-allowed; }

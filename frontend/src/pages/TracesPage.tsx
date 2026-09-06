@@ -1,5 +1,5 @@
 import { PageHeader } from '../components/AppShell'
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchAudit, fetchAuditStats, fetchTraceChain, tracingLink,
   type AuditItem, type AuditStats, type ReplayStep, type TraceChain,
@@ -26,6 +26,9 @@ const secs = (ms: number | null | undefined) => ms == null ? '—' : `${(ms / 10
 /** 后端在这条 trace 上没有记录的字段，按原型的版位留占位符，不编数。 */
 const NA = '—'
 
+/** 滚动分页每次取多少条。12 条约是左栏一屏半 —— 一屏都填不满就触发不了滚动。 */
+const PAGE_SIZE = 12
+
 /** 工具/数据库类节点数 —— 原型「工具调用」那一格的真实口径。 */
 const toolCalls = (steps: ReplayStep[]) =>
   steps.filter(s => STEP_TYPE[s.step] === 'TOOL' || STEP_TYPE[s.step] === 'DB').length
@@ -45,6 +48,16 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
   // 所以单独再要一份 days=1 —— 其余三格仍用 30 天窗口，样本太小的 P95 没有意义。
   const [today, setToday] = useState<AuditStats | null>(null)
   const [items, setItems] = useState<AuditItem[] | null>(null)
+  /* 左栏改成"搜索 + 两个下拉 + 滚动分页"。三个筛选条件都走**服务端**：
+     只筛已加载的那一页，等于"搜不到"和"这一页里没有"分不开。 */
+  const [keyword, setKeyword] = useState('')
+  const [status, setStatus] = useState('')
+  /** 数据源筛选。undefined = 不筛；'' 是合法取值（未记录数据源那一档） */
+  const [source, setSource] = useState<string | undefined>(undefined)
+  const [sources, setSources] = useState<{ id: string; name: string }[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   // 存成 {key, result}，切换 trace 时靠 key 不匹配自然回到「读取中」，
   // 不需要在 effect 里先同步 setChain(null) —— 那会多触发一轮渲染
@@ -53,22 +66,57 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
 
   useEffect(() => {
     let alive = true
-    Promise.all([
-      fetchAuditStats(),
-      fetchAuditStats(1),
-      fetchAudit({ page: 1, pageSize: 12, q: '', kind: '' }),
-    ])
-      .then(([s, t, list]) => {
-        if (!alive) return
-        setStats(s)
-        setToday(t)
-        setItems(list.items)
-        // 进页面就该看到东西：默认选中最近一次调用，不要求先点一下
-        if (list.items.length > 0) setSelected(list.items[0].trace_id)
-      })
+    Promise.all([fetchAuditStats(), fetchAuditStats(1)])
+      .then(([s, t]) => { if (!alive) return; setStats(s); setToday(t) })
       .catch(e => { if (alive) setError(String(e.message || e)) })
     return () => { alive = false }
   }, [])
+
+  /* 输入即请求会把每个字母都打成一次查询。300ms 防抖后再落到 query 上，
+     筛选条件一变回到第一页 —— 停在第 5 页而结果只剩 3 条会看到一片空白。 */
+  const [query, setQuery] = useState('')
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(keyword.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [keyword])
+  useEffect(() => { setPage(1) }, [query, status, source])
+
+  useEffect(() => {
+    let alive = true
+    if (page === 1) setItems(null)
+    else setLoadingMore(true)
+    fetchAudit({ page, pageSize: PAGE_SIZE, q: query, kind: '', status, source })
+      .then(list => {
+        if (!alive) return
+        setError('')
+        setTotal(list.total)
+        if (list.sources) setSources(list.sources)
+        // 分页是**追加**：滚动加载的语义就是列表越来越长，不是换一页
+        setItems(current => (page === 1 ? list.items : [...(current ?? []), ...list.items]))
+        // 进页面就该看到东西：默认选中最近一次调用，不要求先点一下。
+        // 换筛选条件后原来选中的那条可能已经不在列表里，同样回到第一条。
+        if (page === 1) setSelected(list.items[0]?.trace_id ?? null)
+      })
+      .catch(e => { if (alive) setError(String(e.message || e)) })
+      .finally(() => { if (alive) setLoadingMore(false) })
+    return () => { alive = false }
+  }, [page, query, status, source])
+
+  const loaded = items?.length ?? 0
+  const allLoaded = items !== null && loaded >= total
+
+  /* 滚到底再往下拉一页。距底 40px 就触发：等到严格触底才加载，
+     惯性滚动会先撞一下空白。 */
+  const listRef = useRef<HTMLDivElement>(null)
+  const loadMore = useCallback(() => {
+    if (loadingMore || allLoaded || items === null) return
+    setPage(current => current + 1)
+  }, [loadingMore, allLoaded, items])
+  const onListScroll = () => {
+    const el = listRef.current
+    if (!el) return
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 40) loadMore()
+  }
 
   useEffect(() => {
     if (!selected) return
@@ -142,7 +190,41 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
             <div><strong>最近执行</strong><p>点击查看节点级 Span</p></div>
             <span className="status">{items ? 'LIVE' : '读取中'}</span>
           </div>
-          <div className="trace-list">
+
+          <div className="trace-filters">
+            <label className="trace-search">
+              <i aria-hidden="true">⌕</i>
+              <input
+                type="search"
+                value={keyword}
+                placeholder="搜索问题、Trace ID、发起人…"
+                aria-label="搜索执行记录"
+                onChange={event => setKeyword(event.target.value)}
+              />
+            </label>
+            <div className="trace-filter-row">
+              <select value={status} aria-label="按状态筛选" onChange={event => setStatus(event.target.value)}>
+                <option value="">全部状态</option>
+                <option value="ok">已完成</option>
+                <option value="rejected">已拦截</option>
+                <option value="interrupted">已中断</option>
+              </select>
+              {/* '' 是"未记录数据源"，所以"不筛"只能用另一个值表示 —— 用 __all__，
+                  不能拿空串兼任 */}
+              <select
+                value={source === undefined ? '__all__' : source}
+                aria-label="按数据源筛选"
+                onChange={event => setSource(event.target.value === '__all__' ? undefined : event.target.value)}
+              >
+                <option value="__all__">全部数据源</option>
+                {sources.map(item => (
+                  <option key={item.id} value={item.id}>{item.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="trace-list" ref={listRef} onScroll={onListScroll}>
             {items?.map(item => (
               <button
                 className={`trace-item ${selected === item.trace_id ? 'active' : ''}`}
@@ -160,7 +242,24 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
                 <code>{item.trace_id.slice(0, 6)}</code>
               </button>
             ))}
-            {items?.length === 0 && <div className="audit-empty">窗口内没有调用记录</div>}
+            {items?.length === 0 && (
+              <div className="audit-empty">
+                {query || status || source !== undefined ? '没有符合条件的执行记录' : '窗口内没有调用记录'}
+              </div>
+            )}
+            {loadingMore && <div className="trace-loading">加载中…</div>}
+          </div>
+
+          {/* 加载了多少 / 一共多少必须写出来：滚动分页最容易让人以为"就这些了" */}
+          <div className="trace-foot">
+            <span>已加载 {loaded} / {total} 条</span>
+            <button
+              className="ghost"
+              disabled={allLoaded || loadingMore || items === null}
+              onClick={loadMore}
+            >
+              {items === null ? '读取中…' : allLoaded ? '已全部加载' : loadingMore ? '加载中…' : '加载更多'}
+            </button>
           </div>
         </div>
 

@@ -1,5 +1,6 @@
 import { PageHeader } from '../components/AppShell'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   askQuestion,
   fetchReplay,
@@ -14,14 +15,19 @@ import {
 import {
   ClarificationModal,
   CreateTaskModal,
+  EMPTY_TASK_FILTERS,
   ModalShell,
+  TaskFilterModal,
   TaskReasonModal,
   TaskResultModal,
+  hasTaskFilter,
   type CreateTaskPayload,
   type TaskDetailView,
+  type TaskFilters,
   type TaskSourceOption,
 } from '../components/Modals'
 import type { View } from '../types'
+import { ruleTitle } from '../rules'
 import { writeGuard } from '../writeGuard'
 
 /* 结构、类名与文案对齐原型 trusted-data-agent-prototype.html 的 #view-tasks。
@@ -57,6 +63,18 @@ function fmtDuration(ms: number | null | undefined): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(2)}S` : `${Math.round(ms)}MS`
 }
 
+/** 发起时间档。ts 解析不出来时**不放行** —— 选了"今天"却混进一条时间不明的记录，
+ *  比少一条更糟：它会被当成今天发生的。 */
+function withinSince(ts: string, since: string): boolean {
+  if (since === 'all') return true
+  const date = new Date(ts)
+  if (!ts || Number.isNaN(date.getTime())) return false
+  if (since === 'today') return date.toDateString() === new Date().toDateString()
+  const days = since === '7d' ? 7 : since === '30d' ? 30 : 0
+  if (!days) return true
+  return Date.now() - date.getTime() <= days * 86400000
+}
+
 const STATUS_LABEL: Record<Task['status'], string> = {
   interrupted: '等待补充',
   rejected: '已拦截',
@@ -76,19 +94,35 @@ const STATE_GLYPH: Record<Task['status'], string> = {
   done: '✓',
 }
 
-type StatusFilter = 'all' | 'interrupted' | 'rejected' | 'done'
+/* 状态筛选下拉。原型给出七档，后端目前只落地其中三档（INPUT / DONE / BLOCK）——
+   NEW / RUN / APPROVAL 没有对应数据，选中后列表就是空的。这里**不**把它们藏起来：
+   下拉是状态口径的说明书，藏掉等于让人以为这三种状态不存在；空列表由空态文案说明。 */
+type StatusFilter = 'all' | 'pending' | 'running' | 'interrupted' | 'approval' | 'done' | 'rejected'
 
-const FILTER_ORDER: StatusFilter[] = ['all', 'interrupted', 'rejected', 'done']
+const FILTER_ORDER: StatusFilter[] = ['all', 'pending', 'running', 'interrupted', 'approval', 'done', 'rejected']
 const FILTER_LABEL: Record<StatusFilter, string> = {
-  all: '全部状态⌄',
-  interrupted: '等待补充⌄',
-  rejected: '已拦截⌄',
-  done: '已完成⌄',
+  all: '全部状态',
+  pending: '待执行',
+  running: '运行中',
+  interrupted: '等待补充',
+  approval: '等待审批',
+  done: '已完成',
+  rejected: '已拦截',
+}
+const FILTER_CODE: Record<StatusFilter, string> = {
+  all: 'ALL',
+  pending: 'NEW',
+  running: 'RUN',
+  interrupted: 'INPUT',
+  approval: 'APPROVAL',
+  done: 'DONE',
+  rejected: 'BLOCK',
 }
 
 type ModalState =
   | { kind: 'none' }
   | { kind: 'create' }
+  | { kind: 'filter' }
   | { kind: 'result'; task: Task }
   | { kind: 'reason'; task: Task }
   | { kind: 'clarify'; task: Task }
@@ -107,11 +141,17 @@ export function TasksPage({ onNavigate, notify, me }: {
   const [replay, setReplay] = useState<Replay | null>(null)
   const [replayLoading, setReplayLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [filterOpen, setFilterOpen] = useState(false)
-  const [keyword, setKeyword] = useState('')
+  const [statusOpen, setStatusOpen] = useState(false)
+  const [filters, setFilters] = useState<TaskFilters>(EMPTY_TASK_FILTERS)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [sources, setSources] = useState<TaskSourceOption[]>([])
+  const statusRef = useRef<HTMLDivElement>(null)
+  const statusMenuRef = useRef<HTMLDivElement>(null)
+  /* 菜单锚点（视口坐标）。菜单**必须**画到 body 上：任务卡为了让行的圆角不冒出边框
+     用了 overflow:hidden，菜单挂在卡片里就会被裁掉 —— 列表被筛空时卡片只有两三行高，
+     七档里只看得见四档。 */
+  const [statusAt, setStatusAt] = useState<{ top: number; right: number } | null>(null)
 
   const load = useCallback(() => {
     fetchTasks()
@@ -120,6 +160,35 @@ export function TasksPage({ onNavigate, notify, me }: {
   }, [])
 
   useEffect(load, [load])
+
+  // 展开前先量按钮位置：菜单画在 body 上，只能自己贴回按钮下方
+  const openStatusMenu = () => {
+    const rect = statusRef.current?.getBoundingClientRect()
+    if (rect) setStatusAt({ top: rect.bottom + 5, right: window.innerWidth - rect.right })
+  }
+
+  /* 下拉必须点外面能关、Esc 能关：只有按钮自身 toggle 的话，点走到别处它会一直悬在
+     卡片上盖住第一行任务。菜单在 body 上，"外面"要同时排除按钮和菜单两棵子树，
+     否则 mousedown 先把菜单卸掉，菜单项的 click 根本轮不到触发。
+     滚动时直接关掉：锚点是视口坐标，跟着滚会飘到按钮以外的地方去。 */
+  useEffect(() => {
+    if (!statusOpen) return
+    const inside = (node: Node) =>
+      Boolean(statusRef.current?.contains(node)) || Boolean(statusMenuRef.current?.contains(node))
+    const onDown = (event: MouseEvent) => { if (!inside(event.target as Node)) setStatusOpen(false) }
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setStatusOpen(false) }
+    const close = () => setStatusOpen(false)
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('scroll', close, true)
+    window.addEventListener('resize', close)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('resize', close)
+    }
+  }, [statusOpen])
 
   useEffect(() => {
     fetchSources()
@@ -144,14 +213,31 @@ export function TasksPage({ onNavigate, notify, me }: {
     return { interrupted, rejected, doneToday, rate }
   }, [items])
 
-  const matched = useMemo(() => {
-    const key = keyword.trim().toLowerCase()
-    return items.filter(task => {
-      if (statusFilter !== 'all' && task.status !== statusFilter) return false
-      if (!key) return true
-      return `${task.question ?? ''} ${task.thread_id} ${task.trace_id}`.toLowerCase().includes(key)
+  const matched = useMemo(() => items.filter(task => {
+    if (statusFilter !== 'all' && task.status !== statusFilter) return false
+    if (filters.source !== 'all' && (task.source ?? '') !== filters.source) return false
+    if (filters.risk !== 'all' && (task.risk ?? '') !== filters.risk) return false
+    if (filters.user !== 'all' && (task.user ?? '') !== filters.user) return false
+    if (!withinSince(task.ts, filters.since)) return false
+    return true
+  }), [items, statusFilter, filters])
+
+  /* 下拉的可选值只从**当前列表里真有的**值来：列出一个筛完是空的数据源，
+     等于让人自己去撞哪个有数据。 */
+  const sourceOptions = useMemo(() => {
+    const seen = new Map<string, string>()
+    items.forEach(task => {
+      const value = task.source ?? ''
+      if (!seen.has(value)) seen.set(value, task.source_name || task.source || '（未记录数据源）')
     })
-  }, [items, statusFilter, keyword])
+    return Array.from(seen, ([value, label]) => ({ value, label }))
+  }, [items])
+
+  const userOptions = useMemo(() => {
+    const seen = new Set<string>()
+    items.forEach(task => seen.add(task.user ?? ''))
+    return Array.from(seen, value => ({ value, label: value || '匿名' }))
+  }, [items])
 
   /* 分页。/api/tasks 一次返回全部线程（统计卡要算全量），所以这里在**客户端**切页，
      与筛选、关键词同一条链路 —— 服务端分页会让上面那四个统计数字失真。
@@ -164,7 +250,7 @@ export function TasksPage({ onNavigate, notify, me }: {
   )
 
   // 筛选条件一变就回到第一页 —— 停在第 7 页而结果只剩 2 条，会看到一片空白
-  useEffect(() => { setPage(1) }, [statusFilter, keyword, pageSize])
+  useEffect(() => { setPage(1) }, [statusFilter, filters, pageSize])
 
   /* 结果与原因都来自审计回放：没有回放就说没有，不靠状态推断内容 */
   const openDetail = (task: Task, kind: 'result' | 'reason') => {
@@ -257,26 +343,43 @@ export function TasksPage({ onNavigate, notify, me }: {
               <p>每个任务拥有独立状态、执行轨迹和审计记录。{result.user ? `账号 ${result.user}` : '匿名发起'} · 共 {items.length} 条。</p>
             </div>
             <div className="card-actions">
+              <div className="status-select" ref={statusRef}>
+                <button
+                  className={`ghost ${statusFilter === 'all' ? '' : 'on'}`}
+                  aria-haspopup="listbox"
+                  aria-expanded={statusOpen}
+                  onClick={() => { openStatusMenu(); setStatusOpen(open => !open) }}
+                >
+                  {FILTER_LABEL[statusFilter]}<i className="caret">⌄</i>
+                </button>
+                {statusOpen && statusAt && createPortal(
+                  <div
+                    className="task-status-menu"
+                    role="listbox"
+                    ref={statusMenuRef}
+                    style={{ top: statusAt.top, right: statusAt.right }}
+                  >
+                    {FILTER_ORDER.map(value => (
+                      <button
+                        key={value}
+                        role="option"
+                        aria-selected={value === statusFilter}
+                        className={value === statusFilter ? 'on' : ''}
+                        onClick={() => { setStatusFilter(value); setStatusOpen(false) }}
+                      >
+                        <span>{FILTER_LABEL[value]}</span><b>{FILTER_CODE[value]}</b>
+                      </button>
+                    ))}
+                  </div>,
+                  document.body,
+                )}
+              </div>
               <button
-                className={`ghost ${statusFilter === 'all' ? '' : 'on'}`}
-                onClick={() => setStatusFilter(current => FILTER_ORDER[(FILTER_ORDER.indexOf(current) + 1) % FILTER_ORDER.length])}
-              >
-                {FILTER_LABEL[statusFilter]}
-              </button>
-              <button className={`ghost ${filterOpen ? 'on' : ''}`} onClick={() => { setFilterOpen(open => !open); if (filterOpen) setKeyword('') }}>筛选</button>
+                className={`ghost ${hasTaskFilter(filters) ? 'on' : ''}`}
+                onClick={() => setModal({ kind: 'filter' })}
+              >筛选</button>
             </div>
           </div>
-
-          {filterOpen && (
-            <div className="task-filter">
-              <input
-                autoFocus
-                placeholder="按问题原文、线程号或 trace 过滤…"
-                value={keyword}
-                onChange={event => setKeyword(event.target.value)}
-              />
-            </div>
-          )}
 
           {/* 原型里本地新建的任务挂在这里；本实现的新建任务直接进真实任务流，
               容器保留以对齐结构（:empty 时不占位） */}
@@ -296,12 +399,17 @@ export function TasksPage({ onNavigate, notify, me }: {
                 </>
               ) : task.status === 'rejected' ? (
                 <>
-                  <div className="task-meta"><span>风险</span><strong>—</strong></div>
-                  <div className="task-meta"><span>原因</span><strong>GUARD</strong></div>
+                  <div className="task-meta"><span>风险</span><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
+                  {/* 原来这一格写死 GUARD —— 接口给的是**具体规则号**，写死等于把
+                      "撞了哪条护栏"这个唯一有用的信息抹掉了 */}
+                  <div className="task-meta">
+                    <span>原因</span>
+                    <strong title={ruleTitle(task.rejected_by ?? '')}>{task.rejected_by || 'GUARD'}</strong>
+                  </div>
                 </>
               ) : (
                 <>
-                  <div className="task-meta"><span>风险</span><strong>—</strong></div>
+                  <div className="task-meta"><span>风险</span><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
                   <div className="task-meta"><span>耗时</span><strong>{fmtDuration(task.elapsed_ms)}</strong></div>
                 </>
               )}
@@ -325,7 +433,7 @@ export function TasksPage({ onNavigate, notify, me }: {
               <strong>{items.length ? '当前筛选条件下没有任务。' : '这个账号名下还没有执行记录。'}</strong>
               <span>
                 {items.length
-                  ? '换个状态或清空筛选词再看；列表只包含当前账号发起的线程。'
+                  ? '换个状态，或在筛选里重置数据源、发起人与时间再看；列表只包含当前账号发起的线程。'
                   : '任务由提问产生 —— 登录后到查询 Agent 问一次，或在这里创建任务，这里就会出现对应的线程。历史记录若是匿名发起的，不会归到任何账号名下。'}
               </span>
             </div>
@@ -348,6 +456,18 @@ export function TasksPage({ onNavigate, notify, me }: {
       )}
 
       {!result && !error && <section className="card notice-card"><p>读取中…</p></section>}
+
+      {modal.kind === 'filter' && (
+        <ModalShell onClose={() => setModal({ kind: 'none' })}>
+          <TaskFilterModal
+            value={filters}
+            sources={sourceOptions}
+            users={userOptions}
+            onClose={() => setModal({ kind: 'none' })}
+            onApply={next => { setFilters(next); setModal({ kind: 'none' }) }}
+          />
+        </ModalShell>
+      )}
 
       {modal.kind === 'create' && (
         <ModalShell onClose={() => setModal({ kind: 'none' })}>
