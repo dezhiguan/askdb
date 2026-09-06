@@ -310,19 +310,57 @@ jobs:
           # 2026-09-03 起对外实例直连生产主库，登录**必须**是门 ——
           # 库里是真数据，至少要让调用方在审计里有名有姓
           assert d["required"] is True, f"连真实库的实例必须强制登录：{d}"
-          assert d["demo_accounts"], f"一键体验账号为空，登录面板会是死的：{d}"
-          print("登录已就绪，一键体验账号：",
-                ", ".join(a["username"] for a in d["demo_accounts"]))
+          print("登录已启用，当前匿名可见范围：", d["scope"])
           PY
+          # 配置开关为真只说明"打算开"。再打一次错口令：401 才说明登录这条路
+          # 真的通到了账号表 —— 缺 ASKDB_SESSION_SECRET 时这里会是 404。
+          # （/api/auth/demo 已随 61f4a8b「登录落地」下线，一键体验改为纯前端
+          #   跳过登录，因此不再有 demo_accounts 这个字段可断言。）
+          CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' \
+            -X POST "${BASE}/api/auth/login" -H 'Content-Type: application/json' \
+            -d '{"username":"owner","password":"ci-smoke-wrong-password"}')"
+          [[ "${CODE}" == "401" ]] || {
+            echo "::error::错口令登录返回 ${CODE}，期望 401 —— 登录路径没通"; exit 1; }
+
+      - name: Sign in for the authenticated checks
+        env:
+          BASE: ${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}
+          SMOKE_USER: ${{ vars.ASKDB_SMOKE_USER || 'owner' }}
+          SMOKE_PASSWORD: ${{ secrets.ASKDB_SMOKE_PASSWORD }}
+        run: |
+          # required: true（2026-09-03，实例直连生产主库）之后，**读写都要登录** ——
+          # 连 /api/introspect 匿名也是 401。冒烟因此必须先拿会话票。
+          #
+          # 原来走的是 /api/auth/demo（一键体验只跳过认证不跳过授权），那条路
+          # 已随 61f4a8b「登录落地」下线，一键体验改为纯前端跳过登录、不建会话，
+          # 而这份配置 required: true 根本没有那条路。只剩口令登录。
+          #
+          # 口令不入仓库也不入配置：放在仓库 secret ASKDB_SMOKE_PASSWORD 里。
+          # 没配就直接红 —— 跳过会让这三步变成"全绿但什么都没验"，那正是这套
+          # 冒烟反复要挡住的事。
+          set -euo pipefail
+          BASE="${BASE%/}"
+          if [[ -z "${SMOKE_PASSWORD}" ]]; then
+            echo "::error::缺少仓库 secret ASKDB_SMOKE_PASSWORD —— 冒烟拿不到会话，" \
+                 "后面三步（护栏拦写 / 默认租户有数 / 内省可达）全都验不了。" \
+                 "补法：gh secret set ASKDB_SMOKE_PASSWORD（账号见 config/public.yaml 的 auth.accounts，" \
+                 "默认用 owner，可用 vars.ASKDB_SMOKE_USER 换）"
+            exit 1
+          fi
+          jq -n --arg u "${SMOKE_USER}" --arg p "${SMOKE_PASSWORD}" \
+            '{username:$u, password:$p}' > /tmp/login.json
+          CODE="$(curl -s -o /tmp/login-out.json --max-time 20 -w '%{http_code}' -c /tmp/ck.txt \
+            -X POST "${BASE}/api/auth/login" -H 'Content-Type: application/json' \
+            --data-binary @/tmp/login.json)"
+          rm -f /tmp/login.json
+          [[ "${CODE}" == "200" ]] || {
+            echo "::error::冒烟账号登录失败（HTTP ${CODE}）—— 口令过期或账号已从配置里移除"; exit 1; }
+          grep -q askdb_session /tmp/ck.txt || {
+            echo "::error::登录返回 200 却没有下发会话 cookie"; exit 1; }
 
       - name: Guardrail still blocks writes
         run: |
           BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
-          # required: true 之后匿名直查会拿 401，冒烟必须先拿会话票。
-          # 用一键体验账号：它只跳过认证不跳过授权，走的是与口令登录同一条路径。
-          curl --fail --silent --show-error --max-time 20 -c /tmp/ck.txt \
-            -X POST "${BASE}/api/auth/demo" \
-            -H 'Content-Type: application/json' -d '{"username":"owner"}' >/dev/null
           BODY="$(curl --fail --silent --show-error --max-time 15 -b /tmp/ck.txt -X POST "${BASE}/api/sql" \
             -H 'Content-Type: application/json' -d '{"sql":"DELETE FROM documents"}')"
           python3 - <<'PY' "${BODY}"
@@ -345,10 +383,7 @@ jobs:
           # 正确拦掉。那不是故障，是这条断言写在收窄之前。换一张匿名看得见的表，
           # "默认租户下确实查得到数据"这个本意一点没变。
           BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
-          curl --fail --silent --show-error --max-time 20 -c /tmp/ck2.txt \
-            -X POST "${BASE}/api/auth/demo" \
-            -H 'Content-Type: application/json' -d '{"username":"owner"}' >/dev/null
-          BODY="$(curl --fail --silent --show-error --max-time 15 -b /tmp/ck2.txt -X POST "${BASE}/api/sql" \
+          BODY="$(curl --fail --silent --show-error --max-time 15 -b /tmp/ck.txt -X POST "${BASE}/api/sql" \
             -H 'Content-Type: application/json' -d '{"sql":"SELECT COUNT(1) AS c FROM knowledge_bases"}')"
           python3 - <<'PY' "${BODY}"
           import json, sys
@@ -361,10 +396,15 @@ jobs:
       - name: Introspection endpoints are open (2026-08-25 运营决定)
         run: |
           # 对外实例已放开自检/内省与 ask 每 IP 限流，只保留应用层每日配额
-          # （入口配置见 rag-forge#14）。冒烟改为钉住"放开"这个新姿态：
-          # 若哪天又变回 404，说明入口被回滚，需要有人知道。
+          # （入口配置见 rag-forge#14）。冒烟钉住"入口没把它们挡回 404"。
+          #
+          # 带会话票请求：required: true 之后**读也要登录**，匿名拿到的是 401。
+          # 那是登录门在起作用，不是入口被回滚 —— 两者要分开，所以顺带钉住
+          # 匿名确实是 401 而不是 404。
           BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
           for p in /api/introspect /api/selfcheck; do
-            CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE}${p}")"
-            [[ "${CODE}" == "200" ]] || { echo "${p} 期望 200，实得 ${CODE}"; exit 1; }
+            CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -b /tmp/ck.txt "${BASE}${p}")"
+            [[ "${CODE}" == "200" ]] || { echo "${p} 带会话期望 200，实得 ${CODE}"; exit 1; }
+            ANON="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE}${p}")"
+            [[ "${ANON}" == "401" ]] || { echo "${p} 匿名期望 401（登录门），实得 ${ANON}"; exit 1; }
           done
