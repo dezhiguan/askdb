@@ -16,7 +16,13 @@ export interface SourcesState {
   current: SourceCard | null
 }
 
-export function useSources(): SourcesState {
+/**
+ * @param hasBuiltin 启动配置里有没有默认数据源。null = health 还没读到。
+ *   没有内置源时，工作台的选择器会回落到第一个运行时源（options[0]），
+ *   顶栏必须按同一条规则回落 —— 否则第一次进来就是"顶栏说未设默认源、
+ *   下面的选择器已经选中了某个库"，两处对不上。
+ */
+export function useSources(hasBuiltin: boolean | null): SourcesState {
   const [items, setItems] = useState<SourceCard[]>([])
   const [sourceId, setSourceId] = useState('')
 
@@ -32,6 +38,11 @@ export function useSources(): SourcesState {
     items,
     sourceId,
     setSourceId,
-    current: items.find(i => i.id === sourceId && !i.builtin) ?? null,
+    // sourceId 为空串意为"用内置源"。内置源确实存在时顶栏走 health 那条分支，
+    // 这里返回 null 是对的；内置源根本没配时，实际生效的是第一个运行时源。
+    current: items.find(i => i.id === sourceId && !i.builtin)
+      ?? (sourceId === '' && hasBuiltin === false
+        ? items.find(i => !i.builtin) ?? null
+        : null),
   }
 }

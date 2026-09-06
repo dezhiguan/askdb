@@ -46,7 +46,7 @@ function App() {
   // 侧栏「发起快捷查询」重开一次工作台
   const [queryEpoch, setQueryEpoch] = useState(0)
   const health = useHealth()
-  const sources = useSources()
+  const sources = useSources(health.status === 'ready' ? health.health.datasource.configured : null)
 
   // 身份与生效边界。登录/退出后必须重新拉一次 —— 可见表变了，
   // 页面上那些「当前能查什么」的显示不跟着变就是在说谎

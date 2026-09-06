@@ -27,16 +27,14 @@ interface AppShellProps {
  */
 /** 顶栏中段：当前空间。
  *
- *  版式照原型 —— 「当前空间 /」+ 三枚 chip。三枚各自填的是**askdb 真有的东西**：
- *    1. 正在查哪个库（跟随工作台的数据源切换，不是永远显示内置源）
- *    2. 库在哪（本机文件 / 本机 / 远端）
- *    3. 这条连接的性质：运行时源报它自己声明的环境，内置源报 READ-ONLY
+ *  版式照原型 —— 「当前空间 /」+ 一枚 chip，填的是**正在查哪个库**（跟随工作台
+ *  的数据源切换，不是永远显示内置源）。
  *
- *  原型第二枚写「企业内网」、第三枚写「PROD-RO」。前者是部署事实，askdb 无从得知；
- *  后者只有数据源自己声明了环境才成立 —— 一律写 PROD-RO 等于对着测试库宣称
- *  "这是生产只读镜像"。
+ *  2026-09-06 撤掉了原来并排的另外两枚（库在哪 / 连接性质）。它们对着同一个
+ *  本机库恒定显示"本机"与"TEST"，对使用者没有任何决策价值，只是把顶栏塞满。
+ *  库的位置与只读性质在「数据源」页和信任侧栏都查得到。
  *
- *  配置文件路径挪进第一枚 chip 的 title：同一台机器上会同时跑多个实例、界面长得
+ *  配置文件路径挪进这枚 chip 的 title：同一台机器上会同时跑多个实例、界面长得
  *  一模一样，这条信息不能没有，但它不该占顶栏的视觉位置。
  */
 function WorkspaceContext({ health, source }: { health: HealthState; source: SourceCard | null }) {
@@ -50,8 +48,6 @@ function WorkspaceContext({ health, source }: { health: HealthState; source: Sou
           <i className={source.table_count ? 'online-dot' : 'idle-dot'} />
           {source.name}
         </div>
-        <div className="context-chip hide-mobile">{placeOfHost(source.type, source.host)}</div>
-        <div className="context-chip hide-mobile">{ENV_LABEL[source.env] ?? 'READ-ONLY'}</div>
       </div>
     )
   }
@@ -84,7 +80,6 @@ function WorkspaceContext({ health, source }: { health: HealthState; source: Sou
         <div className="context-chip" title={datasource.hint || undefined}>
           <i className="idle-dot" />未设默认源
         </div>
-        <div className="context-chip hide-mobile">按查询选源</div>
       </div>
     )
   }
@@ -99,20 +94,8 @@ function WorkspaceContext({ health, source }: { health: HealthState; source: Sou
         {datasource.ok && <i className="online-dot" />}
         {datasource.ok ? datasource.detail : '数据源不可用'}
       </div>
-      <div className="context-chip hide-mobile">{placeOfHost(datasource.type, datasource.detail)}</div>
-      {/* 内置源没有环境声明。READ-ONLY 对 askdb 的所有连接都成立：
-          duckdb 以 read_only 打开，postgres 会话强制 default_transaction_read_only */}
-      <div className="context-chip hide-mobile">READ-ONLY</div>
     </div>
   )
-}
-
-const ENV_LABEL: Record<string, string> = { prod_ro: 'PROD-RO', test: 'TEST' }
-
-/** 库在哪。duckdb 是本机文件；其余看主机是不是回环地址。 */
-function placeOfHost(type: string, where: string): string {
-  if (type === 'duckdb') return '本机文件'
-  return /(^|@|\s)(127\.0\.0\.1|localhost)\b/.test(where) ? '本机' : '远端'
 }
 
 export function AppShell({ activeView, health, source, onNavigate, onQuickNew, me, onOpenLogin, onSignOut, notice, children }: AppShellProps) {
@@ -122,7 +105,6 @@ export function AppShell({ activeView, health, source, onNavigate, onQuickNew, m
         <Brand />
         <WorkspaceContext health={health} source={source} />
         <div className="top-actions">
-          <span className="secure-label"><i className="online-dot" /> 数据不出域</span>
           <Identity me={me} onOpenLogin={onOpenLogin} onSignOut={onSignOut} />
         </div>
       </header>
@@ -158,10 +140,12 @@ export function AppShell({ activeView, health, source, onNavigate, onQuickNew, m
   )
 }
 
-/** 顶栏身份位。
+/** 顶栏身份位：只回答「你是谁」。
  *
- * 除了「是谁」，还要把**生效边界**摆出来（可见表数 / 行上限）——
- * 权限体系最怕的是"配了但看不出有没有生效"，而这一格是访客唯一会看的地方。
+ * 2026-09-06 撤掉了这里的生效边界（可见表数 / 行上限）。原本摆在这里是为了
+ * 让"配了但看不出有没有生效"可见，但自 RBAC 拍平之后各角色可见面完全相同，
+ * 顶栏那串数字对任何人都是同一个值，不再有区分度，只是噪声。
+ * 边界仍可在信任侧栏查看。
  */
 function Identity({ me, onOpenLogin, onSignOut }: {
   me: Me | null
@@ -173,24 +157,15 @@ function Identity({ me, onOpenLogin, onSignOut }: {
     return <span className="context-chip" title="未配置会话密钥，登录整体关闭">登录未启用</span>
   }
 
-  const scope = `${me.scope.tables.length} 表 · ${me.scope.max_rows} 行`
-
+  // 未登录时不再单独占一格：旁边的「登录」按钮已经把状态说清楚了。
   if (!me.username) {
-    return (
-      <>
-        <span className="context-chip" title={`可见表：${me.scope.tables.join('、')}`}>
-          未登录 · {scope}
-        </span>
-        <button className="primary" onClick={onOpenLogin}>登录</button>
-      </>
-    )
+    return <button className="primary" onClick={onOpenLogin}>登录</button>
   }
   return (
     <>
       <span className="context-chip identity-chip" title={`可见表：${me.scope.tables.join('、')}`}>
         <b>{me.display_name || me.username}</b>
         <em>{me.roles.join('+') || '无角色'}</em>
-        <span className="dim">{scope}</span>
       </span>
       <button className="ghost" onClick={onSignOut}>退出</button>
     </>

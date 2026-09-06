@@ -21,7 +21,7 @@
   .topbar { position: fixed; inset: 0 0 auto; z-index: 40; height: 56px; display: flex; justify-content: space-between; }
   .topbar > .brand { width: 56px; border-right: 0; }
   .workspace-context { flex: 1; min-width: 0; padding-left: 3px; }
-  .workspace-context > span, .hide-mobile, .secure-label, .user-copy, .user-menu > span:last-child { display: none; }
+  .workspace-context > span, .hide-mobile, .user-copy, .user-menu > span:last-child { display: none; }
   .top-actions { padding-right: 8px; }
   .user-menu { padding: 2px; border: 0; background: transparent; }
   .sidebar { position: fixed; z-index: 39; top: 56px; left: 0; right: 0; height: 48px; display: flex; gap: 4px; padding: 4px 8px; border-right: 0; border-bottom: 1px solid var(--line); background: rgba(228,225,215,.96); overflow-x: auto; overflow-y: hidden; }
