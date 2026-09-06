@@ -232,7 +232,15 @@ def test_tight_config_differs_from_prod_only_in_scan_threshold():
     prod, tight = load("config/ragforge-prod.yaml"), load("config/ragforge-tight.yaml")
     assert set(prod.tables) == set(tight.tables)
     assert [m.name for m in prod.metrics] == [m.name for m in tight.metrics]
-    assert prod.dsn == tight.dsn and prod.default_org == tight.default_org
+    assert prod.default_org == tight.default_org
+
+    # dsn 不再逐字比对：prod 配置 2026-09-06 撤掉了默认数据源（隧道没起来时
+    # 它在数据源页上是一张永远「不可用」的卡），prod.dsn 现在直接抛。
+    # 这条比对的**本意**因此弱了一档 —— 原来它保证两份配置打同一个库，
+    # 现在只保证护栏、表白名单与租户口径一致。tight 自己仍连着库，
+    # `askdb ask -c config/ragforge-tight.yaml` 照旧能跑。
+    assert not prod.has_default_source
+    assert tight.has_default_source, "回归配置自己必须还能连库，否则这套 harness 用不了"
 
     pg, tg = dict(prod.raw["guard"]), dict(tight.raw["guard"])
     assert tg.pop("max_scan_rows") < pg.pop("max_scan_rows"), "阈值必须更严，不能更松"

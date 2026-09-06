@@ -4,23 +4,28 @@
 #    技术设计说明书 §8 将此列为禁止项，本次为使用方明确要求后的例外。
 #    因此所有阈值都比本机开发库更严，并且只开放 5 张表。
 #
-# 前置：先建隧道（前台占一个终端，或加 -f 转后台）
-#   ssh -N -L 15432:127.0.0.1:5432 root@8.163.30.216
-#
 # 用法：
 #   askdb check -c config/ragforge-prod.yaml
 #   askdb serve -c config/ragforge-prod.yaml
 #
 # 撤销：ssh root@8.163.30.216 'docker exec -i ragforge-postgres \
 #         psql -U ragforge -d ragforge' < scripts/prod_readonly_rollback.sql
-
-datasource:
-  type: postgresql
-  dsn: "host=127.0.0.1 port=15432 dbname=ragforge user=askdb_ro"
-  password_env: ASKDB_PROD_PG_PASSWORD
-  # dsn 指向的是隧道本地端口；真实库在这里。界面与评测出处按此显示，
-  # 否则出处栏会写成 127.0.0.1，等于把最关键的一条信息说错。
-  upstream: "8.163.30.216:5432"           # 云上主库，经本地 SSH 隧道 15432 转发
+#
+# ---------------------------------------------------------------------------
+# 2026-09-06：**默认数据源已撤掉**（产品决定）。
+#
+# 原来这里写着一条经 SSH 隧道直连云上主库的 datasource：
+#   dsn: host=127.0.0.1 port=15432 dbname=ragforge user=askdb_ro
+#   upstream: 8.163.30.216:5432   # 隧道 ssh -N -L 15432:127.0.0.1:5432 root@…
+# 隧道没起来时它在数据源页上是一张永远「不可用」的卡，而那正是这个实例
+# 最常见的状态。
+#
+# 因此本实例**没有默认数据源**：查询必须显式指定一个运行时数据源
+# （config.has_default_source 支持这种部署，不带源的查询直接被拒，
+#  不会悄悄落到某个"碰巧还在配置里"的库上）。
+# 下面的租户、护栏阈值与表白名单仍按主库场景从严，因为运行时源连的
+# 很可能就是同一个库。
+# ---------------------------------------------------------------------------
 
 tenant:
   enabled: true
