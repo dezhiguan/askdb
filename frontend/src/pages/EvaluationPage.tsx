@@ -5,6 +5,7 @@ import {
   type LiveQuality, type OfflineQuality,
 } from '../api'
 import { PageHeader } from '../components/AppShell'
+import type { View } from '../types'
 import { STEP_NAMES } from '../traceSteps'
 
 /** Agent 质量中心。
@@ -93,7 +94,7 @@ function Dimension({ label, pct, value }: { label: string; pct: number; value: s
   )
 }
 
-export function EvaluationPage() {
+export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => void }) {
   const [scope, setScope] = useState<Scope>('runtime')
   const [category, setCategory] = useState<Category>('overview')
   const [days, setDays] = useState(1)
@@ -101,13 +102,26 @@ export function EvaluationPage() {
   const [offline, setOffline] = useState<OfflineQuality | null>(null)
   const [error, setError] = useState('')
   const [reload, setReload] = useState(0)
+  // 取数时刻。上下文条要显示"数据更新 30 秒前"——这句话只有当它跟着**这次取数**
+  // 走时才是真的，所以记时刻、按 tick 重算，而不是写一个固定文案
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null)
+  // 取数进行中。刷新按钮不给反馈的话，点下去与没点是一样的画面 ——
+  // 数据没变（本来就没有新调用）时，人只会以为按钮坏了
+  const [busy, setBusy] = useState(false)
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const t = window.setInterval(() => setTick(n => n + 1), 15000)
+    return () => window.clearInterval(t)
+  }, [])
 
   // 线上指标随时间窗重取；离线回归是跑出来的文件，不随窗口变
   useEffect(() => {
     let alive = true
+    setBusy(true)
     fetchLiveQuality(days)
-      .then(v => { if (alive) { setLive(v); setError('') } })
+      .then(v => { if (alive) { setLive(v); setError(''); setFetchedAt(Date.now()) } })
       .catch(e => { if (alive) setError(String(e.message || e)) })
+      .finally(() => { if (alive) setBusy(false) })
     return () => { alive = false }
   }, [days, reload])
 
@@ -135,8 +149,11 @@ export function EvaluationPage() {
               <option value={7}>最近 7 天</option>
               <option value={30}>最近 30 天</option>
             </select>
-            <button className="primary" type="button" onClick={() => setReload(n => n + 1)}>
-              ↻ 刷新运行状态
+            <button className="primary" type="button" disabled={busy}
+                    onClick={() => setReload(n => n + 1)}>
+              {busy
+                ? (scope === 'online' ? '正在聚合线上数据…' : '正在刷新运行状态…')
+                : (scope === 'online' ? '↻ 刷新线上数据' : '↻ 刷新运行状态')}
             </button>
           </div>
         }
@@ -157,9 +174,32 @@ export function EvaluationPage() {
         ))}
       </div>
 
+      {/* 上下文条照原型：运行总览不显示，其余三个范围各说各的出处。
+          目前只有「线上质量」接了真实出处，其余两个仍走各自面板里的说明。 */}
+      {scope === 'online' && live && (
+        <div className="eval-context">
+          <div className="eval-context-copy">
+            <i className="eval-context-mark">LIVE</i>
+            <div>
+              <strong>生产运行质量 · 真实调用</strong>
+              <small>
+                {live.runs.toLocaleString()} 个任务 ·{' '}
+                {(live.tools?.calls ?? 0).toLocaleString()} 次工具调用 ·
+                数据来自本实例审计记录里的节点级 trace
+              </small>
+            </div>
+          </div>
+          <div className="eval-context-meta">
+            <span>数据更新 <b>{sinceText(fetchedAt)}</b></span>
+            <span>统计窗口 <b>{live.days === 1 ? '24 小时' : `${live.days} 天`}</b></span>
+            <span className="status">LIVE</span>
+          </div>
+        </div>
+      )}
+
       {error && <div className="audit-error">读取质量数据失败：{error}</div>}
       {scope === 'runtime' && <RuntimeScope live={live} offline={offline} days={days} />}
-      {scope === 'online' && <OnlineScope live={live} days={days} />}
+      {scope === 'online' && <OnlineScope live={live} days={days} onNavigate={onNavigate} />}
       {scope === 'offline' && (
         <OfflineScope category={category} onCategory={setCategory}
                       onDataset={() => setScope('dataset')} offline={offline} live={live} />
@@ -184,20 +224,26 @@ export function EvaluationPage() {
 /** Agent 版本号 —— **写死**。askdb 本身没有对外的"Agent 版本"概念（包版本
  *  0.1.0 是另一回事），产品上先按原型显示；接上真正的版本来源后换掉这一个常量即可。 */
 const AGENT_VERSION = 'Agent v2.4'
-type Alert = { level: '高优' | '中优' | '低优'; text: string }
+type Alert = { level: '高优先级' | '中优先级' | '低优先级'; text: string; why?: string }
 
 /** 告警由真实指标按固定阈值判出来。阈值是策略，判定过程不是 —— 每条都写明依据。 */
 function alertsOf(live: LiveQuality): Alert[] {
   const out: Alert[] = []
-  if (live.failed > 0) out.push({ level: '高优', text: `执行失败 ${live.failed} 次（数据源或模型调用）` })
-  if (live.security_events > 0) out.push({ level: '高优', text: `护栏安全事件 ${live.security_events} 次（R-xx 规则命中）` })
+  if (live.failed > 0) out.push({ level: '高优先级', text: `执行失败 ${live.failed} 次（数据源或模型调用）` })
+  if (live.security_events > 0) out.push({ level: '高优先级', text: `护栏安全事件 ${live.security_events} 次（R-xx 规则命中）` })
   for (const n of live.nodes) {
     if ((n.success_rate ?? 1) < 0.95) {
-      out.push({ level: '中优', text: `${STEP_NAMES[n.step] ?? n.step} 成功率 ${pct(n.success_rate)}，低于 95%` })
+      out.push({ level: '中优先级', text: `${STEP_NAMES[n.step] ?? n.step} 成功率 ${pct(n.success_rate)}，低于 95%` })
     }
   }
   out.push(...latencyAlerts(live))
   return out
+}
+
+/** 当前窗口怎么称呼。设计稿写的是「最近 24 小时」，而窗口是可切的 ——
+ *  选了 7 天还说 24 小时，就是在报一个没算过的范围。 */
+function windowText(days: number): string {
+  return days === 1 ? '24 小时' : `${days} 天`
 }
 
 /** 上一个等长窗口怎么称呼。窗口长度变了措辞也得跟着变 ——
@@ -206,12 +252,16 @@ function prevLabel(days: number): string {
   return days === 1 ? '较昨日' : days === 7 ? '较上周' : days === 30 ? '较上月' : `较上一个 ${days} 天`
 }
 
-/** 延迟告警，按原型的措辞（"database.query P95 较昨日上升 8%"）出环比。
+/** 延迟告警，一律按设计稿的措辞出环比："生成 SQL P95 较昨日上升 8%"。
  *
- *  环比比绝对阈值有用：18.77s 这个数单看不知道是不是常态，"较昨日上升 8%"
- *  才指向"有东西变了"。但它有前提 —— 两个窗口都得有足够样本。
- *  上个窗口只跑了两三次时，P95 就是那两三次里的最大值，涨跌纯属噪声；
- *  这种情况**不报环比**，退回绝对阈值，并说明为什么没有对比。
+ *  只报环比，不报绝对值：18.77s 这个数单看不知道是不是常态 —— 这条链路本来
+ *  就有十几秒的调用 —— "较昨日上升 8%"才指向"有东西变了"。绝对阈值那种
+ *  "超过 10s 目标"的说法已去掉（产品决定），端到端 P95 的当前值在上面
+ *  「端到端耗时」那格里照常看得到，没有被藏起来。
+ *
+ *  环比的前提是两个窗口都有足够样本。上个窗口只跑了两三次时，P95 就是那
+ *  两三次里的最大值，涨跌纯属噪声 —— **这种情况不报**，宁可这一格写"无告警"，
+ *  也不拿噪声当信号。
  */
 const MIN_COMPARE_CALLS = 5
 
@@ -231,7 +281,7 @@ function latencyAlerts(live: LiveQuality): Alert[] {
     }
     if (worst) {
       return [{
-        level: worst.delta >= 0.3 ? '中优' : '低优',
+        level: worst.delta >= 0.3 ? '中优先级' : '低优先级',
         text: `${STEP_NAMES[worst.step] ?? worst.step} P95 ${label}上升 ${Math.round(worst.delta * 100)}%`,
       }]
     }
@@ -240,21 +290,16 @@ function latencyAlerts(live: LiveQuality): Alert[] {
       const delta = (live.p95_ms - prev.p95_ms) / prev.p95_ms
       if (delta >= 0.05) {
         return [{
-          level: delta >= 0.3 ? '中优' : '低优',
-          text: `P95 端到端 ${label}上升 ${Math.round(delta * 100)}%（${fmtMs(prev.p95_ms)} → ${fmtMs(live.p95_ms)}）`,
+          level: delta >= 0.3 ? '中优先级' : '低优先级',
+          text: `P95 端到端 ${label}上升 ${Math.round(delta * 100)}%`,
+          why: `${fmtMs(prev.p95_ms)} → ${fmtMs(live.p95_ms)}`,
         }]
       }
     }
     return []
   }
 
-  // 没有可比的上一窗口：不编环比，改报绝对值，并把原因说出来
-  if ((live.p95_ms ?? 0) > 10000) {
-    return [{
-      level: '低优',
-      text: `P95 端到端 ${fmtMs(live.p95_ms)}，超过 10s 目标（上一个窗口调用不足 ${MIN_COMPARE_CALLS} 次，无法算环比）`,
-    }]
-  }
+  // 没有可比的上一窗口 —— 不报。编不出环比就不编，这一格显示"无告警"。
   return []
 }
 
@@ -287,6 +332,9 @@ function RuntimeScope({ live, offline, days }: {
   const score = healthScore(live)
   const tool = toolSuccess(live)
   const alerts = idle ? [] : alertsOf(live)
+  // 上一个等长窗口够不够拿来做环比。不够时"无告警"只代表"没算出异常"，
+  // 不代表延迟正常 —— 这个区别要让人看得到，所以下面的小字分两种说法。
+  const comparable = (live.prev?.runs ?? 0) >= MIN_COMPARE_CALLS
   const top = alerts[0]
   const band = score == null ? 'IDLE' : score >= 95 ? 'HEALTHY' : score >= 85 ? 'WATCH' : 'DEGRADED'
   const verdict = score == null
@@ -312,18 +360,23 @@ function RuntimeScope({ live, offline, days }: {
   return (
     <section className="quality-overview" aria-label="当前生产 Agent 运行总览">
       <div className="quality-verdict">
-        <div className="quality-index">{score ?? '—'}<small>/100</small></div>
+        <div className="quality-index"
+             title="分数的权重（任务成功 60% / 工具成功 40%，有安全事件则压到 60 以下）与告警阈值是本项目设定的策略，不是测量值">
+          {score ?? '—'}<small>/100</small>
+        </div>
         <div className="quality-verdict-copy">
           <span>PRODUCTION AGENT · {band}</span>
           <strong>{verdict}</strong>
+          {/* 照设计稿原文。分数权重与告警阈值是本项目设定的策略、不是测量值 ——
+              这句原先在正文里，为与设计稿一致挪到了健康分环的 title 上（见上）。
+              **不能整句删掉**：一个 0–100 的分数不说明权重从哪来，就会被当成测出来的。 */}
           <p>
-            基于最近 {live.days} 天 {live.runs.toLocaleString()} 次真实调用持续计算；
+            基于最近 {windowText(live.days)}真实请求持续计算；
             {idle
-              ? '没有调用就没有可报的运行质量 —— 到查询工作台问几次，或把上方时间范围放宽再回来。'
+              ? '本窗口没有调用记录，没有可报的运行质量。'
               : top
                 ? `当前 ${top.level}告警：${top.text}。`
-                : '无告警，工具调用与安全状态均在正常范围。'}
-            <b> 分数的权重（任务 60% / 工具 40%）与告警阈值是本项目设定的策略，不是测量值。</b>
+                : '无高优告警，性能、工具调用和安全状态均在正常范围。'}
           </p>
           <div className="quality-gates">
             <span>任务成功 {pct(live.success_rate)}</span>
@@ -344,36 +397,56 @@ function RuntimeScope({ live, offline, days }: {
           </small>
         </div>
         <div className="quality-kpi">
-          <div className="quality-kpi-head"><span>实际任务量</span><code>REAL · {live.days}D</code></div>
+          <div className="quality-kpi-head"><span>实际任务量</span><code>PROD · {live.days === 1 ? '24H' : `${live.days}D`}</code></div>
           <strong>{live.runs.toLocaleString()}</strong>
-          <small>
+          {/* 设计稿这行只有「成功完成 / 中断或失败」两栏，所以护栏拦截与执行失败
+              在这里合并显示。两者性质不同（拦截是护栏做对事），拆分挂在 title 上，
+              判语区的「安全事件」那枚药丸也仍然单独报。 */}
+          <small title={`护栏拦截 ${live.blocked} · 执行失败 ${live.failed}`}>
             {idle
-              ? `最近 ${days} 天没有调用`
-              : `成功完成 ${live.ok.toLocaleString()} · 护栏拦截 ${live.blocked} · 执行失败 ${live.failed}`}
+              ? `最近 ${windowText(days)}没有调用`
+              : `成功完成 ${live.ok.toLocaleString()} · 中断或失败 ${live.blocked + live.failed}`}
           </small>
         </div>
         <div className="quality-kpi">
           <div className="quality-kpi-head"><span>当前告警</span><code>LIVE</code></div>
           <strong>{idle ? '—' : alerts.length ? `${alerts.length} 个${top!.level}` : '无告警'}</strong>
-          <small>{idle ? '无调用可判' : top ? top.text : '失败、节点成功率、P95 三项均在阈值内'}</small>
+          <small title={top?.why ?? (comparable ? undefined
+            : `上一个等长窗口调用不足 ${MIN_COMPARE_CALLS} 次，延迟环比这一轮算不出来`)}>
+            {idle
+              ? '无调用可判'
+              : top ? top.text
+                : comparable ? '失败、节点成功率、延迟环比三项均在阈值内'
+                  : '失败与节点成功率正常 · 延迟环比暂无可比窗口'}
+          </small>
         </div>
         <div className="quality-kpi">
           <div className="quality-kpi-head"><span>最新离线回归</span><code>辅助验证</code></div>
           <strong>{sc ? `${sc.overall} / 100` : '尚未运行'}</strong>
-          <small>
-            {/* 原型这行写的是「当前版本黄金集结果 · 不是线上统计」。出处对得上就照抄；
-                对不上时**不能照抄** —— 这组分数出自另一个库、另一个模型，
-                「当前版本」四个字就是假的。 */}
-            {!sc
-              ? '跑一次黄金集后这里才有数'
-              : sameSrc
-                ? '当前版本黄金集结果 · 不是线上统计'
-                : `⚠ ${prov?.datasource || '另一个数据源'} 的黄金集结果 · 不能代表本实例`}
+          <small title={sc && !sameSrc
+            ? `这组分数出自 ${prov?.datasource || '另一个数据源'}、模型 ${prov?.model || '未知'}，不是本实例跑的`
+            : undefined}>
+            {/* 照设计稿原文（产品要求）。**出处对不上时这句是不准的** ——
+                这组分数可能出自另一个库、另一个模型，「当前版本」四个字就不成立。
+                出处挂在 title 上，离线回归那一屏顶部仍有一条显眼的红色提示，
+                信息没丢，但这一格不再自己声明。 */}
+            {!sc ? '跑一次黄金集后这里才有数' : '当前版本黄金集结果 · 不是线上统计'}
           </small>
         </div>
       </div>
     </section>
   )
+}
+
+/** "数据更新 X 前"。取的是**本页最后一次取数成功**的时刻，
+ *  不是服务端算这组数的时刻 —— 两者差一次网络往返，措辞上按前者说。 */
+function sinceText(at: number | null): string {
+  if (at == null) return '—'
+  const sec = Math.max(0, Math.round((Date.now() - at) / 1000))
+  if (sec < 10) return '刚刚'
+  if (sec < 60) return `${sec} 秒前`
+  const min = Math.round(sec / 60)
+  return min < 60 ? `${min} 分钟前` : `${Math.round(min / 60)} 小时前`
 }
 
 function pct(v: number | null | undefined): string {
@@ -385,15 +458,54 @@ function fmtMs(v: number | null | undefined): string {
   return v >= 1000 ? `${(v / 1000).toFixed(2)}s` : `${v}ms`
 }
 
-/** 线上质量。全部按真实调用统计，不用黄金集分母。
- *
- *  设计稿这里的节点表写的是 schema.retrieve / metric.resolve / sql.guard /
- *  database.query / result.summarize，并注明"来自 Langfuse / OpenTelemetry
- *  Span 聚合"。askdb 的真实节点名不是这一套（见 traceSteps.STEP_NAMES），
- *  数据也不来自 Langfuse —— 它就在自己的审计记录里。照抄节点名等于
- *  凭空造出五个不存在的工具。
- */
-function OnlineScope({ live, days }: { live: LiveQuality | null; days: number }) {
+/** 线上质量。版式与字段位置严格照原型 #evalOnlinePanel：
+*  一条 LIVE 声明 → 四张带 sparkline 的评分卡 → 三格计量 → 工具健康度 + 质量信号
+*  → 线上持续评测闭环。
+*
+*  与原型的区别只在**数字的来源**，以及三处原型有、本实例还没有的信号：
+*    · 节点名照真实链路（traceSteps.STEP_NAMES），不照抄设计稿那五个
+*      schema.retrieve / metric.resolve / … —— 那等于凭空造出五个不存在的工具。
+*    · 数据来自本实例的审计记录，不是 Langfuse / OpenTelemetry。
+*    · 「用户结果采纳率」「用户主动纠错」没有采集来源，显示「—」并写明原因；
+*      设计稿上的 94.6% / 0.9% 是稿子里的数，照抄就是编。
+*/
+
+/** P95 端到端的目标线。**是本项目设定的策略，不是测量值** ——
+*  与 latencyAlerts 里那道绝对阈值同一个数，只写一次。 */
+const P95_TARGET_MS = 10000
+
+/** sparkline 的柱高。等分七段的真实序列 → 0–100 的高度。
+*
+*  用段内最小值做基线而不是从 0 起：成功率这类数全挤在 95%–100%，
+*  从 0 起画出来七根一样高的柱子，趋势就看不见了。空段（没有调用）给 0，
+*  它和"有调用但值很低"必须能分得开。
+*/
+function sparkBars(values: (number | null)[]): number[] {
+  const real = values.filter((v): v is number => v != null)
+  if (!real.length) return values.map(() => 0)
+  const max = Math.max(...real)
+  const min = Math.min(...real)
+  return values.map(v => {
+    if (v == null) return 0
+    if (max === min) return 70
+    return Math.round(25 + 75 * ((v - min) / (max - min)))
+  })
+}
+
+/** 环比。两个窗口都得有足够样本，否则不报 —— 与告警那边同一条纪律。 */
+function delta(now: number | null | undefined, before: number | null | undefined,
+       prevRuns: number): string {
+  if (now == null || before == null || !before || prevRuns < MIN_COMPARE_CALLS) return ''
+  const d = (now - before) / before
+  if (Math.abs(d) < 0.005) return '持平'
+  return `${d > 0 ? '↑' : '↓'} ${Math.abs(d * 100).toFixed(1)}%`
+}
+
+function OnlineScope({ live, days, onNavigate }: {
+  live: LiveQuality | null
+  days: number
+  onNavigate?: (view: View) => void
+}) {
   if (!live) return <p className="drawer-note">读取中…</p>
   if (!live.runs) {
     return (
@@ -403,110 +515,176 @@ function OnlineScope({ live, days }: { live: LiveQuality | null; days: number })
     )
   }
 
-  const rules = Object.entries(live.by_rule)
+  const series = live.series ?? []
+  const tools = live.tools
+  const sql = live.sql
+  const retry = live.retry
+  const prevRuns = live.prev?.runs ?? 0
+  const label = prevLabel(live.days)
+
+  const toolRate = tools && tools.calls ? tools.ok / tools.calls : null
+  const sqlRate = sql && sql.calls ? sql.ok / sql.calls : null
+  const runsDelta = delta(live.runs, prevRuns, prevRuns)
+  const topFail = tools?.top_fail_step
+    ? `${STEP_NAMES[tools.top_fail_step] ?? tools.top_fail_step} 占 ${Math.round((tools.top_fail_share ?? 0) * 100)}%`
+    : ''
+
   return (
     <section className="eval-scope-panel active" aria-label="线上质量">
       <div className="eval-note">
-        <strong>以下指标来自本实例的审计记录，按真实调用统计，不使用黄金集分母</strong>
-        <p>
-          每次调用一条记录，含节点级 trace。线上结果的<b>准确性没有天然标准答案</b> ——
-          这里能报的是执行是否成功、被护栏挡了多少、耗时与成本；
-          "答得对不对"要靠离线回归与抽样人工判断补。
-        </p>
+        <i>LIVE</i>
+        <div>
+          <strong>以下指标来自本实例的审计记录，按真实调用统计，不使用黄金集分母</strong>
+          <small>
+            工具调用、SQL 执行、耗时、Token 与成本直接按实际请求统计；
+            线上结果准确性没有天然标准答案，要靠离线回归与抽样人工判断补充。
+          </small>
+        </div>
+      </div>
+
+      <div className="eval-score-grid">
+        <ScoreCard
+          label="实际任务数"
+          tag={`AUDIT · ${live.days === 1 ? '24H' : `${live.days}D`}`}
+          value={live.runs.toLocaleString()} unit="RUNS"
+          note={runsDelta ? `${runsDelta} ${label}`
+            : `上一个窗口调用不足 ${MIN_COMPARE_CALLS} 次，不出环比`}
+          bars={sparkBars(series.map(s => s.runs))}
+        />
+        <ScoreCard
+          label="工具调用成功率"
+          tag={tools ? `TRACE · ${tools.ok.toLocaleString()} / ${tools.calls.toLocaleString()}` : 'TRACE'}
+          value={toolRate == null ? '—' : (toolRate * 100).toFixed(1)} unit="%"
+          note={tools && tools.fails
+            ? `${tools.fails} 次失败${topFail ? ` · ${topFail}` : ''}`
+            : '窗口内没有失败的节点'}
+          bars={sparkBars(series.map(s => s.tool_rate))}
+        />
+        <ScoreCard
+          label="SQL 执行成功率"
+          tag={sql ? `${sql.ok.toLocaleString()} / ${sql.calls.toLocaleString()}` : '—'}
+          value={sqlRate == null ? '—' : (sqlRate * 100).toFixed(1)} unit="%"
+          note="不等于结果准确率 —— SQL 跑通了、口径用错了，这里照样是 100%"
+          bars={sparkBars(series.map(s => s.sql_rate))}
+        />
+        <ScoreCard
+          label="P95 端到端耗时"
+          tag="AUDIT TRACE"
+          value={live.p95_ms == null ? '—' : (live.p95_ms / 1000).toFixed(1)} unit="SEC"
+          note={`目标 < ${P95_TARGET_MS / 1000} 秒（本项目设定）· ${
+            (live.p95_ms ?? 0) > P95_TARGET_MS ? '偏慢' : '正常'}`}
+          bars={sparkBars(series.map(s => s.p95_ms))}
+        />
       </div>
 
       <div className="eval-metric-grid">
-        <MetricCard label="调用成功率" status={`AUDIT · ${live.days}D`} value={pct(live.success_rate)}
-                    note={`${live.ok.toLocaleString()} / ${live.runs.toLocaleString()} 次`} />
-        <MetricCard label="护栏拦截率" status={`${live.blocked} BLOCKED`} value={pct(live.block_rate)}
-                    note="拦下一条危险 SQL 是护栏在做对事，不是故障" />
-        <MetricCard label="执行失败" status="EXEC / LLM" value={String(live.failed)}
-                    note="数据源异常或模型调用失败" danger={live.failed > 0} />
-        <MetricCard label="P95 端到端" status={`P50 ${fmtMs(live.p50_ms)}`} value={fmtMs(live.p95_ms)}
-                    note={`样本 ${live.runs.toLocaleString()} 次真实调用`} />
+        <MetricCard
+          label="线上平均 Token" value={live.avg_tok?.toLocaleString() ?? '—'}
+          note={`${live.runs.toLocaleString()} 个真实任务的模型输入与输出消耗`}
+          status={delta(live.avg_tok, live.prev?.avg_tok, prevRuns) || `最近 ${live.days} 天`}
+        />
+        <MetricCard
+          label="线上单任务成本"
+          value={live.avg_cost_cny == null ? '—' : `¥${live.avg_cost_cny.toFixed(4)}`}
+          note="模型开销，按成功和失败任务共同计算"
+          status={delta(live.avg_cost_cny, live.prev?.avg_cost_cny, prevRuns)
+            || `合计 ¥${live.cost_cny.toFixed(2)}`}
+        />
+        <MetricCard
+          label="自动重试恢复率"
+          value={retry?.rate == null ? '—' : `${(retry.rate * 100).toFixed(1)}%`}
+          note={retry && retry.retried
+            ? `${retry.retried} 次重试的任务中，${retry.recovered} 次最终完成`
+            : '窗口内没有任务触发重试（attempts 均为 1）'}
+          status={retry && retry.retried ? 'ATTEMPTS > 1' : '无样本'}
+        />
       </div>
 
-      <article className="eval-card">
-        <div className="eval-card-head">
-          <div>
-            <strong>节点健康度</strong>
-            <small>按审计记录里的 steps 聚合 · 最近 {live.days} 天</small>
-          </div>
-        </div>
-        <div className="eval-table-wrap">
-          <table>
-            <thead>
-              <tr><th>节点</th><th className="num">调用</th><th className="num">成功率</th>
-                  <th className="num">P50</th><th className="num">P95</th><th className="num">token</th></tr>
-            </thead>
-            <tbody>
-              {live.nodes.map(n => (
-                <tr key={n.step}>
-                  <td>{STEP_NAMES[n.step] ?? n.step}</td>
-                  <td className="num">{n.calls.toLocaleString()}</td>
-                  <td className={`num ${(n.success_rate ?? 1) < 0.95 ? 'eval-fail' : 'eval-pass'}`}>
-                    {pct(n.success_rate)}
-                  </td>
-                  <td className="num">{fmtMs(n.p50_ms)}</td>
-                  <td className="num">{fmtMs(n.p95_ms)}</td>
-                  <td className="num">{n.tok ? n.tok.toLocaleString() : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <p className="drawer-note">
-          按 P95 倒序 —— 这张表是拿来找端到端延迟贡献最大的那一段的。
-        </p>
-      </article>
-
-      {rules.length > 0 && (
+      <div className="online-health-grid">
         <article className="eval-card">
           <div className="eval-card-head">
-            <div><strong>护栏都挡了什么</strong><small>按拦截码分布 · 最近 {live.days} 天</small></div>
+            <div>
+              <strong>生产工具健康度</strong>
+              <small>按审计记录里的 steps 聚合 · 最近 {live.days} 天</small>
+            </div>
+            {onNavigate && (
+              <button className="secondary" type="button"
+                  onClick={() => onNavigate('traces')}>打开执行追踪</button>
+            )}
           </div>
           <div className="eval-table-wrap">
             <table>
-              <thead><tr><th>拦截码</th><th>含义</th><th className="num">次数</th></tr></thead>
+              <thead>
+                <tr><th>工具</th><th className="num">调用次数</th><th className="num">成功率</th>
+                  <th className="num">P95</th><th>主要失败原因</th></tr>
+              </thead>
               <tbody>
-                {rules.map(([code, n]) => (
-                  <tr key={code}>
-                    <td className="mono">{code}</td>
-                    <td>{RULE_BRIEF[code] ?? '—'}</td>
-                    <td className="num">{n}</td>
+                {live.nodes.map(n => (
+                  <tr key={n.step}>
+                    <td>{STEP_NAMES[n.step] ?? n.step}</td>
+                    <td className="num">{n.calls.toLocaleString()}</td>
+                    <td className={`num ${(n.success_rate ?? 1) < 0.95 ? 'eval-fail' : 'eval-pass'}`}>
+                      {pct(n.success_rate)}
+                    </td>
+                    <td className="num">{fmtMs(n.p95_ms)}</td>
+                    <td>{n.fail_reason || '—'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         </article>
-      )}
+
+        <article className="eval-card">
+          <div className="eval-card-head">
+            <div><strong>线上质量信号</strong><small>没有标准答案时使用代理指标</small></div>
+            <span className="status">{live.days === 1 ? '24H' : `${live.days}D`}</span>
+          </div>
+          <div className="eval-card-body online-signal-list">
+            <div className="online-signal">
+              <div><strong>用户结果采纳率</strong><small>需要"看完之后有没有重来"的反馈信号，本实例未采集</small></div>
+              <span>—</span>
+            </div>
+            <div className="online-signal">
+              <div><strong>人工介入率</strong><small>查询触发审批的比例 · 来自审批流水</small></div>
+              <span>{live.intervention?.rate == null ? '—' : pct(live.intervention.rate)}</span>
+            </div>
+            <div className="online-signal">
+              <div>
+                <strong>同问题重复查询率</strong>
+                <small>
+                  同一发起人 {live.repeat?.window_min ?? 10} 分钟内再次提交；
+                  匿名调用会被并成一个人，这个数偏高
+                </small>
+              </div>
+              <span>{live.repeat?.rate == null ? '—' : pct(live.repeat.rate)}</span>
+            </div>
+            <div className="online-signal">
+              <div><strong>用户主动纠错</strong><small>没有"结果不准确"的反馈入口，无从统计</small></div>
+              <span>—</span>
+            </div>
+          </div>
+        </article>
+      </div>
+
+      <article className="eval-card" style={{ marginTop: 10 }}>
+        <div className="eval-card-head">
+          <div><strong>线上持续评测闭环</strong><small>把真实场景转化为可重复的离线回归资产</small></div>
+          <span className="status">未接入</span>
+        </div>
+        <div className="eval-card-body">
+          <div className="online-eval-flow">
+            <div className="online-eval-step"><i>01 · SAMPLE</i><strong>生产 Trace 抽样</strong><small>按业务域、风险与异常信号分层抽取</small></div>
+            <div className="online-eval-step"><i>02 · CHECK</i><strong>规则 + Judge 初评</strong><small>确定性校验与 LLM-as-Judge 组合评分</small></div>
+            <div className="online-eval-step"><i>03 · REVIEW</i><strong>人工复核</strong><small>低置信度与高风险样本由专家确认</small></div>
+            <div className="online-eval-step"><i>04 · PROMOTE</i><strong>沉淀黄金集</strong><small>确认无误的样本进入黄金集下一版</small></div>
+          </div>
+        </div>
+      </article>
     </section>
   )
 }
 
-/** 拦截码的一句话含义。与结果页那份 RULES 同源但更短 —— 这张表是分布统计，
- *  不是给人排查单次失败的，长文案会把表撑散。 */
-const RULE_BRIEF: Record<string, string> = {
-  'R-01': '多语句',
-  'R-02': '非查询语句',
-  'R-03': '表不在白名单',
-  'R-04': '字段不存在',
-  'R-05': 'SELECT *',
-  'R-06': '跨 schema 引用',
-  'R-07': '禁用函数',
-  'R-08': '笛卡尔积',
-  'R-10': '租户归属不明',
-  'R-11': '扫描量超限',
-  'R-17': '累计成本超限',
-  'R-18': '扇出放大',
-  'R-19': '超出数据期限',
-  QUOTA: '当日配额用尽',
-  EXEC: '数据源执行失败',
-  LLM: '模型调用失败',
-  NO_SQL: '现有表回答不了',
-  INTERRUPTED: '执行中断',
-}
 
 function OfflineScope({ category, onCategory, onDataset, offline, live }: {
   category: Category
@@ -978,7 +1156,25 @@ const CATEGORY_CN: Record<string, string> = {
   reject: '应拒绝',
 }
 
+/** 评测集 —— 版式与字段照原型 `[data-eval-panel="datasets"]`：
+ *  三格汇总（黄金问题 / 标准答案 / 最近回归结果）+ 一张五列表
+ *  （用例 / 场景 / 黄金问题 / 标准答案 / 最近结果）。
+ *
+ *  用例编号按原型的 EV-0126 形态显示，序号由用例在评测集文件里的位置生成 ——
+ *  它是**显示用编号**，真实 id（s03 / j06 / r03）挂在同一格的 title 上，
+ *  否则拿着页面上的编号回文件里就找不到那道题了。
+ */
+function evCode(index: number): string {
+  return `EV-${String(index + 1).padStart(4, '0')}`
+}
+
 function DatasetScope({ offline }: { offline: OfflineQuality | null }) {
+  // 分页条与任务中心、审计中心同一套结构与类名 —— 三页的操作手感必须一致。
+  // 评测集全量 58 条时不分页也能看，但这套题会长；一次渲染整份文件是
+  // 任务中心已经踩过的那个坑（一千四百多行、DOM 高七万像素）。
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+
   if (!offline?.available) {
     return (
       <section className="eval-scope-panel active">
@@ -991,21 +1187,58 @@ function DatasetScope({ offline }: { offline: OfflineQuality | null }) {
   const g = offline.golden
   const ran = cases.filter(c => c.passed !== null)
   const passed = cases.filter(c => c.passed === true).length
+  const answered = cases.filter(c => c.has_answer).length
+  const cats = Object.keys(g?.by_category ?? {})
+  const pages = Math.max(Math.ceil(cases.length / pageSize), 1)
+  const current = Math.min(page, pages)
+  const visible = cases.slice((current - 1) * pageSize, current * pageSize)
+  const rate = ran.length ? `${((passed / ran.length) * 100).toFixed(1)}%` : '—'
+
+  // 「最近更新」只能说评测集文件的 mtime —— 这套题没有版本号，也没有任何地方
+  // 记录"谁在什么时候改了考题"。角标同理：题目齐不齐是能验的（每条都有标准答案），
+  // "谁维护、审没审过"不是，所以那两项不编。
+  const updated = g?.updated_at ? g.updated_at.slice(0, 16).replace('T', ' ') : '—'
+  const complete = g?.answered != null && g.total > 0 && g.answered === g.total
 
   return (
     <section className="eval-scope-panel active">
+      <div className="eval-context">
+        <div className="eval-context-copy">
+          <i className="eval-context-mark">SET</i>
+          <div>
+            <strong>黄金评测集 · {g?.path?.split('/').pop() || '未知文件'}</strong>
+            <small>
+              {g?.total ?? cases.length} 个黄金问题 · 标准 SQL、行列约束与预期拦截规则
+            </small>
+          </div>
+        </div>
+        <div className="eval-context-meta">
+          <span>最近更新 <b>{updated}</b></span>
+          <span>本轮实跑 <b>{ran.length} / {cases.length}</b></span>
+          <span className={`status ${complete ? '' : 'wait'}`}>
+            {complete ? '标准答案齐全' : '标准答案不全'}
+          </span>
+        </div>
+      </div>
+
       <div className="eval-dataset-summary">
         <div className="eval-dataset-stat">
           <span>黄金问题</span><strong>{g?.total ?? cases.length}</strong>
-          <small>{Object.keys(g?.by_category ?? {}).length} 类场景</small>
+          <small>{cats.length} 类场景 · {g?.path?.split('/').pop() || '评测集文件'}</small>
         </div>
         <div className="eval-dataset-stat">
-          <span>本轮实跑</span><strong>{ran.length} / {cases.length}</strong>
-          <small>盲测只跑标了 blind 的那些</small>
+          <span>标准答案</span><strong>{answered} / {cases.length}</strong>
+          <small>标准 SQL + 行列约束 · 应拒用例对规则</small>
         </div>
         <div className="eval-dataset-stat">
-          <span>本轮结果</span><strong>{passed} PASS</strong>
-          <small>{ran.length - passed} 条失败 · 其余 {cases.length - ran.length} 条本轮未跑</small>
+          <span>最近回归结果</span><strong>{passed} PASS</strong>
+          {/* 通过率的分母是**实跑数**，不是全集。盲测只跑一部分：拿全集当分母会
+              把通过率算低，拿"没失败"当通过会把它算高 —— 两个方向都不能含糊，
+              所以未跑数单列出来。 */}
+          <small>
+            {ran.length - passed} 条待修复 · {rate}
+            {cases.length - ran.length > 0 && ` · 其余 ${cases.length - ran.length} 条本轮未跑`}
+          </small>
         </div>
       </div>
 
@@ -1013,25 +1246,35 @@ function DatasetScope({ offline }: { offline: OfflineQuality | null }) {
         <div className="eval-card-head">
           <div>
             <strong>黄金评测集</strong>
-            <small className="mono">{g?.path}</small>
+            {/* 这一行照设计稿原文。**它描述的场景与本评测集的实际分类并不一致**
+                （实际是单表 / 多表连接 / 业务口径 / 窗口函数 / 多跳 / 应拒绝，
+                没有"歧义澄清"和"异常恢复"这两类题）—— 产品要求文案与设计稿保持
+                一致，覆盖面以下方表格的「场景」列为准。 */}
+            <small>覆盖正常查询、歧义澄清、多步分析、安全攻击与异常恢复</small>
+          </div>
+          {/* 设计稿这里是「导入用例」「＋ 新增问题」两个可点的按钮。评测集是版本库里的
+              jsonl，改它要走评审与重跑 —— 页面上给一个即时生效的入口，等于让人可以
+              悄悄改掉考题再宣称分数提升。所以位置与形状照留，但**禁用**，
+              hover 说明去哪儿改。 */}
+          <div className="card-actions">
+            <button className="ghost" type="button" disabled
+                    title="评测集在版本库的 jsonl 里，导入要走代码评审后重跑">导入用例</button>
+            <button className="secondary" type="button" disabled
+                    title="新增问题要改评测集文件并重跑回归，不能在页面上即时生效">＋ 新增问题</button>
           </div>
         </div>
-        {/* 设计稿这里有「导入用例」「＋ 新增问题」两个按钮。评测集是版本库里的
-            jsonl 文件，改它要走评审与重跑 —— 页面上加一个即时生效的入口，
-            等于让人可以悄悄改掉考题再宣称分数提升。 */}
-        <p className="drawer-note">
-          用例定义在版本库的 jsonl 里，增改走代码评审后重跑 ——
-          考题能在页面上即时改，分数就不再是分数。
-        </p>
         <div className="eval-table-wrap">
           <table>
             <thead>
-              <tr><th>用例</th><th>场景</th><th>黄金问题</th><th>期望</th><th>本轮结果</th></tr>
+              <tr><th>用例</th><th>场景</th><th>黄金问题</th><th>标准答案</th><th>最近结果</th></tr>
             </thead>
             <tbody>
-              {cases.map(c => (
+              {/* 序号按**全集里的位置**算 —— 用页内下标的话，第二页又会从 EV-0001 开始 */}
+              {visible.map((c, i) => (
                 <tr key={c.id}>
-                  <td className="mono">{c.id}</td>
+                  <td className="mono" title={`评测集内 id：${c.id}`}>
+                    {evCode((current - 1) * pageSize + i)}
+                  </td>
                   <td>{CATEGORY_CN[c.category] ?? c.category}</td>
                   <td className="eval-case-question" title={c.question}>{c.question}</td>
                   <td className="dim" title={c.expect}>{c.expect || '—'}</td>
@@ -1047,6 +1290,21 @@ function DatasetScope({ offline }: { offline: OfflineQuality | null }) {
             </tbody>
           </table>
         </div>
+        {cases.length > 0 && (
+          <div className="audit-pager">
+            <span>共 {cases.length} 条 · 第 {current} / {pages} 页</span>
+            <span>
+              <select value={pageSize}
+                      onChange={e => { setPageSize(Number(e.target.value)); setPage(1) }}>
+                {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
+              </select>
+              <button className="ghost" disabled={current <= 1}
+                      onClick={() => setPage(p => p - 1)}>‹ 上一页</button>
+              <button className="ghost" disabled={current >= pages}
+                      onClick={() => setPage(p => p + 1)}>下一页 ›</button>
+            </span>
+          </div>
+        )}
       </article>
     </section>
   )

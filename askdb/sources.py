@@ -490,13 +490,18 @@ def whitelist_from_scan(columns: dict[str, list[dict[str, Any]]],
         cols = columns.get(name)
         if not cols:
             raise SourceError(f"表 {name} 取不到字段信息，无法开放")
+        # 库里的注释直接当白名单里的说明用。手工填是填不完的（一个源 33 张表、
+        # 几百个列），而"没有说明"不是一件中性的事：Schema 召回靠它给中文提问
+        # 打分，全空就等于召回失灵。
         out.append({
             "name": name,
-            "desc": "",
+            "desc": next((c.get("table_desc", "") for c in cols
+                          if c.get("table_desc")), ""),
             "aliases": [],
             # 运行时添加的数据源按单租户处理，见 derive_config 的说明
             "tenant_exempt": True,
-            "columns": {c["name"]: {"type": c["type"], "desc": ""} for c in cols},
+            "columns": {c["name"]: {"type": c["type"], "desc": c.get("desc", "")}
+                        for c in cols},
         })
     return out
 

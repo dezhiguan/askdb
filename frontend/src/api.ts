@@ -380,8 +380,11 @@ export interface Introspect {
   total?: number
 }
 
-export async function fetchSchema(): Promise<Schema> {
-  const response = await fetch('/api/schema')
+export async function fetchSchema(source?: string): Promise<Schema> {
+  // 不带 source 时取内置配置 —— 但查询页**必须**带上：推荐问题、示例 SQL
+  // 都从这份 schema 生成，取错源就会把另一个库的表名推给用户。
+  const query = source ? `?source=${encodeURIComponent(source)}` : ''
+  const response = await fetch(`/api/schema${query}`)
   if (!response.ok) throw new Error(`/api/schema ${response.status}`)
   return response.json()
 }
@@ -566,6 +569,15 @@ export interface AskResult {
 
   tables_hit?: string[]
   metrics_hit?: string[]
+  /** 这次召回是盲选：给模型的表不是按相关度选出来的，答案可能答非所问。
+   *  必须显示 —— 盲选下的答案与正常答案在页面上长得一模一样。 */
+  recall_blind?: boolean
+  /** 召回过程中要告知用户的话（盲选、全库兜底、向量回落）。 */
+  recall_note?: string
+  /** 被脱敏的返回列。星号得有个出处，否则看的人以为库里就是这样。 */
+  masked_columns?: string[]
+  /** 脱敏判定退化过：SQL 解析不出投影来源，整行按敏感返回。 */
+  mask_degraded?: boolean
   attempts?: number
   step_count?: number
   multi_step?: boolean
@@ -800,6 +812,9 @@ export interface QualityNode {
   p50_ms: number | null
   p95_ms: number | null
   tok: number
+  /** 这个节点失败时最常见的那条 note。没失败过就是空串 —— 不编一个理由出来 */
+  fail_reason?: string
+  fails?: number
 }
 
 export interface LiveQuality {
@@ -829,9 +844,23 @@ export interface LiveQuality {
   prev?: {
     runs: number
     p95_ms: number | null
+    avg_tok: number | null
+    avg_cost_cny: number | null
     nodes: Record<string, { calls: number; p95_ms: number | null }>
   }
   nodes: QualityNode[]
+  /** 工具（链路节点）调用总量与失败集中在哪 —— 设计稿「工具调用成功率」那张卡 */
+  tools?: { calls: number; ok: number; fails: number; top_fail_step: string; top_fail_share: number | null }
+  /** 只读执行节点的成败。**不等于结果准确率** */
+  sql?: { calls: number; ok: number }
+  /** attempts>1 的任务里最终没被拒的占比 */
+  retry?: { retried: number; recovered: number; rate: number | null }
+  /** 同一个人在 window_min 分钟内又提交一次的比例。匿名会被并成一个人 —— 会高估 */
+  repeat?: { n: number; rate: number | null; window_min: number }
+  /** 窗口等分七段的趋势，供 sparkline。空段照样在，不跳过 */
+  series?: { runs: number; tool_rate: number | null; sql_rate: number | null; p95_ms: number | null }[]
+  /** 走到人工审批的次数与占比 —— 来自审批流水，不在审计里 */
+  intervention?: { n: number; rate: number | null }
 }
 
 export async function fetchLiveQuality(days: number): Promise<LiveQuality> {
@@ -882,6 +911,10 @@ export interface OfflineQuality {
     total: number
     blind_n: number
     by_category: Record<string, number>
+    /** 评测集文件的 mtime。没有版本号、也没人记"谁改了考题"，这是唯一能说的真话 */
+    updated_at?: string
+    /** 有标准答案的题数。齐了才算这套题判得动 */
+    answered?: number
   }
   failures?: {
     id: string
@@ -906,7 +939,10 @@ export interface OfflineQuality {
     category: string
     question: string
     in_blind: boolean
+    /** 标准答案：判分实际拿什么对（标准 SQL + 约束，或应拒规则） */
     expect: string
+    /** 这条题有没有标准答案。汇总那格「标准答案 X / Y」按它算 */
+    has_answer: boolean
     passed: boolean | null
     reason: string
     trace_id: string

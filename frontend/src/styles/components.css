@@ -117,6 +117,11 @@
 .answer-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .answer-card h3 { margin: 0; font-size: 12px; }
 .answer-card p { margin: 5px 0 0; color: var(--ink-2); font-size: 8px; line-height: 1.55; }
+/* 召回盲选 / 脱敏说明。警示那条要**比正文重**：它说的是"这个答案可能是错的"，
+   与旁边那句模型自述的分量完全不同，排版上分不出来就等于没说。 */
+.answer-notice { margin-top: 6px !important; padding: 5px 7px; border-radius: 5px; font-size: 7.5px !important; line-height: 1.6 !important; }
+.answer-notice-warn { border: 1px solid #d8a24a; background: rgba(255, 244, 224, .9); color: #7a4b06 !important; font-weight: 600; }
+.answer-notice-info { border: 1px solid #bad0c1; background: rgba(255, 255, 255, .6); color: var(--ink-2) !important; }
 .answer-actions { display: flex; gap: 6px; flex: none; }
 .answer-actions button { padding: 6px 8px; border: 1px solid #9fc5ab; border-radius: 5px; color: var(--green); background: rgba(255,255,255,.55); font-size: 7px; font-weight: 700; cursor: pointer; }
 .answer-actions button:hover { background: white; }

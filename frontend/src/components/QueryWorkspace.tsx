@@ -41,12 +41,6 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
-    let alive = true
-    fetchSchema().then(s => { if (alive) setSchema(s) }).catch(() => {})
-    return () => { alive = false }
-  }, [])
-
-  useEffect(() => {
     if (!menuOpen) return
     const close = () => setMenuOpen(false)
     window.addEventListener('click', close)
@@ -56,7 +50,12 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   const ready = health.status === 'ready' ? health.health : null
   const canAsk = !!ready?.datasource.ok && !!ready?.llm.ok
   const canSql = !!ready?.datasource.ok
-  const mode: Mode = modeChoice ?? (canAsk ? 'ask' : 'sql')
+  // health 还没回来时**不要替用户改模式**。原来这里 canAsk 为 false 就落到
+  // 'sql'，而 health 未就绪时 canAsk 恰好也是 false —— 于是页面刚打开的那一两秒
+  // 处于"看着是自然语言提问、实际是直查模式"的状态，此时按 Enter 什么都不会发生
+  // （Enter 只在 ask 模式下提交），也不给任何反馈。实测复现过一次：输入框被清空、
+  // 一条请求都没发出。ready 为 null 时按主用途留在 'ask'，等 health 回来再定。
+  const mode: Mode = modeChoice ?? (!ready ? 'ask' : canAsk ? 'ask' : 'sql')
 
   // 内置源的名字取 health 里的真实库名，而不是配置文件路径 ——
   // 工作台上要回答的是"我在查哪个库"。
@@ -93,6 +92,18 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   const current = options.find(o => o.id === sourceId) ?? options[0] ?? EMPTY_SOURCE
   const usable = (mode === 'ask' ? canAsk : canSql) && current.tables > 0
 
+  // schema 跟着数据源走：推荐问题、示例 SQL 全从这份 schema 生成，
+  // 切了源却不重取，页面就会把另一个库的表名推给用户（点了必然拒答）。
+  // 依赖 current.id 而不是 sourceId，理由同 run() 里那段：选中项被移除时
+  // 二者会不一致，而**发查询用的是 current.id** —— 示例必须与它同源。
+  // 切换过程中先清空，宁可空一瞬，也不要显示上一个源的表名。
+  useEffect(() => {
+    let alive = true
+    setSchema(null)
+    fetchSchema(current.id).then(s => { if (alive) setSchema(s) }).catch(() => {})
+    return () => { alive = false }
+  }, [current.id])
+
   // 最近查询按数据源分桶。空串（内置源）不能直接当键 —— 落盘后与
   // "没有数据源"分不开，统一映射成 builtin。
   const sourceKey = current.id || 'builtin'
@@ -121,6 +132,16 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   const run = async () => {
     const text = question.trim()
     if (!text) { inputRef.current?.focus(); return }
+    // Enter 与「发送」按钮必须同一套判定。按钮上挂着 disabled，Enter 却直接
+    // 进链路 —— 两条入口对同一个状态给出不同结果，用户看到的就是"有时能发、
+    // 有时不能，还不说为什么"。
+    if (running) return
+    if (!usable) {
+      setError(ready
+        ? '当前数据源不可执行查询：先到「数据源」确认连接与开放表。'
+        : '正在确认数据源与模型状态，稍等一下再发起。')
+      return
+    }
     const bucket = { key: sourceKey, name: current.name }
     setRunning(true); setError('')
     recent.upsert(text, 'running', bucket)

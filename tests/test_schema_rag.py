@@ -187,3 +187,92 @@ def test_grain_enters_the_prompt_as_a_hard_constraint(cfg):
     assert "聚合粒度" in doc
     # 没写粒度的口径不该凭空多出一行
     assert "聚合粒度" not in metric_doc(Metric(name="x", aliases=[], scope=[], expr="COUNT(*)"))
+
+
+# ---------------------------------------------------------------------------
+# 中文提问的召回（2026-09-06 事故）
+#
+# 事故形状：_score 只做 `表名 in 问题` 的字面包含，中文问题对英文标识符恒为
+# 0 分，全表并列，排序退化成白名单顺序 —— careermate 源 33 张表，5 条中文提问
+# 召回到的永远是同样的前 3 张。不是拒答，是**答错还很笃定**：问"一共有多少个
+# 用户"用 agent_messages 的 COUNT(DISTINCT user_id) 答了 6512，真值 10084。
+# ---------------------------------------------------------------------------
+
+def _wide_cfg(cfg, names):
+    """一份"表多、注释全空"的白名单 —— 运行时数据源就长这样。"""
+    from askdb.config import Column, Table
+
+    # 本机配置走 mode: all，而这批用例锁的正是 keyword 那条路 —— 显式钉死，
+    # 否则它们在"全库注入"下永远是绿的，什么也没验证。
+    cfg.raw["schema_rag"]["mode"] = "keyword"
+    cfg.tables = {
+        n: Table(name=n, desc="", aliases=[],
+                 columns={"id": Column("id", "BIGINT"),
+                          "user_id": Column("user_id", "BIGINT"),
+                          "created_at": Column("created_at", "TIMESTAMP")},
+                 tenant_exempt=True)
+        for n in names
+    }
+    cfg.metrics = []
+    return cfg
+
+
+CAREERMATE_LIKE = [
+    "agent_messages", "interview_questions", "agent_tool_calls", "resume_versions",
+    "security_audit_logs", "agent_task_states", "agent_sessions", "users",
+    "user_profiles", "job_matches", "job_applications", "saved_jobs",
+    "career_tasks", "study_notes", "interview_sessions", "resumes",
+]
+
+
+def test_chinese_question_reaches_the_right_table(cfg):
+    """问"用户"就该召回 users —— 库里是英文，人问的是中文。"""
+    c = _wide_cfg(cfg, CAREERMATE_LIKE)
+    r = schema_rag.recall("一共有多少个用户", c)
+    assert r.table_names[0] == "users"
+    assert not r.blind
+
+
+def test_chinese_question_is_not_answered_by_a_lookalike_table(cfg):
+    """就是那条答错 6512 的问题：agent_messages 不能排在 users 前面。"""
+    c = _wide_cfg(cfg, CAREERMATE_LIKE)
+    r = schema_rag.recall("一共有多少个用户", c)
+    assert r.table_names.index("users") < r.table_names.index("agent_messages") \
+        if "agent_messages" in r.table_names else True
+
+
+def test_recall_is_marked_blind_when_nothing_matches(cfg):
+    """一张表都没命中时必须**说出来**，而不是把兜底当成召回结果往下跑。"""
+    c = _wide_cfg(cfg, CAREERMATE_LIKE)
+    c.raw["schema_rag"]["token_budget"] = 200          # 塞不下全库，只能兜底
+    r = schema_rag.recall("今天天气怎么样", c)
+    assert r.blind
+    assert r.note
+
+
+def test_blind_recall_widens_to_all_tables_when_budget_allows(cfg):
+    """表少到能全给时，全给 —— 模型看得见全部表名就不会挑错。"""
+    c = _wide_cfg(cfg, ["users", "orders"])
+    c.raw["schema_rag"]["token_budget"] = 5000
+    r = schema_rag.recall("今天天气怎么样", c)
+    assert set(r.table_names) == {"users", "orders"}
+    assert not r.blind          # 全库都给了，不存在"看不见的表"
+    assert r.note
+
+
+def test_table_comment_beats_the_builtin_dictionary(cfg):
+    """库里的中文表注释是最准的一份语义，权重要压过词典。"""
+    from askdb.config import Column, Table
+
+    cfg.raw["schema_rag"]["mode"] = "keyword"
+    cfg.metrics = []
+    cfg.tables = {
+        "t_zzz": Table(name="t_zzz", desc="岗位投递记录", aliases=[],
+                       columns={"id": Column("id", "BIGINT")}, tenant_exempt=True),
+        "users": Table(name="users", desc="", aliases=[],
+                       columns={"id": Column("id", "BIGINT")}, tenant_exempt=True),
+    }
+    cfg.raw["schema_rag"]["top_k"] = 1
+    cfg.raw["schema_rag"]["max_k"] = 1
+    r = schema_rag.recall("岗位投递有多少条", cfg)
+    assert r.table_names[0] == "t_zzz"

@@ -567,3 +567,146 @@ def _no_column(cfg: Config, table: str, shown: str) -> str:
     cols = list(cfg.tables[table].columns)
     listed = "、".join(cols[:12]) + ("…" if len(cols) > 12 else "")
     return f"字段不存在：{shown}（表 {table} 无此列）。该表可用字段：{listed}"
+
+
+# ---------------------------------------------------------------------------
+# 脱敏落点解析（P03）
+#
+# executor 拿到结果时，手里只有**返回列名**。模型写 `phone AS 手机号`，
+# 返回列名就是"手机号"，按列名匹配的脱敏一条也匹配不上 —— 2026-09-06 实测
+# 匿名访客据此拿到了明文手机号。列名匹配不是"够不够严"的问题，是**别名一改
+# 就整层失效**，属于静默失效，最坏的那一类。
+#
+# 因此改在 AST 上判：哪一个返回列是从敏感列算出来的，是解析器能回答的问题，
+# 别名改不动它。落点仍在返回值上（不改 SQL），原因见 executor._mask 的注释：
+# 改 SQL 会悄悄改变 COUNT(DISTINCT phone) 这类口径的语义。
+# ---------------------------------------------------------------------------
+
+
+def _sensitive_names(cfg: Config) -> set[str]:
+    return {c.lower() for t in cfg.tables.values() for c in t.sensitive_columns}
+
+
+def _table_flags(cfg: Config, table: str) -> dict[str, bool] | None:
+    t = cfg.tables.get(table.lower())
+    if t is None:
+        return None
+    return {c.name.lower(): c.sensitive for c in t.columns.values()}
+
+
+def _select_flags(select: exp.Select, cfg: Config,
+                  outer: dict[str, dict[str, bool]] | None = None,
+                  ) -> list[tuple[str, bool]] | None:
+    """一层 SELECT 的每个输出列：(输出名, 是否由敏感列算出)。
+
+    返回 None = **解析不了**。调用方必须按"不确定就当敏感"处理 ——
+    这一层的每一次放行都是一次可能的泄露，静默放行是不能接受的失败方向。
+    """
+    # 先解出本层可见的来源：真实表、CTE、子查询，都归一成 列名→是否敏感。
+    scope: dict[str, dict[str, bool]] = dict(outer or {})
+    # 键名与 _from_node 同一个坑：sqlglot 30 把 "with" 改成了 "with_"。
+    # 取不到时这里会退化成"整层解析不出"→ 全列脱敏，不是漏脱敏，
+    # 但那等于把带 CTE 的查询全打成星号，照样得两个键都认。
+    with_ = select.args.get("with") or select.args.get("with_")
+    for cte in (with_.expressions if with_ else []):
+        inner = cte.this
+        if not isinstance(inner, exp.Select):
+            return None
+        flags = _select_flags(inner, cfg, scope)
+        if flags is None:
+            return None
+        scope[cte.alias_or_name.lower()] = {n.lower(): s for n, s in flags}
+
+    sources: list[dict[str, bool]] = []
+    frm = _from_node(select)
+    parts = []
+    if frm is not None:
+        parts.append(frm.this)
+        parts += list(frm.args.get("expressions") or [])
+    parts += [j.this for j in (select.args.get("joins") or [])]
+    for node in parts:
+        if isinstance(node, exp.Table):
+            name = (node.name or "").lower()
+            flags = scope.get(name) or _table_flags(cfg, name)
+            if flags is None:
+                return None                    # 未知来源：交给调用方保守处理
+            scope[(node.alias or name).lower()] = flags
+            sources.append(flags)
+        elif isinstance(node, exp.Subquery) and isinstance(node.this, exp.Select):
+            sub = _select_flags(node.this, cfg, scope)
+            if sub is None:
+                return None
+            flags = {n.lower(): s for n, s in sub}
+            scope[(node.alias or "").lower()] = flags
+            sources.append(flags)
+        else:
+            return None
+
+    def _col_sensitive(col: exp.Column) -> bool:
+        cname = (col.name or "").lower()
+        qualifier = (col.table or "").lower()
+        if qualifier:
+            flags = scope.get(qualifier)
+            # 限定名指向本层解不出的作用域（相关子查询引用外层等）：不确定，从严
+            return True if flags is None else flags.get(cname, False)
+        # 未限定：任一来源里同名列敏感就算敏感。多表作用域下无法判断这一列
+        # 到底出自哪张表，而**猜错的方向必须是多脱敏**。
+        return any(f.get(cname, False) for f in sources) if sources else True
+
+    out: list[tuple[str, bool]] = []
+    for i, proj in enumerate(select.expressions):
+        if isinstance(proj, exp.Star) or (
+                isinstance(proj, exp.Column) and isinstance(proj.this, exp.Star)):
+            # R-05 会在执行前把 * 展开，正常路径到不了这里；真到了就说明
+            # 输出列集合未知，无法逐列判定。
+            return None
+        inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
+        cols = list(inner.find_all(exp.Column))
+        if isinstance(inner, exp.Count):
+            # COUNT 只暴露"有多少个"，不暴露值本身；把它脱敏等于把数字毁掉。
+            # MIN/MAX 不在此列 —— 它们原样吐出某一行的真值。
+            flag = False
+        elif cols:
+            flag = any(_col_sensitive(c) for c in cols)
+        else:
+            flag = False                       # 常量、CURRENT_DATE 之类
+        name = proj.alias_or_name or (cols[0].name if cols else f"col{i}")
+        out.append((str(name), flag))
+    return out
+
+
+def sensitive_output_columns(sql: str, cfg: Config,
+                             dialect: str = "duckdb") -> set[int] | None:
+    """这条 SQL 的哪几个返回列必须脱敏（按位置）。
+
+    None = 解析不出。调用方退回按列名匹配，并且**额外把解析失败这件事记下来**
+    —— 悄悄退化成一个更弱的判定，正是这次要修掉的那种失效。
+    """
+    try:
+        stmts = [s for s in sqlglot.parse(sql, dialect=dialect) if s is not None]
+    except Exception:
+        return None
+    if len(stmts) != 1:
+        return None
+    root = stmts[0]
+
+    if isinstance(root, exp.Union):
+        # UNION 各分支按位置对齐，任一分支敏感则该位置敏感
+        sides = [root.this, root.expression]
+        per: list[list[tuple[str, bool]]] = []
+        for s in sides:
+            if not isinstance(s, exp.Select):
+                return None
+            f = _select_flags(s, cfg)
+            if f is None:
+                return None
+            per.append(f)
+        width = min(len(f) for f in per)
+        return {i for i in range(width) if any(f[i][1] for f in per)}
+
+    if not isinstance(root, exp.Select):
+        return None
+    flags = _select_flags(root, cfg)
+    if flags is None:
+        return None
+    return {i for i, (_, s) in enumerate(flags) if s}

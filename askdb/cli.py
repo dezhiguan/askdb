@@ -7,7 +7,14 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Optional
+
+# serve 的第一声必须在**模块级 import 之前**发出。下面这几行会把 langchain /
+# fastapi 整条依赖链拉起来，pydevd 追踪下要几十秒 —— 在此之前控制台一个字都
+# 没有，看起来就像进程没起来。只在 serve 时打，别的子命令输出可能被管道消费。
+if sys.argv[1:2] == ["serve"]:
+    print("askdb 启动中 · 正在加载依赖…", flush=True)
 
 import typer
 from rich.console import Console
@@ -173,14 +180,52 @@ def cmd_serve(
     host: str = typer.Option("127.0.0.1", help="监听地址"),
     port: int = typer.Option(8000, help="监听端口"),
 ) -> None:
-    """启动 Web 界面。"""
+    """启动 Web 界面。
+
+    启动过程分段打印，因为**"进程在"不等于"能连"**：在 PyCharm 调试器下
+    pydevd 要给整个进程装追踪钩子，从进程起来到端口 LISTEN 有十几秒，
+    这段时间里前端打接口是连接被拒 —— 看起来和"服务崩了"一模一样。
+    所以最后那行就绪横幅**在端口真正绑定之后**才打（见 _ReadyServer）：
+    看到它才算能连，没看到就是还在起。
+    """
+    import time as _time
+
+    t0 = _time.perf_counter()
+    # 第一行必须在**任何重量级 import 之前**打。fastapi / langchain 那一坨在
+    # pydevd 追踪下要装很久，早先把 import 写在前面，控制台会先空白几十秒 ——
+    # 而那正是最需要一句"它在起，没崩"的时候。
+    con.print(f"[bold]askdb[/] 启动中 · 配置 [cyan]{config}[/]")
+
     import uvicorn
 
     from .server import create_app
 
-    _load(config)  # 提前暴露配置错误，别等到浏览器打开才报
-    con.print(f"[bold]askdb[/] → [cyan]http://{host}:{port}[/]\n")
-    uvicorn.run(create_app(config), host=host, port=port, log_level="warning")
+    cfg = _load(config)  # 提前暴露配置错误，别等到浏览器打开才报
+    source = (f"{cfg.db_type}:{cfg.db_path.name}" if cfg.db_type == "duckdb"
+              else cfg.db_type) if cfg.has_default_source else "无默认数据源（查询须指定运行时数据源）"
+    con.print(f"  [dim]配置就绪[/] · 数据源 {source} · 审计 {cfg.audit_log.name}")
+
+    con.print("  [dim]装配 Web 应用…[/]")
+    application = create_app(config)
+
+    class _ReadyServer(uvicorn.Server):
+        """端口绑定成功之后再报就绪。
+
+        uvicorn 自己那行 "Uvicorn running on …" 在 log_level=warning 下不打，
+        而它正是唯一可靠的就绪信号。这里覆写 startup()：super() 里做完
+        lifespan 与 create_server 才返回，所以这一行落在**已经能连**之后。
+        端口被占用时 super() 直接退出，这行不会打 —— 正是想要的语义。
+        """
+
+        async def startup(self, sockets: list | None = None) -> None:
+            await super().startup(sockets=sockets)
+            con.print(
+                f"\n[green]✓ 服务已就绪[/] → [cyan]http://{host}:{port}[/]"
+                f"   [dim]（总耗时 {_time.perf_counter() - t0:.1f}s，Ctrl+C 停止）[/]\n")
+
+    _ReadyServer(uvicorn.Config(
+        application, host=host, port=port, log_level="warning",
+    )).run()
 
 
 @app.command("replay")

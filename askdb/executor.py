@@ -87,6 +87,12 @@ class QueryResult:
     truncated: bool = False
     elapsed_ms: int = 0
     as_of: str = ""     # 数据时间（§8 准入条件 #7）
+    #: 脱敏判定退化过：SQL 解析不出，本次结果按整行脱敏返回。
+    #: 必须能传到界面上 —— 一屏星号而不说明为什么，看的人只会以为库里就是这样。
+    mask_degraded: bool = False
+    #: 本次被脱敏的返回列名。审计要记"哪几列脱了"，否则事后无从判断
+    #: 某一次结果到底有没有真的脱敏。
+    masked_columns: list[str] = field(default_factory=list)
 
 
 # ==========================================================================
@@ -386,14 +392,27 @@ class _PgBackend(_Backend):
                      "tenant": bool(r[3])} for r in cur.fetchall()]
 
     def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """字段清单，**连库里的注释一起取**。
+
+        注释是这套系统里最便宜也最准的一份语义：中文注释与中文提问同语种，
+        召回命中它比任何中英词典都可靠。不取它，运行时数据源的白名单就永远
+        是一堆没有语义的英文标识符 —— 而那正是中文提问召回失灵的根。
+        """
         if not names:
             return {}
         with self.connect().cursor() as cur:
             cur.execute("""
-                SELECT table_name, column_name, data_type
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = ANY(%s)
-                ORDER BY table_name, ordinal_position
+                SELECT c.table_name,
+                       c.column_name,
+                       c.data_type,
+                       COALESCE(col_description(k.oid, c.ordinal_position), ''),
+                       COALESCE(obj_description(k.oid, 'pg_class'), '')
+                FROM information_schema.columns c
+                LEFT JOIN pg_class k
+                       ON k.relname = c.table_name
+                      AND k.relnamespace = 'public'::regnamespace
+                WHERE c.table_schema = 'public' AND c.table_name = ANY(%s)
+                ORDER BY c.table_name, c.ordinal_position
             """, (names,))
             return _group_columns(cur.fetchall())
 
@@ -406,9 +425,17 @@ def _group_columns(rows: Any) -> dict[str, list[dict[str, Any]]]:
     它们会退化成放行，而放行是最不该出现的失败方向。
     """
     out: dict[str, list[dict[str, Any]]] = {}
-    for table, column, dtype in rows:
-        out.setdefault(str(table), []).append(
-            {"name": str(column), "type": str(dtype).upper()})
+    for row in rows:
+        # 后端各取各的：DuckDB 只有三元组，PostgreSQL 还带列注释与表注释。
+        # 用长度分支而不是要求两边对齐，是因为 DuckDB 根本没有 COMMENT ON
+        # 这套元数据可取 —— 硬凑两个空字符串出来，读的人会以为它有而恰好是空。
+        table, column, dtype = row[0], row[1], row[2]
+        item: dict[str, Any] = {"name": str(column), "type": str(dtype).upper()}
+        if len(row) >= 4:
+            item["desc"] = str(row[3] or "")
+        if len(row) >= 5:
+            item["table_desc"] = str(row[4] or "")
+        out.setdefault(str(table), []).append(item)
     return out
 
 def _masked(value) -> str:
@@ -574,28 +601,38 @@ class Executor:
         if truncated:
             rows = rows[:cap]
         names = [str(c) for c in columns]
+        masked, hit, degraded = self._mask(names, rows, sql)
         return QueryResult(
             columns=names,
-            rows=self._mask(names, rows),
+            rows=masked,
             row_count=len(rows),
             truncated=truncated,
             elapsed_ms=elapsed,
             as_of=as_of,
+            mask_degraded=degraded,
+            masked_columns=[names[i] for i in hit],
         )
 
-    def _mask(self, columns: list[str], rows: list[list]) -> list[list]:
-        """按列名脱敏个人信息（P03）。
+    def _mask(self, columns: list[str], rows: list[list], sql: str = "",
+              ) -> tuple[list[list], list[int], bool]:
+        """脱敏个人信息（P03）。
 
-        **落点在这里而不是在 SQL 里**，有两个理由：
-          · 改 SQL 意味着要正确处理别名、表达式、聚合、子查询里的同名列 ——
-            每一处判错都是一次泄露，而这里拿到的是最终真正返回的列名，
-            没有歧义。
-          · 脱敏不该改变查询语义。把 phone 换成 substr(...) 会让
-            COUNT(DISTINCT phone) 之类的口径悄悄变样，那是比看到原值
-            更难发现的错误。
+        **落点在返回值上而不是在 SQL 里**：改 SQL 会悄悄改变查询语义 ——
+        把 phone 换成 substr(...) 会让 COUNT(DISTINCT phone) 这类口径变样，
+        那是比看到原值更难发现的错误。
 
-        代价要说清楚：模型与护栏仍然看得到真实列名，脱敏只作用于**返回值**。
-        所以它防的是"人看到了不该看的内容"，防不住"按敏感列做筛选"
+        **但"哪几列要脱敏"必须在 AST 上判，不能按返回列名判。**
+        这里原来写的是"拿到的是最终真正返回的列名，没有歧义"—— 那句话错了：
+        模型写 `SELECT phone AS 手机号`，返回列名就是"手机号"，与敏感列名对不上，
+        整层脱敏静默失效。2026-09-06 的实测里匿名访客据此拿到了明文手机号。
+        改为由 guard 解析投影到底出自哪一列，别名改不动它。
+
+        解析不出时（未知语法、来源不明的作用域）**从严**：退回列名匹配的同时，
+        把所有值都当敏感处理。宁可整屏星号让人来问，也不能悄悄退化成一层
+        更弱的判定 —— 那正是这次事故的形状。
+
+        代价仍要说清楚：模型与护栏看得到真实列名，脱敏只作用于返回值。
+        它防的是"人看到了不该看的内容"，防不住"按敏感列做筛选"
         （WHERE phone = '138...' 仍能试探）。后者要靠表白名单收窄，
         不是靠这一层 —— 两件事别混。
         """
@@ -603,13 +640,33 @@ class Executor:
         # `if self.cfg.unmask: return rows` 的出口，供 DEV / DATA_OWNER 看原值。
         # 产品决定所有角色可见面一致后，那个位失去了承载它的角色差别，
         # 与其留一个恒为假的分支，不如让脱敏成为无条件的。
+        from . import guard
+
         sensitive = {c.lower()
                      for t in self.cfg.tables.values() for c in t.sensitive_columns}
         if not sensitive:
-            return rows
-        hit = [i for i, name in enumerate(columns) if name.lower() in sensitive]
+            return rows, [], False
+
+        # 列名匹配保留下来，但只作为**补充**：模型把某列 `AS phone` 时，
+        # 它出自哪儿不重要，叫这个名字就该按这个名字对待。
+        by_name = {i for i, name in enumerate(columns) if name.lower() in sensitive}
+
+        by_ast: set[int] | None = None
+        degraded = False
+        if sql:
+            try:
+                by_ast = guard.sensitive_output_columns(sql, self.cfg, self.cfg.dialect)
+            except Exception:                          # pragma: no cover - 解析器兜底
+                by_ast = None
+        if by_ast is None:
+            # 解析不出：整行当敏感。见上方 docstring —— 不确定时必须偏严，
+            # 而不是退回那层已经被证明会失效的列名匹配。
+            degraded = bool(sql)
+            hit = list(range(len(columns))) if degraded else sorted(by_name)
+        else:
+            hit = sorted(by_ast | by_name)
         if not hit:
-            return rows
+            return rows, [], degraded
         out = []
         for row in rows:
             r = list(row)
@@ -617,4 +674,4 @@ class Executor:
                 if r[i] is not None:
                     r[i] = _masked(r[i])
             out.append(r)
-        return out
+        return out, hit, degraded

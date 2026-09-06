@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -25,6 +26,9 @@ class Recall:
     truncated: list[str] = field(default_factory=list)   # 因预算被裁掉的表名
     mode: str = ""
     note: str = ""                                      # 降级等需要告知的情况
+    #: 这次召回没有任何表命中关键词，挑出来的表是兜底而非相关度排序的结果。
+    #: 必须一路传到界面：盲选下的答案看起来与正常答案毫无区别。
+    blind: bool = False
 
     @property
     def table_names(self) -> list[str]:
@@ -69,29 +73,188 @@ def metric_doc(m: Metric) -> str:
     return out
 
 
+#: 库里是英文，人问的是中文 —— 这本词典就是那道缝。
+#:
+#: 2026-09-06 实测：careermate 源 33 张表，5 条中文提问的召回结果**完全相同**
+#: （agent_messages / interview_questions / agent_tool_calls，正好是白名单前三
+#: 张），因为 _score 只做 `t.name.lower() in question` 这种字面包含，中文问题
+#: 对英文标识符恒为 0 分，全表并列第一，排序退化成白名单顺序。后果不是拒答，
+#: 是**看起来成功的错答**：问"一共有多少个用户"拿 agent_messages 的
+#: COUNT(DISTINCT user_id) 答了 6512，真值 users 表 10084。
+#:
+#: 词典是兜底不是终点：数据源白名单里的 desc / aliases 一旦填上（结构扫描现在
+#: 会把库里的表注释、列注释抓进来），它们的权重更高，词典就只在没有注释的库上
+#: 起作用。想要真正的语义召回，把 schema_rag.mode 换成 vector。
+#:
+#: 只收**双向都成立**的对应：把"记录"映射到 log 这种一对多的联想留给向量召回，
+#: 塞进词典只会让本来准的查询变歪。
+CN_HINTS: dict[str, tuple[str, ...]] = {
+    "用户": ("user", "users", "account", "member"),
+    "账号": ("user", "users", "account"),
+    "会员": ("member", "user"),
+    "组织": ("org", "organization", "tenant"),
+    "租户": ("tenant", "org", "organization"),
+    "公司": ("company", "corp", "employer"),
+    "企业": ("company", "corp", "enterprise"),
+    "岗位": ("job", "position", "post"),
+    "职位": ("job", "position"),
+    "工作": ("job", "work"),
+    "招聘": ("job", "recruit", "hire"),
+    "投递": ("application", "apply", "delivery"),
+    "申请": ("application", "apply"),
+    "简历": ("resume", "cv"),
+    "面试": ("interview",),
+    "题目": ("question", "quiz"),
+    "问题": ("question",),
+    "答案": ("answer",),
+    "会话": ("session", "conversation", "chat"),
+    "对话": ("conversation", "chat", "session", "message"),
+    "消息": ("message", "msg"),
+    "任务": ("task", "job", "run"),
+    "计划": ("plan",),
+    "工具": ("tool",),
+    "调用": ("call", "invoke", "invocation"),
+    "执行": ("run", "exec", "execution"),
+    "知识库": ("knowledge", "kb", "knowledgebase"),
+    "文档": ("document", "doc", "file"),
+    "文件": ("file", "document"),
+    "分块": ("chunk", "segment"),
+    "检索": ("retrieval", "search", "query"),
+    "召回": ("retrieval", "recall"),
+    "模型": ("model", "llm"),
+    "费用": ("cost", "fee", "expense", "usage"),
+    "成本": ("cost", "usage"),
+    "用量": ("usage", "quota"),
+    "配额": ("quota", "limit"),
+    "评测": ("eval", "evaluation", "benchmark"),
+    "审计": ("audit",),
+    "日志": ("log", "logs", "record"),
+    "记录": ("log", "record", "history"),
+    "历史": ("history", "log"),
+    "权限": ("permission", "auth", "role", "acl"),
+    "角色": ("role",),
+    "登录": ("login", "signin", "session"),
+    "通知": ("notification", "notify", "message"),
+    "收藏": ("saved", "favorite", "collect", "star"),
+    "标签": ("tag", "label"),
+    "分类": ("category", "type", "class"),
+    "城市": ("city", "location", "region"),
+    "地区": ("region", "area", "location"),
+    "地址": ("address", "location"),
+    "薪资": ("salary", "pay", "compensation", "wage"),
+    "工资": ("salary", "pay", "wage"),
+    "学习": ("study", "learn"),
+    "笔记": ("note", "notes"),
+    "画像": ("profile", "portrait"),
+    "档案": ("profile", "archive"),
+    "偏好": ("preference", "prefs", "setting"),
+    "设置": ("setting", "config", "preference"),
+    "版本": ("version", "revision"),
+    "快照": ("snapshot",),
+    "状态": ("state", "status"),
+    "反思": ("reflection", "reflect"),
+    "记忆": ("memory",),
+    "匹配": ("match", "matching"),
+    "机会": ("opportunity", "job", "match"),
+    "产物": ("artifact", "output"),
+    "结果": ("result", "output"),
+    "断点": ("checkpoint",),
+    "协作": ("collab", "collaboration"),
+    "安全": ("security", "audit"),
+    "时间": ("time", "date", "at"),
+    "数量": ("count", "num", "total"),
+    "金额": ("amount", "money", "cost"),
+}
+
+
+def _tokens(name: str) -> set[str]:
+    """标识符切词：`agent_tool_calls` → {agent, tool, calls, call}。
+
+    末尾的复数 s 一并收进去，因为提问里的中文对应词是单数（"调用"→call），
+    而表名习惯用复数（calls）—— 差这一个字母就前功尽弃。
+    """
+    out: set[str] = set()
+    for w in re.split(r"[^0-9A-Za-z]+|(?<=[a-z0-9])(?=[A-Z])", str(name)):
+        if not w:
+            continue
+        w = w.lower()
+        out.add(w)
+        if len(w) > 3 and w.endswith("s"):
+            out.add(w[:-1])
+    return out
+
+
+def _wanted(question: str) -> set[str]:
+    """从提问里解出"想找什么"：英文词原样收，中文词经词典换成英文词。"""
+    q = question.lower()
+    out = {w for w in re.split(r"[^0-9A-Za-z]+", q) if len(w) > 1}
+    for cn, ens in CN_HINTS.items():
+        if cn in question:
+            out.update(ens)
+    return out
+
+
 def _score(t: Table, question: str) -> int:
-    """关键词相关度。表名/别名命中权重最高，其次字段名与字段说明。"""
+    """关键词相关度。表名/别名命中权重最高，其次字段名与字段说明。
+
+    命中判定按**词**，不按子串：中文提问对英文标识符做子串匹配恒为 0 分，
+    而 0 分并列会让排序退化成白名单顺序 —— 那正是这个函数出过的事故。
+    """
     s = 0
     q = question.lower()
-    if t.name.lower() in q:
+    wanted = _wanted(question)
+    name_tokens = _tokens(t.name)
+
+    if t.name.lower() in q:                       # 直接写了表名，最强信号
         s += 10
+    elif name_tokens & wanted:
+        # 表名的词被问到（含中文经词典转换）。按命中词数给分，
+        # `interview_questions` 对"面试题目"命中两个词，理应压过只命中一个的表。
+        s += 6 * len(name_tokens & wanted)
+
     for a in t.aliases:
         if a and a in question:
             s += 8
+    if t.desc:
+        # 表注释是**库里真有的元数据**，权重排在别名之后、字段之前。
+        # 中文注释与中文提问同语种，命中它比任何词典都准。
+        s += 4 * sum(1 for w in _desc_words(t.desc) if w in question)
+
     for c in t.columns.values():
+        ctoks = _tokens(c.name)
         if c.name.lower() in q:
             s += 3
-        if c.desc and any(w and w in question for w in c.desc.split("，")[:1]):
-            s += 1
+        elif ctoks & wanted:
+            s += 2
+        if c.desc:
+            s += 2 * sum(1 for w in _desc_words(c.desc) if w in question)
         for e in c.enum:
             if e.lower() in q:
                 s += 2
     return s
 
 
-def _keyword_pick(question: str, cfg: Config, top_k: int, max_k: int) -> list[Table]:
+def _desc_words(desc: str) -> list[str]:
+    """注释里够长、值得当关键词的片段。
+
+    只切标点：中文分词要么引依赖要么做不准，而"命中一个 2 字以上的连续片段"
+    在表注释这种短文本上已经够用。
+    """
+    return [w for w in re.split(r"[\s,，、。;；:：（）()\[\]/]+", str(desc))
+            if len(w) >= 2]
+
+
+def _keyword_pick(question: str, cfg: Config, top_k: int, max_k: int,
+                  ) -> tuple[list[Table], bool]:
+    """按关键词挑表。第二个返回值 = **这次挑选是不是瞎猜**。
+
+    瞎猜（全表 0 分）与"挑出了 3 张相关的表"在返回值上原来长得一模一样，
+    于是链路把一次盲选当成一次正常召回接着往下跑，最后给出一个语气笃定的
+    错答案。这个布尔量存在的唯一目的，就是让上层能区分这两件事。
+    """
     all_tables = list(cfg.tables.values())
     scored = sorted(((_score(t, question), t) for t in all_tables), key=lambda x: -x[0])
+    blind = not scored or scored[0][0] <= 0
     picked = [t for s, t in scored if s > 0][:max_k]
     if len(picked) < top_k:
         # 召回不足时补齐，宁可多给一张表，也不要让模型无表可用
@@ -100,7 +263,7 @@ def _keyword_pick(question: str, cfg: Config, top_k: int, max_k: int) -> list[Ta
                 picked.append(t)
             if len(picked) >= top_k:
                 break
-    return picked
+    return picked, blind
 
 
 def recall(question: str, cfg: Config, index: Any = None) -> Recall:
@@ -112,6 +275,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     all_tables = list(cfg.tables.values())
     metrics = [m for m in cfg.metrics if m.matches(question)]
     note = ""
+    blind = False
 
     if mode == "all":
         picked = all_tables
@@ -128,7 +292,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
             hits = idx.search(question, want)
         except EmbeddingUnavailable as e:
             # 召回退化只是准确率下降，不该让整条链路不可用
-            picked = _keyword_pick(question, cfg, top_k, max_k)
+            picked, blind = _keyword_pick(question, cfg, top_k, max_k)
             mode, note = "keyword", f"向量召回不可用，已回落关键词：{e}"
         else:
             ranked = [(h.score, cfg.tables[h.key.split(":", 1)[1]])
@@ -156,13 +320,37 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
                 if m and m not in metrics:
                     metrics.append(m)
             if len(picked) < top_k:
-                for t in _keyword_pick(question, cfg, top_k, max_k):
+                for t in _keyword_pick(question, cfg, top_k, max_k)[0]:
                     if t not in picked:
                         picked.append(t)
                     if len(picked) >= top_k:
                         break
     else:
-        picked = _keyword_pick(question, cfg, top_k, max_k)
+        picked, blind = _keyword_pick(question, cfg, top_k, max_k)
+
+    # 一张表都没命中 = 这次召回是**盲选**，挑出来的只是白名单前几张。
+    #
+    # 原来这里什么都不做，链路照常往下跑，于是"问 A 答 B"—— 实测问"一共有多少
+    # 个用户"，盲选给出 agent_messages，模型老老实实按给的表算了个
+    # COUNT(DISTINCT user_id)，返回 6512，而真值是 users 表的 10084。
+    # 没有任何一层报错，因为每一层都做对了自己那件事。
+    #
+    # 两条出路，先选便宜的那条：全部表塞得进预算就全给，让模型自己挑 ——
+    # 模型看得见 33 张表的表名时不会挑错，看不见时只能在给它的 3 张里硬凑。
+    # 塞不进就如实说"这次是盲选"，让上层把不确定性透出去，而不是伪装成一次
+    # 正常召回。§3.2.3「禁止全库注入」针对的是**常态**，不是这种召回失败的兜底。
+    if blind and mode == "keyword":
+        whole = _render(all_tables, metrics)
+        if all_tables and _est_tokens(whole) <= budget:
+            picked = all_tables
+            # 全库都给了，模型手上不再有"看不见的表"，这就不算盲选了 ——
+            # 只有"给了 3 张、真正该用的那张不在里面"才需要向用户示警。
+            blind = False
+            note = (f"关键词召回一张表都没命中，已改为把全部 {len(all_tables)} 张表"
+                    f"交给模型自行判断（仍在 token 预算内）")
+        else:
+            note = (f"关键词召回一张表都没命中，下列 {len(picked)} 张表是按白名单顺序"
+                    f"取的，**不是**按相关度选出来的；结果可能答非所问，请核对 SQL")
 
     # 命中口径涉及的表必须一并注入，否则口径表达式引用的列不可见
     by_name = {t.name: t for t in picked}
@@ -190,6 +378,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         truncated=truncated,
         mode=mode,
         note=note,
+        blind=blind,
     )
 
 

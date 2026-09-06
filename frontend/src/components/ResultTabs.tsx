@@ -47,12 +47,40 @@ function AnswerCard({ result, onGoTab }: {
     ? `${result.columns![0]}：${fmtValue(result.rows![0][0])}`
     : `查询返回 ${(result.row_count ?? 0).toLocaleString()} 行`
 
+  // 召回盲选 / 脱敏这两件事必须**贴着答案本身**说，不能只写进执行链路页签。
+  // 盲选下的错答与正常答案在页面上长得一模一样，看的人不会主动去点链路；
+  // 而一屏星号若不给出处，第一反应是"库里存的就是这样"。
+  const notices: { tone: 'warn' | 'info'; text: string }[] = []
+  if (result.recall_blind) {
+    notices.push({
+      tone: 'warn',
+      text: result.recall_note
+        || '这次没有任何表命中问题里的关键词，下面用到的表是兜底选的，结果可能答非所问 —— 请核对 SQL，或在问题里直接写出表名。',
+    })
+  } else if (result.recall_note) {
+    notices.push({ tone: 'info', text: result.recall_note })
+  }
+  if (result.mask_degraded) {
+    notices.push({
+      tone: 'info',
+      text: '这条 SQL 的投影来源解析不出，本次结果按整行从严脱敏 —— 星号是系统加的，不是库里的值。',
+    })
+  } else if (result.masked_columns?.length) {
+    notices.push({
+      tone: 'info',
+      text: `个人信息列已脱敏：${result.masked_columns.join('、')}（首尾保留，中间打星）`,
+    })
+  }
+
   return (
     <div className="answer-card">
       <div className="answer-top">
         <div>
           <strong>{headline}</strong>
           {result.reasoning && <p>{result.reasoning}</p>}
+          {notices.map(n => (
+            <p key={n.text} className={`answer-notice answer-notice-${n.tone}`}>{n.text}</p>
+          ))}
         </div>
         <div className="answer-actions">
           <button onClick={() => onGoTab('sql')}>查看原生 SQL</button>
@@ -68,10 +96,12 @@ function AnswerCard({ result, onGoTab }: {
           <span>数据快照</span><strong>{result.as_of ? fmtStamp(result.as_of) : '—'}</strong>
         </div>
         <div className="evidence-item">
-          <span>返回 / 扫描</span>
+          {/* 扫描数是 EXPLAIN 的**估算**，不是实测：估算值小于实际返回行数是
+              常态（"7 / 1 ROWS"），不标出来就是一句自相矛盾的话。 */}
+          <span>返回 / 扫描(估)</span>
           <strong>
             {(result.row_count ?? 0).toLocaleString()} / {result.explain_rows == null
-              ? '—' : result.explain_rows.toLocaleString()} ROWS
+              ? '—' : `≈${result.explain_rows.toLocaleString()}`} ROWS
           </strong>
         </div>
       </div>

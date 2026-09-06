@@ -7,11 +7,61 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+#: 按列名判定个人信息列的内置模式。
+#:
+#: **这是脱敏的下限，不是它的全部。** 手写白名单（config/*-tables.yaml）可以
+#: 逐列标 sensitive，但运行时数据源的白名单是结构扫描自动生成的 —— 那条路径上
+#: 没有人来标，2026-09-06 的实测里 careermate 源把 users.phone 原样返回给了
+#: 匿名访客。靠"记得标"来兜个人信息，就等于没兜。
+#:
+#: 判定按**词**而不是按子串。`phone_number` / `phoneNumber` / `PhoneNo` 会被
+#: 切成同一组词，都能命中；而 `platform_role`（含 "lat"）、`telemetry`（含
+#: "tel"）不会 —— 子串匹配在真实 schema 上误伤太多，误伤多了就会有人来关它，
+#: 关掉的那一刻这层防护就没了。
+SENSITIVE_WORDS: frozenset[str] = frozenset({
+    "phone", "mobile", "tel", "telephone",
+    "email", "mail",
+    "passport", "ssn", "idcard", "idno",
+    "password", "passwd", "pwd", "secret", "token", "apikey", "accesskey",
+    "address", "addr",
+    "realname", "fullname",
+    "wechat", "openid", "unionid",
+    "birthday", "birthdate", "dob",
+    "lat", "lng", "latitude", "longitude",
+})
+
+#: 拼起来才成立的模式：单看任何一个词都不敏感（`card` / `id` / `no` 到处都是），
+#: 连在一起才是身份证号、银行卡号。对**去下划线后的整列名**做子串匹配。
+SENSITIVE_COMPOUNDS: tuple[str, ...] = (
+    "idcard", "identitycard", "cardno", "bankcard", "creditcard",
+    "realname", "apikey", "accesskey", "openid", "unionid",
+)
+
+
+def _words(name: str) -> set[str]:
+    """把列名切成词：下划线、大小写边界、数字边界都算。"""
+    parts = re.split(r"[^0-9A-Za-z]+|(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Za-z])(?=[0-9])",
+                     str(name))
+    return {p.lower() for p in parts if p}
+
+
+def looks_sensitive(column_name: str) -> bool:
+    """列名看着像个人信息 / 凭据吗。
+
+    单独成函数是为了让"哪些列被自动判成敏感"这件事可测、可 grep，
+    而不是埋在 dataclass 里的一行推导式。
+    """
+    flat = str(column_name).replace("_", "").lower()
+    return bool(_words(column_name) & SENSITIVE_WORDS) or any(
+        c in flat for c in SENSITIVE_COMPOUNDS)
 
 
 @dataclass
@@ -28,6 +78,18 @@ class Column:
     #: 数据期限所依据的时间列。语义与 tenant 完全对称：
     #: 那个标"按谁隔离"，这个标"按哪一列算新旧"。
     time: bool = False
+
+    def __post_init__(self) -> None:
+        # 内置模式命中即敏感，**配置只能往上加、不能往下摘**（`sensitive: false`
+        # 摘不掉 phone）。理由与 identity.narrow 的"只能收窄不能放宽"是同一条：
+        # 配错的方向必须是偏严的那一侧。要放开某一列，得改这里的模式并留下记录，
+        # 那是一次带评审的改动，不是一次点击。
+        #
+        # 落点选 __post_init__ 而不是各个解析函数，是因为 Column 有三条构造路径
+        # （手写白名单 parse_tables、运行时源 sources.derive_config、测试固件），
+        # 分开写就迟早漏掉一条 —— 而漏掉的那条正是这次出事的那条。
+        if not self.sensitive and looks_sensitive(self.name):
+            self.sensitive = True
 
 
 @dataclass

@@ -44,6 +44,11 @@ class AskState(TypedDict, total=False):
     tables_hit: list[str]
     metrics_hit: list[str]
     recall_truncated: list[str]
+    #: 召回是盲选（没有任何表命中关键词）/ 召回过程中要告知用户的话。
+    #: 进 State 是因为它必须跟着检查点走：续跑一条中断的线程时，
+    #: 那句"这次是盲选"不能在恢复后凭空消失。
+    recall_blind: bool
+    recall_note: str
 
     sql_raw: str
     sql_final: str
@@ -53,6 +58,8 @@ class AskState(TypedDict, total=False):
 
     columns: list[str]
     rows: list[list[Any]]
+    mask_degraded: bool
+    masked_columns: list[str]
     row_count: int
     truncated: bool
     as_of: str            # 数据时间，来自数据源时钟（§8 准入条件 #7）
@@ -139,6 +146,14 @@ class AskResult:
 
     tables_hit: list[str] = field(default_factory=list)
     metrics_hit: list[str] = field(default_factory=list)
+    #: 召回是盲选：给模型的表不是按相关度选出来的，答案可能答非所问。
+    #: 出接口而不只进审计 —— 事后能查出来，救不了正在看这个数字的人。
+    recall_blind: bool = False
+    recall_note: str = ""
+    #: 脱敏判定退化过（SQL 解析不出，整行按敏感处理）。
+    mask_degraded: bool = False
+    #: 本次实际脱敏的列。
+    masked_columns: list[str] = field(default_factory=list)
     attempts: int = 1
     step_count: int = 1
     multi_step: bool = False
@@ -201,6 +216,8 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         "tables_hit": r.table_names,
         "metrics_hit": [m.name for m in r.metrics],
         "recall_truncated": r.truncated,
+        "recall_blind": r.blind,
+        "recall_note": r.note,
     }
 
 
@@ -310,9 +327,16 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         }
 
     label = "生成 1 条 SELECT" if attempt == 0 else f"第 {attempt + 1} 轮重新生成"
-    d.tracer.add("generate_sql", t, label, tok_in=usage.input_tokens, tok_out=usage.output_tokens,
-                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
+    # **先判有没有 SQL，再落节点**。反过来写的话（这里原来就是反的），模型一条
+    # SQL 都没给出来时，节点上照样记着"生成 1 条 SELECT · ok" —— 任务收尾是
+    # NO_SQL、节点却显示成功，工具健康度那张表因此永远看不到这类失败，
+    # 「主要失败原因」列也就永远是空的。token 与成本两条路都要记：这次调用
+    # 真的花了钱，没产出 SQL 不是不计费的理由。
     if not (draft.sql or "").strip():
+        why = (draft.reasoning or "模型判断当前表结构无法回答该问题。").strip()
+        d.tracer.add("generate_sql", t, f"未生成 SQL：{why}", status="failed",
+                     tok_in=usage.input_tokens, tok_out=usage.output_tokens,
+                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
         return {
             "error": draft.reasoning or "模型判断当前表结构无法回答该问题。",
             "error_hint": "换个问法，或在 config/tables.yaml 中开放更多表。",
@@ -320,6 +344,8 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             "reasoning": draft.reasoning,
             **_spent(state, usage),
         }
+    d.tracer.add("generate_sql", t, label, tok_in=usage.input_tokens, tok_out=usage.output_tokens,
+                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
     return {"sql_raw": draft.sql, "reasoning": draft.reasoning,
             "error": None, "rejected_by": None, **_spent(state, usage)}
 
@@ -393,12 +419,20 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     note = f"返回 {res.row_count} 行"
     if res.truncated:
         note += "（已按行数上限截断）"
+    if res.masked_columns:
+        # 脱敏进执行链路的说明里：只把星号显示出来而不说是谁脱的，
+        # 看的人第一反应是"库里存的就是这样"。
+        note += f"；已脱敏 {len(res.masked_columns)} 列（{'、'.join(res.masked_columns[:5])}）"
+    if res.mask_degraded:
+        note += "；SQL 解析不出投影来源，本次按整行从严脱敏"
     d.tracer.add("execute", t, note)
     return {
         "columns": [str(c) for c in res.columns],
         "rows": [[jsonable(v) for v in row] for row in res.rows],
         "row_count": res.row_count, "truncated": res.truncated,
         "as_of": res.as_of,
+        "mask_degraded": res.mask_degraded,
+        "masked_columns": list(res.masked_columns),
         "error": None, "rejected_by": None,
     }
 
@@ -708,6 +742,12 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         "source": cfg.source_id or "builtin",
         "source_name": cfg.source_name or cfg.path,
         "tables_hit": result.tables_hit, "metrics_hit": result.metrics_hit,
+        # 召回是不是盲选、脱了哪几列 —— 两者都必须进审计。
+        # 事后复盘一条可疑结果时，第一个要回答的问题就是"模型当时看得见
+        # 该看的那张表吗"；脱敏同理，不记就无从证明当时到底脱没脱。
+        "recall_blind": result.recall_blind,
+        "masked_columns": result.masked_columns,
+        "mask_degraded": result.mask_degraded,
         "sql_raw": result.sql_raw, "sql_final": result.sql_final,
         "rules_fired": result.rules_fired, "rejected_by": result.rejected_by,
         "attempts": result.attempts, "explain_rows": explain_rows,
@@ -813,6 +853,10 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
         rejected_by=out.get("rejected_by"), error=out.get("error") or "",
         hint=out.get("error_hint", ""),
         tables_hit=out.get("tables_hit", []), metrics_hit=out.get("metrics_hit", []),
+        recall_blind=bool(out.get("recall_blind", False)),
+        recall_note=str(out.get("recall_note", "") or ""),
+        mask_degraded=bool(out.get("mask_degraded", False)),
+        masked_columns=out.get("masked_columns", []),
         attempts=out.get("attempt", 0) + 1,
         step_count=max(out.get("step_no", 1), 1),
         multi_step=bool(out.get("multi_step", False)),

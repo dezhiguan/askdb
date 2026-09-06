@@ -220,6 +220,28 @@ def _dsn_brief_id(cfg: Config) -> str:
     return f"{kv.get('dbname', '?')}@{host}"
 
 
+def _golden_answer(c: dict[str, Any]) -> str:
+    """一条黄金用例的**标准答案**，压成一行给页面显示。
+
+    判分实际拿什么对，这里就写什么：应拒用例对的是护栏规则，其余对的是
+    标准 SQL 加上列与行数约束。写成"标准 SQL"而不把 SQL 原文贴出来 ——
+    这一列在表格里只有一格宽，贴原文会把题目本身挤掉；要看原文去评测集文件。
+    """
+    if rule := c.get("expect_rule"):
+        return f"拒绝执行 · 应被 {rule} 拦下"
+    if not c.get("expect_sql"):
+        return str(c.get("note") or "")
+    parts = ["标准 SQL"]
+    if cols := c.get("expect_cols"):
+        parts.append("列 " + "、".join(cols))
+    lo, hi = c.get("min_rows"), c.get("max_rows")
+    if isinstance(lo, int) and isinstance(hi, int) and (lo > 0 or hi < 10000):
+        parts.append(f"行数 {lo}–{hi}")
+    if c.get("should_be_single"):
+        parts.append("单步收敛")
+    return " + ".join(parts)
+
+
 def _first_provenance(d: Any) -> dict[str, Any] | None:
     """从一份结果文件里取出处，兼容两种顶层形状。
 
@@ -629,8 +651,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return out
 
     @app.get("/api/schema")
-    def schema(request: Request) -> dict[str, Any]:
+    def schema(request: Request, source: str = "") -> dict[str, Any]:
         """当前调用方**眼里的** schema。
+
+        **按数据源取**（source 参数，2026-09-06 补）。这个接口原来只认内置配置，
+        于是查询页在 careermate 源（33 张表）下把 ragforge 的表名与口径当成
+        "推荐问题"推给用户 —— 点了必然拒答，因为那些表在这个源里根本不存在。
+        取源的顺序与 ask 一致：先按源派生，再按角色收窄。
 
         **表按角色收窄**：用未收窄的 cfg 会让人看到自己查不了的表连同字段。
         实测：public.yaml 下匿名角色只能查 knowledge_bases / orgs，
@@ -647,7 +674,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         metrics 换回 scoped.metrics。
         """
         _require_cap(request, _identity.GLOSSARY_READ, "查看业务口径")
-        scoped = _scoped(request)
+        # 源取不到时退回内置配置：这个接口是页面加载路径上的一次读，
+        # 不该因为某个源刚被删掉就让整页起不来 —— ask 那条路上仍会如实报错。
+        try:
+            base = _cfg_for(source, request)
+        except HTTPException:
+            base = cfg
+        scoped = _scoped(request, base)
         visible_tables = {t.lower() for t in scoped.tables}
         return {
             "tables": [
@@ -709,6 +742,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "model": str(cfg.raw.get("llm", {}).get("model") or ""),
             "config": Path(cfg.path).name if cfg.path else "",
         }
+        # 「人工介入率」——「线上质量信号」那组里唯一有真实来源的一项：
+        # 一次查询走到审批，就是一次人接手。它不在审计流水里（审批是另一条流水），
+        # 所以在这里合，而不是让 audit.quality 去读它不该知道的文件。
+        from datetime import datetime as _dt, timedelta as _td
+        cut = _dt.now().astimezone() - _td(days=days)
+        n = 0
+        for rec in _approvals.state(cfg).values():
+            ts = str(rec.get("ts") or "")
+            try:
+                if ts and _dt.fromisoformat(ts) >= cut:
+                    n += 1
+            except ValueError:
+                continue
+        runs = int(out.get("runs") or 0)
+        out["intervention"] = {"n": n, "rate": round(n / runs, 4) if runs else None}
         return out
 
     @app.get("/api/metrics/check")
@@ -1240,6 +1288,15 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     "total": len(cases),
                     "blind_n": sum(1 for c in cases if c.get("blind")),
                     "by_category": dict(sorted(by_cat.items(), key=lambda kv: -kv[1])),
+                    # 评测集这份文件本身最后一次改动的时间。页面上要显示"最近更新"，
+                    # 而唯一能说的真话就是文件 mtime —— 评测集没有版本号，也没有
+                    # 任何地方记录"谁在什么时候改了考题"。
+                    "updated_at": datetime.fromtimestamp(
+                        gp.stat().st_mtime).astimezone().isoformat(timespec="seconds"),
+                    # 每条题都有标准答案才算这套题是齐的。缺一条，分数就有一条是
+                    # 判不了的 —— 这正是页面上那枚状态角标要回答的事。
+                    "answered": sum(
+                        1 for c in cases if c.get("expect_sql") or c.get("expect_rule")),
                 }
 
         # 评测集清单：每条用例 + 它在本轮的结果。
@@ -1262,9 +1319,15 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                         "category": c.get("category", ""),
                         "question": c.get("question", ""),
                         "in_blind": bool(c.get("blind")),
-                        # 期望：应拒用例看规则，其余看列与行数约束
-                        "expect": (f"应被 {c['expect_rule']} 拦下" if c.get("expect_rule")
-                                   else "、".join(c.get("expect_cols") or []) or c.get("note", "")),
+                        # 标准答案。设计稿这一列写的是「标准 SQL + 结果 18.6%」
+                        # 「拒绝执行并解释只读边界」—— 描述的是**这条题judge时拿什么对**。
+                        # 黄金集里每条都有 expect_sql（应拒用例是 expect_rule），
+                        # 原来只显示 expect_cols/note，结果 58 条里 53 条是空的，
+                        # 看起来像"大半的题没有标准答案"，而事实相反。
+                        "expect": _golden_answer(c),
+                        # 有没有标准答案。汇总那格「标准答案 X / Y」按它算 ——
+                        # 不能拿总数当分子，那是默认所有题都判得了。
+                        "has_answer": bool(c.get("expect_sql") or c.get("expect_rule")),
                         # 本轮没跑到就是 null，不是"通过"
                         "passed": (None if o is None else bool(o.get("passed"))),
                         "reason": (o or {}).get("reason", ""),

@@ -496,6 +496,9 @@ def quality(path: Path, days: int = 1) -> dict[str, Any]:
             "p50_ms": _pctl_of(e["ms"], 0.5),
             "p95_ms": _pctl_of(e["ms"], 0.95),
             "tok": e["tok"],
+            # 设计稿「主要失败原因」列。没失败过就是"—"，不编一个出来
+            "fail_reason": (e["fail_notes"].most_common(1)[0][0] if e["fail_notes"] else ""),
+            "fails": e["calls"] - e["ok"],
         }
         for name, e in nodes.items()
     ]
@@ -533,13 +536,128 @@ def quality(path: Path, days: int = 1) -> dict[str, Any]:
         "prev": {
             "runs": len(previous),
             "p95_ms": _pctl_of([int(r.get("elapsed_ms") or 0) for r in previous], 0.95),
+            # 「线上平均 Token / 单任务成本」两张卡要出环比，口径与本窗口逐字相同
+            "avg_tok": (round(sum(int(r.get("tok_in") or 0) + int(r.get("tok_out") or 0)
+                                  for r in previous) / len(previous)) if previous else None),
+            "avg_cost_cny": (round(sum(float(r.get("cost_cny") or 0)
+                                       for r in previous) / len(previous), 6)
+                             if previous else None),
             "nodes": {
                 name: {"calls": e["calls"], "p95_ms": _pctl_of(e["ms"], 0.95)}
                 for name, e in _nodes_of(previous).items()
             },
         },
         "nodes": node_rows,
+        # ---- 以下四组服务「线上质量」页，字段位置照设计稿 ----
+        # 工具调用总量与成功率。askdb 的"工具"就是链路节点，分母是节点调用次数，
+        # 不是任务数 —— 一次任务会打好几个节点，两者混用会让成功率无从对账
+        "tools": _tools_of(nodes),
+        # SQL 执行成功率单列。它**不等于结果准确率**，页面上那句话不是客套：
+        # SQL 跑通了但口径用错，这里照样是 100%
+        "sql": {"calls": nodes.get("execute", {}).get("calls", 0),
+                "ok": nodes.get("execute", {}).get("ok", 0)},
+        # 自动重试恢复率：attempts > 1 的任务里，最终没被拒的占多少
+        "retry": _retry_of(recent),
+        # 同问题重复查询率 —— 没有"用户觉得答得对不对"的信号时，
+        # 短时间内换个问法再问一次是能拿到的最接近的代理指标
+        "repeat": _repeat_of(recent),
+        # 七段趋势，供设计稿里四张卡的 sparkline 用。段数固定 7，
+        # 段长 = 窗口 / 7，因此 24 小时窗口一段是 3.4 小时，30 天窗口一段是 4.3 天
+        "series": _series_of(recent, cutoff, days),
     }
+
+
+def _tools_of(nodes: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """工具（节点）调用总量、成功率，以及失败主要集中在哪个节点。
+
+    设计稿那句"149 次失败 · 数据库工具占 71%"要的就是后半句：
+    知道失败最多的是哪一类，才知道该去修哪儿。
+    """
+    calls = sum(e["calls"] for e in nodes.values())
+    ok = sum(e["ok"] for e in nodes.values())
+    fails = {name: e["calls"] - e["ok"] for name, e in nodes.items() if e["calls"] > e["ok"]}
+    top = max(fails.items(), key=lambda kv: kv[1]) if fails else None
+    return {
+        "calls": calls,
+        "ok": ok,
+        "fails": calls - ok,
+        "top_fail_step": top[0] if top else "",
+        "top_fail_share": round(top[1] / (calls - ok), 4) if top and calls > ok else None,
+    }
+
+
+def _retry_of(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """自动重试恢复率。分母是**真的重试过**的任务（attempts > 1），
+    不是全部任务 —— 拿全部任务当分母会让这个数永远接近 100%，读不出信息。"""
+    retried = [r for r in records if int(r.get("attempts") or 1) > 1]
+    recovered = [r for r in retried if not r.get("rejected_by")]
+    return {
+        "retried": len(retried),
+        "recovered": len(recovered),
+        "rate": round(len(recovered) / len(retried), 4) if retried else None,
+    }
+
+
+# 换个问法再问一次，算不算"同一件事"的时间窗
+_REPEAT_WINDOW = timedelta(minutes=10)
+
+
+def _repeat_of(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """同问题重复查询率：同一个人在 10 分钟内又提交了一次。
+
+    口径写清楚，因为它很容易被读成别的意思：
+    - 「同一个人」= 同一 (org_id, user)。匿名调用 user 为空，会被并成一个人 ——
+      这会**高估**重复率，页面上要标注，不能当精确值用。
+    - 问法一模一样（刷新重跑）和改了问法都计入：两者都指向"上一次没解决问题"。
+    """
+    by_user: dict[tuple[Any, str], list[datetime]] = {}
+    for r in records:
+        t = _parse_ts(str(r.get("ts", "")))
+        if t is None:
+            continue
+        by_user.setdefault((r.get("org_id"), str(r.get("user") or "")), []).append(t)
+    n = 0
+    for times in by_user.values():
+        times.sort()
+        n += sum(1 for a, b in zip(times, times[1:]) if b - a <= _REPEAT_WINDOW)
+    total = len(records)
+    return {"n": n, "rate": round(n / total, 4) if total else None,
+            "window_min": int(_REPEAT_WINDOW.total_seconds() // 60)}
+
+
+# sparkline 的段数。设计稿画的就是 7 根柱子
+_SERIES_BUCKETS = 7
+
+
+def _series_of(records: list[dict[str, Any]], cutoff: datetime,
+               days: int) -> list[dict[str, Any]]:
+    """把窗口等分成 7 段，每段给出四张卡各自需要的那个数。
+
+    空段照样返回（runs=0、比率为 None），不能跳过 —— 跳过会让柱子的横轴
+    变成"有数据的那几段"，趋势就是假的。
+    """
+    span = timedelta(days=days) / _SERIES_BUCKETS
+    buckets: list[list[dict[str, Any]]] = [[] for _ in range(_SERIES_BUCKETS)]
+    for r in records:
+        t = _parse_ts(str(r.get("ts", "")))
+        if t is None:
+            continue
+        idx = int((t - cutoff) / span) if span else 0
+        buckets[max(0, min(_SERIES_BUCKETS - 1, idx))].append(r)
+
+    out = []
+    for group in buckets:
+        nodes = _nodes_of(group)
+        calls = sum(e["calls"] for e in nodes.values())
+        ok = sum(e["ok"] for e in nodes.values())
+        ex = nodes.get("execute", {"calls": 0, "ok": 0})
+        out.append({
+            "runs": len(group),
+            "tool_rate": round(ok / calls, 4) if calls else None,
+            "sql_rate": round(ex["ok"] / ex["calls"], 4) if ex["calls"] else None,
+            "p95_ms": _pctl_of([int(r.get("elapsed_ms") or 0) for r in group], 0.95),
+        })
+    return out
 
 
 def _nodes_of(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -551,10 +669,15 @@ def _nodes_of(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             name = str(st.get("step", ""))
             if not name:
                 continue
-            e = nodes.setdefault(name, {"calls": 0, "ok": 0, "ms": [], "tok": 0})
+            e = nodes.setdefault(
+                name, {"calls": 0, "ok": 0, "ms": [], "tok": 0, "fail_notes": Counter()})
             e["calls"] += 1
             if st.get("status") == "ok":
                 e["ok"] += 1
+            else:
+                # 失败原因取这一步自己的 note —— 设计稿那张表最右列问的是
+                # "这个工具主要死在什么上"，只有节点自己的 note 答得了
+                e["fail_notes"][str(st.get("note") or st.get("status") or "未记录原因")] += 1
             e["ms"].append(int(st.get("ms") or 0))
             e["tok"] += int(st.get("tok_in") or 0) + int(st.get("tok_out") or 0)
     return nodes
