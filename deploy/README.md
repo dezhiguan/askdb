@@ -170,6 +170,82 @@ python -m scripts.migrate_sources_to_pg -c config/public.yaml             # 再�
 `backend` 是 `redis`、`multi_replica_safe` 是 `true`。若显示 `file`，说明
 Secret 没生效 —— 此时**不要**把 replicas 调大于 1，配额会变成 N 倍。
 
+### 接入 ragforge 与 careermate 两个数据源（2026-09-07）
+
+内置数据源已撤，两个库都走运行时注册表（见 `config/public.yaml` 开头那段）。
+**顺序不能换**：库侧角色 → Secret → 滚 Pod → 注册数据源 → 最后才推代码。
+反过来先推代码，会有一段时间站点一个数据源都没有，且冒烟会红在探针上。
+
+先在数据机上建三套库侧对象（脚本自带执行命令与回滚说明）：
+
+```bash
+# 1. 元数据库：askdb 自己的数据，要能写。单独一个库，不与业务库同库 ——
+#    权限方向相反，混在一起迟早有人把可写那把配到 datasource 上去。
+ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
+  psql -U ragforge -d postgres -v pwd=\"'<meta 口令>'\"" < scripts/askdb_sources_store_setup.sql
+
+# 2. ragforge 全库只读。**不能复用 askdb_ro** —— 它那 5 张表上的 RLS 条件是
+#    current_setting('app.org_id')，而运行时数据源写死不做租户隔离、不会去 SET
+#    它，结果是连得上、扫得出表、查询不报错、结果永远为空。
+ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
+  psql -U ragforge -d ragforge -v pwd=\"'<ro_all 口令>'\"" < scripts/ragforge_readonly_all_setup.sql
+
+# 3. careermate 只读（该库此前没有任何只读角色）。必须用超级用户执行：
+#    GRANT ... ON ALL TABLES 要属主权限，用 -U ragforge 会静默只授到一部分表。
+ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
+  psql -U postgres -d careermate_db -v pwd=\"'<cm 口令>'\"" < scripts/careermate_readonly_setup.sql
+```
+
+再建/补 Secret。两个数据源的口令走 `askdb-db`（`envFrom` 取整个 Secret，
+加键即可，不必改 manifest）—— 本实例有意不配 `ASKDB_SECRET_KEY`，
+所以数据源口令**只能填环境变量名**，明文那条路是关着的：
+
+```bash
+kubectl -n askdb create secret generic askdb-sources \
+  --from-literal=ASKDB_SOURCES_DSN='host=172.25.90.183 port=5432 dbname=askdb_meta user=askdb_meta' \
+  --from-literal=ASKDB_SOURCES_PASSWORD='<meta 口令>'
+
+kubectl -n askdb create secret generic askdb-db \
+  --from-literal=ASKDB_PROD_PG_PASSWORD='<askdb_ro 的口令，保持原值>' \
+  --from-literal=RAGFORGE_RO_ALL_PASSWORD='<ro_all 口令>' \
+  --from-literal=CAREERMATE_RO_PASSWORD='<cm 口令>' \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n askdb rollout restart deployment/askdb
+kubectl -n askdb rollout status deployment/askdb --timeout=180s
+```
+
+滚完确认 `/api/sources` 不再 503（此时旧镜像里内置源还在，站点照常可用）。
+然后登录（写操作一律要登录，管理员令牌过不了能力位判定）并注册两个源：
+
+```bash
+curl -c /tmp/j -s -X POST https://askdb.ragforge.net/api/auth/login \
+  -H 'Content-Type: application/json' -d '{"username":"owner","password":"<口令>"}'
+
+for s in \
+  '{"name":"ragforge 生产库","type":"postgresql","env":"prod_ro","upstream":"8.163.30.216:5432","dsn":"host=172.25.90.183 port=5432 dbname=ragforge user=ragforge_ro_all","password_env":"RAGFORGE_RO_ALL_PASSWORD"}' \
+  '{"name":"careermate 生产库","type":"postgresql","env":"prod_ro","upstream":"8.163.30.216:5432","dsn":"host=172.25.90.183 port=5432 dbname=careermate_db user=careermate_ro","password_env":"CAREERMATE_RO_PASSWORD"}'
+do
+  curl -b /tmp/j -s -X POST https://askdb.ragforge.net/api/sources \
+    -H 'Content-Type: application/json' -d "$s" | jq '.source.id, .visible_count'
+done
+```
+
+**新源的表默认一张都不开放** —— 扫描只解决"看得见"，开放是单独一步。
+逐个源把扫出来的表提交进白名单：
+
+```bash
+SID=src_xxxxxxxxxxxx
+TABLES=$(curl -b /tmp/j -s "https://askdb.ragforge.net/api/sources/$SID/scan" \
+         | jq -c '[.tables[].name]')
+curl -b /tmp/j -s -X PUT "https://askdb.ragforge.net/api/sources/$SID/tables" \
+  -H 'Content-Type: application/json' -d "{\"tables\":$TABLES}" | jq '.table_count'
+```
+
+两个源都注册并开好表之后，才推代码（撤内置源 + `auth.required: true`）。
+CI 的部署后实证会回落到注册表里第一个开了表的源；注册表若是空的，
+探针给 `reason` 而不是让护栏那条断言背锅。
+
 ---
 
 ## 部署
