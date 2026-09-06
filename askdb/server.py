@@ -344,6 +344,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     cfg: Config = load(config_path)
     app = FastAPI(title="askdb", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
+    @app.exception_handler(_sources.StoreUnavailable)
+    async def _store_unavailable(_request: Request, exc: _sources.StoreUnavailable):
+        """数据源元数据库不可用 —— 503，并把原因原样给出去。
+
+        **不能退化成"没有数据源"。** 空列表和"存不住/读不到"是两回事，
+        混成一种，界面会显示一个看起来正常的空页面，而实际上这台实例
+        此刻既查不了数也存不下新源。503 才能让人知道该去修哪一头。
+
+        单独一个处理器而不是在每个接口 try：数据源相关接口有六个，
+        逐个包等于给"将来新增一个忘了包"留位置。
+        """
+        return JSONResponse(status_code=503,
+                            content={"code": "sources_store_unavailable",
+                                     "detail": str(exc)})
+
     @app.middleware("http")
     async def _gate_writes(request: Request, call_next):
         """未登录一律拦下写操作。**整个写入面只有这一处判据。**

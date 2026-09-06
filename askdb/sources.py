@@ -3,6 +3,10 @@
 启动配置里的那个数据源是**内置源**：它定义了这套部署的护栏阈值、租户策略与
 业务口径。本模块管的是在它之外、由界面在运行时添加的只读数据源。
 
+记录存在 PostgreSQL 的 askdb_sources 表里（2026-09-06 前是 var/sources/*.yaml，
+迁移见 scripts/migrate_sources_to_pg.py）。连接串只从环境变量来 —— 数据源
+不进配置文件，因此改数据源不必重启，数据源出问题也影响不到启动。
+
 内置源不可编辑，但**可以删除**（`drop_default_source`）—— 一套只用运行时数据源
 的部署，不该被逼着在配置里留一个用不上的库。删除受与新增同一个开关约束，
 且必须先有别的数据源可用：删到一个源都不剩，等于把实例变砖。
@@ -28,13 +32,13 @@ import copy
 import hashlib
 import os
 import re
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
 
 from .config import Column, Config, Table
 
@@ -129,49 +133,229 @@ def resolve_password(src: Source) -> str | None:
 
 
 # --------------------------------------------------------------------------
-# 存储
+# 存储 —— PostgreSQL
 # --------------------------------------------------------------------------
+#
+# 2026-09-06：从 `var/sources/*.yaml` 一源一文件改为 PG 单表。
+#
+# 换掉文件的三个理由，都是文件方案在这套部署下**已经**踩着的：
+#
+# - **两副本共享同一个 hostPath，而 yaml 写入无锁。** record_probe 每次探活
+#   都整文件重写（连白名单一起），两个 Pod 同时探同一个源就可能写坏。
+#   进库之后探活是一条只动四列的 UPDATE，白名单在物理上就不可能被带脏 ——
+#   原来那句"只动这四个字段"是靠调用方自觉，现在是靠 SQL。
+# - **重启不该改变数据源，数据源也不该影响启动。** 连接信息进库之后，
+#   启动配置里再没有任何一条数据源，load() 读的是纯策略；库连不上也只是
+#   数据源页报错，服务照起。
+# - 跨节点部署时文件方案必废，PG 不用再改一次。
+#
+# 连接串**只从环境变量来，不进配置文件** —— 与 identity 同一条纪律
+# （tests/test_identity.py 有一条断言在守它）。默认回落到身份库：两张表
+# 同属"askdb 自己的元数据"，默认同库省一套运维；要分开，设 ASKDB_SOURCES_DSN。
 
-def store_dir(cfg: Config) -> Path:
-    return cfg.root / "var" / "sources"
+#: 元数据库连接串。缺省回落到身份库的连接串。
+DSN_ENV = "ASKDB_SOURCES_DSN"
+#: 口令。DSN 里已写 password= 时以 DSN 为准。
+PASSWORD_ENV = "ASKDB_SOURCES_PASSWORD"
+#: 建表落在哪个 schema。测试用它做隔离，生产一般不设。
+SCHEMA_ENV = "ASKDB_SOURCES_SCHEMA"
+
+_SCHEMA_RE = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+
+#: 建表语句。幂等，省掉一套迁移工具（与 identity.ensure_schema 同一套做法）。
+#:
+#: created_at / last_checked_at 存 text 而不是 timestamptz：这两个值全链路
+#: 都是带偏移量的 ISO 串（前端直接 new Date() 吃它），换成时间戳类型就要在
+#: 读写两侧各加一次转换，而这次改的是存储介质，不是数据契约。
+#:
+#: tables 用 jsonb 而不是拆两张子表：白名单永远整体读写，拆表只会凭空多出
+#: 一个事务边界，换不来任何查询能力 —— 没有任何代码路径需要"按列查表"。
+_DDL = """
+CREATE TABLE IF NOT EXISTS askdb_sources (
+    id                 text PRIMARY KEY,
+    name               text NOT NULL,
+    type               text NOT NULL,
+    dsn                text NOT NULL,
+    env                text NOT NULL DEFAULT 'test',
+    upstream           text NOT NULL DEFAULT '',
+    password_env       text NOT NULL DEFAULT '',
+    password_enc       text NOT NULL DEFAULT '',
+    tables             jsonb NOT NULL DEFAULT '[]'::jsonb,
+    created_at         text NOT NULL DEFAULT '',
+    last_checked_at    text NOT NULL DEFAULT '',
+    last_ok            boolean,
+    last_latency_ms    double precision,
+    last_visible_count integer
+)
+"""
+
+#: 列顺序在读写两侧共用一份，避免 SELECT 与 Source 字段错位。
+_COLS = ("id", "name", "type", "dsn", "env", "upstream", "password_env",
+         "password_enc", "tables", "created_at", "last_checked_at",
+         "last_ok", "last_latency_ms", "last_visible_count")
+
+
+class StoreUnavailable(RuntimeError):
+    """元数据库不可用。**与 SourceError 分开**：那个是"用户填错了"（400），
+    这个是"这台实例没配好或库挂了"（503）—— 混成一种，界面就没法区分
+    "你填的地址不对"和"我这边存不下"。
+    """
+
+
+def _store_dsn() -> str:
+    dsn = (os.environ.get(DSN_ENV) or os.environ.get("ASKDB_IDENTITY_DSN") or "").strip()
+    if not dsn:
+        raise StoreUnavailable(
+            f"未配置数据源元数据库：设置 {DSN_ENV}（或复用 ASKDB_IDENTITY_DSN）。"
+            f"连接串只从环境变量读，不写进配置文件。"
+        )
+    pwd = (os.environ.get(PASSWORD_ENV) or "").strip()
+    if pwd and "password=" not in dsn:
+        dsn = f"{dsn} password={pwd}"
+    return dsn
+
+
+def _schema() -> str:
+    name = (os.environ.get(SCHEMA_ENV) or "public").strip()
+    if not _SCHEMA_RE.fullmatch(name):
+        raise StoreUnavailable(f"{SCHEMA_ENV} 不是合法的 schema 名：{name}")
+    return name
+
+
+_pool: Any = None
+_pool_key: tuple[str, str] | None = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool():
+    """惰性建池。**进程启动时不连库** —— min_size=0，第一次真正用到才建连。
+
+    这条是硬要求而不是优化：数据源存储连不上时，服务必须照样起得来，
+    只是数据源页报错。启动期就建连等于把元数据库变成启动依赖。
+
+    连接池而不是每次现连（identity 那种写法）：数据源在每条查询的路径上
+    都要读一次，裸连接会让每次问答多一次 TCP + 认证往返。
+    """
+    global _pool, _pool_key
+    key = (_store_dsn(), _schema())
+    with _pool_lock:
+        if _pool is not None and _pool_key == key:
+            return _pool
+        if _pool is not None:
+            _pool.close()
+            _pool, _pool_key = None, None
+        try:
+            from psycopg_pool import ConnectionPool
+        except ImportError as e:                       # pragma: no cover
+            raise StoreUnavailable(
+                '未安装 psycopg_pool：uv pip install "psycopg[binary,pool]"') from e
+        dsn, schema = key
+        _pool = ConnectionPool(
+            dsn, min_size=0, max_size=4, timeout=5, max_idle=300,
+            kwargs={"autocommit": True, "connect_timeout": 5},
+            configure=(None if schema == "public"
+                       else lambda con, s=schema: con.execute(f"SET search_path TO {s}")),
+            open=True, name="askdb-sources",
+        )
+        _pool_key = key
+        return _pool
+
+
+def reset_pool() -> None:
+    """丢弃当前连接池。测试换库/换 schema 时调；生产用不到。"""
+    global _pool, _pool_key
+    with _pool_lock:
+        if _pool is not None:
+            _pool.close()
+        _pool, _pool_key = None, None
+
+
+def _conn():
+    try:
+        return _get_pool().connection()
+    except StoreUnavailable:
+        raise
+    except Exception as e:
+        raise StoreUnavailable(
+            f"连接数据源元数据库失败：{str(e).splitlines()[0]}") from e
+
+
+def ensure_schema() -> None:
+    """建表。幂等。
+
+    **只在写路径调。** 与 identity 同一条口径：读路径调 DDL 意味着任何一个
+    读请求都能让服务端对元数据库执行一次建表 —— 幂等归幂等，但"读不改库"
+    这条得守住。读路径改为容忍表不存在，见 _rows()。
+    """
+    schema = _schema()
+    with _conn() as con:
+        if schema != "public":
+            con.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+            con.execute(f"SET search_path TO {schema}")
+        con.execute(_DDL)
+
+
+def _rows(sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+    """读一次库，**表还没建出来时按空处理**。
+
+    没有 askdb_sources 表 = 一个数据源都还没登记过，与查出来 0 行是同一回事。
+    注意这里只吞 UndefinedTable：连不上、认证失败都要照实抛 ——
+    把"库挂了"显示成"没有数据源"，正是这轮改造要消灭的那种静默失败。
+    """
+    import psycopg
+
+    try:
+        with _conn() as con:
+            return con.execute(sql, params).fetchall()
+    except psycopg.errors.UndefinedTable:
+        return []
 
 
 def enabled(cfg: Config) -> bool:
     return bool(cfg.raw.get("datasources", {}).get("allow_runtime_add", False))
 
 
-def _path(cfg: Config, sid: str) -> Path:
+def _check_id(sid: str) -> str:
     if not _ID_RE.fullmatch(sid):
         raise SourceError("数据源 id 非法")
-    return store_dir(cfg) / f"{sid}.yaml"
+    return sid
+
+
+def _to_source(row: tuple[Any, ...]) -> Source:
+    d = dict(zip(_COLS, row))
+    d["tables"] = d["tables"] or []
+    return Source(**d)
 
 
 def list_sources(cfg: Config) -> list[Source]:
-    d = store_dir(cfg)
-    if not d.is_dir():
-        return []
-    out: list[Source] = []
-    for p in sorted(d.glob("src_*.yaml")):
-        try:
-            raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        except Exception:
-            continue                       # 坏文件跳过，不能让一个坏文件顶掉整页
-        if isinstance(raw, dict) and raw.get("id"):
-            out.append(Source(**{k: v for k, v in raw.items()
-                                 if k in Source.__dataclass_fields__}))
-    return sorted(out, key=lambda s: s.created_at)
+    cols = ", ".join(_COLS)
+    return [_to_source(r) for r in
+            _rows(f"SELECT {cols} FROM askdb_sources ORDER BY created_at, id")]
 
 
 def get_source(cfg: Config, sid: str) -> Source | None:
-    return next((s for s in list_sources(cfg) if s.id == sid), None)
+    cols = ", ".join(_COLS)
+    rows = _rows(f"SELECT {cols} FROM askdb_sources WHERE id = %s", (_check_id(sid),))
+    return _to_source(rows[0]) if rows else None
 
 
 def save_source(cfg: Config, src: Source) -> None:
-    d = store_dir(cfg)
-    d.mkdir(parents=True, exist_ok=True)
-    _path(cfg, src.id).write_text(
-        yaml.safe_dump(src.__dict__, allow_unicode=True, sort_keys=False),
-        encoding="utf-8")
+    """整条写入（新增或改白名单）。**探活字段不走这里** —— 见 record_probe。"""
+    from psycopg.types.json import Jsonb
+
+    _check_id(src.id)
+    ensure_schema()
+    vals = []
+    for c in _COLS:
+        v = getattr(src, c)
+        vals.append(Jsonb(v) if c == "tables" else v)
+    cols = ", ".join(_COLS)
+    ph = ", ".join(["%s"] * len(_COLS))
+    upd = ", ".join(f"{c} = EXCLUDED.{c}" for c in _COLS if c != "id")
+    with _conn() as con:
+        con.execute(
+            f"INSERT INTO askdb_sources ({cols}) VALUES ({ph}) "
+            f"ON CONFLICT (id) DO UPDATE SET {upd}", tuple(vals))
 
 
 def record_probe(cfg: Config, src: Source, *, ok: bool,
@@ -179,14 +363,20 @@ def record_probe(cfg: Config, src: Source, *, ok: bool,
                  visible_count: int | None = None) -> None:
     """把一次连接检查的结果落到数据源记录上。
 
-    只动这四个字段，白名单一个字节都不碰 —— 检查是"看"，开放是"改"，
-    两件事共用一次写入，迟早会让一次失败的探测把白名单也带脏。
+    只动这四列。原来是"整份 yaml 重写，但请调用方只改这四个字段"，靠自觉；
+    现在 UPDATE 的列清单就是约束 —— 一次失败的探测在物理上碰不到白名单。
     """
     src.last_checked_at = datetime.now().astimezone().isoformat(timespec="seconds")
     src.last_ok = ok
     src.last_latency_ms = latency_ms
     src.last_visible_count = visible_count
-    save_source(cfg, src)
+    ensure_schema()
+    with _conn() as con:
+        con.execute(
+            "UPDATE askdb_sources SET last_checked_at = %s, last_ok = %s, "
+            "last_latency_ms = %s, last_visible_count = %s WHERE id = %s",
+            (src.last_checked_at, src.last_ok, src.last_latency_ms,
+             src.last_visible_count, _check_id(src.id)))
 
 
 def drop_default_source(cfg: Config) -> None:
@@ -224,11 +414,20 @@ def drop_default_source(cfg: Config) -> None:
 
 
 def delete_source(cfg: Config, sid: str) -> bool:
-    p = _path(cfg, sid)
-    if not p.exists():
+    """删掉返回 True，本来就没有返回 False —— 调用方据此给 404。
+
+    表不存在与记录不存在是同一回事（一个源都没登记过），不建表也不报错：
+    删除是收窄操作，为它执行一次 DDL 属于多余的副作用。
+    """
+    import psycopg
+
+    _check_id(sid)
+    try:
+        with _conn() as con:
+            return con.execute(
+                "DELETE FROM askdb_sources WHERE id = %s", (sid,)).rowcount > 0
+    except psycopg.errors.UndefinedTable:
         return False
-    p.unlink()
-    return True
 
 
 # --------------------------------------------------------------------------

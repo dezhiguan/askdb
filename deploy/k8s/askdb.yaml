@@ -105,6 +105,20 @@ spec:
             - secretRef:
                 name: askdb-auth
                 optional: true
+            # 数据源注册表的元数据库（ASKDB_SOURCES_DSN，可带 ASKDB_SOURCES_PASSWORD）。
+            #
+            # 2026-09-06 起数据源存 PG 而不是 var/sources/*.yaml —— 两副本
+            # 原来各写各的 hostPath 且无锁，探活会整文件重写、可能把白名单带脏。
+            #
+            # optional: true 而不是 false，与 askdb-db 相反：数据源存储连不上
+            # **不该让服务起不来**，那正是这轮改造要去掉的耦合。代价是缺失时
+            # 数据源相关接口返回 503（sources_store_unavailable），其余功能正常。
+            #
+            # ⚠️ 上线前必须先建这个 Secret，否则对外实例的数据源管理页整页 503。
+            #    冒烟里还没有钉它的断言 —— 建完 Secret 之后补一条。
+            - secretRef:
+                name: askdb-sources
+                optional: true
             # 配额计数用的共享 Redis（复用数据机上那套，带口令）。
             # optional: true 是有意的 —— 没建这个 Secret 时退回本地文件计数，
             # 单副本下依然正确，不至于因为少建一个 Secret 就起不来。

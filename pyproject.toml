@@ -18,6 +18,11 @@ dependencies = [
     "langfuse>=2.60,<3",
     "sqlglot>=25.0",
     "duckdb>=1.0",
+    # 数据源注册表存在 PostgreSQL（askdb/sources.py）。**主依赖，不是可选**：
+    # 没有它连"有哪些数据源"都读不出来，实例整个不可用 —— 与被查询的库
+    # 是不是 PG 无关，纯 duckdb 部署同样要装。pool 走连接池：数据源在每条
+    # 查询路径上都要读一次，裸连接会给每次问答加一次建连往返。
+    "psycopg[binary,pool]>=3.2",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "typer>=0.12",
@@ -28,7 +33,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-postgres = ["psycopg[binary]>=3.1"]
+# 保留为兼容别名：psycopg 自 2026-09-06 起是主依赖（数据源注册表要用）。
+# 不删是因为 CI 与部署文档里到处都是 ".[postgres,dev]"，删了会一起红。
+postgres = []
 web = ["fastapi>=0.110", "uvicorn>=0.29"]
 # 向量召回（schema_rag.mode: vector）。默认 keyword 模式用不到，故不入主依赖。
 vectors = ["chromadb>=0.5"]

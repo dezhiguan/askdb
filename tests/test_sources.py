@@ -14,8 +14,13 @@ from askdb import auth, server, sources
 
 
 @pytest.fixture
-def open_cfg(cfg, tmp_path):
-    """开启运行时添加，并把注册表写到临时目录 —— 不污染仓库里的 var/。"""
+def open_cfg(cfg, tmp_path, sources_store):
+    """开启运行时添加。
+
+    注册表落在 sources_store 给的临时 schema 里 —— 2026-09-06 起数据源存 PG，
+    "写到临时目录"那套隔离随之作废。cfg.root 仍指临时目录：审计日志、
+    检查点库还跟着它走。
+    """
     cfg.raw["datasources"] = {"allow_runtime_add": True}
     cfg.root = tmp_path
     return cfg
@@ -56,7 +61,7 @@ def _body(**over):
 
 # --------------------------------------------------------------- 准入
 
-def test_write_endpoints_are_closed_by_default(cfg, monkeypatch):
+def test_write_endpoints_are_closed_by_default(cfg, monkeypatch, sources_store):
     """默认必须是关的，而且**两道门各自独立**。
 
     未登录撞的是写入中间件（401），登录之后撞的是 allow_runtime_add 开关（403）。

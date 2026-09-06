@@ -21,6 +21,20 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # 数据源注册表自 2026-09-06 起只有 PG 一种存储，用例不 skip 只会 fail ——
+    # 没有这个服务，tests/test_sources.py 整批红，而它测的是"服务端会不会
+    # 按用户填的地址向外建连"这类东西，正是最不能不跑的一批。
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: askdb
+          POSTGRES_PASSWORD: askdb
+          POSTGRES_DB: askdb_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U askdb"
+          --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -51,6 +65,11 @@ jobs:
       - name: Run tests
         # 用 python -m 与本地跑法保持一致（本地一直是 python -m pytest）。
         # pyproject 里也配了 pythonpath，两层都兜住。
+        env:
+          # 与 ASKDB_SOURCES_DSN 有意不同名：跑一次测试会建/删 schema，
+          # 复用运行时那个变量意味着谁在本机跑一次测试就动了自己的真数据源。
+          ASKDB_TEST_SOURCES_DSN: >-
+            host=127.0.0.1 port=5432 dbname=askdb_test user=askdb password=askdb
         run: python -m pytest -q
 
   frontend:

@@ -94,3 +94,53 @@ def _reset_quota_cache():
     quota.reset_cache()
     yield
     quota.reset_cache()
+
+
+# ---------------------------------------------------------------- 数据源存储
+
+#: 测试用元数据库。**有意与 ASKDB_SOURCES_DSN 分开**：跑一次测试会清表，
+#: 指着生产/开发库跑就把真实数据源清掉了。要单独设一个才跑得起来。
+TEST_DSN_ENV = "ASKDB_TEST_SOURCES_DSN"
+
+
+def _test_store_dsn() -> str:
+    import os
+    return (os.environ.get(TEST_DSN_ENV) or "").strip()
+
+
+@pytest.fixture
+def sources_store(monkeypatch):
+    """给每个用例一个独立 schema 的 askdb_sources 表。
+
+    **不 skip。** 没配 TEST_DSN_ENV 就直接 fail —— 数据源注册表自 2026-09-06
+    起只有 PG 一种存储，跳过它意味着 17 个用例（准入、口令、隔离、审计归属）
+    全都不跑，而报告还是绿的。这一类"绿色的假象"比红灯难查得多。
+
+    用临时 schema 而不是 TRUNCATE 公共表：并行跑用例、或者有人手滑把
+    TEST_DSN_ENV 指到了有数据的库上时，临时 schema 都碰不到别人的表。
+    """
+    import uuid
+
+    from askdb import sources
+
+    dsn = _test_store_dsn()
+    if not dsn:
+        pytest.fail(
+            f"数据源用例需要一个可写的 PostgreSQL：设置 {TEST_DSN_ENV}，"
+            f"例如 '{TEST_DSN_ENV}=host=127.0.0.1 dbname=askdb_test user=…'。"
+            f"（有意不 skip：跳过等于这批安全用例一条都没跑，而报告是绿的）")
+
+    schema = f"askdb_t_{uuid.uuid4().hex[:10]}"
+    monkeypatch.setenv(sources.DSN_ENV, dsn)
+    monkeypatch.setenv(sources.SCHEMA_ENV, schema)
+    sources.reset_pool()
+    sources.ensure_schema()
+    try:
+        yield schema
+    finally:
+        import psycopg
+
+        sources.reset_pool()
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as con:
+            con.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        sources.reset_pool()

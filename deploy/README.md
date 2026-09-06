@@ -130,6 +130,35 @@ kubectl -n askdb create secret generic askdb-auth \
   --from-literal=ASKDB_SESSION_SECRET="$(python -m askdb.cli session-secret | cut -d= -f2)"
 ```
 
+### 数据源元数据库（2026-09-06 起必配）
+
+数据源不再存在 `var/sources/*.yaml`，改存 PostgreSQL 的 `askdb_sources` 表。
+连接串**只从环境变量来，不进配置文件** —— 这是"改数据源不用重启、数据源
+出问题不影响启动"这条要求的落点：启动配置里再没有任何一条数据源。
+
+| 环境变量 | 缺省 | 缺了会怎样 |
+|---|---|---|
+| `ASKDB_SOURCES_DSN` | 回落到 `ASKDB_IDENTITY_DSN` | 数据源相关接口一律 **503**（`sources_store_unavailable`），服务本身照起 |
+| `ASKDB_SOURCES_PASSWORD` | 无 | DSN 里已写 `password=` 就不需要 |
+| `ASKDB_SOURCES_SCHEMA` | `public` | 一般不设，测试用它做隔离 |
+
+**503 而不是空列表是有意的**：读不到与"一个源都没有"是两回事，
+显示成空页面会让人以为实例正常，而它此刻既查不了数也存不下新源。
+
+两副本共用同一个库，因此"在 A 副本加的源 B 副本立刻看得见" —— 这是换掉
+文件存储的直接收益，原来两个 Pod 各写各的 hostPath 且**无锁**。
+
+首次上线跑一次迁移（幂等，但**服务开始写库之后别再跑**，会把库里更新过的
+白名单改回 yaml 里的旧版本）：
+
+```bash
+python -m scripts.migrate_sources_to_pg -c config/public.yaml --dry-run   # 先看
+python -m scripts.migrate_sources_to_pg -c config/public.yaml             # 再写
+```
+
+脚本**不删** `var/sources` —— 迁移出错时那批 yaml 是唯一的原始数据。
+回读核对通过后由人手工删。
+
 另有两把**有意不配**的密钥，别顺手补上：
 
 | 环境变量 | 不配的后果 | 为什么不配 |
