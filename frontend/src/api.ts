@@ -58,6 +58,10 @@ export interface AuditItem {
   org_id: number | null
   /** 这条调用出自谁的可见范围。老记录没有该字段，后端如实给「（未记录）」 */
   role: string
+  /** 发起人账号。空串有两种来路，页面上要分开讲：
+   *  未登录时后端把它抹成空串（与 question 同一道边界，见 text_visible）；
+   *  已登录时的空串是真的没有发起人 —— 那次调用本来就是匿名发的。 */
+  user: string
   /** 未登录时为 null —— 是"看不到"，不是"没有" */
   question: string | null
   rejected_by: string | null

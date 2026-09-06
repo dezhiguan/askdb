@@ -94,8 +94,9 @@ export function AuditPage({ me }: { me: Me | null }) {
     const head = ['时间', 'trace_id', '用户', '角色', '自然语言问题', '数据源', '策略结果', '耗时(s)', '成本(CNY)']
     const cell = (v: string) => `"${v.replace(/"/g, '""')}"`
     const rows = list.items.map(item => [
-      fmtTime(item.ts), item.trace_id, DASH, item.role || DASH, item.question ?? '',
-      DASH, guardText(item), (item.elapsed_ms / 1000).toFixed(1), String(item.cost_cny ?? 0),
+      fmtTime(item.ts), item.trace_id, item.user || DASH, item.role || DASH, item.question ?? '',
+      item.source_name || item.source || DASH,
+      guardText(item), (item.elapsed_ms / 1000).toFixed(1), String(item.cost_cny ?? 0),
     ].map(cell).join(','))
     const blob = new Blob(['﻿' + [head.map(cell).join(','), ...rows].join('\r\n')],
       { type: 'text/csv;charset=utf-8' })
@@ -271,17 +272,30 @@ function AuditRow({ item, stats, textVisible, onReplay }: {
     >
       <td className="mono">{fmtTime(item.ts)}</td>
       <td className="mono">{item.trace_id}</td>
-      {/* 原型是「林晓 / 产品」一格。审计记录里没有调用者账号，只有可见范围（角色），
-          所以账号位恒为 —，等后端落库再填 */}
-      <td title="审计记录未落调用者账号，仅记录生效角色">
-        <span className="audit-na">{DASH}</span> / {item.role || DASH}
+      {/* 原型是「林晓 / 产品」一格。账号与角色都由审计记录如实给出。
+          空账号有两种来路，措辞必须分开：未登录看这一页时后端会连同问题原文
+          一起把发起人抹掉（textVisible=false），而登录后仍为空的那些，是那次
+          调用本来就没有登录发起 —— 都写成 — 会把"你看不到"读成"没有人"。 */}
+      <td title={item.user
+        ? `发起人 ${item.user} · 生效角色 ${item.role || DASH}`
+        : textVisible ? '这次调用未登录发起，只记录了生效角色' : '登录后可见发起人'}>
+        {item.user
+          ? item.user
+          : <span className="audit-na">{textVisible ? '匿名' : DASH}</span>} / {item.role || DASH}
       </td>
       <td className="audit-question" title={item.question ?? ''}>
         {/* question 为 null 是"看不到"，不是"没问过" —— 空着会被读成后者 */}
         {item.question ?? <span className="mask">登录后可见</span>}
       </td>
-      {/* 单实例单数据源，逐条记录里不存数据源名 */}
-      <td className="audit-na" title="审计记录未按条落数据源">{DASH}</td>
+      {/* 多源之后每条记录都落了打在哪个源上（少了它，同一条 SQL 在不同源上的
+          结果事后对不上账）。名字缺失时退回 id，与执行追踪页同一口径；
+          两者都没有的是多源之前的老记录，如实说清楚而不是含糊一个 —。 */}
+      <td className={item.source_name || item.source ? undefined : 'audit-na'}
+          title={item.source
+            ? `${item.source_name || DASH} · source_id ${item.source}`
+            : '这条记录写在多源之前，没有落数据源'}>
+        {item.source_name || item.source || DASH}
+      </td>
       <td><GuardBadge item={item} /></td>
       <td className="num">{(item.elapsed_ms / 1000).toFixed(1)}s</td>
       <td className="num">¥{item.cost_cny ?? 0}</td>
