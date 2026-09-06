@@ -224,6 +224,31 @@ class _DuckBackend(_Backend):
                  "tenant": bool(r[3])} for r in rows]
 
 
+def _pg_connect_hint(dsn: str, upstream: str) -> str:
+    """连不上 PostgreSQL 时，该去查哪一头。
+
+    dsn 里写的永远是本机端点。经 SSH 隧道连接时那是个转发端口，本机上
+    确实没有库在监听 —— 这时候提示"确认 Postgres.app 在运行"会把人支去
+    查一个根本不该存在的本地服务，而真正断掉的是隧道。同一台机器上往往
+    还真跑着一个本地 Postgres（在 5432），照着查只会更确信方向没错。
+
+    upstream 与本机端点相同时不算隧道：本机直连也可以声明 upstream，
+    只是当出处标注用（与 server._dsn_label 同一套判断）。
+    """
+    parts = dict(
+        kv.split("=", 1) for kv in dsn.split()
+        if "=" in kv and not kv.startswith("password=")
+    )
+    db = parts.get("dbname", "?")
+    local = f"{parts.get('host', '?')}:{parts.get('port', '5432')}"
+    tunneled = bool(upstream) and upstream.strip().rstrip("/").removesuffix(f"/{db}") != local
+    if tunneled:
+        return (f"dsn 指向的 {local} 是隧道本地端口，真实库在 {upstream}；"
+                f"本机该端口没有服务是正常的。先确认到 {upstream} 的 SSH 隧道已建立，"
+                f"再查库名与账号。")
+    return "确认 Postgres.app 在运行、库名与账号正确、该账号已被授权。"
+
+
 class _PgBackend(_Backend):
     """PostgreSQL —— 护栏做在引擎层，比应用层可靠。"""
 
@@ -250,7 +275,7 @@ class _PgBackend(_Backend):
         except Exception as e:
             raise DataSourceError(
                 f"无法连接 PostgreSQL：{str(e).splitlines()[0]}",
-                hint="确认 Postgres.app 在运行、库名与账号正确、该账号已被授权。",
+                hint=_pg_connect_hint(dsn, self.cfg.upstream),
             ) from e
         # 计到这里为止 —— 自检里那一项叫「网络可达与认证」，量的就该是握手
         # 加认证。下面几条 SET 是护栏配置，算进去会让这个数字变成另一件事。
