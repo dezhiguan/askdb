@@ -388,11 +388,31 @@ def test_trace_page_does_not_depend_on_replay():
     for early in ("if (!chain)", "if (!replay)", "if (!replayOn)"):
         assert early not in head, f"标题/事实网格前有提前返回（{early}），整块会被一起吞掉"
 
-    # 链路条与 Span 表同理：没有步骤时按原型版式留空表，
+    # 链路条与 Span 表同理：没有步骤时仍按原型版式留着这张表，
     # 而不是把这两段换成一段说明文字 —— 页面形态要和原型一致。
     nodes = src[src.index("function TraceNodes("):src.index("function hex16(")]
     assert "Span 明细" in nodes, "没有渲染 Span 表版式"
-    assert "steps.length === 0" not in nodes, "空态被换成了另一种展示，不再是原型的空表"
+    assert "return null" not in nodes and "if (!steps.length) return" not in nodes, \
+        "空态把整张表换掉了，不再是原型的版式"
+
+    # 2026-09-07 加的一条：空表里必须说清**为什么**空。
+    #
+    # 这里原来断言 `steps.length === 0` 不出现，意思是"空态不要另做展示"。
+    # 那天撞上一次代价：/api/trace 因为拿启动配置判可见性，把运行时数据源上的
+    # 记录全判成 404，而 404 与"这条确实没有步骤"渲染成同一张只有表头的空表 ——
+    # 界面上没有任何线索指向接口，只能去 curl 才知道。
+    #
+    # 版式的约束没有松：那句话是**表格里的一行**，不是另起的提示条或卡片。
+    # 松掉的只是"空态一个字都不能写"。
+    assert "steps.length === 0" in nodes, "空表里没有那一行状态，四种空态又会长得一样"
+    for state in ("loading", "unavailable", "failed"):
+        assert state in nodes, f"空态没有区分 {state}"
+
+    api = _code_only(FRONTEND_SRC / "api.ts")
+    fetch_chain = api[api.index("export async function fetchTraceChain("):]
+    fetch_chain = fetch_chain[:fetch_chain.index("export async function fetchReplay(")]
+    assert "return null" not in fetch_chain, \
+        "fetchTraceChain 又把失败收敛成 null 了 —— 404、5xx、断网会重新变成同一片空白"
 
 
 def test_model_step_classification_matches_the_frontend():

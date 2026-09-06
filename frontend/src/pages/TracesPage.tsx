@@ -3,7 +3,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchAudit, fetchAuditStats, fetchTraceChain, tracingLink,
   type AuditItem, type AuditStats, type ReplayStep, type TraceChain,
-  type Me,
+  type TraceChainResult, type Me,
 } from '../api'
 import type { ModalName, View } from '../types'
 import { writeGuard } from '../writeGuard'
@@ -61,7 +61,7 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
   const [selected, setSelected] = useState<string | null>(null)
   // 存成 {key, result}，切换 trace 时靠 key 不匹配自然回到「读取中」，
   // 不需要在 effect 里先同步 setChain(null) —— 那会多触发一轮渲染
-  const [chain, setChain] = useState<{ key: string; result: TraceChain | null } | null>(null)
+  const [chain, setChain] = useState<{ key: string; result: TraceChainResult } | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -125,7 +125,12 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
     return () => { alive = false }
   }, [selected])
 
-  const currentChain = chain && chain.key === selected ? chain.result : null
+  // key 不匹配 = 还在读这一条。四种状态必须一直分开传到底：
+  // 「读取中」「看不到」「读取失败」「拿到了但没有步骤」在页面上长得一样时，
+  // 一次接口层的静默失效就会被读成"这条调用本来就没有链路"（2026-09-07 撞过）。
+  const currentResult: TraceChainResult | { status: 'loading' } =
+    chain && chain.key === selected ? chain.result : { status: 'loading' }
+  const currentChain = currentResult.status === 'ok' ? currentResult.data : null
   const currentItem = items?.find(i => i.trace_id === selected) ?? null
 
   const tracing = stats?.tracing
@@ -264,7 +269,7 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
         </div>
 
         <div className="card trace-detail">
-          <TraceDetail item={currentItem} chain={currentChain} />
+          <TraceDetail item={currentItem} chain={currentChain} result={currentResult} />
         </div>
       </div>
 
@@ -311,9 +316,12 @@ function StatTiles({ stats, today }: { stats: AuditStats | null; today: AuditSta
   )
 }
 
-function TraceDetail({ item, chain }: {
+function TraceDetail({ item, chain, result }: {
   item: AuditItem | null
   chain: TraceChain | null
+  /** 节点链这一次取的结果。chain 是它的 ok 分支，两个都要传：
+   *  上面六格只需要值，下面的 Span 表还要说清"为什么没有值"。 */
+  result: TraceChainResult | { status: 'loading' }
 }) {
   if (!item) return <p className="trace-empty">左侧选一条调用查看节点明细。</p>
 
@@ -344,7 +352,7 @@ function TraceDetail({ item, chain }: {
         <div className="trace-fact"><span>数据源</span><strong title={item.source_name ?? ''}>{item.source_name || NA}</strong></div>
       </div>
 
-      <TraceNodes steps={steps} />
+      <TraceNodes steps={steps} result={result} />
     </>
   )
 }
@@ -362,9 +370,26 @@ function shortHash(hash: string | null | undefined): string {
   return hash.length <= 12 ? hash : `${hash.slice(0, 4)}…${hash.slice(-4)}`
 }
 
-/** 链路条与 Span 明细。没有步骤时按原型的版式留空表，
- *  不在页面上另起一段说明文字 —— 页面形态与原型保持一致。 */
-function TraceNodes({ steps }: { steps: ReplayStep[] }) {
+/** 链路条与 Span 明细。版式照原型，不另起说明段落 ——
+ *  唯一的例外是空表里那一行状态，它替代的是原来那片无从解释的空白。 */
+function TraceNodes({ steps, result }: {
+  steps: ReplayStep[]
+  result: TraceChainResult | { status: 'loading' }
+}) {
+  /* 一行都没有时，那一行说的是**为什么**没有。
+   *
+   * 四种空态原来渲染成同一张只有表头的空表，于是"接口把这条挡掉了"和
+   * "这条调用确实没有节点"在界面上无法区分 —— 2026-09-07 的那次静默失效
+   * （/api/trace 拿启动配置判可见性，运行时数据源上的记录一律 404）
+   * 从界面上找不到任何线索，只能去 curl 才知道是 404。
+   *
+   * 措辞按后端的约定收着说：记录不存在与无权同为 404（区分本身就是信息泄露），
+   * 前端不替它区分，只说"当前看不到"和两种可能，不断言是哪一种。 */
+  const empty =
+    result.status === 'loading' ? '读取中…'
+    : result.status === 'unavailable' ? '这条链路当前不可见：记录不存在，或它命中的表不在你此刻的可见范围内。'
+    : result.status === 'failed' ? `节点链读取失败：${result.message}`
+    : '这条调用没有留下节点记录。'
   return (
     <>
       {steps.length > 0 && (
@@ -391,6 +416,9 @@ function TraceNodes({ steps }: { steps: ReplayStep[] }) {
               <tr><th>类型</th><th>Span</th><th>输入摘要</th><th>输出摘要</th><th>耗时</th><th>状态</th></tr>
             </thead>
             <tbody>
+              {steps.length === 0 && (
+                <tr className="span-empty"><td colSpan={6}>{empty}</td></tr>
+              )}
               {steps.map((step, i) => (
                 <tr key={`${step.step}-${i}`}>
                   <td><span className={`span-type ${(STEP_TYPE[step.step] ?? 'sys').toLowerCase()}`}>{STEP_TYPE[step.step] ?? 'SYS'}</span></td>

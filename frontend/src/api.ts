@@ -230,11 +230,32 @@ export interface TraceChain {
   sql_hash: string | null
 }
 
-/** 取不到就是 null —— 记录不存在与看不到后端同为 404，前端不做区分。 */
-export async function fetchTraceChain(traceId: string): Promise<TraceChain | null> {
-  const response = await fetch(`/api/trace?trace_id=${encodeURIComponent(traceId)}`)
-  if (!response.ok) return null
-  return response.json()
+/** 节点链的三种结局。**取不到不能再collapse成 null**：
+ *
+ *  这里原来失败一律返回 null，而页面把 null 与"steps 为空"渲染成同一个样子 ——
+ *  一张只有表头的空表。2026-09-07 撞上一次：`/api/trace` 因为拿启动配置判可见性，
+ *  把运行时数据源上的记录全判成 404，界面上就是"列得出来、点进去空白"，
+ *  读起来完全像"这条调用本来就没有节点"，排查从界面出发找不到任何线索。
+ *
+ *  `unavailable` 与 `failed` 分开：前者是后端的既定约定（记录不存在与无权同为
+ *  404，区分本身就是信息泄露 —— 前端也**不**替它区分，只说"当前看不到"），
+ *  后者是这次调用坏了（5xx、网络断），两句话对应的下一步动作完全不同。 */
+export type TraceChainResult =
+  | { status: 'ok'; data: TraceChain }
+  | { status: 'unavailable' }
+  | { status: 'failed'; message: string }
+
+export async function fetchTraceChain(traceId: string): Promise<TraceChainResult> {
+  let response: Response
+  try {
+    response = await fetch(`/api/trace?trace_id=${encodeURIComponent(traceId)}`)
+  } catch (e) {
+    // 网络层的失败也要说出来。吞掉它就又回到"空白等于没有数据"。
+    return { status: 'failed', message: String((e as Error).message || e) }
+  }
+  if (response.status === 404) return { status: 'unavailable' }
+  if (!response.ok) return { status: 'failed', message: `HTTP ${response.status}` }
+  return { status: 'ok', data: await response.json() }
 }
 
 export async function fetchReplay(traceId: string): Promise<ReplayResult> {

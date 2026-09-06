@@ -220,6 +220,9 @@
 /* 原型只有 good；失败态不能跟成功态一个颜色 */
 .span-table td.bad { color: var(--red); font-weight: 800; }
 .span-table td.span-note { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 一行都没有时那句状态。跟表体同一套字号，不做成提示条 ——
+   它是这张表的内容，不是页面上另起的一段说明 */
+.span-table tr.span-empty td { color: var(--muted); text-align: center; padding: 16px 8px; white-space: normal; }
 .span-type { display: inline-flex; padding: 2px 4px; border-radius: 3px; color: var(--green); background: var(--green-wash); }
 .span-type.model { color: var(--blue); background: var(--blue-wash); }
 .span-type.tool, .span-type.db { color: var(--amber); background: var(--amber-wash); }
