@@ -184,28 +184,5 @@
 
 .trace-empty { padding: 20px 13px; color: var(--muted); font-size: 8px; }
 
-/* ---------- 页尾观测两卡：原型 .observe-grid / .integration-card ---------- */
-.traces-page .observe-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 10px; margin-top: 11px; }
-.traces-page .integration-card {
-  padding: 13px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(250, 249, 245, .86);
-  box-shadow: var(--shadow);
-}
-.traces-page .integration-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.traces-page .integration-card h3 { margin: 0; font-family: var(--serif); font-size: 13px; }
-.traces-page .integration-card p { margin: 5px 0 10px; color: var(--muted); font-size: 7px; line-height: 1.55; }
-.traces-page .attribute-list { display: flex; flex-wrap: wrap; gap: 5px; }
-.traces-page .attribute-list code {
-  padding: 4px 5px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  color: var(--ink-2);
-  background: white;
-  font: 6px var(--mono);
-}
-
-
 @media (max-width: 900px) {
 }

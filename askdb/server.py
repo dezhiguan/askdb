@@ -1222,6 +1222,41 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "tracing": _obs_status(),
         }
 
+    @app.get("/api/trace")
+    def trace_chain_api(request: Request, trace_id: str = "") -> JSONResponse:
+        """执行追踪页的节点链（模型、token、SQL 哈希、逐节点耗时与结果）。
+
+        为什么不复用 /api/replay：回放要登录、要 observability.replay_api 开关，
+        而它返回 SQL 全文与问题原文 —— 那三道门是给 SQL 全文设的。节点链本身
+        既不含 SQL 文本也不含结果行，却被一起挡在门后，结果是执行追踪页在
+        它最常见的形态（未登录 / 回放关闭）下右半屏全是占位符，而这一页存在
+        的全部意义就是把链路显出来。
+
+        这里只放宽"谁能看"，没有放宽"能看到什么"：
+        - 字段走 audit.TRACE_FIELDS + STEP_FIELDS 双白名单，sql_raw / sql_final /
+          question / rows 一个都不出接口；SQL 只以 sha256 出现；
+        - 仍按调用者**当下**的可见表收窄 —— 步骤 note 里会出现表名与租户谓词，
+          不收窄就等于把别人查过的表结构送出去；
+        - 记录不存在与看不到同为 404，沿用回放那条"不区分"的约定。
+        """
+        _require_cap(request, _identity.AUDIT_READ, "查看执行追踪")
+        not_found = JSONResponse({"error": "not found"}, status_code=404)
+        if not _TRACE_ID_RE.fullmatch(trace_id or ""):
+            return not_found
+
+        from .audit import get_audit, trace_chain
+
+        rec = get_audit(cfg.audit_log, trace_id)
+        if rec is None:
+            return not_found
+
+        scoped = _scoped(request)
+        hit = {str(t).lower() for t in (rec.get("tables_hit") or [])}
+        if hit and not hit <= {t.lower() for t in scoped.tables}:
+            return not_found
+
+        return JSONResponse(trace_chain(rec))
+
     @app.get("/api/replay")
     def replay_trace(request: Request, trace_id: str = "") -> JSONResponse:
         """判定链路回放（设计说明 V1.1）。

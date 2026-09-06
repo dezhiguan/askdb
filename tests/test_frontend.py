@@ -361,34 +361,55 @@ def test_sql_toolbar_does_not_claim_the_sql_is_unmodified():
     src = _code_only(RESULT_TABS)
     assert "已按护栏改写" in src, "改写过的 SQL 必须如实标注"
     assert "result.rewrites" in src, "改写标注要由真实的 rewrites 决定"
-def test_trace_detail_does_not_depend_on_replay_for_the_basics():
-    """执行追踪的详情区：标题与事实网格必须只用审计流水里的字段。
+def test_trace_page_does_not_depend_on_replay():
+    """执行追踪页整页都不许挂在 /api/replay 上。
 
-    回放（observability.replay_api）在连真实数据源的实例上**默认关闭** ——
-    那才是常态。一旦把整个详情区做成"取不到回放就只显示一句话"，
-    右半屏就是一片空白，看起来像页面坏了；而耗时这类字段流水里本来就有，
-    不该跟着一起消失。
+    回放要登录、要 observability.replay_api 开关，而连真实数据源的实例默认
+    关着 —— 挂上去的结果是这一页在它**最常见**的形态下右半屏全是占位符、
+    Span 表一行没有，而这一页存在的全部意义就是把链路显出来。节点链改走
+    /api/trace（双白名单，SQL 只以哈希出现），六格与 Span 表因此在未登录、
+    回放关闭时照样是满的。
 
     2026-09-06 起事实网格严格照原型的六格（总耗时/模型/Token/工具调用/
     SQL Hash/数据源），角色、轮次、成本等格子已撤 —— 那些是原型没有的字段。
-    这条钉的是"不依赖回放"，不是"必须有哪几格"。
     """
     src = _code_only(FRONTEND_SRC / "pages" / "TracesPage.tsx")
 
+    assert "fetchTraceChain" in src, "执行追踪页没有走 /api/trace"
+    assert "fetchReplay" not in src, "执行追踪页又挂回 /api/replay 了（要登录+开关，默认取不到）"
+
     head = src[src.index("function TraceDetail("):src.index("function TraceNodes(")]
-    for field in ("item.elapsed_ms", "item.trace_id", "item.kind"):
-        assert field in head, f"详情区标题/事实网格没有用 {field}，可能又挂到回放上了"
+    for field in ("item.elapsed_ms", "item.trace_id", "item.kind", "chain?.model", "chain?.sql_hash"):
+        assert field in head, f"详情区事实网格没有用 {field}"
 
-    # 钉的是「不能因为取不到回放就提前 return」
-    for early in ("if (!replayOn)", "if (!replay)", "if (!replay "):
-        assert early not in head, f"标题/事实网格前有基于回放的提前返回（{early}），整块会被一起吞掉"
+    # 钉的是「取不到就整块消失」这一类退化，不管它退化的判据是什么
+    for early in ("if (!chain)", "if (!replay)", "if (!replayOn)"):
+        assert early not in head, f"标题/事实网格前有提前返回（{early}），整块会被一起吞掉"
 
-    # 链路条与 Span 表同理：取不到回放时按原型版式留空表，
+    # 链路条与 Span 表同理：没有步骤时按原型版式留空表，
     # 而不是把这两段换成一段说明文字 —— 页面形态要和原型一致。
-    nodes = src[src.index("function TraceNodes("):src.index("function ObserveGrid(")]
-    assert "Span 明细" in nodes, "回放那一段没有渲染 Span 表版式"
-    for early in ("if (!replayOn)", "if (!replay)", "if (!replay "):
-        assert early not in nodes, f"链路条那一段有提前返回（{early}），空态会变成一段说明文字"
+    nodes = src[src.index("function TraceNodes("):src.index("function hex16(")]
+    assert "Span 明细" in nodes, "没有渲染 Span 表版式"
+    assert "steps.length === 0" not in nodes, "空态被换成了另一种展示，不再是原型的空表"
+
+
+def test_model_step_classification_matches_the_frontend():
+    """「模型调用成功率」按模型**节点**算，而节点归类前后端各存一份。
+
+    后端 audit.MODEL_STEPS 拿来算数，前端 traceSteps.STEP_TYPE 拿来在 Span 表上
+    标 MODEL —— 两份漂了不会报错，只会让那格百分比和页面上标 MODEL 的行对不上，
+    而这正是"数字经不经得起对账"要防的事。
+    """
+    from askdb.audit import MODEL_STEPS
+
+    src = (FRONTEND_SRC / "traceSteps.ts").read_text(encoding="utf-8")
+    block = re.search(r"export const STEP_TYPE[^{]*\{(.*?)\n\}", src, re.S)
+    assert block, "traceSteps.ts 里找不到 STEP_TYPE"
+    front = {name for name, kind in
+             re.findall(r"^\s*([a-z_]+):\s*'([A-Z]+)'", block.group(1), re.M)
+             if kind == "MODEL"}
+    assert front == set(MODEL_STEPS), (
+        f"模型节点归类前后端不一致：前端 {sorted(front)} / 后端 {sorted(MODEL_STEPS)}")
 
 
 def test_removed_pages_leave_no_dangling_references():

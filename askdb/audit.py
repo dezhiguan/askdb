@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from datetime import datetime, timedelta
@@ -26,6 +27,27 @@ SUMMARY_FIELDS = (
     "attempts", "rows_returned", "elapsed_ms", "cost_cny",
     "step_count", "multi_step", "source", "source_name",
 )
+
+# /api/trace 的字段白名单：执行追踪页要的是**节点链与计量**。
+# 与 REPLAY_FIELDS 的分界是刻意的 —— 这里不给 sql_raw / sql_final / question /
+# tables_hit，SQL 文本、问题原文与命中表仍然只经 /api/replay 出去（要登录、
+# 要开关、还要按调用者当下的可见表收窄）。步骤 note 里会出现表名，所以
+# /api/trace 同样做那道可见表收窄，只是不返回 tables_hit 本身。
+TRACE_FIELDS = (
+    "trace_id", "ts", "kind", "thread_id", "role", "model",
+    "tok_in", "tok_out", "step_count", "multi_step", "attempts",
+    "elapsed_ms", "cost_cny", "rejected_by", "source", "source_name",
+)
+
+# 步骤对象自身也走白名单 —— 记录里的 steps 由各节点自由追加，
+# 哪天有人往里塞了 sql 或行样本，这里不会顺手带出去。
+STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note")
+
+# 真正过模型的图节点。与前端 traceSteps.ts 的 STEP_TYPE == 'MODEL' 是同一份口径，
+# 两边都写一次是因为一个算数、一个只做展示；漂了会让「模型调用成功率」这格
+# 与页面上标 MODEL 的那些 span 对不上 —— tests 里钉住了两边一致。
+MODEL_STEPS = frozenset({"plan", "generate_sql", "assess", "reflect"})
+
 
 # /api/replay 的字段白名单（判定链路回放接口设计说明 §4.2）。
 # rows / schema_prompt 两个字段在设计上**绝不出接口** —— 用白名单而不是
@@ -202,6 +224,27 @@ def get_audit(path: Path, trace_id: str) -> dict[str, Any] | None:
     return found
 
 
+def trace_chain(rec: dict[str, Any]) -> dict[str, Any]:
+    """一条记录的节点链视图（/api/trace 的响应体）。
+
+    执行追踪页此前把这些字段挂在 /api/replay 上，而回放要登录、要开关、
+    连真实库的实例默认关着 —— 于是那一页最常见的样子是右半屏全是占位符，
+    而节点链本身在审计记录里一直都有，不含 SQL 文本也不含结果行。
+
+    sql_hash 是就地算的：记录里只存 SQL 全文，而追踪页那一格要的是哈希。
+    哈希不可逆，给出去不等于给 SQL；但它足以判断"两次查询是不是同一条 SQL"。
+    """
+    out: dict[str, Any] = {k: rec.get(k) for k in TRACE_FIELDS}
+    out["kind"] = rec.get("kind", "ask")
+    out["steps"] = [
+        {k: s.get(k) for k in STEP_FIELDS if s.get(k) is not None}
+        for s in (rec.get("steps") or [])
+    ]
+    sql = str(rec.get("sql_final") or rec.get("sql_raw") or "")
+    out["sql_hash"] = hashlib.sha256(sql.encode("utf-8")).hexdigest() if sql else None
+    return out
+
+
 def _parse_ts(ts: str) -> datetime | None:
     try:
         return datetime.fromisoformat(ts)
@@ -244,6 +287,14 @@ def stats(path: Path, days: int = 30, only_user: str | None = None) -> dict[str,
     with_steps = sum(1 for r in recent if r.get("steps"))
     elapsed = sorted(int(r.get("elapsed_ms") or 0) for r in recent)
 
+    # 模型调用的成败按**节点**算，不是按整次调用算：一次提问里模型可能被调
+    # 三四次（判定 / 生成 / 自检 / 反思），其中一次失败后重试成功，整次调用
+    # 是成功的，但模型确实失败过一次。按调用算会把这些失败全部抹掉。
+    model_steps = [s for r in recent for s in (r.get("steps") or [])
+                   if s.get("step") in MODEL_STEPS]
+    model_calls = len(model_steps)
+    model_failed = sum(1 for s in model_steps if s.get("status") != "ok")
+
     daily: dict[str, dict[str, Any]] = {}
     by_kind: dict[str, int] = {}
     by_rule: dict[str, int] = {}
@@ -273,6 +324,10 @@ def stats(path: Path, days: int = 30, only_user: str | None = None) -> dict[str,
         "tok_in": sum(int(r.get("tok_in") or 0) for r in recent),
         "tok_out": sum(int(r.get("tok_out") or 0) for r in recent),
         "trace_complete": round(with_steps / calls, 4) if calls else None,
+        # 窗口内一次模型节点都没有时为 None —— 0/0 不是 0%，也不是 100%
+        "model_calls": model_calls,
+        "model_failed": model_failed,
+        "model_success": round((model_calls - model_failed) / model_calls, 4) if model_calls else None,
         "elapsed_p50_ms": _percentile(elapsed, 0.5),
         "elapsed_p95_ms": _percentile(elapsed, 0.95),
         "daily": sorted(daily.values(), key=lambda d: d["date"]),

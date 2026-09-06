@@ -1,11 +1,12 @@
 import { PageHeader } from '../components/AppShell'
 import { Fragment, useEffect, useState } from 'react'
 import {
-  fetchAudit, fetchAuditStats, fetchReplay, tracingLink,
-  type AuditItem, type AuditStats, type Replay, type ReplayResult, type ReplayStep,
-  type Tracing, type Me,
+  fetchAudit, fetchAuditStats, fetchTraceChain, tracingLink,
+  type AuditItem, type AuditStats, type ReplayStep, type TraceChain,
+  type Me,
 } from '../api'
 import type { ModalName, View } from '../types'
+import { writeGuard } from '../writeGuard'
 import { KIND_NAMES, STEP_NAMES, STEP_TYPE } from '../traceSteps'
 
 
@@ -29,15 +30,16 @@ const NA = '—'
 const toolCalls = (steps: ReplayStep[]) =>
   steps.filter(s => STEP_TYPE[s.step] === 'TOOL' || STEP_TYPE[s.step] === 'DB').length
 
-export function TracesPage({ onNavigate, onOpenModal }: {
+export function TracesPage({ onNavigate, onOpenModal, me }: {
   /** App 未传时退回点击侧栏导航（见 goTasks 注释） */
   onNavigate?: (view: View) => void
   /** 「接入 Langfuse」弹窗由 App 的 ModalLayer 挂载，未传时按钮置灰 */
   onOpenModal?: (modal: ModalName) => void
-  /** 保留在签名上：App 统一往各页传 me。这一页不按登录态置灰任何入口 ——
-   *  导出的是本地这条 trace 的元数据，接入向导只是打开一个说明弹窗。 */
   me?: Me | null
 } = {}) {
+  /** 导出与接入向导按登录态置灰，与其余六页同一口径 ——
+   *  展示（流水、节点链）匿名可见，动作要登录。 */
+  const guard = writeGuard(me ?? null, '这个操作')
   const [stats, setStats] = useState<AuditStats | null>(null)
   // 原型第一格是「今日 Traces」。统计接口按窗口取，30 天那份不能拿来当今天讲，
   // 所以单独再要一份 days=1 —— 其余三格仍用 30 天窗口，样本太小的 P95 没有意义。
@@ -45,8 +47,8 @@ export function TracesPage({ onNavigate, onOpenModal }: {
   const [items, setItems] = useState<AuditItem[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   // 存成 {key, result}，切换 trace 时靠 key 不匹配自然回到「读取中」，
-  // 不需要在 effect 里先同步 setReplay(null) —— 那会多触发一轮渲染
-  const [replay, setReplay] = useState<{ key: string; result: ReplayResult } | null>(null)
+  // 不需要在 effect 里先同步 setChain(null) —— 那会多触发一轮渲染
+  const [chain, setChain] = useState<{ key: string; result: TraceChain | null } | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -71,11 +73,11 @@ export function TracesPage({ onNavigate, onOpenModal }: {
   useEffect(() => {
     if (!selected) return
     let alive = true
-    fetchReplay(selected).then(result => { if (alive) setReplay({ key: selected, result }) })
+    fetchTraceChain(selected).then(result => { if (alive) setChain({ key: selected, result }) })
     return () => { alive = false }
   }, [selected])
 
-  const currentReplay = replay && replay.key === selected ? replay.result : null
+  const currentChain = chain && chain.key === selected ? chain.result : null
   const currentItem = items?.find(i => i.trace_id === selected) ?? null
 
   const tracing = stats?.tracing
@@ -104,9 +106,10 @@ export function TracesPage({ onNavigate, onOpenModal }: {
             <button className="ghost" onClick={goTasks}>← 返回任务中心</button>
             <button
               className="ghost"
-              disabled={!currentItem}
-              title={currentItem ? '导出当前 trace 的 OTLP/JSON' : '先选一条调用'}
-              onClick={() => currentItem && exportOtel(currentItem, currentReplay)}
+              disabled={!currentItem || !guard.can}
+              title={!guard.can ? guard.props.title
+                : currentItem ? '导出当前 trace 的 OTLP/JSON' : '先选一条调用'}
+              onClick={() => currentItem && exportOtel(currentItem, currentChain)}
             >
               导出 OpenTelemetry
             </button>
@@ -118,8 +121,9 @@ export function TracesPage({ onNavigate, onOpenModal }: {
                 </a>
               : <button
                   className="primary"
-                  disabled={!onOpenModal}
-                  title={onOpenModal ? undefined : '接入向导由应用外壳挂载，当前实例未启用'}
+                  disabled={!onOpenModal || !guard.can}
+                  title={!guard.can ? guard.props.title
+                    : onOpenModal ? undefined : '接入向导由应用外壳挂载，当前实例未启用'}
                   onClick={() => onOpenModal?.('langfuse')}
                 >
                   接入 Langfuse
@@ -161,11 +165,10 @@ export function TracesPage({ onNavigate, onOpenModal }: {
         </div>
 
         <div className="card trace-detail">
-          <TraceDetail item={currentItem} replay={currentReplay} />
+          <TraceDetail item={currentItem} chain={currentChain} />
         </div>
       </div>
 
-      <ObserveGrid tracing={stats?.tracing} />
     </div>
   )
 }
@@ -181,18 +184,25 @@ function StatTiles({ stats, today }: { stats: AuditStats | null; today: AuditSta
     <div className="stats">
       <div className="stat">
         <span>今日 Traces</span><strong>{(today?.calls ?? 0).toLocaleString()}</strong>
-        <small>{pct(today?.trace_complete)} 已关联审计</small>
+        {/* 没有调用时 trace_complete 是 null —— 那句话就不该出现，
+            「— 已关联审计」是把一个没有的比例硬写成一行字 */}
+        <small>{today?.calls ? `${pct(today.trace_complete)} 已关联审计` : '今日暂无调用'}</small>
       </div>
       <div className="stat">
         <span>P95 总耗时</span><strong>{secs(stats.elapsed_p95_ms)}</strong>
         {/* 样本量必须一起给：7 次调用的 P95 基本等于最慢那次，当成稳定指标读会出错 */}
         <small>P50 {secs(stats.elapsed_p50_ms)} · 样本 {stats.calls} 次</small>
       </div>
-      {/* 原型这一格是「模型调用成功率」。审计只记整次调用的成败，没有单独记
-          模型调用本身失败/重试了几次 —— 版位照留，数字不拿别的口径顶上。 */}
+      {/* 按模型**节点**算（判定/生成/自检/反思），不是按整次调用算 ——
+          一次提问里模型可能被调三四次，其中一次失败后重试成功，
+          按调用算会把这些失败全部抹掉。 */}
       <div className="stat">
-        <span>模型调用成功率</span><strong>{NA}</strong>
-        <small>该口径尚未采集</small>
+        <span>模型调用成功率</span><strong>{pct(stats.model_success)}</strong>
+        <small>
+          {stats.model_calls
+            ? `${stats.model_calls.toLocaleString()} 次模型节点 · ${stats.model_failed} 次失败`
+            : '窗口内没有经模型的节点'}
+        </small>
       </div>
       <div className="stat">
         <span>平均 Token</span><strong>{avgTokens?.toLocaleString() ?? NA}</strong>
@@ -202,22 +212,19 @@ function StatTiles({ stats, today }: { stats: AuditStats | null; today: AuditSta
   )
 }
 
-function TraceDetail({ item, replay }: {
+function TraceDetail({ item, chain }: {
   item: AuditItem | null
-  replay: ReplayResult | null
+  chain: TraceChain | null
 }) {
   if (!item) return <p className="trace-empty">左侧选一条调用查看节点明细。</p>
 
-  const d = replay?.status === 'ok' ? replay.data : null
-  const steps = d?.steps ?? []
+  const steps = chain?.steps ?? []
   const outcome = item.ok
     ? 'SUCCESS'
     : item.rejected_by === 'INTERRUPTED' ? 'INTERRUPTED' : `BLOCKED · ${item.rejected_by}`
 
   return (
     <>
-      {/* 标题与事实网格只用审计流水里的字段 —— 回放关着时照样完整，
-          不会出现右半屏一片空白 */}
       <div className="trace-detail-head">
         <div>
           <h3>{item.question || `（${KIND_NAMES[item.kind] ?? item.kind}）`}</h3>
@@ -227,27 +234,38 @@ function TraceDetail({ item, replay }: {
         <span className={`status ${item.ok ? '' : 'wait'}`}>可信度 {NA}</span>
       </div>
 
-      {/* 字段与顺序严格照原型的六格，一格不多。模型 / SQL Hash / 数据源 askdb
-          没有落在 trace 上，留占位不编数。 */}
+      {/* 字段与顺序严格照原型的六格，一格不多。数据来自 /api/trace（节点链）
+          与流水本身 —— 不经回放，所以未登录、回放关闭时这六格照样是满的。 */}
       <div className="trace-facts">
         <div className="trace-fact"><span>总耗时</span><strong>{secs(item.elapsed_ms)}</strong></div>
-        <div className="trace-fact"><span>模型</span><strong>{NA}</strong></div>
-        <div className="trace-fact"><span>Token</span><strong>{d ? `${d.tok_in ?? 0}+${d.tok_out ?? 0}` : NA}</strong></div>
+        <div className="trace-fact"><span>模型</span><strong title={chain?.model ?? ''}>{chain?.model || NA}</strong></div>
+        <div className="trace-fact"><span>Token</span><strong>{tokens(chain)}</strong></div>
         <div className="trace-fact"><span>工具调用</span><strong>{steps.length ? toolCalls(steps) : NA}</strong></div>
-        <div className="trace-fact"><span>SQL Hash</span><strong>{NA}</strong></div>
-        <div className="trace-fact"><span>数据源</span><strong>{NA}</strong></div>
+        <div className="trace-fact"><span>SQL Hash</span><strong title={chain?.sql_hash ?? ''}>{shortHash(chain?.sql_hash)}</strong></div>
+        <div className="trace-fact"><span>数据源</span><strong title={item.source_name ?? ''}>{item.source_name || NA}</strong></div>
       </div>
 
-      <TraceNodes replay={replay} />
+      <TraceNodes steps={steps} />
     </>
   )
 }
 
-/** 链路条与 Span 明细。两段的数据都只有回放接口给得出来；取不到时按原型的版式
- *  留空表，不在页面上另起一段说明文字 —— 页面形态与原型保持一致。 */
-function TraceNodes({ replay }: { replay: ReplayResult | null }) {
-  const steps = replay?.status === 'ok' ? (replay.data.steps ?? []) : []
+/** 「1,020」而不是「953+67」：原型那一格是一个数。分不清进出的时候
+ *  两者都没有就留占位，不拿 0 顶上。 */
+function tokens(chain: TraceChain | null): string {
+  if (!chain || (chain.tok_in == null && chain.tok_out == null)) return NA
+  return ((chain.tok_in ?? 0) + (chain.tok_out ?? 0)).toLocaleString()
+}
 
+/** 原型写的是「8ad2…91cf」—— 首尾各四位。整串放进 title，要对账时能拷走。 */
+function shortHash(hash: string | null | undefined): string {
+  if (!hash) return NA
+  return hash.length <= 12 ? hash : `${hash.slice(0, 4)}…${hash.slice(-4)}`
+}
+
+/** 链路条与 Span 明细。没有步骤时按原型的版式留空表，
+ *  不在页面上另起一段说明文字 —— 页面形态与原型保持一致。 */
+function TraceNodes({ steps }: { steps: ReplayStep[] }) {
   return (
     <>
       {steps.length > 0 && (
@@ -296,47 +314,10 @@ function TraceNodes({ replay }: { replay: ReplayResult | null }) {
   )
 }
 
-/** 页尾观测两卡：版式照原型，卡里写的是本实例真实的接入状态与上报边界 ——
- *  原型那两张写的是「NOT CONNECTED / prompt: REDACTED」，照抄会说假话。 */
-function ObserveGrid({ tracing }: { tracing?: Tracing | null }) {
-  const on = !!tracing?.enabled
-  const backend = tracing?.backend === 'langsmith' ? 'LangSmith' : 'Langfuse'
-
-  return (
-    <div className="observe-grid">
-      <div className="integration-card">
-        <div className="integration-top">
-          <div>
-            <h3>{backend} 集成</h3>
-            <p>Agent Harness 统一产生 Trace/Span；接入观测后端不需要改动业务节点。</p>
-          </div>
-          <span className={`status ${on ? '' : 'wait'}`}>{on ? 'CONNECTED' : 'NOT CONNECTED'}</span>
-        </div>
-        <div className="attribute-list">
-          <code>trace_id</code><code>org_id</code><code>kind</code><code>role</code>
-          <code>attempts</code><code>cost_cny</code><code>tables_hit</code><code>latency_ms</code>
-        </div>
-      </div>
-      <div className="integration-card">
-        <div className="integration-top">
-          <div>
-            <h3>上报数据边界</h3>
-            <p>只上报步骤元数据、SQL 文本与 token 计量；查询结果行不出本地。</p>
-          </div>
-          <span className="status">RESULT OFF</span>
-        </div>
-        <div className="attribute-list">
-          <code>prompt: 原文</code><code>sql: 全文</code><code>result: OFF</code>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 /* ---------- 导出 OpenTelemetry ----------
  *
  * 原型这颗按钮只弹一句提示。这里按 OTLP/JSON 的 resourceSpans 结构把当前这条 trace
- * 真的写成文件下载 —— 不引依赖，浏览器 Blob 就够。取不到 replay 时退化成一条根 span，
+ * 真的写成文件下载 —— 不引依赖，浏览器 Blob 就够。取不到节点链时退化成一条根 span，
  * 那也是真实的（审计流水里确实只有这一层）。
  */
 function hex16(input: string): string {
@@ -357,8 +338,8 @@ const attr = (key: string, value: string | number | boolean) => ({
     : typeof value === 'boolean' ? { boolValue: value } : { stringValue: value },
 })
 
-function exportOtel(item: AuditItem, replay: ReplayResult | null) {
-  const data: Replay | null = replay?.status === 'ok' ? replay.data : null
+function exportOtel(item: AuditItem, chain: TraceChain | null) {
+  const data = chain
   const traceId = hex16(item.trace_id) + hex16(item.trace_id + '#')
   const startNs = BigInt(new Date(item.ts).getTime() || Date.now()) * 1000000n
 

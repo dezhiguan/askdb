@@ -178,6 +178,40 @@ def test_audit_endpoints_paginate_and_stats(cfg, monkeypatch):
     assert st["daily"] and st["daily"][-1]["calls"] == 4
 
 
+def test_trace_chain_endpoint_serves_the_node_chain_without_login(cfg, monkeypatch):
+    """/api/trace：未登录也给得出节点链，但 SQL 文本一个字都不出接口。
+
+    这一页此前把节点链挂在 /api/replay 上 —— 那道门是给 SQL 全文设的
+    （要登录、要 replay_api 开关），于是执行追踪页在它最常见的形态下
+    右半屏全是占位符。放宽的只是"谁能看"，不是"能看到什么"。
+    """
+    from fastapi.testclient import TestClient
+
+    from askdb import server
+
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+    client = TestClient(server.create_app("ignored.yaml"))
+    trace_id = client.post("/api/sql",
+                           json={"sql": "SELECT file_name FROM documents"}).json()["trace_id"]
+
+    # 回放默认关着、也没登录 —— 那条路本来就取不到
+    assert client.get("/api/replay", params={"trace_id": trace_id}).status_code == 404
+
+    d = client.get("/api/trace", params={"trace_id": trace_id})
+    assert d.status_code == 200
+    body = d.json()
+    for leaked in ("sql_raw", "sql_final", "rows", "question", "tables_hit", "schema_prompt"):
+        assert leaked not in body, f"/api/trace 漏出了 {leaked}"
+    assert body["steps"], "节点链是这个接口存在的唯一理由，不能是空的"
+    assert set(body["steps"][0]) <= set(audit.STEP_FIELDS)
+    # SQL 只以哈希出现 —— 够判断两次是不是同一条，且不可逆
+    assert body["sql_hash"] and len(body["sql_hash"]) == 64
+
+    # 不存在的记录与非法 id 同为 404，不区分
+    assert client.get("/api/trace", params={"trace_id": "0" * 12}).status_code == 404
+    assert client.get("/api/trace", params={"trace_id": "not-an-id"}).status_code == 404
+
+
 def test_langsmith_status_from_env(monkeypatch):
     """观测状态只认环境变量，如实报告 —— 不发请求也不编成功率。"""
     from askdb.trace import langsmith_status

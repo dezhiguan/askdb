@@ -32,7 +32,7 @@
   .page, .query-page { height: auto; min-height: calc(100vh - 104px); padding: 16px 12px 32px; overflow: visible; }
   .page-head { align-items: flex-start; }
   .page-head h1 { font-size: 21px; }
-  .workspace-grid, .policy-layout, .glossary-layout, .trace-layout, .observe-grid, .stats, .source-grid { grid-template-columns: minmax(0,1fr) !important; }
+  .workspace-grid, .policy-layout, .glossary-layout, .trace-layout, .stats, .source-grid { grid-template-columns: minmax(0,1fr) !important; }
   .workspace-grid { overflow: visible; }
   .query-stage { min-height: 640px; }
   .stage-head { align-items: stretch; flex-direction: column; }

@@ -67,6 +67,9 @@ export interface AuditItem {
   cost_cny: number | null
   step_count: number | null
   multi_step: boolean | null
+  /** 这次调用打在哪个数据源上。builtin 表示配置里的默认源 */
+  source: string | null
+  source_name: string | null
   ok: boolean
 }
 
@@ -98,6 +101,12 @@ export interface AuditStats {
   tok_out: number
   /** 没有调用时为 null。后端如实算占比，不写死 100% —— 这格数字要经得起对账。 */
   trace_complete: number | null
+  /** 模型调用的成败按**节点**算（判定/生成/自检/反思），不是按整次调用算：
+   *  失败后重试成功的那次，整次调用是成功的，但模型确实失败过。
+   *  窗口内没有模型节点时 model_success 为 null —— 0/0 既不是 0% 也不是 100%。 */
+  model_calls: number
+  model_failed: number
+  model_success: number | null
   /** 最近秩分位：一定是真发生过的某一次耗时，不是插值。窗口内无调用时为 null。 */
   elapsed_p50_ms: number | null
   elapsed_p95_ms: number | null
@@ -180,6 +189,38 @@ export async function fetchAudit(params: {
 export async function fetchAuditStats(days = 30): Promise<AuditStats> {
   const response = await fetch(`/api/audit/stats?days=${days}`)
   if (!response.ok) throw new Error(`/api/audit/stats ${response.status}`)
+  return response.json()
+}
+
+/** 执行追踪页的节点链（/api/trace）。
+ *
+ *  刻意与 Replay 分开：回放要登录 + 开关，返回 SQL 全文与问题原文；
+ *  这里只有节点链与计量，SQL 只以哈希出现，未登录照样看得到。 */
+export interface TraceChain {
+  trace_id: string
+  ts: string
+  kind: string
+  thread_id: string | null
+  role: string | null
+  model: string | null
+  tok_in: number | null
+  tok_out: number | null
+  step_count: number | null
+  multi_step: boolean | null
+  attempts: number | null
+  elapsed_ms: number | null
+  cost_cny: number | null
+  rejected_by: string | null
+  source: string | null
+  source_name: string | null
+  steps: ReplayStep[]
+  sql_hash: string | null
+}
+
+/** 取不到就是 null —— 记录不存在与看不到后端同为 404，前端不做区分。 */
+export async function fetchTraceChain(traceId: string): Promise<TraceChain | null> {
+  const response = await fetch(`/api/trace?trace_id=${encodeURIComponent(traceId)}`)
+  if (!response.ok) return null
   return response.json()
 }
 
