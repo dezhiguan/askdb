@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from .config import Config
 from .quota import QuotaExceeded, build_quota
+from .trace import call_cost_cny
 
 __all__ = ["LlmClient", "LlmNotConfigured", "LlmUsage", "SqlDraft", "QuotaExceeded"]
 
@@ -70,12 +71,22 @@ RETRY = """{schema}
 
 @dataclass
 class LlmUsage:
+    """一次或多次模型调用的用量与**已结算金额**。
+
+    金额随用量一起累加，而不是最后拿总 token 乘一个单价：一次问答里的多次调用
+    可能由不同模型应答（兜底），也可能跨过计费时段边界，全程单价并不一致。
+    """
+
     input_tokens: int = 0
     output_tokens: int = 0
+    cached_input_tokens: int = 0    # 含在 input_tokens 内，不另计
+    cost_cny: float = 0.0
 
     def add(self, other: "LlmUsage") -> None:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.cached_input_tokens += other.cached_input_tokens
+        self.cost_cny = round(self.cost_cny + other.cost_cny, 6)
 
 
 class LlmClient:
@@ -143,13 +154,22 @@ class LlmClient:
         from langchain_openai import ChatOpenAI  # 延迟导入，未配密钥时不必加载
 
         kwargs: dict = {}
-        # DeepSeek V4 默认开启思考模式，而思考模式不支持强制 tool_choice，
-        # 结构化输出会直接 400。SQL 生成也用不上长链思考 —— 输出是最贵的一档，
-        # 白烧 reasoning token 没有意义。默认关掉，可在配置里显式打开。
-        # 仅对 DeepSeek 下发：这是厂商私有参数，发给别家可能被拒。
-        if "deepseek" in str(self.llm_cfg.get("provider", "")).lower():
-            state = "enabled" if self.llm_cfg.get("thinking", False) else "disabled"
+        # 思考模式一律默认关掉：它不支持强制 tool_choice，结构化输出会直接 400；
+        # SQL 生成也用不上长链思考 —— 输出是最贵的一档，白烧 reasoning token
+        # 没有意义。可在配置里 thinking: true 显式打开。
+        #
+        # 关的参数名各家不同，且都是厂商私有参数，发给别家可能被拒，因此按
+        # provider 分发，不做统一封装 —— 少一层抽象，多一份"发错家"的可见性。
+        thinking = bool(self.llm_cfg.get("thinking", False))
+        provider = str(self.llm_cfg.get("provider", "")).lower()
+        if "deepseek" in provider:
+            state = "enabled" if thinking else "disabled"
             kwargs["extra_body"] = {"thinking": {"type": state}}
+        elif "dashscope" in provider:
+            # 百炼的混合思考模型（qwen3.8-flash / qwen3.8-max / qwen3.8-27b）
+            # 官方文档明写"默认开启思考模式"，不显式关就会当场踩上面那个 400。
+            # 参数名是 enable_thinking，非 OpenAI 标准参数，须走 extra_body。
+            kwargs["extra_body"] = {"enable_thinking": thinking}
 
         self._model = ChatOpenAI(
             model=self.llm_cfg["model"],
@@ -184,7 +204,7 @@ class LlmClient:
         parsed = out["parsed"] if isinstance(out, dict) else out
         if parsed is None:
             raise RuntimeError("模型未按结构化格式返回，请重试或更换模型。")
-        return parsed, _usage_of(out)
+        return parsed, _usage_of(out, self.llm_cfg)
 
     def generate_sql(
         self,
@@ -227,16 +247,28 @@ class LlmClient:
             return draft, usage
 
         draft = out["parsed"] if isinstance(out, dict) else out
-        usage = _usage_of(out)
+        usage = _usage_of(out, self.llm_cfg)
         if draft is None:
             raise RuntimeError("模型未按结构化格式返回，请重试或更换模型。")
         return draft, usage
 
 
-def _usage_of(out: object) -> LlmUsage:
+def _usage_of(out: object, llm_cfg: dict | None = None) -> LlmUsage:
+    """把厂商回传的用量折成 LlmUsage，并当场按 llm_cfg 的单价结算金额。
+
+    缓存命中量取 langchain 归一化后的 input_token_details.cache_read ——
+    实测百炼与 DeepSeek 两边都填这个字段（DeepSeek 另给 prompt_cache_hit_tokens，
+    值一致），所以不必按厂商分支去读私有字段。
+    """
     raw = out.get("raw") if isinstance(out, dict) else None
     meta = getattr(raw, "usage_metadata", None) or {}
+    tok_in = int(meta.get("input_tokens", 0) or 0)
+    tok_out = int(meta.get("output_tokens", 0) or 0)
+    cached = int((meta.get("input_token_details") or {}).get("cache_read", 0) or 0)
+    cost = call_cost_cny(tok_in, tok_out, cached, llm_cfg) if llm_cfg else 0.0
     return LlmUsage(
-        input_tokens=int(meta.get("input_tokens", 0) or 0),
-        output_tokens=int(meta.get("output_tokens", 0) or 0),
+        input_tokens=tok_in,
+        output_tokens=tok_out,
+        cached_input_tokens=cached,
+        cost_cny=cost,
     )

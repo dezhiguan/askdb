@@ -103,24 +103,45 @@ schema_rag:
 
 llm:
   # 主模型选便宜的那个：对外实例的成本要按"被刷满"来估，不是按正常使用估。
-  # 实测样例库上单次问答约 833+28 token ≈ ¥0.0009，
-  # 200 次/天 ≈ ¥0.18/天 ≈ ¥5.4/月。
-  provider: deepseek
-  base_url: "https://api.deepseek.com"
-  model: deepseek-v4-flash
+  #
+  # 2026-09-06 由 deepseek-v4-flash 换为 qwen3.8-flash：单价 0.8/2.7 对
+  # 1/2（元/百万 Token），同档位里最便宜的一个，且代次更新。
+  # 口径按 1809 条真实审计（data/audit*.jsonl）重算，不再用早先那个偏乐观的
+  # 833+28：实测均值 in 2651 / out 102，含 7% 的重试；对外样例库这一档约
+  # in 900 / out 140 ≈ ¥0.0011/次，200 次/天 ≈ ¥6.6/月。
+  provider: dashscope
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: qwen3.8-flash
   temperature: 0
-  api_key_env: DEEPSEEK_API_KEY
-  price_input_per_1k: 0.001
-  price_output_per_1k: 0.002
-  thinking: false
+  api_key_env: DASHSCOPE_API_KEY
+  price_input_per_1k: 0.0008        # 0.8 元/百万 Token（2026-09-06 核对官方单价）
+  price_output_per_1k: 0.0027       # 2.7 元/百万 Token
+  # 百炼的上下文缓存要显式创建，命中按标准输入价的 10% 计。实测本链路
+  # cache_read 恒为 0（没建显式缓存），所以这个价目前用不上，写在这里是为了
+  # 一旦启用显式缓存，账立刻就是对的，不必回头再改代码。
+  price_cached_input_per_1k: 0.00008
+  # 百炼无峰谷计费 —— 不配 peak_windows，倍率恒为 1.0。
+  thinking: false                   # 该模型默认开思考，必须显式关（见 llm.py _build）
 
   # 备选只在主模型**调用失败**时兜底（限流 / 超时 / 厂商故障）。
   # 生成的 SQL 不对不切备选 —— 那是反思重试的职责。
   fallback:
-    provider: dashscope
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    model: qwen-plus
-    api_key_env: DASHSCOPE_API_KEY
+    # 备选必须换一家厂商：主模型已在百炼上，备选再挂百炼的话，
+    # 百炼整体故障时两级一起挂，这条兜底等于不存在。
+    provider: deepseek
+    base_url: "https://api.deepseek.com"
+    model: deepseek-v4-flash
+    api_key_env: DEEPSEEK_API_KEY
+    # DeepSeek 直连单价（官网 2026-09-06 核对）。备选的单价必须写全：
+    # 兜底触发时按**这里**结算，不再沿用主模型的价。
+    # 按高峰填，空闲由 offpeak_multiplier 向下打折 —— 漏配时偏贵不偏便宜。
+    price_input_per_1k: 0.003          # 未命中：高峰 3 元/1M（空闲 1.5）
+    price_output_per_1k: 0.009         # 高峰 9 元/1M（空闲 4.5）
+    price_cached_input_per_1k: 0.0001  # 命中：高峰 0.10 元/1M（空闲 0.05）
+    offpeak_multiplier: 0.5
+    peak_windows: ["09:00-12:00", "14:00-18:00"]   # 北京时间
+    peak_weekdays_only: true
+    peak_utc_offset_hours: 8
 
 observability:
   # 写在 ./var 而不是 ./data —— data 目录里是随镜像固化的样例库，

@@ -63,11 +63,17 @@ schema_rag:
 llm:
   provider: dashscope
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  model: qwen-max
+  model: qwen3.8-flash
   temperature: 0
   api_key_env: DASHSCOPE_API_KEY     # 仅走环境变量，禁止写入配置文件
-  price_input_per_1k: 0.0024         # ⚠️ 未经核对的估值，待以官方单价校正
-  price_output_per_1k: 0.0096        # ⚠️ 同上
+  price_input_per_1k: 0.0008        # 0.8 元/百万 Token（2026-09-06 核对官方单价）
+  price_output_per_1k: 0.0027       # 2.7 元/百万 Token
+  # 百炼的上下文缓存要显式创建，命中按标准输入价的 10% 计。实测本链路
+  # cache_read 恒为 0（没建显式缓存），所以这个价目前用不上，写在这里是为了
+  # 一旦启用显式缓存，账立刻就是对的，不必回头再改代码。
+  price_cached_input_per_1k: 0.00008
+  # 百炼无峰谷计费 —— 不配 peak_windows，倍率恒为 1.0。
+  thinking: false                   # 该模型默认开思考，必须显式关（见 llm.py _build）
 
   # 备选模型：仅在主模型「调用失败」时兜底一次（限流 / 超时 / 厂商故障）。
   # 生成的 SQL 不对不会切备选 —— 那是反思重试的职责，两者不要混。
@@ -77,16 +83,32 @@ llm:
     base_url: "https://api.deepseek.com"
     model: deepseek-v4-flash
     api_key_env: DEEPSEEK_API_KEY
+    # DeepSeek 直连单价（官网 2026-09-06 核对）。备选的单价必须写全：
+    # 兜底触发时按**这里**结算，不再沿用主模型的价。
+    # 按高峰填，空闲由 offpeak_multiplier 向下打折 —— 漏配时偏贵不偏便宜。
+    price_input_per_1k: 0.003          # 未命中：高峰 3 元/1M（空闲 1.5）
+    price_output_per_1k: 0.009         # 高峰 9 元/1M（空闲 4.5）
+    price_cached_input_per_1k: 0.0001  # 命中：高峰 0.10 元/1M（空闲 0.05）
+    offpeak_multiplier: 0.5
+    peak_windows: ["09:00-12:00", "14:00-18:00"]   # 北京时间
+    peak_weekdays_only: true
+    peak_utc_offset_hours: 8
 
-  # ---- 备选：DeepSeek V4（官方单价，2026-08 核对）----
-  # provider: deepseek
-  # base_url: "https://api.deepseek.com"
-  # model: deepseek-v4-flash         # 或 deepseek-v4-pro
-  # api_key_env: DEEPSEEK_API_KEY
-  # price_input_per_1k: 0.001        # 缓存未命中 1 元/1M；命中 0.02 元/1M（自动前缀缓存）
-  # price_output_per_1k: 0.002       # 2 元/1M（pro 为 3 元 / 6 元）
-  # thinking: false                  # 默认即 false。思考模式不支持强制 tool_choice，
-  #                                  # 开启会导致结构化输出直接 400；SQL 生成也用不上长链思考。
+  # ---- DeepSeek 直连单价（api-docs.deepseek.com 官方页，2026-09-06 核对）----
+  # 原先此处写的 1 元 / 2 元**不是 DeepSeek 直连价** —— 那是百炼转售
+  # deepseek-v4-flash 的价格。直连按峰谷两档计费，且差 2 倍：
+  #
+  #   deepseek-v4-flash   输入(未命中)  空闲 1.5 元/1M   高峰 3.0 元/1M
+  #                       输入(已命中)  空闲 0.05 元/1M  高峰 0.10 元/1M
+  #                       输出          空闲 4.5 元/1M   高峰 9.0 元/1M
+  #   deepseek-v4-pro     上述各档的 3 倍
+  #
+  # 高峰 = 北京时间周一至周五 9:00-12:00、14:00-18:00 —— 正好是工作时段，
+  # 所以对外服务的常态就是高峰价，估成本要按高峰估，不能拿空闲价自我安慰。
+  #
+  # 走百炼调 deepseek-v4-flash 反而更便宜（1 元 / 2 元，无峰谷）。这里仍然
+  # 直连，是拿钱换厂商隔离：备选跟主模型同挂百炼的话，百炼整体故障两级一起
+  # 死。差价只在兜底真的触发时才付，值得。
 
 observability:
   audit_log: ./data/audit.jsonl

@@ -30,7 +30,7 @@ class FakeLlm:
         if self.raises:
             raise self.raises
         sql = self.sqls.pop(0) if self.sqls else ""
-        return SqlDraft(sql=sql, reasoning=self.reasoning), LlmUsage(100, 50)
+        return SqlDraft(sql=sql, reasoning=self.reasoning), LlmUsage(100, 50, 0, 0.002)
 
     def structured(self, schema, system, human):
         """规划与评估节点用。默认判定单步、结果足够 —— 多步用例单独覆写。"""
@@ -38,8 +38,8 @@ class FakeLlm:
 
         self.calls.append({"structured": schema.__name__})
         if schema is Plan:
-            return Plan(multi_step=False, reason="测试替身默认单步"), LlmUsage(10, 5)
-        return Assessment(enough=True, reason="测试替身默认足够"), LlmUsage(10, 5)
+            return Plan(multi_step=False, reason="测试替身默认单步"), LlmUsage(10, 5, 0, 0.0003)
+        return Assessment(enough=True, reason="测试替身默认足够"), LlmUsage(10, 5, 0, 0.0003)
 
 
 def run(cfg, ex, *sqls, **kw):
@@ -71,6 +71,9 @@ def test_cost_is_accounted(cfg, ex):
     assert per_step["generate_sql"]["tok_in"] == 100
     assert r.tok_in == sum(s["tok_in"] for s in r.steps)
     assert r.cost_cny > 0 and r.elapsed_ms >= 0
+    # 金额同样是逐步累加出来的，不是拿总 token 乘单价重算的 —— 后者在
+    # 兜底切模型或跨计费时段时会算错。
+    assert r.cost_cny == round(sum(s["cost_cny"] for s in r.steps), 6)
 
 
 def test_result_is_json_serializable(cfg, ex):
@@ -280,13 +283,13 @@ class PlanLlm(FakeLlm):
         if schema is Plan:
             multi, goal = self.plans.pop(0) if self.plans else (False, "")
             self.calls.append({"plan": goal, "human": human})
-            return Plan(multi_step=multi, reason="替身", goal=goal), LlmUsage(20, 10)
+            return Plan(multi_step=multi, reason="替身", goal=goal), LlmUsage(20, 10, 0, 0.0006)
         enough, carry = self.assess.pop(0) if self.assess else (True, {})
         ng = self.next_goals.pop(0) if self.next_goals else ""
         rs = self.reasons.pop(0) if self.reasons else "替身"
         self.calls.append({"assess": enough, "human": human})
         return (Assessment(enough=enough, reason=rs, carry=carry, next_goal=ng),
-                LlmUsage(20, 10))
+                LlmUsage(20, 10, 0, 0.0006))
 
 
 def _enable_planner(cfg, **kw):

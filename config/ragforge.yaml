@@ -60,19 +60,34 @@ schema_rag:
   max_metrics: 2         # 口径是强约束（"必须用此定义"），塞多了会误导模型
 
 llm:
-  provider: deepseek
-  base_url: "https://api.deepseek.com"
-  model: deepseek-v4-flash
+  provider: dashscope
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: qwen3.8-flash
   temperature: 0
-  api_key_env: DEEPSEEK_API_KEY
-  price_input_per_1k: 0.001
-  price_output_per_1k: 0.002
-  thinking: false
+  api_key_env: DASHSCOPE_API_KEY
+  price_input_per_1k: 0.0008        # 0.8 元/百万 Token（2026-09-06 核对官方单价）
+  price_output_per_1k: 0.0027       # 2.7 元/百万 Token
+  # 百炼的上下文缓存要显式创建，命中按标准输入价的 10% 计。实测本链路
+  # cache_read 恒为 0（没建显式缓存），所以这个价目前用不上，写在这里是为了
+  # 一旦启用显式缓存，账立刻就是对的，不必回头再改代码。
+  price_cached_input_per_1k: 0.00008
+  # 百炼无峰谷计费 —— 不配 peak_windows，倍率恒为 1.0。
+  thinking: false                   # 该模型默认开思考，必须显式关（见 llm.py _build）
   fallback:
-    provider: dashscope
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    model: qwen-max
-    api_key_env: DASHSCOPE_API_KEY
+    provider: deepseek
+    base_url: "https://api.deepseek.com"
+    model: deepseek-v4-flash
+    api_key_env: DEEPSEEK_API_KEY
+    # DeepSeek 直连单价（官网 2026-09-06 核对）。备选的单价必须写全：
+    # 兜底触发时按**这里**结算，不再沿用主模型的价。
+    # 按高峰填，空闲由 offpeak_multiplier 向下打折 —— 漏配时偏贵不偏便宜。
+    price_input_per_1k: 0.003          # 未命中：高峰 3 元/1M（空闲 1.5）
+    price_output_per_1k: 0.009         # 高峰 9 元/1M（空闲 4.5）
+    price_cached_input_per_1k: 0.0001  # 命中：高峰 0.10 元/1M（空闲 0.05）
+    offpeak_multiplier: 0.5
+    peak_windows: ["09:00-12:00", "14:00-18:00"]   # 北京时间
+    peak_weekdays_only: true
+    peak_utc_offset_hours: 8
 
 observability:
   replay_api: true    # 本机开发：判定链路可回放

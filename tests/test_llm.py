@@ -133,8 +133,13 @@ def test_thinking_can_be_enabled_explicitly(cfg, monkeypatch):
     assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
 
 
-def test_vendor_param_not_sent_to_other_providers(cfg, monkeypatch):
-    """thinking 是 DeepSeek 私有参数，发给百炼可能被拒。"""
+def test_thinking_disabled_by_default_for_dashscope(cfg, monkeypatch):
+    """百炼的 qwen3.8 系列同样默认开思考，参数名却是 enable_thinking。
+
+    两家的参数不能互串：DeepSeek 的 thinking.type 发给百炼是无效字段，
+    百炼的 enable_thinking 发给 DeepSeek 同理 —— 一旦串了，表现是思考没关成，
+    而结构化输出会在强制 tool_choice 时 400。
+    """
     captured: dict = {}
 
     class FakeChat:
@@ -145,7 +150,8 @@ def test_vendor_param_not_sent_to_other_providers(cfg, monkeypatch):
     monkeypatch.setenv(cfg.llm["api_key_env"], "sk-x")
     monkeypatch.setattr("langchain_openai.ChatOpenAI", FakeChat)
     LlmClient(cfg)._build()
-    assert "extra_body" not in captured
+    assert captured["extra_body"] == {"enable_thinking": False}
+    assert "thinking" not in captured["extra_body"], "DeepSeek 的参数名不得发给百炼"
 
 
 def test_structured_output_forces_function_calling(cfg):
@@ -248,3 +254,44 @@ def test_fallback_does_not_chain_infinitely(cfg):
     cfg.raw["llm"]["fallback"] = {"model": "backup-model"}
     fb = LlmClient(cfg)._fallback_client()
     assert fb._fallback_client() is None
+
+
+def test_fallback_is_billed_at_its_own_price(cfg, monkeypatch):
+    """兜底切到备选时，金额按**备选自己的单价**结算，不再沿用主模型的价。
+
+    旧口径拿总 token 乘主模型单价，两家单价差几倍，兜底那几条记录的成本是错的。
+    """
+    cfg.raw["llm"]["price_input_per_1k"] = 0.0008        # 主：便宜
+    cfg.raw["llm"]["price_output_per_1k"] = 0.0027
+    cfg.raw["llm"]["fallback"] = {
+        "provider": "deepseek", "model": "deepseek-v4-flash",
+        "base_url": "https://api.deepseek.com", "api_key_env": "OTHER_KEY",
+        "price_input_per_1k": 0.003, "price_output_per_1k": 0.009,   # 备选：贵
+    }
+    monkeypatch.setenv("OTHER_KEY", "sk-x")
+    monkeypatch.setenv(cfg.llm["api_key_env"], "sk-x")
+
+    class Raw:
+        usage_metadata = {"input_tokens": 1000, "output_tokens": 100,
+                          "input_token_details": {"cache_read": 0}}
+
+    class FallbackModel:
+        def invoke(self, _m):
+            return {"parsed": SqlDraft(sql="SELECT 1 AS a"), "raw": Raw()}
+
+    class DeadModel:
+        def invoke(self, _m):
+            raise RuntimeError("主模型 503")
+
+    c = LlmClient(cfg)
+    c._model = object()
+    monkeypatch.setattr(c, "_build", lambda: type("M", (), {
+        "with_structured_output": lambda *a, **k: DeadModel()})())
+    fb = c._fallback_client()
+    monkeypatch.setattr(fb, "_build", lambda: type("M", (), {
+        "with_structured_output": lambda *a, **k: FallbackModel()})())
+
+    _, usage = c.generate_sql("问题", "schema")
+    assert usage.cost_cny == round(1000 / 1000 * 0.003 + 100 / 1000 * 0.009, 6)
+    # 按主模型价算会便宜三倍多 —— 那正是修掉的那个错
+    assert usage.cost_cny > round(1000 / 1000 * 0.0008 + 100 / 1000 * 0.0027, 6)

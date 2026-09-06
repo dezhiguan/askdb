@@ -29,7 +29,7 @@ from .config import Config
 from .executor import DataSourceError, Executor
 from .llm import LlmClient, LlmNotConfigured
 from .quota import QuotaExceeded, build_quota
-from .trace import Tracer, cost_cny, now_iso, write_audit
+from .trace import Tracer, now_iso, write_audit
 
 
 class AskState(TypedDict, total=False):
@@ -253,14 +253,16 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         fallback = (state.get("next_goal") or "").strip()
         if fallback:
             d.tracer.add("plan", t, f"重规划未给出目标，沿用结果评估的判定：{fallback}",
-                         tok_in=usage.input_tokens, tok_out=usage.output_tokens)
+                         tok_in=usage.input_tokens, tok_out=usage.output_tokens,
+                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
             # 不要动 step_no —— 它由 assess 递增，这里再加一次就成了双重递增
             return {"goal": fallback, "multi_step": True, **_spent(state, usage),
                     "attempt": 0, "sql_raw": "", "error": None, "enough": False}
         # 连 assess 都没说清缺什么 —— 此时继续下去也是空转，如实收敛并标注
         d.tracer.add("plan", t, "重规划与结果评估均未给出下一步，收敛作答",
                      status="failed",
-                     tok_in=usage.input_tokens, tok_out=usage.output_tokens)
+                     tok_in=usage.input_tokens, tok_out=usage.output_tokens,
+                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
         return {"enough": True, "goal": "", **_spent(state, usage),
                 "converged_early": "结果评估判定不足，但未能给出下一步目标"}
 
@@ -268,7 +270,8 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         note = ("判定需多步：" + plan.reason) if plan.multi_step else ("判定单步可答：" + plan.reason)
     else:
         note = f"第 {step_no + 1} 步目标：{plan.goal}"
-    d.tracer.add("plan", t, note, tok_in=usage.input_tokens, tok_out=usage.output_tokens)
+    d.tracer.add("plan", t, note, tok_in=usage.input_tokens, tok_out=usage.output_tokens,
+                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
     return {"multi_step": bool(plan.multi_step) if first else state.get("multi_step", False),
             "goal": plan.goal or "", "enough": False, **_spent(state, usage)}
 
@@ -307,7 +310,8 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         }
 
     label = "生成 1 条 SELECT" if attempt == 0 else f"第 {attempt + 1} 轮重新生成"
-    d.tracer.add("generate_sql", t, label, tok_in=usage.input_tokens, tok_out=usage.output_tokens)
+    d.tracer.add("generate_sql", t, label, tok_in=usage.input_tokens, tok_out=usage.output_tokens,
+                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
     if not (draft.sql or "").strip():
         return {
             "error": draft.reasoning or "模型判断当前表结构无法回答该问题。",
@@ -462,20 +466,23 @@ def _n_assess(state: AskState, config: RunnableConfig) -> dict[str, Any]:
 
     if a.enough:
         d.tracer.add("assess", t, f"足以作答 ✓ {a.reason}",
-                     tok_in=usage.input_tokens, tok_out=usage.output_tokens)
+                     tok_in=usage.input_tokens, tok_out=usage.output_tokens,
+                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
         return {**base, "enough": True, "carry": {}, **_spent(state, usage)}
 
     ok, why = planner.carry_within_limit(a.carry, d.cfg)
     if not ok:
         # R-15：下传规模超限往往说明上一步筛选本身有问题
         d.tracer.add("assess", t, f"{why}，收敛作答（R-15）", status="blocked",
-                     tok_in=usage.input_tokens, tok_out=usage.output_tokens)
+                     tok_in=usage.input_tokens, tok_out=usage.output_tokens,
+                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
         return {**base, "enough": True, "converged_early": why, **_spent(state, usage)}
 
     carried = "、".join(f"{k}={v}" for k, v in a.carry.items()) or "无"
     d.tracer.add("assess", t, f"不足以作答 → 重规划（第 {step_no}/{state.get('max_steps')} 步）"
                               f"；下传 {carried}",
-                 status="failed", tok_in=usage.input_tokens, tok_out=usage.output_tokens)
+                 status="failed", tok_in=usage.input_tokens, tok_out=usage.output_tokens,
+                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
     return {**base, "enough": False, "carry": a.carry, **_spent(state, usage),
             # 判"还不够"的人最清楚缺什么 —— 目标由 assess 给出，
             # plan 在模型说不出话时据此兜底，而不是推翻 assess 的判定
@@ -772,6 +779,10 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
             ex.close()
 
     tok_in, tok_out = tracer.tok_in, tracer.tok_out
+    # 金额取各步之和：每一步在调用当刻已按**实际应答的模型**、实测缓存命中量
+    # 和当刻计费时段结算过了。这里不能再拿 tok_in/tok_out 乘一个单价重算 ——
+    # 那会把兜底切走的调用按主模型价记，也会抹掉缓存折扣。
+    spent_cny = tracer.cost_cny
     if interrupted is not None:
         tracer.add("interrupted", tracer.start(),
                    f"执行在中断点停止：{interrupted}", status="failed")
@@ -782,7 +793,7 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
             hint=_interrupt_hint(cfg, thread_id),
             steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
             tok_in=tok_in, tok_out=tok_out,
-            cost_cny=cost_cny(tok_in, tok_out, cfg.llm),
+            cost_cny=spent_cny,
         )
         rec = _audit_of(result, cfg, kind)
         write_audit(cfg.audit_log, rec)
@@ -809,7 +820,7 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
         converged_early=out.get("converged_early", ""),
         steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
         tok_in=tok_in, tok_out=tok_out,
-        cost_cny=cost_cny(tok_in, tok_out, cfg.llm),
+        cost_cny=spent_cny,
     )
     rec = _audit_of(result, cfg, kind, explain_rows=out.get("explain_rows"))
     write_audit(cfg.audit_log, rec)
