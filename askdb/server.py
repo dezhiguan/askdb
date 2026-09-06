@@ -158,6 +158,9 @@ _REPLAY_RL = _RateLimit()
 # 的那份额度花光，而防住的东西一样没多。
 _SOURCE_DIAL_RL = _RateLimit(limit=10, window_s=60)
 _SOURCE_MANAGE_RL = _RateLimit(limit=30, window_s=60)
+#: /api/health?probe=1 的实证要连库跑两条语句。页面加载调的是不带 probe 的那条，
+#: 不受影响；这里防的是有人拿它当查询接口刷。部署后冒烟一次一条，6/min 绰绰有余。
+_PROBE_RL = _RateLimit(limit=6, window_s=60)
 
 
 def _paired_delta(base: list[dict], other: list[dict]) -> dict[str, Any] | None:
@@ -438,9 +441,65 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         app.mount("/assets", StaticFiles(directory=str(WEB / "assets")), name="assets")
 
+    def _post_deploy_probe(db_ok: bool) -> dict[str, Any]:
+        """部署后实证：护栏真的拦写吗、默认租户下真的查得到数据吗。
+
+        **为什么要有这个接口**：这两件事原来由 CI 冒烟拿一个人类账号登录后
+        用 /api/sql 去验。实例改成 required: true 之后，那条路要求 CI 持有一份
+        账号口令 —— 部署后的验证不该依赖任何人的凭证：口令会过期、会被改、
+        会跟着人走，一旦对不上，验证就整段消失，而"验证消失"和"系统正常"
+        在流水线上长得一模一样。这里把结论落在服务端，谁都不需要登录。
+
+        **放宽的只是这两个布尔值**，不是数据：
+        - write_blocked 走 Executor.self_check() 里的写操作实探（真发一条写语句
+          给库，看它拦不拦），只取那一项的成败，不带出任何检查明细；
+        - default_tenant_has_rows 只回答"有没有行"，不回答有多少行、是什么行。
+          探针表取租户表里的第一张，而 /api/health 本来就把 tenant.tables
+          原样列出来，没有多暴露一个表名。
+
+        实证跑一次要连库，所以：默认不跑（?probe=1 才跑）+ 独立限流。
+        """
+        if not db_ok or not cfg.has_default_source:
+            return {"ok": False, "reason": "数据源不可用，实证无从谈起",
+                    "write_blocked": None, "default_tenant_has_rows": None}
+
+        table = next(iter(sorted(cfg.tenant_tables())), None) or next(iter(cfg.tables), None)
+        if table is None:
+            return {"ok": False, "reason": "白名单里没有表",
+                    "write_blocked": None, "default_tenant_has_rows": None}
+
+        # 护栏：静态判定就够了，它拦的就是这一层（R-02 非只读语句）
+        g = guard.check(f"DELETE FROM {table}", cfg,
+                        org_id=cfg.default_org, dialect=cfg.dialect)
+        write_blocked = (not g.ok) and g.rejected_by == "R-02"
+
+        has_rows = None
+        try:
+            probe_sql = guard.check(f"SELECT 1 FROM {table}", cfg,
+                                    org_id=cfg.default_org, dialect=cfg.dialect)
+            if probe_sql.ok:
+                with Executor(cfg) as ex:
+                    # 走护栏改写后的那条：租户谓词与 LIMIT 都是它注入的，
+                    # 绕过去验出来的"有数据"回答的是另一个问题
+                    has_rows = bool(ex.run(probe_sql.sql).rows)
+        except DataSourceError:
+            has_rows = None
+
+        return {
+            "ok": bool(write_blocked and has_rows),
+            "table": table,
+            "org_id": cfg.default_org,
+            "write_blocked": write_blocked,
+            "default_tenant_has_rows": has_rows,
+        }
+
     @app.get("/api/health")
-    def health() -> dict[str, Any]:
-        """页面启动时调一次，决定要不要显示配置横幅。"""
+    def health(request: Request, probe: bool = False) -> dict[str, Any]:
+        """页面启动时调一次，决定要不要显示配置横幅。
+
+        ``?probe=1`` 额外跑一遍**部署后实证**（见 _post_deploy_probe）。
+        默认不跑：页面每次加载都会调这个接口，而实证要连库。
+        """
         db_ok, db_msg, db_hint = True, "", ""
         if not cfg.has_default_source:
             # 没配默认数据源是**预期状态**，不是故障：这套部署只用运行时源。
@@ -455,7 +514,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                           else _dsn_label(cfg.dsn, cfg.upstream))
             except DataSourceError as e:
                 db_ok, db_msg, db_hint = False, str(e), e.hint
-        return {
+        out: dict[str, Any] = {
             # 有意不接模型的实例（对外开放配置），没配密钥是**预期状态**，
             # 不能算不健康 —— 否则 health 顶层恒报 false，看的人以为服务坏了。
             "ok": db_ok and (bool(cfg.api_key()) or bool(cfg.llm.get("disabled"))),
@@ -503,6 +562,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
             },
         }
+        if probe:
+            if not _PROBE_RL.allow(_rl_key(request)):
+                raise HTTPException(status_code=429, detail="实证接口限流，稍后再试")
+            out["probe"] = _post_deploy_probe(db_ok)
+        return out
 
     @app.get("/api/schema")
     def schema(request: Request) -> dict[str, Any]:

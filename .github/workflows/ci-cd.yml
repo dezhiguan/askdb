@@ -345,93 +345,31 @@ jobs:
               echo "::error::${p} 匿名返回 ${CODE}，期望 401（404 说明入口把路由挡了）"; exit 1; }
           done
 
-      - name: Sign in for the authenticated checks
+      - name: Guardrail and default tenant, proven server-side
         env:
           BASE: ${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}
-          SMOKE_USER: ${{ vars.ASKDB_SMOKE_USER || 'owner' }}
-          SMOKE_PASSWORD: ${{ secrets.ASKDB_SMOKE_PASSWORD }}
         run: |
-          # required: true（2026-09-03，实例直连生产主库）之后，**读写都要登录** ——
-          # 连 /api/introspect 匿名也是 401。冒烟因此必须先拿会话票。
+          # 这两件事原来靠"拿一个人类账号登录，再用 /api/sql 去试"。实例改成
+          # required: true 之后那条路要求 CI 持有一份账号口令 —— 部署后的验证
+          # 不该依赖任何人的凭证：口令会过期、会被改、会跟着人走，一旦对不上，
+          # 验证就整段消失，而"验证消失"和"系统正常"在流水线上长得一模一样
+          # （2026-09-06 就是这么红的）。结论改由服务端给：/api/health?probe=1。
           #
-          # 原来走的是 /api/auth/demo（一键体验只跳过认证不跳过授权），那条路
-          # 已随 61f4a8b「登录落地」下线，一键体验改为纯前端跳过登录、不建会话，
-          # 而这份配置 required: true 根本没有那条路。只剩口令登录。
-          #
-          # 口令不入仓库也不入配置：放在仓库 secret ASKDB_SMOKE_PASSWORD 里。
-          # 没配就直接红 —— 跳过会让这三步变成"全绿但什么都没验"，那正是这套
-          # 冒烟反复要挡住的事。
+          # 放宽的只是两个布尔值，不是数据：写操作实探只回成败，租户探针只回
+          # "有没有行"。探针默认不跑（页面加载调的是不带 probe 的那条），有独立限流。
           set -euo pipefail
           BASE="${BASE%/}"
-          if [[ -z "${SMOKE_PASSWORD}" ]]; then
-            # 直接红，不降级。匿名侧那半上面已经硬跑过，但少了会话票就验不到
-            # 三件事：带票进去之后护栏还在不在、默认租户下真查不查得到数据、
-            # 内省带票可不可达。缺了它们只发一条 warning 的话，任务照样绿 ——
-            # "全绿但什么都没验"正是这套冒烟反复要挡住的病根。
-            echo "::error::缺少仓库 secret ASKDB_SMOKE_PASSWORD —— 冒烟拿不到会话，" \
-                 "护栏拦写 / 默认租户有数 / 内省带票可达三步全都验不了。" \
-                 "补法：gh secret set ASKDB_SMOKE_PASSWORD -R <repo>（账号见 config/public.yaml" \
-                 "的 auth.accounts，默认 owner，可用 vars.ASKDB_SMOKE_USER 换）"
-            exit 1
-          fi
-          jq -n --arg u "${SMOKE_USER}" --arg p "${SMOKE_PASSWORD}" \
-            '{username:$u, password:$p}' > /tmp/login.json
-          CODE="$(curl -s -o /tmp/login-out.json --max-time 20 -w '%{http_code}' -c /tmp/ck.txt \
-            -X POST "${BASE}/api/auth/login" -H 'Content-Type: application/json' \
-            --data-binary @/tmp/login.json)"
-          rm -f /tmp/login.json
-          [[ "${CODE}" == "200" ]] || {
-            echo "::error::冒烟账号登录失败（HTTP ${CODE}）—— 口令过期或账号已从配置里移除"; exit 1; }
-          grep -q askdb_session /tmp/ck.txt || {
-            echo "::error::登录返回 200 却没有下发会话 cookie"; exit 1; }
-
-      - name: Guardrail still blocks writes
-        run: |
-          BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
-          BODY="$(curl --fail --silent --show-error --max-time 15 -b /tmp/ck.txt -X POST "${BASE}/api/sql" \
-            -H 'Content-Type: application/json' -d '{"sql":"DELETE FROM documents"}')"
-          python3 - <<'PY' "${BODY}"
+          curl --fail --silent --show-error --max-time 30 \
+            "${BASE}/api/health?probe=1" -o /tmp/probe.json
+          python3 - /tmp/probe.json <<'PY'
           import json, sys
-          d = json.loads(sys.argv[1])
-          # 护栏拒绝是 200 + ok:false，不是 5xx —— 这是接口的既定约定
-          assert d["ok"] is False and d["rejected_by"] == "R-02", d
+          p = json.load(open(sys.argv[1]))["probe"]
+          # 护栏：R-02 非只读语句。配置说"只读"不算数，要它真的拦下一条 DELETE
+          assert p["write_blocked"] is True, f"护栏没拦住写操作：{p}"
+          # 默认租户：2026-08-25 把 default_ctx 改成了库里不存在的组织，站点
+          # 从此查什么都是 0 行，而且全链路不报错（护栏照常注入租户谓词，只是
+          # 匹配不到行），冒烟一路全绿，三天后才由人肉发现。
+          assert p["default_tenant_has_rows"] is True, \
+              f"默认租户 org_id={p.get('org_id')} 在表 {p.get('table')} 上一行都没有 —— 页面等于查不到任何东西：{p}"
+          print(f"实证通过：护栏拦写 ✓，默认租户 org_id={p['org_id']} 在 {p['table']} 上有数据 ✓")
           PY
-
-      - name: Default tenant actually returns data
-        run: |
-          # 2026-08-25 把 default_ctx 改成了样例库里不存在的组织，站点从此
-          # 查什么都是 0 行 —— 而且全链路不报错（护栏照常注入租户谓词，
-          # 只是匹配不到行），冒烟一路全绿，三天后才由人肉发现。
-          # 这里钉住"默认租户下确实查得到数据"，不再依赖有人去点页面。
-          #
-          # 查的是 knowledge_bases 而不是 documents：角色收窄上线后，**匿名**
-          # 拿到的是最窄的一档（public.yaml 的 role_policies.ANONYMOUS 只给
-          # knowledge_bases + orgs），冒烟不带 cookie，查 documents 会被 R-03
-          # 正确拦掉。那不是故障，是这条断言写在收窄之前。换一张匿名看得见的表，
-          # "默认租户下确实查得到数据"这个本意一点没变。
-          BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
-          BODY="$(curl --fail --silent --show-error --max-time 15 -b /tmp/ck.txt -X POST "${BASE}/api/sql" \
-            -H 'Content-Type: application/json' -d '{"sql":"SELECT COUNT(1) AS c FROM knowledge_bases"}')"
-          python3 - <<'PY' "${BODY}"
-          import json, sys
-          d = json.loads(sys.argv[1])
-          assert d["ok"] is True, d
-          n = d["rows"][0][0]
-          assert n > 0, f"默认租户 org_id={d['org_id']} 下一条数据都没有 —— 页面等于查不到任何东西"
-          PY
-
-      - name: Introspection endpoints are open (2026-08-25 运营决定)
-        run: |
-          # 对外实例已放开自检/内省与 ask 每 IP 限流，只保留应用层每日配额
-          # （入口配置见 rag-forge#14）。冒烟钉住"入口没把它们挡回 404"。
-          #
-          # 带会话票请求：required: true 之后**读也要登录**，匿名拿到的是 401。
-          # 那是登录门在起作用，不是入口被回滚 —— 两者要分开，所以顺带钉住
-          # 匿名确实是 401 而不是 404。
-          BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
-          # 匿名侧那半（401 而不是 404）已由「Login gate is actually closed to
-          # anonymous」无条件跑过，这里只补带票能不能真进去。
-          for p in /api/introspect /api/selfcheck; do
-            CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -b /tmp/ck.txt "${BASE}${p}")"
-            [[ "${CODE}" == "200" ]] || { echo "${p} 带会话期望 200，实得 ${CODE}"; exit 1; }
-          done

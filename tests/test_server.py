@@ -65,6 +65,37 @@ def test_schema_exposes_tables_and_metrics(client):
     assert d["metrics"] and d["metrics"][0]["definition"]
 
 
+def test_health_probe_proves_guard_and_tenant(client):
+    """?probe=1 是部署后实证：护栏真拦写、默认租户真有数 —— 且**不需要登录**。
+
+    这两件事原来由冒烟拿账号口令登录后用 /api/sql 去试。部署后的验证不该
+    依赖任何人的凭证：口令一旦对不上，验证就整段消失，而"验证消失"和
+    "系统正常"在流水线上长得一模一样。
+    """
+    assert "probe" not in client.get("/api/health").json(), \
+        "实证要连库，不能让每次页面加载都跑一遍"
+
+    p = client.get("/api/health", params={"probe": 1}).json()["probe"]
+    assert p["write_blocked"] is True and p["default_tenant_has_rows"] is True
+    assert p["ok"] is True
+    # 只回布尔值：多少行、什么行都不出接口 —— 这个端点匿名可读
+    assert set(p) == {"ok", "table", "org_id", "write_blocked", "default_tenant_has_rows"}
+
+
+def test_health_probe_catches_a_default_tenant_with_no_data(cfg, monkeypatch):
+    """2026-08-25 把 default_ctx 改成库里不存在的组织，站点查什么都是 0 行，
+    全链路不报错（护栏照常注入租户谓词，只是匹配不到），三天后才由人肉发现。
+    这条实证就是为它设的 —— 没有它，那次故障在流水线上是全绿的。
+    """
+    cfg.raw["tenant"]["default_ctx"] = 999999
+    monkeypatch.setattr(server, "load", lambda _p: cfg)
+    p = TestClient(server.create_app("x")).get(
+        "/api/health", params={"probe": 1}).json()["probe"]
+    assert p["default_tenant_has_rows"] is False
+    assert p["write_blocked"] is True      # 护栏与租户是两件事，别一起塌
+    assert p["ok"] is False
+
+
 def test_selfcheck_endpoint(client):
     d = client.get("/api/selfcheck").json()
     assert d["ok"] is True
