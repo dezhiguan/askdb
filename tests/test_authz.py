@@ -141,7 +141,7 @@ def test_anonymous_instance_keeps_working(zcfg, monkeypatch):
 
 # ---------- 能力位在接口上（矩阵） ----------
 
-def test_product_cannot_touch_data_sources(zcfg, monkeypatch):
+def test_product_cannot_touch_data_sources(zcfg, monkeypatch, sources_store):
     c = _as(_client(zcfg, monkeypatch), "lin")
     assert c.get("/api/sources").status_code == 200          # 列表能看
     r = c.post("/api/sources/test", json={"type": "duckdb", "dsn": "x"})

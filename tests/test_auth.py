@@ -331,7 +331,7 @@ def test_refusal_says_what_to_do_next(client):
     assert "失败" not in detail
 
 
-def test_reads_are_not_touched_by_the_write_gate(client):
+def test_reads_are_not_touched_by_the_write_gate(client, sources_store):
     """ask / sql / resume 是 POST 但它们是查询。被写入拦截误伤的话，
     未登录就一条数据都查不了 —— 那不是收紧，是把功能关了。"""
     assert client.post("/api/ask", json={"question": "有多少知识库"}).status_code != 401

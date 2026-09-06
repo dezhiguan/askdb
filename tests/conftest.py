@@ -108,8 +108,30 @@ def _test_store_dsn() -> str:
     return (os.environ.get(TEST_DSN_ENV) or "").strip()
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_store(monkeypatch):
+    """没显式要 sources_store 的用例，**看不到任何元数据库**。
+
+    这条是被一次 CI 红灯逼出来的：config.load() 会把项目根的 .env 读进环境，
+    而开发机的 .env 里有 ASKDB_IDENTITY_DSN。于是本地跑测试时，连没申明
+    store 夹具的用例都连上了真库、全绿；CI 上没有这个变量，同样两条用例
+    直接 503。**本地绿、CI 红，差别只在开发机的 .env** —— 这类不可复现
+    才是最贵的。
+
+    清掉之后本地与 CI 的默认状态一致：要用元数据库就得显式申明。
+    """
+    from askdb import sources
+
+    for var in (sources.DSN_ENV, sources.PASSWORD_ENV, sources.SCHEMA_ENV,
+                "ASKDB_IDENTITY_DSN"):
+        monkeypatch.delenv(var, raising=False)
+    sources.reset_pool()
+    yield
+    sources.reset_pool()
+
+
 @pytest.fixture
-def sources_store(monkeypatch):
+def sources_store(_no_ambient_store, monkeypatch):
     """给每个用例一个独立 schema 的 askdb_sources 表。
 
     **不 skip。** 没配 TEST_DSN_ENV 就直接 fail —— 数据源注册表自 2026-09-06
