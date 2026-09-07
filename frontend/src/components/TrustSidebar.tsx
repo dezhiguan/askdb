@@ -25,7 +25,7 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
   health: HealthState
   /** 工作台当前选中的数据源。切源时「本次执行策略」要跟着变 —— 护栏与
    *  租户是实例级、切源不变（原型亦如此），真正随源变的只有数据源身份这一项。 */
-  source?: { id?: string; name: string; dialect: string; env?: string }
+  source?: { id?: string; name: string; dialect: string; env?: string; table_count?: number }
   result: AskResult | null
   /** 「身份」一格要的当前登录态 */
   me?: Me | null
@@ -48,8 +48,15 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
     : !ready.llm.ok ? { label: '仅直查 SQL', tone: 'wait' }
     : { label: 'READY', tone: '' }
 
+  // 开放给模型的表数。运行时源按它自己的白名单算；没有选运行时源（实例配了
+  // 内置源）时白名单就是配置里那份，me.scope.tables 正是它。两条路都取不到
+  // 时给 null —— 这一项直接不进准入清单，不拿一个猜的数去判真假。
+  const whitelist = source?.id
+    ? (source.table_count ?? null)
+    : (me?.scope.tables.length ?? null)
+
   // 有结果且真的执行成功了才切到「本次结果」；被护栏拒掉的那次没有结果可评
-  const scored = result?.ok ? resultChecks(result) : admissionChecks(ready, !!source)
+  const scored = result?.ok ? resultChecks(result) : admissionChecks(ready, !!source, whitelist)
   const passed = scored.filter(c => c.ok).length
   const score = scored.length ? Math.round(passed / scored.length * 100) : null
   const failed = scored.filter(c => !c.ok)
@@ -171,7 +178,8 @@ type Check = { label: string; ok: boolean; why: string }
 /** 提问前的准入检查。**只取实例级、与选哪个源无关的事实** ——
  *  表白名单是按源走的（运行时源各有各的白名单），这里拿不到，
  *  与其报一个可能不对的数，不如不列这一项。 */
-function admissionChecks(ready: Health | null, hasSource: boolean): Check[] {
+function admissionChecks(ready: Health | null, hasSource: boolean,
+                         whitelist: number | null): Check[] {
   if (!ready) return []
   const g = ready.guard
   return [
@@ -192,6 +200,11 @@ function admissionChecks(ready: Health | null, hasSource: boolean): Check[] {
       why: '没有语句超时，慢查询会一直占着连接' },
     { label: '每日配额已设', ok: g.daily_quota > 0,
       why: '没有每日配额，模型开销没有上限' },
+    // 白名单张数取不到时整项不列 —— 少一项分母，不假装判过
+    ...(whitelist == null ? [] : [{
+      label: '表白名单已生效', ok: whitelist > 0,
+      why: '这个源一张表都没开放，模型什么也看不见 —— 到「数据源」页勾选要开放的表',
+    }]),
   ]
 }
 
