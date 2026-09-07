@@ -452,6 +452,48 @@ export interface Introspect {
   total?: number
 }
 
+export interface ReviewItem {
+  trace_id?: string
+  thread_id?: string
+  question?: string | null
+  review_status: 'REQUESTED' | 'ACCEPTED' | 'RETURNED'
+  review_why?: string[]
+  reviewer?: string
+  note?: string
+  decided_ts?: string
+  owner?: string
+  user?: string
+  ts?: string
+}
+
+export interface ReviewQueue {
+  can_review: boolean
+  items: ReviewItem[]
+  pending: number
+}
+
+/** 结果复核队列。**与审批是两件事**：审批是事前"这条该不该去跑"，
+ *  复核是事后"跑出来的数字算不算数"。 */
+export async function fetchReviews(): Promise<ReviewQueue> {
+  const response = await fetch('/api/reviews')
+  if (!response.ok) throw new Error(`/api/reviews ${response.status}`)
+  return response.json()
+}
+
+export async function decideReview(
+  traceId: string, accepted: boolean, note: string,
+): Promise<void> {
+  const response = await fetch(`/api/reviews/${encodeURIComponent(traceId)}/decide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accepted, note }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null)
+    throw new Error(detail?.detail || `/api/reviews/decide ${response.status}`)
+  }
+}
+
 export async function fetchSchema(source?: string): Promise<Schema> {
   // 不带 source 时取内置配置 —— 但查询页**必须**带上：推荐问题、示例 SQL
   // 都从这份 schema 生成，取错源就会把另一个库的表名推给用户。
@@ -856,9 +898,13 @@ export interface Task {
    *    needs_operator   等运维：数据源连不上或执行期故障，恢复后可重试
    *    interrupted      断点在，可续跑 */
   status: 'running' | 'done' | 'rejected' | 'waiting_input'
-        | 'waiting_approval' | 'needs_operator' | 'interrupted'
+        | 'waiting_approval' | 'waiting_review' | 'review_returned'
+        | 'needs_operator' | 'interrupted'
   /** 下一步该谁动手，后端给的原话。页面直接显示，别在前端再写一遍 if/else。 */
   next_actor?: string
+  /** 这条结果**为什么**值得复核（盲选召回、脱敏退化、反复重试、触顶收敛）。
+   *  复核人要判断的正是这几句；让他自己猜"这条为什么进队列"，队列就没人用。 */
+  review_why?: string[]
   /** 被哪条护栏规则拦下（R-03 / R-11 / EXEC …）。未被拦下为 null。 */
   rejected_by?: string | null
   /** 风险档与理由。审计里没有这个字段，是后端按已记录事实**折算**出来的

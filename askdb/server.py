@@ -20,6 +20,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import approvals as _approvals
+from . import audit as _audit
+from . import reviews as _reviews
 from . import auth as _auth
 from . import evalrun as _evalrun
 from . import guard
@@ -391,6 +393,15 @@ class SqlRequest(BaseModel):
 class DecideRequest(BaseModel):
     approved: bool
     # 驳回时尤其要写：申请人拿到的唯一信息就是这句话
+    note: str = Field(default="", max_length=200)
+
+
+class ReviewRequest(BaseModel):
+    """结果复核的决策。字段名有意与审批**不同** —— 两者是两件事：
+    审批放行的是"要不要去跑"，复核采信的是"跑出来的数字算不算数"。
+    共用一个 approved 会让两边的语义在读代码时糊成一片。"""
+    accepted: bool
+    # 打回时尤其要写：发起人拿到的唯一信息就是这句话
     note: str = Field(default="", max_length=200)
 
 
@@ -1845,6 +1856,71 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                                 detail="该申请不存在，或已经有过结论，不能重复决策。")
         return rec
 
+    @app.get("/api/reviews")
+    def reviews_list(request: Request) -> dict[str, Any]:
+        """待复核队列 —— 跑成了、但结果带存疑痕迹的那些。
+
+        **与审批是两件事**：审批是事前"这条该不该去跑"，复核是事后"跑出来的
+        数字算不算数"。决策人恰好都是系统管理员、动作恰好都是放行/打回，
+        但触发时机与判定对象完全不同，所以是两条队列、两套存储。
+
+        待复核不预先登记：它由审计里的痕迹（盲选召回、脱敏退化、反复重试、
+        触顶收敛）确定性地推导出来。登记反而会引入"痕迹在、登记没写成"
+        这种第三态。已决的那些从复核存储取回来。
+
+        可见范围与审批同一条口径：有 APPROVE 的看全部，没有的只看自己发起的
+        —— 发起人必须看得到自己的结果被判成什么，否则他不知道那个数字还能不能用。
+        """
+        _require_login(request)
+        from .audit import tasks as _tasks
+
+        can_review = _can(request, _identity.APPROVE)
+        me = _current_user(request) or ""
+        items = _tasks(
+            cfg.audit_log,
+            None if can_review else me,
+            max_rows=cfg.max_rows,
+            max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
+            review_status=_reviews.decided(cfg),
+        )
+        pending = [t for t in items if t.get("status") == _audit.WAITING_REVIEW]
+        return {
+            "can_review": can_review,
+            "items": _reviews.listing(cfg, pending),
+            "pending": len(pending),
+        }
+
+    @app.post("/api/reviews/{trace_id}/decide")
+    def reviews_decide(trace_id: str, req: ReviewRequest,
+                       request: Request) -> dict[str, Any]:
+        """采信或打回一条存疑结果。**只有系统管理员**，与审批同一道门。
+
+        打回**不撤销已经发生的事**：数字早就返回给发起人了。复核改变的是
+        这条记录此后的可信标记与任务态 —— 想真正阻止结果外流，那是事前审批
+        的职责。两件事别混，也别在这里假装做得到。
+        """
+        _require_login(request)
+        _require_cap(request, _identity.APPROVE, "复核查询结果")
+        if not _TRACE_ID_RE.fullmatch(trace_id or ""):
+            raise HTTPException(status_code=404, detail="记录不存在")
+
+        from .audit import get_audit
+
+        rec = get_audit(cfg.audit_log, trace_id)
+        if rec is None or not _audit.needs_review(rec):
+            # 不存在、已被拦下、或本就不需要复核 —— 合并成同一句：
+            # 复核队列不是一个可以拿来试探"某条记录存不存在"的入口。
+            raise HTTPException(status_code=404,
+                                detail="该记录不存在，或不在待复核范围内。")
+        try:
+            out = _reviews.decide(cfg, trace_id,
+                                  reviewer=_current_user(request) or "",
+                                  accepted=bool(req.accepted), note=req.note,
+                                  owner=str(rec.get("user") or ""))
+        except _reviews.SelfReview as e:
+            raise HTTPException(status_code=403, detail=str(e)) from e
+        return out
+
     @app.get("/api/tasks")
     def tasks(request: Request) -> dict[str, Any]:
         """当前账号名下的**全部执行线程**，新的在前。
@@ -1881,6 +1957,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         except Exception:
             open_ids = set()          # 审批存储不可用不该让任务中心整页打不开
 
+        # 复核结论同理：待复核是从审计痕迹推导的，**已决的那些**要从复核
+        # 存储取回来，否则采信过的结果会永远挂在队列里。
+        reviewed: dict[str, str] = {}
+        try:
+            reviewed = _reviews.decided(cfg)
+        except Exception:
+            reviewed = {}
+
         # 阈值传进去做风险折算（审计里没有风险字段，见 audit._risk 的说明）
         items = _tasks(
             cfg.audit_log,
@@ -1888,6 +1972,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             max_rows=cfg.max_rows,
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
             open_approval_ids=open_ids,
+            review_status=reviewed,
         )
         # 审计只知道这条线程上次以 INTERRUPTED 收尾（或只落了发起记录），
         # 不知道现场有没有真的落盘、也不知道后来是不是已被续跑跑完 ——

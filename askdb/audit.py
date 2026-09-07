@@ -233,6 +233,8 @@ def _record_status(rec: dict[str, Any]) -> str:
 #: 也不该认识 —— 那是两套存储，耦合进来这里就没法单测了）。
 RUNNING = "running"                       # 只落了发起记录，还没收尾
 DONE = "done"
+WAITING_REVIEW = "waiting_review"         # 跑完了，但结果可信度存疑，等系统管理员采信/打回
+REVIEW_RETURNED = "review_returned"       # 复核打回：这个数字不采信
 REJECTED = "rejected"                     # 安全红线：护栏拦下
 WAITING_INPUT = "waiting_input"           # 等用户补充/换个问法
 WAITING_APPROVAL = "waiting_approval"     # 等负责人放行
@@ -240,15 +242,53 @@ NEEDS_OPERATOR = "needs_operator"         # 等运维：库连不上、执行期
 INTERRUPTED = "interrupted"               # 断点在，可续跑
 
 
-def stage(rec: dict[str, Any], *, has_open_approval: bool = False) -> str:
-    """一条记录**当前处在哪一档**，以及言下之意是"下一步该谁动手"。"""
+#: 结果可信度存疑的痕迹 → 一句人话。**判据全在审计里已有的字段上**，
+#: 不新增维度、不引入"可信度分数"（一个 0~100 的数说不清它凭什么，
+#: 而复核这件事的全部意义就是说得清）。
+#:
+#: 这四条对应的都是**看起来成功的错答**那一类失败：链路每层都做对了自己
+#: 那件事，最后给出一个语气笃定的错数字。2026-09-07 实测过一次：问"一共有
+#: 多少个用户"，召回给的是 agent_messages，模型按给的表算出 6512，
+#: 真值 10084，没有任何一层报错。
+def review_reasons(rec: dict[str, Any]) -> list[str]:
+    """这条结果为什么值得复核。空列表 = 不需要复核。"""
+    why: list[str] = []
+    if rec.get("recall_blind"):
+        why.append("召回是盲选：给模型的表不是按相关度选出来的，可能答非所问")
+    if rec.get("mask_degraded"):
+        why.append("脱敏判定退化：SQL 解析不出投影来源，整行按敏感返回")
+    if int(rec.get("attempts") or 1) >= 3:
+        why.append(f"反复重试 {rec.get('attempts')} 次后才收敛，前几轮都被打回")
+    if rec.get("converged_early"):
+        why.append(f"token 触顶提前收敛：{rec.get('converged_early')}")
+    return why
+
+
+def needs_review(rec: dict[str, Any]) -> bool:
+    """跑成了，但结果带着存疑痕迹。**只对成功的结果问这个问题** ——
+    被拦下的那些本来就没给出数字，没有"采不采信"可言。"""
+    return not rec.get("rejected_by") and bool(review_reasons(rec))
+
+
+def stage(rec: dict[str, Any], *, has_open_approval: bool = False,
+          review_status: str = "") -> str:
+    """一条记录**当前处在哪一档**，以及言下之意是"下一步该谁动手"。
+
+    review_status 由调用方从复核存储取（审计不认识那套存储，理由同审批）：
+    空串 = 还没结论。
+    """
     if rec.get("phase") == PHASE_STARTED:
         return RUNNING
     code = rec.get("rejected_by")
     if code in _OPEN_CODES:
         return INTERRUPTED
     if not code:
-        return DONE
+        # 复核只在**成功的结果**上发生：先看有没有结论，没有再看要不要复核。
+        if review_status == "RETURNED":
+            return REVIEW_RETURNED
+        if review_status == "ACCEPTED":
+            return DONE          # 已采信，回到普通的"已完成"
+        return WAITING_REVIEW if needs_review(rec) else DONE
     if code == "EXEC":
         return NEEDS_OPERATOR
     if code == "NO_SQL":
@@ -260,13 +300,15 @@ def stage(rec: dict[str, Any], *, has_open_approval: bool = False) -> str:
     return REJECTED
 
 
-def _thread_status(last: dict[str, Any], *, has_open_approval: bool = False) -> str:
+def _thread_status(last: dict[str, Any], *, has_open_approval: bool = False,
+                   review_status: str = "") -> str:
     """一条线程现在处于什么状态 —— 看它**最后一条**记录。
 
     续跑写新 trace 但 thread 不变，所以线程的当前状态永远由最后一条决定；
     归属才看第一条（见 tasks 的说明）。
     """
-    return stage(last, has_open_approval=has_open_approval)
+    return stage(last, has_open_approval=has_open_approval,
+                 review_status=review_status)
 
 
 # ---- 风险分档 ----------------------------------------------------------------
@@ -329,6 +371,8 @@ def _risk(rec: dict[str, Any], max_rows: int, max_scan_rows: int) -> tuple[str, 
 _NEXT_ACTOR = {
     RUNNING: "系统正在执行",
     DONE: "",
+    WAITING_REVIEW: "等系统管理员复核：结果带存疑痕迹，采信或打回",
+    REVIEW_RETURNED: "复核未通过：这个数字不采信，换个问法重新发起",
     REJECTED: "不可放行：这条触碰的是安全边界，改写法也过不去",
     WAITING_INPUT: "等你补充：把问题说具体些，或直接写出表名",
     WAITING_APPROVAL: "等负责人放行：审批通过后凭票重跑",
@@ -339,7 +383,8 @@ _NEXT_ACTOR = {
 
 def tasks(path: Path, only_user: str | None = None, *,
           max_rows: int = 0, max_scan_rows: int = 0,
-          open_approval_ids: Any = None) -> list[dict[str, Any]]:
+          open_approval_ids: Any = None,
+          review_status: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """执行线程，新的在前。``only_user=None`` 给全部，字符串只给这个人发起的。
 
     askdb 没有任务表，任务这个概念完全落在审计流水与检查点上：
@@ -395,8 +440,13 @@ def tasks(path: Path, only_user: str | None = None, *,
         item["attempts_on_thread"] = len(recs)
         item["first_ts"] = recs[0].get("ts", "")
         item["question"] = recs[0].get("question") or last.get("question") or ""
+        trace = str(last.get("trace_id") or tid)
         item["status"] = _thread_status(
-            last, has_open_approval=str(last.get("trace_id") or tid) in open_approvals)
+            last, has_open_approval=trace in open_approvals,
+            review_status=(review_status or {}).get(trace, ""))
+        # 为什么值得复核，逐条给出去 —— 复核人要判断的正是这几句，
+        # 让他自己去猜"这条为什么进了队列"，这个队列就没人会用。
+        item["review_why"] = review_reasons(last) if not last.get("rejected_by") else []
         # RUNNING 也报可续：进程被杀留下的线程与"正在跑"在审计上分不开，
         # 而前者的现场就在检查点里。这里只给一个**候选**，服务端随后按检查点
         # 逐条核实（graph.is_resumable），核不过就落回 False —— 不核实就会

@@ -77,6 +77,8 @@ function withinSince(ts: string, since: string): boolean {
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   running: '运行中',
+  waiting_review: '等待复核',
+  review_returned: '复核未通过',
   interrupted: '可续跑',
   waiting_input: '等待补充',
   waiting_approval: '等待审批',
@@ -88,6 +90,8 @@ const STATUS_LABEL: Record<Task['status'], string> = {
 /** 原型：completed / running 走绿色，其余一律 .status.wait */
 const STATUS_WAIT: Record<Task['status'], boolean> = {
   running: false,
+  waiting_review: true,
+  review_returned: true,
   interrupted: true,
   waiting_input: true,
   waiting_approval: true,
@@ -98,6 +102,8 @@ const STATUS_WAIT: Record<Task['status'], boolean> = {
 
 const STATE_GLYPH: Record<Task['status'], string> = {
   running: '·',
+  waiting_review: '?',
+  review_returned: '!',
   interrupted: '?',
   waiting_input: '?',
   waiting_approval: '!',
@@ -111,19 +117,23 @@ const STATE_GLYPH: Record<Task['status'], string> = {
    「待执行」是唯一还没有数据的一档 —— askdb 不排队，收到即执行，留在这里是
    为了让状态口径完整可读，选中后由空态文案说明。 */
 type StatusFilter = 'all' | 'pending' | 'running' | 'interrupted' | 'waiting_input'
-  | 'waiting_approval' | 'needs_operator' | 'done' | 'rejected'
+  | 'waiting_approval' | 'waiting_review' | 'review_returned' | 'needs_operator'
+  | 'done' | 'rejected'
 
 const FILTER_ORDER: StatusFilter[] = ['all', 'pending', 'running', 'waiting_input',
-  'waiting_approval', 'needs_operator', 'interrupted', 'done', 'rejected']
+  'waiting_approval', 'waiting_review', 'needs_operator', 'interrupted', 'done',
+  'review_returned', 'rejected']
 const FILTER_LABEL: Record<StatusFilter, string> = {
   all: '全部状态',
   pending: '待执行',
   running: '运行中',
   waiting_input: '等待补充',
   waiting_approval: '等待审批',
+  waiting_review: '等待复核',
   needs_operator: '等待运维',
   interrupted: '可续跑',
   done: '已完成',
+  review_returned: '复核未通过',
   rejected: '已拦截',
 }
 const FILTER_CODE: Record<StatusFilter, string> = {
@@ -132,9 +142,11 @@ const FILTER_CODE: Record<StatusFilter, string> = {
   running: 'RUN',
   waiting_input: 'INPUT',
   waiting_approval: 'APPROVAL',
+  waiting_review: 'REVIEW',
   needs_operator: 'OPS',
   interrupted: 'RESUME',
   done: 'DONE',
+  review_returned: 'RETURNED',
   rejected: 'BLOCK',
 }
 
@@ -227,6 +239,8 @@ export function TasksPage({ onNavigate, notify, me }: {
     const waitingInput = items.filter(task => task.status === 'waiting_input').length
     const waitingApproval = items.filter(task => task.status === 'waiting_approval').length
     const needsOperator = items.filter(task => task.status === 'needs_operator').length
+    const waitingReview = items.filter(task => task.status === 'waiting_review').length
+    const reviewReturned = items.filter(task => task.status === 'review_returned').length
     const running = items.filter(task => task.status === 'running').length
     const rejected = items.filter(task => task.status === 'rejected').length
     const done = items.filter(task => task.status === 'done')
@@ -235,8 +249,8 @@ export function TasksPage({ onNavigate, notify, me }: {
     // 把它们记成失败，这个数字就会随"有多少人问得含糊"上下浮动，与系统好坏无关。
     const settled = done.length + rejected
     const rate = settled ? `成功率 ${((done.length / settled) * 100).toFixed(1)}%` : '暂无收尾记录'
-    return { interrupted, waitingInput, waitingApproval, needsOperator, running,
-             rejected, doneToday, rate }
+    return { interrupted, waitingInput, waitingApproval, waitingReview, reviewReturned,
+             needsOperator, running, rejected, doneToday, rate }
   }, [items])
 
   const matched = useMemo(() => items.filter(task => {
@@ -359,10 +373,12 @@ export function TasksPage({ onNavigate, notify, me }: {
             合成一个数字就等于让人自己去猜该找谁。审批那格原来写死 0。 */}
         <div className="stat">
           <span>待处理</span>
-          <strong>{stats.waitingInput + stats.waitingApproval + stats.needsOperator + stats.interrupted}</strong>
+          <strong>{stats.waitingInput + stats.waitingApproval + stats.waitingReview
+                   + stats.needsOperator + stats.interrupted}</strong>
           <small>
             {stats.waitingInput} 补充信息 · {stats.waitingApproval} 审批
-            · {stats.needsOperator} 运维 · {stats.interrupted} 可续跑
+            · {stats.waitingReview} 复核 · {stats.needsOperator} 运维
+            · {stats.interrupted} 可续跑
           </small>
         </div>
         <div className="stat"><span>今日完成</span><strong>{stats.doneToday}</strong><small>{stats.rate}</small></div>
@@ -441,6 +457,20 @@ export function TasksPage({ onNavigate, notify, me }: {
                 <>
                   <div className="task-meta"><span>阶段</span><strong>执行中</strong></div>
                   <div className="task-meta"><span>已发起</span><strong>{fmtClock(task.ts)}</strong></div>
+                </>
+              ) : task.status === 'waiting_review' || task.status === 'review_returned' ? (
+                <>
+                  <div className="task-meta"><span>风险</span><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
+                  {/* 存疑理由是复核人唯一要看的东西，直接摆在行上；
+                      多条时给第一条，其余挂 title。 */}
+                  <div className="task-meta">
+                    <span>存疑</span>
+                    <strong title={(task.review_why ?? []).join('；')}>
+                      {(task.review_why ?? []).length > 1
+                        ? `${task.review_why![0].slice(0, 6)}… +${task.review_why!.length - 1}`
+                        : (task.review_why?.[0] ?? '—').slice(0, 10)}
+                    </strong>
+                  </div>
                 </>
               ) : task.status === 'waiting_approval' || task.status === 'needs_operator'
                    || task.status === 'waiting_input' ? (
@@ -614,7 +644,31 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
      「改写问题后重新发起」—— 对等审批的人是错的（该去找负责人），对库连不上
      的人更是错的（改写法一万遍也连不上）。nextStep 是这个弹窗唯一有用的一句话，
      不能对三种人说同一句。 */
-  const reason = task.status === 'waiting_approval'
+  const reason = task.status === 'waiting_review'
+    ? {
+      category: '结果待复核 · REVIEW',
+      node: '结果可信度',
+      detail: (task.review_why ?? []).join('；')
+        || '这次查询跑成了，但结果带着存疑痕迹。',
+      policy: `${task.kind} · ${task.role}`,
+      nextStep: task.next_actor
+        || '等系统管理员看一眼：采信这个数字，或打回并说明原因。',
+      action: 'none' as const,
+      actionLabel: '等待复核',
+    }
+    : task.status === 'review_returned'
+    ? {
+      category: '复核未通过 · RETURNED',
+      node: '结果可信度',
+      detail: (task.review_why ?? []).join('；')
+        || '这条结果经复核判定为不可采信。',
+      policy: `${task.kind} · ${task.role}`,
+      nextStep: task.next_actor
+        || '这个数字不采信。按复核意见换个问法重新发起 —— 原始记录与链路仍可查。',
+      action: 'revise' as const,
+      actionLabel: '按复核意见重问',
+    }
+    : task.status === 'waiting_approval'
     ? {
       category: `等待审批 · ${task.rejected_by ?? 'R-11'}`,
       node: task.rejected_by ?? '高成本查询',
