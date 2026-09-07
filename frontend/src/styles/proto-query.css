@@ -424,17 +424,38 @@
 
 /* 准入评分环。照原型：3px 绿环 + 右侧一段留白，环内是分值。
    原型出处：全站 CSS 第 1027-1036 行。 */
+/* 评分环。原型是「整圈绿、右侧留一段白」的静态画法 —— 那段留白与分数无关，
+   纯粹是稿上的样子。分数换成真值之后弧长必须跟着走：画成 conic-gradient，
+   --pct 由组件按通过率写进来，::before 挖出中间的洞。
+   弧还停在原地而数字在动，等于把写死的东西从数字挪到了图形上。 */
 .score-ring {
+  --pct: 100;
+  position: relative;
   width: 43px;
   height: 43px;
   flex: none;
   display: grid;
   place-items: center;
-  border: 3px solid var(--green-2);
-  border-right-color: rgba(255,255,255,.15);
   border-radius: 50%;
+  background: conic-gradient(
+    var(--green-2) calc(var(--pct) * 1%), rgba(255,255,255,.15) 0);
   font: 700 11px var(--mono);
 }
+
+/* 中间的洞。用 hero 的底色填，不是透明 —— 卡片背景是深色，透明会露出渐变 */
+.score-ring::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--dark);
+}
+
+.score-ring > span { position: relative; }
+
+/* 没满分时环变琥珀色：数字要看清是几分，颜色先说清"有东西没通过" */
+.score-ring.partial { background: conic-gradient(
+    #e0a33e calc(var(--pct) * 1%), rgba(255,255,255,.15) 0); }
 
 .ready-badge {
   flex: none;

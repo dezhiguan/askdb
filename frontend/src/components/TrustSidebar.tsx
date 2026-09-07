@@ -1,4 +1,4 @@
-import type { AskResult, Me } from '../api'
+import type { AskResult, Health, Me } from '../api'
 import type { ResultTab, View } from '../types'
 import type { HealthState } from '../useHealth'
 import { useSqlDigest } from './ResultTabs'
@@ -8,8 +8,18 @@ import { useSqlDigest } from './ResultTabs'
  *  版式、标签与文案一律照原型（trusted-data-agent-prototype.html 第 2196-2216 行）。
  *  格子里的值一律取真实数据 —— 原型上的 90 DAYS / 15 SEC 是稿上的示意值，
  *  照抄等于在可信侧栏上宣称一条并未执行的策略。
- *  评分环照原型固定显示 96 —— askdb 没有"结果可信度"这个口径，它是设计稿上的
- *  展示值，等真有准入评分再接。
+ *
+ *  评分环原来固定显示 96（原型展示值），2026-09-07 换成真值。**它是一个通过率，
+ *  不是一个权重打分**：每一项都是链路自己记下的事实，逐条判真假，分数 =
+ *  通过项 / 总项。这样定的理由是，可信度一旦变成"截断扣 25 分、重试扣 10 分"
+ *  那种加权公式，权重就没有出处 —— 说不清 25 从哪来的数字，摆在"可信"侧栏上
+ *  本身就是最不可信的那个。通过率至少每一项都能指着说"这条成立/不成立"。
+ *
+ *  两态，与卡片标题一起切：
+ *    · 还没结果 → **安全准入**：数据源、模型、三条护栏阈值、配额，6 项
+ *    · 有结果且执行成功 → **本次结果可信度**：截断、重试、脱敏降级、召回盲选、
+ *      有无结果行，5 项
+ *  执行被拒时不切 —— 那次根本没跑出结果，给它算一个"结果可信度"是无中生有。
  */
 export function TrustSidebar({ health, source, result, me, onResultTab, onNavigate }: {
   health: HealthState
@@ -38,17 +48,40 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
     : !ready.llm.ok ? { label: '仅直查 SQL', tone: 'wait' }
     : { label: 'READY', tone: '' }
 
+  // 有结果且真的执行成功了才切到「本次结果」；被护栏拒掉的那次没有结果可评
+  const scored = result?.ok ? resultChecks(result) : admissionChecks(ready, !!source)
+  const passed = scored.filter(c => c.ok).length
+  const score = scored.length ? Math.round(passed / scored.length * 100) : null
+  const failed = scored.filter(c => !c.ok)
+  // 悬停要能说清扣在哪一项。只报"96 分"而不说因为什么，与写死一个数没有区别
+  const scoreTitle = !scored.length ? '读取中'
+    : [`${result?.ok ? '本次结果可信度' : '安全准入'} ${passed}/${scored.length}`,
+       ...scored.map(c => `${c.ok ? '✓' : '✕'} ${c.label}${c.ok ? '' : `：${c.why}`}`)].join('\n')
+
   return (
     // side-stack 是原型的类名；trust-sidebar 保留，窄屏断点按它排版
     <aside className="trust-sidebar side-stack">
       <div className="assurance-card">
         <div className="assurance-hero">
-          {/* 照原型固定 96。askdb 没有"结果可信度"这个口径，这是设计稿上的展示值 */}
-          <div className="score-ring">96</div>
+          {/* 环上的弧长跟着分数走。弧是假的而数字是真的，等于换了个地方写死 */}
+          <div className={`score-ring ${score != null && score < 100 ? 'partial' : ''}`}
+               style={{ ['--pct' as string]: score ?? 0 }} title={scoreTitle}>
+            <span>{score ?? '—'}</span>
+          </div>
           <div className="assurance-hero-copy">
-            <strong>{canAsk ? '安全准入已通过' : canExecute ? '只读执行可用' : '暂不可执行'}</strong>
-            <small>
-              {canAsk ? '当前身份可在只读边界内执行查询'
+            <strong>
+              {result?.ok ? '本次结果可信度'
+                : canAsk ? '安全准入已通过'
+                : canExecute ? '只读执行可用' : '暂不可执行'}
+            </strong>
+            <small title={scoreTitle}>
+              {/* 失败项直接写在脸上。可信度掉了却要人去别处找原因，
+                  等于把一个数字换成了另一个说不清的数字 */}
+              {result?.ok
+                ? (failed.length ? failed.map(c => c.why).join(' · ')
+                   : `${scored.length} 项检查全部通过`)
+                : canAsk ? (failed.length ? failed.map(c => c.why).join(' · ')
+                            : '当前身份可在只读边界内执行查询')
                 : canExecute ? '未配模型密钥，自然语言提问不可用，直查 SQL 仍可用'
                 : ready?.datasource.hint || '数据源连接不可用'}
             </small>
@@ -130,6 +163,54 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
       </button>
     </aside>
   )
+}
+
+/** 可信度环里的一项。`why` 是这项不成立时要说给人听的那句话。 */
+type Check = { label: string; ok: boolean; why: string }
+
+/** 提问前的准入检查。**只取实例级、与选哪个源无关的事实** ——
+ *  表白名单是按源走的（运行时源各有各的白名单），这里拿不到，
+ *  与其报一个可能不对的数，不如不列这一项。 */
+function admissionChecks(ready: Health | null, hasSource: boolean): Check[] {
+  if (!ready) return []
+  const g = ready.guard
+  return [
+    // 没有内置源的实例上 health.datasource.ok 恒为真（它报的是"配置里那条"，
+    // 而配置里压根没有），拿它当"连得上"会让这一项永远白送分。
+    // 那种实例上真正的条件是**当前选没选到一个运行时源**。
+    { label: '数据源可用', ok: ready.datasource.configured ? ready.datasource.ok : hasSource,
+      why: ready.datasource.configured
+        ? (ready.datasource.hint || '数据源连接不可用')
+        : '还没选数据源，到「数据源」页选一个再提问' },
+    { label: '模型可用', ok: ready.llm.ok,
+      why: '未配模型密钥，只能直查 SQL' },
+    { label: '返回行上限已设 · R-13', ok: g.max_rows > 0,
+      why: '没有返回行上限，一次查询可能拉回整表' },
+    { label: '扫描行上限已设 · R-11', ok: g.max_scan_rows > 0,
+      why: '没有扫描行上限，全表扫描不会被拦' },
+    { label: '语句超时已设 · R-12', ok: g.timeout_ms > 0,
+      why: '没有语句超时，慢查询会一直占着连接' },
+    { label: '每日配额已设', ok: g.daily_quota > 0,
+      why: '没有每日配额，模型开销没有上限' },
+  ]
+}
+
+/** 出结果之后的可信度检查。五项**全部来自链路自己记下的事实**，
+ *  不问模型、不做二次判断 —— 让模型给自己的答案打分，打出来的是作文分。 */
+function resultChecks(r: AskResult): Check[] {
+  const rows = r.row_count ?? 0
+  return [
+    { label: '结果完整未截断', ok: !r.truncated,
+      why: `结果被 R-13 截断，只看到前 ${rows} 行` },
+    { label: '一次生成成功', ok: (r.attempts ?? 1) <= 1,
+      why: `SQL 重试了 ${(r.attempts ?? 1) - 1} 次才跑通` },
+    { label: '脱敏判定未降级', ok: !r.mask_degraded,
+      why: '脱敏判定退化为整行按敏感处理，列的归属没解析出来' },
+    { label: '召回不是盲选', ok: !r.recall_blind,
+      why: r.recall_note || '这次召回是盲选，给模型的表不是按相关度选的' },
+    { label: '有结果行', ok: rows > 0,
+      why: '查询成功但一行都没返回，先确认过滤条件是不是过窄' },
+  ]
 }
 
 /** 「身份」一格。原型写死 `SSO · PRODUCT`；这里报真实登录态与角色。 */
