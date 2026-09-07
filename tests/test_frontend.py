@@ -141,8 +141,14 @@ SOURCES_PAGE = FRONTEND_SRC / "pages" / "DataSourcesPage.tsx"
 
 
 def test_sources_page_is_wired_to_real_endpoints():
+    """这一页的每一块都得来自真接口，不能退回样例数据。
+
+    2026-09-07 名单里去掉 fetchSchema：「测试连接」展开的那块配置面板整段撤了
+    （693b579），页面不再需要表结构。**只去掉这一个名字，判据没松** —— 数据源
+    列表、库结构内省、运行时自检三块仍然各自钉着一个真接口。
+    """
     src = SOURCES_PAGE.read_text(encoding="utf-8")
-    for fn in ("fetchSchema", "fetchIntrospect", "fetchSelfCheck"):
+    for fn in ("fetchSources", "fetchIntrospect", "fetchSelfCheck"):
         assert fn in src, f"数据源页没有调用 {fn}"
 
     notices = (FRONTEND_SRC / "components" / "MockNotice.tsx").read_text(encoding="utf-8")
