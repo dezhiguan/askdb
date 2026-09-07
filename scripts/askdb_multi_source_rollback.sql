@@ -4,11 +4,11 @@
 -- 三个对象分处三个库，**必须分三次执行**（psql 一次只连一个库）：
 --
 --   ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
---     psql -U postgres -d careermate_db" < scripts/askdb_multi_source_rollback.sql
+--     psql -U ragforge -d careermate_db" < scripts/askdb_multi_source_rollback.sql
 --   ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
 --     psql -U ragforge -d ragforge"      < scripts/askdb_multi_source_rollback.sql
 --   ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
---     psql -U postgres -d postgres"      < scripts/askdb_multi_source_rollback.sql
+--     psql -U ragforge -d postgres"      < scripts/askdb_multi_source_rollback.sql
 --
 -- 每次只有与当前库相关的那一段会做事，其余段落自动跳过（判存在性）。
 -- 脚本本身幂等，重复跑无副作用。

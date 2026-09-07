@@ -183,8 +183,10 @@ Secret 没生效 —— 此时**不要**把 replicas 调大于 1，配额会变�
 #    权限方向相反，混在一起迟早有人把可写那把配到 datasource 上去。
 #    用超级用户：末尾要在新库里授 public schema 的 CREATE（PG 15 起不再默认
 #    放开），少这一句的症状是数据源页 503 且日志 permission denied for schema。
+#    **这台 PG 上超级用户是 ragforge，没有 postgres 这个角色** —— 写
+#    -U postgres 会 FATAL: role "postgres" does not exist（2026-09-07 实测）。
 ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
-  psql -U postgres -d postgres -v pwd=\"'<meta 口令>'\"" < scripts/askdb_sources_store_setup.sql
+  psql -U ragforge -d postgres -v pwd=\"'<meta 口令>'\"" < scripts/askdb_sources_store_setup.sql
 
 # 2. ragforge 全库只读。**不能复用 askdb_ro** —— 它那 5 张表上的 RLS 条件是
 #    current_setting('app.org_id')，而运行时数据源写死不做租户隔离、不会去 SET
@@ -193,9 +195,10 @@ ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
   psql -U ragforge -d ragforge -v pwd=\"'<ro_all 口令>'\"" < scripts/ragforge_readonly_all_setup.sql
 
 # 3. careermate 只读（该库此前没有任何只读角色）。必须用超级用户执行：
-#    GRANT ... ON ALL TABLES 要属主权限，用 -U ragforge 会静默只授到一部分表。
+#    GRANT ... ON ALL TABLES 要属主权限，普通角色跑会静默只授到一部分表。
+#    这台机上超级用户就是 ragforge（见上），别照旧文写 -U postgres。
 ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
-  psql -U postgres -d careermate_db -v pwd=\"'<cm 口令>'\"" < scripts/careermate_readonly_setup.sql
+  psql -U ragforge -d careermate_db -v pwd=\"'<cm 口令>'\"" < scripts/careermate_readonly_setup.sql
 ```
 
 再建/补 Secret。两个数据源的口令走 `askdb-db`（`envFrom` 取整个 Secret，

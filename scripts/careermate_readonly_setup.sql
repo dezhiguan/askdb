@@ -20,7 +20,7 @@
 --
 --   PWD='<新生成的强口令>'
 --   ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
---     psql -U postgres -d careermate_db -v pwd=\"'$PWD'\"" < scripts/careermate_readonly_setup.sql
+--     psql -U ragforge -d careermate_db -v pwd=\"'$PWD'\"" < scripts/careermate_readonly_setup.sql
 --
 -- 回滚：scripts/askdb_multi_source_rollback.sql
 

@@ -17,13 +17,16 @@
 --
 -- 本脚本不含任何凭据：密码经 psql 变量 :pwd 在执行时传入。
 --
--- 执行**必须用超级用户**：末尾要在新库里 GRANT schema 权限，
+-- 执行**必须用超级用户**。这台 PG（容器 ragforge-postgres）上超级用户是
+-- **ragforge**，**没有 postgres 这个角色** —— 写 -U postgres 会直接
+-- `FATAL: role "postgres" does not exist`（2026-09-07 实测）。
+-- 末尾要在新库里 GRANT schema 权限，
 -- PG 15 起 public schema 不再默认对所有人开放 CREATE，
 -- 不授的话应用起来后 ensure_schema() 建表会 permission denied。
 --
 --   PWD='<新生成的强口令>'
 --   ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
---     psql -U postgres -d postgres -v pwd=\"'$PWD'\"" < scripts/askdb_sources_store_setup.sql
+--     psql -U ragforge -d postgres -v pwd=\"'$PWD'\"" < scripts/askdb_sources_store_setup.sql
 --
 -- 回滚：scripts/askdb_multi_source_rollback.sql
 
