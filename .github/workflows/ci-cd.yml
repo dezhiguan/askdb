@@ -261,16 +261,24 @@ jobs:
           import json, sys
           d = json.loads(sys.argv[1])
           assert d["datasource"]["ok"], d
-          # 2026-09-03 起对外实例直连 ragforge 生产主库，"只能连样例库"这条
-          # 安全边界没了 —— 断言不是删掉，是换到接替它的那几条上。
+          # 这一段翻过两次，每次都是**换判据**，不是放宽：
+          #   · 2026-09-03 从"只能连样例库"换成"连生产主库 + 租户双层隔离"
+          #   · 2026-09-07 内置数据源整段撤掉，两个库都走运行时注册表，于是
+          #     health 里的 datasource 恒为空、tenant 恒不生效 —— 老断言
+          #     （type == postgresql、tenant.enabled）会红在**设计如此**上，
+          #     报错还写着"数据源被改回样例库"，把人往完全错的方向引。
           #
-          # 库里是真数据，所以下面三条一条都不能松：
-          assert d["datasource"]["type"] == "postgresql", f"数据源被改回样例库或改错了：{d['datasource']}"
-          assert d["tenant"]["enabled"], f"租户隔离被关了：{d['tenant']}"
-          assert d["tenant"]["mode"] == "rls_and_predicate", \
-              f"对外实例要双层隔离，应用层被绕过时库侧 RLS 仍在：{d['tenant']}"
-          # 口令必须走环境变量 —— 连接串里出现明文就是把口令写进了仓库
-          assert d["datasource"].get("credential"), f"数据库口令没走环境变量：{d['datasource']}"
+          # 现在钉的是这一轮的形状本身：
+          assert d["datasource"]["configured"] is False, \
+              f"内置数据源又回来了 —— 本实例的两个库都该走注册表：{d['datasource']}"
+          # tenant 段留在配置里只为 schema 页展示，对查询不再起作用。
+          # **必须钉住它如实报 enforced: false**：报成 true 会让人以为线上还在
+          # 按 org_id=316 过滤，而实际上运行时数据源一律不做租户隔离
+          # （sources.derive_config 写死）—— 这是这轮改动最容易踩的误读。
+          # 行级边界消失之后接替它的是登录，由下面 required is True 那条钉住，
+          # 两条是一对：只剩其中一条时这个实例就不该对外可达。
+          assert d["tenant"].get("enforced") is False, \
+              f"租户隔离报成生效了，与运行时数据源的实际行为不符：{d['tenant']}"
           # 接了模型，所以不再断言 disabled；改为钉住**成本护栏**：
           # 每日配额必须设置且不得放得太宽，否则被脚本刷爆
           q = d["guard"].get("daily_quota")
