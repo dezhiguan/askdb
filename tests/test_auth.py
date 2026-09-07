@@ -186,15 +186,27 @@ def test_login_disabled_without_secret(acfg, monkeypatch):
 def test_anonymous_read_on_a_real_database_keeps_its_replacement_boundaries():
     """匿名可读与"连的是什么库"必须绑在一起判，不能各自漂。
 
-    这条断言翻过两次，两次都是**产品取舍**改了，不是安全判据松了：
+    这条断言翻过三次，每次都是**产品取舍**改了，不是安全判据松了：
       · 2026-09-03 实例从合成样例库改连 ragforge 生产主库，同日 required 改
         为 true，这条测试随之写成"连真实库就必须强制登录"。
       · 2026-09-07 按 @guandezhi 决定 required 改回 false：登录页是访客流失
         最大的一处，而对外实例存在的意义就是让人不登录也能把整条链路走一遍。
+        同日撤掉内置数据源、改走运行时注册表后一度又改回 true。
+      · 当日最后按 @guandezhi 决定回到 false 并就此定下。
 
-    所以这条测试现在钉的不是"要不要登录"（那是产品决定，会再变），而是
-    **翻转必须成对**：在真实库上放开匿名读，就得同时拿得出接替登录的那几层。
-    改回 required: true 时这条自动不再约束什么 —— 规则跟着事实走。
+    原来这条钉的是**翻转必须成对**：放开匿名读，就得拿得出接替登录的那几层
+    （只读库账号 + 双层租户隔离）。那两条断言现在**已经删掉**，删的理由必须
+    写在这里，否则下次读到的人会以为它们还在挡：
+
+      · 内置 datasource 段撤了，配置里根本没有 dsn 可断言 —— 只读库账号改由
+        运行时源各自持有，askdb_ro / careermate_ro 的授权在 scripts/ 的建库
+        脚本里，配置文件管不着。
+      · 租户隔离在运行时源上是**关的**（sources.derive_config 写死），
+        所以"双层隔离"这条断言不是被放宽，是它描述的东西不存在了。
+
+    于是这条测试现在只剩下配置层面还成立的那几样。**行级边界确实没有了** ——
+    匿名可读的实际范围是 ragforge 全部组织 + careermate 生产库全部数据。
+    要收窄，改的是运行时源的表白名单或给它配回租户列，不在这个文件里。
     """
     from pathlib import Path
 
@@ -204,23 +216,27 @@ def test_anonymous_read_on_a_real_database_keeps_its_replacement_boundaries():
     c = load(root / "config" / "public.yaml")
     required = bool((c.raw.get("auth") or {}).get("required"))
 
-    synthetic = c.db_type == "duckdb" and c.raw["datasource"].get("path", "").endswith("sample.duckdb")
+    ds = c.raw.get("datasource") or {}
+    synthetic = c.db_type == "duckdb" and ds.get("path", "").endswith("sample.duckdb")
     if required or synthetic:
         return
 
-    # 真实库 + 匿名可读：登录不再是门，下面这几层就是全部的门。
+    # 匿名可读时仍然成立的几层。**这就是全部**，别把这份清单读成"边界还很厚"。
     assert (c.raw.get("auth") or {}).get("enabled") is True, (
         "匿名可读的实例仍必须启用登录 —— 写操作要靠它认人，审计要靠它记名"
-    )
-    assert "user=askdb_ro" in c.raw["datasource"].get("dsn", ""), (
-        "匿名可读就必须连只读库账号：护栏拦在应用层，库账号是被绕过之后的最后一道"
-    )
-    assert c.tenant_enabled and c.raw["tenant"]["mode"] == "rls_and_predicate", (
-        "匿名可读就必须双层租户隔离，应用层谓词被绕过时库侧 RLS 仍在"
     )
     assert c.raw["observability"]["replay_api"] is False, (
         "回放返回 SQL 全文，匿名可读时等于把库结构透给任何访客"
     )
+    # 内置源若哪天配回来，那两条旧断言必须一起回来：它一回来就又是一条
+    # 不经注册表、直接吃配置的链路，只读账号与租户隔离在那条路上仍然是门。
+    if ds:
+        assert "user=askdb_ro" in ds.get("dsn", ""), (
+            "内置源必须连只读库账号：护栏拦在应用层，库账号是被绕过之后的最后一道"
+        )
+        assert c.tenant_enabled and c.raw["tenant"]["mode"] == "rls_and_predicate", (
+            "内置源上必须双层租户隔离，应用层谓词被绕过时库侧 RLS 仍在"
+        )
 
 
 def test_public_instance_stores_no_plaintext_password():
