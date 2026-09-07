@@ -17,10 +17,13 @@
 --
 -- 本脚本不含任何凭据：密码经 psql 变量 :pwd 在执行时传入。
 --
--- 执行：
+-- 执行**必须用超级用户**：末尾要在新库里 GRANT schema 权限，
+-- PG 15 起 public schema 不再默认对所有人开放 CREATE，
+-- 不授的话应用起来后 ensure_schema() 建表会 permission denied。
+--
 --   PWD='<新生成的强口令>'
 --   ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
---     psql -U ragforge -d postgres -v pwd=\"'$PWD'\"" < scripts/askdb_sources_store_setup.sql
+--     psql -U postgres -d postgres -v pwd=\"'$PWD'\"" < scripts/askdb_sources_store_setup.sql
 --
 -- 回滚：scripts/askdb_multi_source_rollback.sql
 
@@ -56,4 +59,14 @@ ALTER ROLE askdb_meta CONNECTION LIMIT 12;
 ALTER ROLE askdb_meta SET statement_timeout = '10s';
 ALTER ROLE askdb_meta SET idle_in_transaction_session_timeout = '30s';
 
-SELECT 'askdb_meta 角色与库已就绪；askdb_sources 表由应用 ensure_schema() 自建' AS 结果;
+-- ---- 建表权限 ----
+-- 切进新库再授。PG 15 起 public schema 的 CREATE 不再默认给 PUBLIC，
+-- 而 askdb_sources 是由应用启动后 ensure_schema() 现建的 ——
+-- 少这一句，症状是数据源页 503 且日志里 permission denied for schema public，
+-- 看着像"元数据库没配好"，实际库和角色都在，只差一个授权。
+\connect askdb_meta
+
+GRANT ALL ON SCHEMA public TO askdb_meta;
+
+SELECT 'askdb_meta 角色与库已就绪（当前库 ' || current_database()
+       || '），askdb_sources 表由应用 ensure_schema() 自建' AS 结果;

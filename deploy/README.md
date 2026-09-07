@@ -181,8 +181,10 @@ Secret 没生效 —— 此时**不要**把 replicas 调大于 1，配额会变�
 ```bash
 # 1. 元数据库：askdb 自己的数据，要能写。单独一个库，不与业务库同库 ——
 #    权限方向相反，混在一起迟早有人把可写那把配到 datasource 上去。
+#    用超级用户：末尾要在新库里授 public schema 的 CREATE（PG 15 起不再默认
+#    放开），少这一句的症状是数据源页 503 且日志 permission denied for schema。
 ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
-  psql -U ragforge -d postgres -v pwd=\"'<meta 口令>'\"" < scripts/askdb_sources_store_setup.sql
+  psql -U postgres -d postgres -v pwd=\"'<meta 口令>'\"" < scripts/askdb_sources_store_setup.sql
 
 # 2. ragforge 全库只读。**不能复用 askdb_ro** —— 它那 5 张表上的 RLS 条件是
 #    current_setting('app.org_id')，而运行时数据源写死不做租户隔离、不会去 SET
