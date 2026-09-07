@@ -1275,6 +1275,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             (root / "ragforge-blind.json", root / "ragforge-ablation.json", None),
             (root / "blind.json", root / "ablation2.json", root / "ablation_F.json"),
         ]
+        # 配置里 evaluation.out 说了"这个实例的成绩写在哪"，这里就先读它。
+        # 此前不读，于是配置指定一处、页面读另一处 —— 没有内置数据源的实例
+        # （对外实例就是）永远匹配不上任何一套出处，只能退回列表第一项，
+        # 把**别的实例**的成绩摆在自己页面上，而且还标着"当前数据源"。
+        declared = str((cfg.raw.get("evaluation") or {}).get("out") or "")
+        declared_p = (cfg.root / declared) if declared else None
+        if declared_p is not None:
+            candidates.insert(
+                0, (declared_p,
+                    declared_p.with_name(declared_p.stem + "-ablation.json"), None))
 
         def _src_of(paths):
             """从一组结果文件里取出处。
@@ -1312,11 +1322,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         here = (f"{cfg.db_type}:"
                 + (cfg.db_path.name if cfg.db_type == "duckdb"
                    else _dsn_brief_id(cfg)))
+        # 这一份是不是本实例自己配置指定的那一份。**配置指定即算数**：
+        # 没有内置数据源的实例上 here 退化成 ":?@?:"，与任何出处都比不出
+        # "一致"，此时按不一致渲染就是在对着自家成绩说"这是别人的"。
+        declared_hit = declared_p is not None and blind_p == declared_p
         out["provenance"] = {
             **prov,
-            "current_datasource": here,
+            "current_datasource": here if cfg.db_type else (
+                str((cfg.raw.get("evaluation") or {}).get("source") or "") or here),
             # 出处缺失时不敢断言"一致"——按不一致处理，宁可多提示一次
-            "matches_current": bool(prov) and _same_source(prov.get("datasource", ""), here),
+            "matches_current": declared_hit or (
+                bool(prov) and _same_source(prov.get("datasource", ""), here)),
         }
         def _avg_tok(rep: Any) -> int | None:
             """每题平均 token（输入 + 输出）。

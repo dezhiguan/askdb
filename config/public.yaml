@@ -149,6 +149,18 @@ llm:
     peak_weekdays_only: true
     peak_utc_offset_hours: 8
 
+# 回归评测跑在哪。**固定一个数据源**，不跟着页面上当前选的源走：
+# 同一套题在不同库上的分数不可比，考场一换，历史成绩之间立刻失去意义。
+#
+# 这个实例上的成绩由 `python -m evals.run_live` 产出 —— 它把题目发给**站点
+# 自己的** /api/ask、标准答案发给同一个站点的 /api/sql，因此测的是真正跑在
+# 生产上的那一版（镜像 + 配置 + 注册表），而不是某台机器上的一份代码。
+# 页面上那张「评测集」卡读的就是下面这两个文件。
+evaluation:
+  source: "careermate 生产库"
+  golden: evals/golden-careermate.jsonl
+  out: evals/results/careermate-blind.json
+
 observability:
   # 写在 ./var 而不是 ./data —— data 目录里是随镜像固化的样例库，
   # 往它上面挂卷会把样例库遮掉。var 单独挂卷，用于持久化审计日志。

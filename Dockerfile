@@ -30,9 +30,15 @@ COPY askdb ./askdb
 COPY config ./config
 COPY data/__init__.py data/seed.py ./data/
 # 评测结果随镜像一起走 —— 少了它评测页是空的。
-# 只带结果 JSON（逐题通过与否、失败原因、trace_id、耗时成本），
-# 不带题库与脚本：对外实例不跑评测，只展示已有结论。
+# 只带结果 JSON（逐题通过与否、失败原因、trace_id、耗时成本）与题库 jsonl，
+# 不带出题脚本与回放器：对外实例不跑评测，只展示已有结论。
+#
+# 题库这一行是 2026-09-07 补的。此前只带 results，而 /api/eval 要按结果文件
+# 里记的 provenance.golden 去读题库才能给出"评测集全集多少题、覆盖哪几类、
+# 每题问的是什么"——文件不在镜像里，那一整块就静默为空，页面上「评测集」
+# 卡片显示 "—"，看着像没跑过评测，实际是跑了但题目丢在构建上下文外面。
 COPY evals/results ./evals/results
+COPY evals/*.jsonl ./evals/
 
 # 样例库在**构建期**生成并固化进镜像：
 #   · 固定随机种子 → 每次构建产出完全一致的数据，可复现
