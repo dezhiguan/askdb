@@ -62,8 +62,26 @@ REPLAY_FIELDS = (
 )
 
 
-def read_records(path: Path) -> list[dict[str, Any]]:
-    """读出全部审计记录，保持文件（时间）顺序。"""
+#: 发起时先落的那条记录的标记。**它不是一次调用的结果，只是一个占位**：
+#: 说明"这条线程存在、归谁、打哪个库"，收尾时另有一条带结果的记录。
+#:
+#: 为什么要有它：2026-09-07 实测 kill -9 打在查询中途 —— 检查点写了
+#: （现场在），审计一条没写。任务中心完全由审计构建，于是这条任务从系统里
+#: 彻底消失；即便手里有 thread_id 去续跑也走不通，因为**数据源只记在审计里**，
+#: 读不到就退回内置源。而"进程挂了"恰恰是断点续跑唯一的真实用例。
+#: 补上这条记录之后，同一个线程立刻变回 interrupted / resumable 并真的续上了
+#: （节点从 generate_sql 起步，schema_recall 没重跑）—— 机制本来就是好的，
+#: 缺的只是它。
+PHASE_STARTED = "started"
+
+
+def read_records(path: Path, *, include_started: bool = False) -> list[dict[str, Any]]:
+    """读出全部审计记录，保持文件（时间）顺序。
+
+    **默认滤掉发起记录**（phase=started）：它没有结果、没有成本、没有收尾码，
+    进了统计就是把每次调用数成两次、把成功率稀释一半。只有任务中心需要它
+    （那一页要回答"有没有一条线程正在跑/跑一半没了"），显式传参取。
+    """
     if not path.exists():
         return []
     out: list[dict[str, Any]] = []
@@ -76,8 +94,11 @@ def read_records(path: Path) -> list[dict[str, Any]]:
                 rec = json.loads(line)
             except ValueError:
                 continue                      # 撕裂行：跳过，不中断
-            if isinstance(rec, dict) and rec.get("trace_id"):
-                out.append(rec)
+            if not (isinstance(rec, dict) and rec.get("trace_id")):
+                continue
+            if not include_started and rec.get("phase") == PHASE_STARTED:
+                continue
+            out.append(rec)
     return out
 
 
@@ -185,7 +206,8 @@ _OPEN_CODES = frozenset({"INTERRUPTED", "RESUME_BLOCKED"})
 def _record_status(rec: dict[str, Any]) -> str:
     """单条记录怎么收尾的 —— ok / rejected / interrupted。
 
-    与 _thread_status 是同一套判定，区别只在看谁：线程看最后一条，这里看这一条。
+    **审计中心的三档口径，有意保持粗粒度**：那一页问的是"这次调用成没成"，
+    不是"接下来该谁动手"。细分档由 stage() 给，任务中心用它。
     两处都从 rejected_by 读，别在别处再写第三份。
     """
     if rec.get("rejected_by") in _OPEN_CODES:
@@ -193,17 +215,58 @@ def _record_status(rec: dict[str, Any]) -> str:
     return "rejected" if rec.get("rejected_by") else "ok"
 
 
-def _thread_status(last: dict[str, Any]) -> str:
+#: 收尾码 → 任务态。**确定性折算，不是模型打分**，与 _risk 同一套做法。
+#:
+#: 2026-09-07 之前这里只有 done / rejected / interrupted 三档，于是六种
+#: 语义完全不同的结局被压进同一个"已拦截"：碰了安全红线（不可放行）、
+#: 模型答不上来（换个问法就行）、库连不上（找运维，而且天然可重试）、
+#: 等人放行（有人点一下就能继续）—— 四种里有三种其实还有下一步，
+#: 而页面一律显示"已拦截"，读起来全是终结态。
+#:
+#: 判据全部来自记录里**已有**的字段，不新增任何一维：
+#:   · INTERRUPTED / RESUME_BLOCKED —— 现场在检查点里，可续跑
+#:   · EXEC                         —— 执行期故障（连不上、超时），该找运维
+#:   · NO_SQL                       —— 模型没产出 SQL，下一步在**用户**手上
+#:   · R-xx                         —— 护栏拦下，除非拿到审批否则改写法也没用
+#: R-11 另有一档：它是唯一"拿到审批就能继续"的拒绝，有未决审批单时归
+#: waiting_approval，由调用方把审批单 id 传进来（审计不认识 approvals 存储，
+#: 也不该认识 —— 那是两套存储，耦合进来这里就没法单测了）。
+RUNNING = "running"                       # 只落了发起记录，还没收尾
+DONE = "done"
+REJECTED = "rejected"                     # 安全红线：护栏拦下
+WAITING_INPUT = "waiting_input"           # 等用户补充/换个问法
+WAITING_APPROVAL = "waiting_approval"     # 等负责人放行
+NEEDS_OPERATOR = "needs_operator"         # 等运维：库连不上、执行期故障
+INTERRUPTED = "interrupted"               # 断点在，可续跑
+
+
+def stage(rec: dict[str, Any], *, has_open_approval: bool = False) -> str:
+    """一条记录**当前处在哪一档**，以及言下之意是"下一步该谁动手"。"""
+    if rec.get("phase") == PHASE_STARTED:
+        return RUNNING
+    code = rec.get("rejected_by")
+    if code in _OPEN_CODES:
+        return INTERRUPTED
+    if not code:
+        return DONE
+    if code == "EXEC":
+        return NEEDS_OPERATOR
+    if code == "NO_SQL":
+        return WAITING_INPUT
+    if has_open_approval:
+        # 目前只有 R-11 会开审批单；判据用"有没有未决审批"而不是硬编码规则号，
+        # 将来哪条规则接上审批，这里不用改。
+        return WAITING_APPROVAL
+    return REJECTED
+
+
+def _thread_status(last: dict[str, Any], *, has_open_approval: bool = False) -> str:
     """一条线程现在处于什么状态 —— 看它**最后一条**记录。
 
     续跑写新 trace 但 thread 不变，所以线程的当前状态永远由最后一条决定；
     归属才看第一条（见 tasks 的说明）。
     """
-    if last.get("rejected_by") in _OPEN_CODES:
-        return "interrupted"              # 现场还在检查点里，可续跑
-    if last.get("rejected_by"):
-        return "rejected"                 # 被护栏拦下，已收尾
-    return "done"
+    return stage(last, has_open_approval=has_open_approval)
 
 
 # ---- 风险分档 ----------------------------------------------------------------
@@ -261,8 +324,22 @@ def _risk(rec: dict[str, Any], max_rows: int, max_scan_rows: int) -> tuple[str, 
     return "LOW", "只读单步查询，未触及任何边界"
 
 
+#: 每一档**下一步该谁动手**。任务态的全部意义就在这一列 ——
+#: 四种"已拦截"里有三种还有下一步，说不清楚就等于没分档。
+_NEXT_ACTOR = {
+    RUNNING: "系统正在执行",
+    DONE: "",
+    REJECTED: "不可放行：这条触碰的是安全边界，改写法也过不去",
+    WAITING_INPUT: "等你补充：把问题说具体些，或直接写出表名",
+    WAITING_APPROVAL: "等负责人放行：审批通过后凭票重跑",
+    NEEDS_OPERATOR: "等运维：数据源连不上或执行期故障，恢复后可重试",
+    INTERRUPTED: "可续跑：现场还在检查点里",
+}
+
+
 def tasks(path: Path, only_user: str | None = None, *,
-          max_rows: int = 0, max_scan_rows: int = 0) -> list[dict[str, Any]]:
+          max_rows: int = 0, max_scan_rows: int = 0,
+          open_approval_ids: Any = None) -> list[dict[str, Any]]:
     """执行线程，新的在前。``only_user=None`` 给全部，字符串只给这个人发起的。
 
     askdb 没有任务表，任务这个概念完全落在审计流水与检查点上：
@@ -288,13 +365,25 @@ def tasks(path: Path, only_user: str | None = None, *,
     是同一条轴：看得见不等于动得了。
     """
     threads: dict[str, list[dict[str, Any]]] = {}
-    for rec in read_records(path):
+    # 这一页**要**发起记录：一条线程只落了发起、没落收尾，说明它要么正在跑、
+    # 要么跑一半进程没了 —— 两种都得看得见，而这正是原来整片丢失的那一档。
+    for rec in read_records(path, include_started=True):
         tid = rec.get("thread_id") or rec.get("trace_id")
         if tid:
             threads.setdefault(str(tid), []).append(rec)
 
+    open_approvals = {str(a) for a in (open_approval_ids or ())}
     out: list[dict[str, Any]] = []
     for tid, recs in threads.items():
+        # 同一次调用的发起记录与收尾记录共用 trace_id：收尾一到，发起就该退场，
+        # 否则"最后一条"可能是那条占位，线程会永远显示成运行中。
+        done_traces = {r.get("trace_id") for r in recs
+                       if r.get("phase") != PHASE_STARTED}
+        recs = [r for r in recs
+                if r.get("phase") != PHASE_STARTED
+                or r.get("trace_id") not in done_traces]
+        if not recs:
+            continue
         # 归属看这条线程的**第一条**记录：续跑会写新 trace，但发起人不变。
         # 按最后一条判会让"谁续跑谁就成了主人"。
         owner = recs[0].get("user") or ""
@@ -306,8 +395,16 @@ def tasks(path: Path, only_user: str | None = None, *,
         item["attempts_on_thread"] = len(recs)
         item["first_ts"] = recs[0].get("ts", "")
         item["question"] = recs[0].get("question") or last.get("question") or ""
-        item["status"] = _thread_status(last)
-        item["resumable"] = item["status"] == "interrupted"
+        item["status"] = _thread_status(
+            last, has_open_approval=str(last.get("trace_id") or tid) in open_approvals)
+        # RUNNING 也报可续：进程被杀留下的线程与"正在跑"在审计上分不开，
+        # 而前者的现场就在检查点里。这里只给一个**候选**，服务端随后按检查点
+        # 逐条核实（graph.is_resumable），核不过就落回 False —— 不核实就会
+        # 出现"这里说能续、点下去 404"，那正是这个字段要避免的分叉。
+        item["resumable"] = item["status"] in (INTERRUPTED, RUNNING)
+        # 「下一步该谁动手」直接给出去，页面不用再照着状态码写一遍 if/else ——
+        # 写两遍就会漂，而这句话是这一页存在的理由。
+        item["next_actor"] = _NEXT_ACTOR.get(item["status"], "")
         # 归属如实给出去。空串 = 匿名发起，不是"丢了" —— 页面要能说清这一点。
         item["owner"] = owner
         # 风险档是折算出来的，不是记录里的字段 —— 理由一并给出，页面可解释

@@ -1869,16 +1869,31 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         from .audit import tasks as _tasks
         from .graph import is_resumable
 
+        # 未决审批要联查进来：R-11 被拦下的那条**在等人放行**，不是终局。
+        # 只看审计的话它与"碰了安全红线"长得一模一样，页面上都是「已拦截」，
+        # 而两者的下一步一个是"找负责人点一下"、一个是"这条永远过不去"。
+        # 审计不认识 approvals 存储（两套存储，耦合进去就没法单测），
+        # 所以在这里取、按 id 传进去。
+        open_ids: set[str] = set()
+        try:
+            open_ids = {str(a.get("id")) for a in _approvals.state(cfg).values()
+                        if a.get("status") == _approvals.REQUESTED}
+        except Exception:
+            open_ids = set()          # 审批存储不可用不该让任务中心整页打不开
+
         # 阈值传进去做风险折算（审计里没有风险字段，见 audit._risk 的说明）
         items = _tasks(
             cfg.audit_log,
             None if _can(request, _identity.TASKS_ALL) else username,
             max_rows=cfg.max_rows,
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
+            open_approval_ids=open_ids,
         )
-        # 审计只知道这条线程上次以 INTERRUPTED 收尾，不知道现场有没有真的
-        # 落盘、也不知道后来是不是已被续跑跑完 —— 只按审计标 resumable，
-        # 会出现"这里说能续、点下去 404"。以检查点为准再核一遍。
+        # 审计只知道这条线程上次以 INTERRUPTED 收尾（或只落了发起记录），
+        # 不知道现场有没有真的落盘、也不知道后来是不是已被续跑跑完 ——
+        # 只按审计标 resumable，会出现"这里说能续、点下去 404"。
+        # 以检查点为准再核一遍：真正在跑的线程此刻没有可续的断点，
+        # 会在这里被核回 False；被杀掉那条留着现场，核得过。
         for it in items:
             if it.get("resumable"):
                 state = is_resumable(str(it.get("thread_id") or ""), cfg)
@@ -1906,7 +1921,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         owner = ""
         origin_source = ""
-        for rec in read_records(cfg.audit_log):
+        # **带上发起记录**（include_started）：进程被杀那种线程只剩这一条，
+        # 而归属与数据源正是从它取。滤掉它就等于"任务中心说能续跑、这里说
+        # 你当初跑在 builtin 上" —— 实测过一次，就是这条 400。
+        for rec in read_records(cfg.audit_log, include_started=True):
             if (rec.get("thread_id") or rec.get("trace_id")) == req.thread_id:
                 owner = rec.get("user") or ""
                 # 续跑必须回到**当初那个数据源**。审计里存了它（_audit_of 的

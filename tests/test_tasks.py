@@ -171,3 +171,113 @@ def test_anonymous_created_task_keeps_old_semantics(client, acfg):
                                  rejected="INTERRUPTED", ts=_now())])
     r = client.post("/api/resume", json={"thread_id": "aaaaaaaaaaa1"})
     assert r.status_code == 404          # 没有检查点，但不是被归属挡下的
+
+
+# ---------------------------------------------------------------------------
+# 任务态分档（2026-09-07）
+#
+# 在此之前只有 done / rejected / interrupted 三档，六种语义完全不同的结局被
+# 压进同一个"已拦截"：碰了安全红线、模型答不上来、库连不上、等人放行 ——
+# 四种里有三种其实还有下一步，而页面一律显示终结态。判据全部来自记录里
+# **已有**的收尾码，不新增任何一维（与 _risk 同一套确定性折算）。
+# ---------------------------------------------------------------------------
+
+def test_stage_tells_who_acts_next(acfg):
+    """一个收尾码一档，且每一档都能回答"下一步该谁动手"。"""
+    cases = [
+        (None, audit.DONE),
+        ("R-03", audit.REJECTED),            # 安全红线：改写法也过不去
+        ("R-02", audit.REJECTED),
+        ("NO_SQL", audit.WAITING_INPUT),     # 模型没产出 SQL，球在用户那边
+        ("EXEC", audit.NEEDS_OPERATOR),      # 库连不上，该找运维且可重试
+        ("INTERRUPTED", audit.INTERRUPTED),  # 现场在检查点里
+        ("RESUME_BLOCKED", audit.INTERRUPTED),
+    ]
+    for code, want in cases:
+        assert audit.stage({"rejected_by": code}) == want, code
+
+
+def test_pending_approval_is_not_a_rejection(acfg):
+    """R-11 挂起是**等人放行**，不是终局 —— 与"碰了红线"必须分得开。"""
+    rec = {"rejected_by": "R-11", "trace_id": "t1"}
+    assert audit.stage(rec) == audit.REJECTED
+    assert audit.stage(rec, has_open_approval=True) == audit.WAITING_APPROVAL
+
+
+def test_tasks_marks_thread_waiting_approval(acfg):
+    """未决审批要联查进任务列表，否则页面上它与"已拦截"长得一模一样。"""
+    _write(acfg.audit_log, [{**_rec("a1", "t1", user="alice", rejected="R-11",
+                                    ts=_now()), "trace_id": "a1"}])
+    plain = audit.tasks(acfg.audit_log)
+    assert plain[0]["status"] == audit.REJECTED
+
+    joined = audit.tasks(acfg.audit_log, open_approval_ids={"a1"})
+    assert joined[0]["status"] == audit.WAITING_APPROVAL
+    assert "放行" in joined[0]["next_actor"]
+
+
+def test_started_record_makes_a_crashed_thread_visible(acfg):
+    """发起记录：进程中途被杀时，任务不能从系统里整片消失。
+
+    2026-09-07 实测 kill -9 打在查询中途 —— 检查点写了、审计一条没写，
+    任务中心列不出来，凭 thread_id 也续不了（数据源只记在审计里）。
+    """
+    _write(acfg.audit_log, [{
+        "trace_id": "c1", "thread_id": "c1", "ts": _now(), "kind": "ask",
+        "phase": audit.PHASE_STARTED, "user": "alice", "role": "PRODUCT",
+        "question": "跑一半就没了的那条", "source": "src_x",
+        "rejected_by": None,
+    }])
+    items = audit.tasks(acfg.audit_log)
+    assert [t["thread_id"] for t in items] == ["c1"]
+    assert items[0]["status"] == audit.RUNNING
+    assert items[0]["owner"] == "alice"
+    assert items[0]["source"] == "src_x", "数据源必须跟着发起记录走，否则续跑回不去"
+
+
+def test_started_record_steps_aside_once_the_result_lands(acfg):
+    """收尾一到，占位就该退场 —— 否则线程会永远显示成运行中。"""
+    ts = _now()
+    _write(acfg.audit_log, [
+        {"trace_id": "d1", "thread_id": "d1", "ts": ts, "kind": "ask",
+         "phase": audit.PHASE_STARTED, "user": "alice", "rejected_by": None},
+        _rec("d1", "d1", user="alice", rejected=None, ts=_now(1)),
+    ])
+    items = audit.tasks(acfg.audit_log)
+    assert len(items) == 1
+    assert items[0]["status"] == audit.DONE
+
+
+def test_started_records_never_reach_the_statistics(acfg):
+    """发起记录没有结果、没有成本、没有收尾码。
+
+    进了统计就是把每次调用数成两次、把成功率稀释一半 —— 所以 read_records
+    默认滤掉它，只有任务中心显式要。
+    """
+    ts = _now()
+    _write(acfg.audit_log, [
+        {"trace_id": "e1", "thread_id": "e1", "ts": ts, "kind": "ask",
+         "phase": audit.PHASE_STARTED, "user": "alice", "rejected_by": None},
+        _rec("e1", "e1", user="alice", rejected=None, ts=_now(1)),
+    ])
+    assert len(audit.read_records(acfg.audit_log)) == 1
+    assert len(audit.read_records(acfg.audit_log, include_started=True)) == 2
+    assert audit.stats(acfg.audit_log)["calls"] == 1
+
+
+def test_resume_finds_the_source_from_the_started_record(client, acfg):
+    """只剩发起记录的线程，续跑要能回到**当初那个数据源**。
+
+    实测过一次这条 400：任务中心说能续跑，/api/resume 却回
+    「这条任务当初跑在数据源『builtin』上」—— 因为它读审计时把发起记录
+    滤掉了，而被杀掉的线程只剩这一条。归属与数据源都在它身上。
+    """
+    _write(acfg.audit_log, [{
+        "trace_id": "aaaaaaaaaaa1", "thread_id": "aaaaaaaaaaa1", "ts": _now(),
+        "kind": "ask", "phase": audit.PHASE_STARTED, "user": "",
+        "question": "跑一半就没了的那条", "source": "", "rejected_by": None,
+    }])
+    r = client.post("/api/resume", json={"thread_id": "aaaaaaaaaaa1"})
+    # 没有检查点所以仍是 404 —— 但**不是**被"回不到那个数据源"挡下的 400。
+    # 这两个状态码分得开，这条用例才有意义。
+    assert r.status_code == 404, r.json()

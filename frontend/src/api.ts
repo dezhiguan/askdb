@@ -845,9 +845,20 @@ export interface Task {
   source_name?: string | null
   elapsed_ms: number
   cost_cny: number | null
-  /** 线程当前状态，看它最后一条记录：
-   *  interrupted=现场还在检查点里 / rejected=被护栏拦下 / done=正常收尾 */
-  status: 'interrupted' | 'rejected' | 'done'
+  /** 线程当前状态，看它最后一条记录。**每一档都对应一个"下一步该谁动手"**，
+   *  这是分档的全部意义 —— 2026-09-07 之前四种结局压在同一个 rejected 里，
+   *  页面一律显示「已拦截」，而其中三种其实还有下一步：
+   *    running          系统正在执行（只落了发起记录，还没收尾）
+   *    done             正常收尾
+   *    rejected         安全红线：护栏拦下，改写法也过不去
+   *    waiting_input    等用户补充：模型没产出 SQL，把问题说具体些
+   *    waiting_approval 等负责人放行：审批通过后凭票重跑
+   *    needs_operator   等运维：数据源连不上或执行期故障，恢复后可重试
+   *    interrupted      断点在，可续跑 */
+  status: 'running' | 'done' | 'rejected' | 'waiting_input'
+        | 'waiting_approval' | 'needs_operator' | 'interrupted'
+  /** 下一步该谁动手，后端给的原话。页面直接显示，别在前端再写一遍 if/else。 */
+  next_actor?: string
   /** 被哪条护栏规则拦下（R-03 / R-11 / EXEC …）。未被拦下为 null。 */
   rejected_by?: string | null
   /** 风险档与理由。审计里没有这个字段，是后端按已记录事实**折算**出来的

@@ -76,36 +76,53 @@ function withinSince(ts: string, since: string): boolean {
 }
 
 const STATUS_LABEL: Record<Task['status'], string> = {
-  interrupted: '等待补充',
+  running: '运行中',
+  interrupted: '可续跑',
+  waiting_input: '等待补充',
+  waiting_approval: '等待审批',
+  needs_operator: '等待运维',
   rejected: '已拦截',
   done: '已完成',
 }
 
 /** 原型：completed / running 走绿色，其余一律 .status.wait */
 const STATUS_WAIT: Record<Task['status'], boolean> = {
+  running: false,
   interrupted: true,
+  waiting_input: true,
+  waiting_approval: true,
+  needs_operator: true,
   rejected: true,
   done: false,
 }
 
 const STATE_GLYPH: Record<Task['status'], string> = {
+  running: '·',
   interrupted: '?',
+  waiting_input: '?',
+  waiting_approval: '!',
+  needs_operator: '!',
   rejected: '!',
   done: '✓',
 }
 
-/* 状态筛选下拉。原型给出七档，后端目前只落地其中三档（INPUT / DONE / BLOCK）——
-   NEW / RUN / APPROVAL 没有对应数据，选中后列表就是空的。这里**不**把它们藏起来：
-   下拉是状态口径的说明书，藏掉等于让人以为这三种状态不存在；空列表由空态文案说明。 */
-type StatusFilter = 'all' | 'pending' | 'running' | 'interrupted' | 'approval' | 'done' | 'rejected'
+/* 状态筛选下拉。七档**现在全部有对应数据**：2026-09-07 起后端按收尾码做确定性
+   折算（audit.stage），并落发起记录，运行中与等待审批不再是空档。
+   「待执行」是唯一还没有数据的一档 —— askdb 不排队，收到即执行，留在这里是
+   为了让状态口径完整可读，选中后由空态文案说明。 */
+type StatusFilter = 'all' | 'pending' | 'running' | 'interrupted' | 'waiting_input'
+  | 'waiting_approval' | 'needs_operator' | 'done' | 'rejected'
 
-const FILTER_ORDER: StatusFilter[] = ['all', 'pending', 'running', 'interrupted', 'approval', 'done', 'rejected']
+const FILTER_ORDER: StatusFilter[] = ['all', 'pending', 'running', 'waiting_input',
+  'waiting_approval', 'needs_operator', 'interrupted', 'done', 'rejected']
 const FILTER_LABEL: Record<StatusFilter, string> = {
   all: '全部状态',
   pending: '待执行',
   running: '运行中',
-  interrupted: '等待补充',
-  approval: '等待审批',
+  waiting_input: '等待补充',
+  waiting_approval: '等待审批',
+  needs_operator: '等待运维',
+  interrupted: '可续跑',
   done: '已完成',
   rejected: '已拦截',
 }
@@ -113,8 +130,10 @@ const FILTER_CODE: Record<StatusFilter, string> = {
   all: 'ALL',
   pending: 'NEW',
   running: 'RUN',
-  interrupted: 'INPUT',
-  approval: 'APPROVAL',
+  waiting_input: 'INPUT',
+  waiting_approval: 'APPROVAL',
+  needs_operator: 'OPS',
+  interrupted: 'RESUME',
   done: 'DONE',
   rejected: 'BLOCK',
 }
@@ -205,12 +224,19 @@ export function TasksPage({ onNavigate, notify, me }: {
   const stats = useMemo(() => {
     const today = new Date().toDateString()
     const interrupted = items.filter(task => task.status === 'interrupted').length
+    const waitingInput = items.filter(task => task.status === 'waiting_input').length
+    const waitingApproval = items.filter(task => task.status === 'waiting_approval').length
+    const needsOperator = items.filter(task => task.status === 'needs_operator').length
+    const running = items.filter(task => task.status === 'running').length
     const rejected = items.filter(task => task.status === 'rejected').length
     const done = items.filter(task => task.status === 'done')
     const doneToday = done.filter(task => new Date(task.ts).toDateString() === today).length
+    // 成功率的分母只算**真收尾**的：等补充、等审批、等运维都还有下一步，
+    // 把它们记成失败，这个数字就会随"有多少人问得含糊"上下浮动，与系统好坏无关。
     const settled = done.length + rejected
     const rate = settled ? `成功率 ${((done.length / settled) * 100).toFixed(1)}%` : '暂无收尾记录'
-    return { interrupted, rejected, doneToday, rate }
+    return { interrupted, waitingInput, waitingApproval, needsOperator, running,
+             rejected, doneToday, rate }
   }, [items])
 
   const matched = useMemo(() => items.filter(task => {
@@ -326,11 +352,24 @@ export function TasksPage({ onNavigate, notify, me }: {
       />
 
       <div className="stats">
-        {/* 后端只记录线程的终态，没有「正在跑」这一维，不拿数字凑 */}
-        <div className="stat stat-muted"><span>运行中</span><strong>—</strong><small>后端不跟踪运行中状态</small></div>
-        <div className="stat"><span>待处理</span><strong>{stats.interrupted}</strong><small>{stats.interrupted} 补充信息 · 0 审批</small></div>
+        {/* 2026-09-07 起后端在发起时先落一条记录，「运行中」才有真数字可给。
+            它同时也是"跑一半进程没了"那一档 —— 那种线程原来整片从系统里消失。 */}
+        <div className="stat"><span>运行中</span><strong>{stats.running}</strong><small>已发起未收尾</small></div>
+        {/* 「待处理」= 还等着**某个人**动手的那些。三档分开写：等谁动手不一样，
+            合成一个数字就等于让人自己去猜该找谁。审批那格原来写死 0。 */}
+        <div className="stat">
+          <span>待处理</span>
+          <strong>{stats.waitingInput + stats.waitingApproval + stats.needsOperator + stats.interrupted}</strong>
+          <small>
+            {stats.waitingInput} 补充信息 · {stats.waitingApproval} 审批
+            · {stats.needsOperator} 运维 · {stats.interrupted} 可续跑
+          </small>
+        </div>
         <div className="stat"><span>今日完成</span><strong>{stats.doneToday}</strong><small>{stats.rate}</small></div>
-        <div className="stat"><span>已拦截</span><strong>{stats.rejected}</strong><small>越权或写入意图</small></div>
+        {/* 小字只说这一档真正是什么：护栏拦下的。"模型答不上来"已经分到
+            「等待补充」，不再混进这个数字里 —— 原来 62 条 rejected 里 57 条
+            是 NO_SQL，而这行小字写着"越权或写入意图"。 */}
+        <div className="stat"><span>已拦截</span><strong>{stats.rejected}</strong><small>触碰安全边界</small></div>
       </div>
 
       {error && <div className="audit-error">读取任务失败：{error}</div>}
@@ -395,8 +434,22 @@ export function TasksPage({ onNavigate, notify, me }: {
               </div>
               {task.status === 'interrupted' ? (
                 <>
-                  <div className="task-meta"><span>缺少条件</span><strong>—</strong></div>
+                  <div className="task-meta"><span>现场</span><strong>检查点在</strong></div>
                   <div className="task-meta"><span>当前节点</span><strong>INTERRUPT</strong></div>
+                </>
+              ) : task.status === 'running' ? (
+                <>
+                  <div className="task-meta"><span>阶段</span><strong>执行中</strong></div>
+                  <div className="task-meta"><span>已发起</span><strong>{fmtClock(task.ts)}</strong></div>
+                </>
+              ) : task.status === 'waiting_approval' || task.status === 'needs_operator'
+                   || task.status === 'waiting_input' ? (
+                <>
+                  <div className="task-meta"><span>风险</span><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
+                  <div className="task-meta">
+                    <span>原因</span>
+                    <strong title={ruleTitle(task.rejected_by ?? '')}>{task.rejected_by || '—'}</strong>
+                  </div>
                 </>
               ) : task.status === 'rejected' ? (
                 <>
@@ -414,7 +467,8 @@ export function TasksPage({ onNavigate, notify, me }: {
                   <div className="task-meta"><span>耗时</span><strong>{fmtDuration(task.elapsed_ms)}</strong></div>
                 </>
               )}
-              <div><span className={`status ${STATUS_WAIT[task.status] ? 'wait' : ''}`}>{STATUS_LABEL[task.status]}</span></div>
+              <div><span className={`status ${STATUS_WAIT[task.status] ? 'wait' : ''}`}
+                         title={task.next_actor ?? ''}>{STATUS_LABEL[task.status]}</span></div>
               {task.status === 'done' ? (
                 <button className="ghost task-view-result" onClick={() => openDetail(task, 'result')}>查看结果</button>
               ) : (
@@ -556,16 +610,67 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
     }
     : null
 
-  const reason = task.status === 'rejected'
+  /* 三档"还有下一步"的结局，原来都落在 rejected 这一支里，弹窗一律说
+     「改写问题后重新发起」—— 对等审批的人是错的（该去找负责人），对库连不上
+     的人更是错的（改写法一万遍也连不上）。nextStep 是这个弹窗唯一有用的一句话，
+     不能对三种人说同一句。 */
+  const reason = task.status === 'waiting_approval'
+    ? {
+      category: `等待审批 · ${task.rejected_by ?? 'R-11'}`,
+      node: task.rejected_by ?? '高成本查询',
+      detail: replay?.snapshots?.find(item => item.error)?.error
+        ?? '这次查询超过成本阈值，已挂起等待放行；SQL 没有在数据库上执行。',
+      policy: `${task.kind} · ${task.role}`,
+      nextStep: task.next_actor
+        || '审批通过后凭票重跑；审批是一次性的，用过即作废。',
+      action: 'none' as const,
+      actionLabel: '等待负责人放行',
+    }
+    : task.status === 'needs_operator'
+    ? {
+      category: '执行期故障 · EXEC',
+      node: '数据源',
+      detail: replay?.snapshots?.find(item => item.error)?.error
+        ?? '这次调用在执行阶段失败：数据源连不上，或执行期出错。',
+      policy: `${task.kind} · ${task.role}`,
+      nextStep: task.next_actor
+        || '这不是权限问题，改写法也过不去。等数据源恢复后原样重试即可。',
+      action: 'revise' as const,
+      actionLabel: '恢复后重试',
+    }
+    : task.status === 'waiting_input'
+    ? {
+      category: '信息不足 · NO_SQL',
+      node: '语义理解',
+      detail: replay?.snapshots?.find(item => item.error)?.error
+        ?? '模型没能从这个问题里确定要查什么，没有产出 SQL。',
+      policy: `${task.kind} · ${task.role}`,
+      nextStep: task.next_actor
+        || '把问题说具体些（指明表名、时间范围或指标口径）后重新发起。',
+      action: 'revise' as const,
+      actionLabel: '补充后重新提问',
+    }
+    : task.status === 'rejected'
     ? {
       category: `护栏拒绝 · ${replay?.rejected_by ?? 'GUARD'}`,
       node: replay?.rejected_by ?? '安全护栏',
       detail: replay?.snapshots?.find(item => item.error)?.error
         ?? '这次调用被护栏拦下，SQL 没有在数据库上执行。',
       policy: `${task.kind} · ${task.role}`,
-      nextStep: '改写问题或缩小取数范围后重新发起；被拦下的调用不会留下可续跑的断点。',
+      nextStep: task.next_actor
+        || '这条触碰的是安全边界，改写法也过不去；换个能在开放范围内回答的问法。',
       action: 'revise' as const,
       actionLabel: '调整后重新提问',
+    }
+    : task.status === 'running'
+    ? {
+      category: '执行中 · RUNNING',
+      node: '执行图',
+      detail: '这条线程已经发起、还没有收尾记录：要么正在跑，要么跑到一半进程没了。',
+      policy: `${task.kind} · ${task.role}`,
+      nextStep: '稍后刷新；若长时间停在这里，到执行追踪看它停在哪个节点。',
+      action: 'none' as const,
+      actionLabel: '执行中',
     }
     : task.status === 'interrupted'
       ? {

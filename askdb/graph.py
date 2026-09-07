@@ -29,6 +29,7 @@ from .config import Config
 from .executor import DataSourceError, Executor
 from .llm import LlmClient, LlmNotConfigured
 from .quota import QuotaExceeded, build_quota
+from .audit import PHASE_STARTED
 from .trace import Tracer, now_iso, write_audit
 
 
@@ -867,6 +868,28 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
     own_exec = executor is None
     ex = executor or Executor(cfg)
     deps = Deps(cfg=cfg, llm=llm or LlmClient(cfg), executor=ex, tracer=tracer)
+
+    # **发起记录先落盘，再进图。**
+    #
+    # 收尾记录只在图跑完（或异常被兜住）之后才写。进程在中途被杀时，检查点
+    # 已经存了现场，审计却一条都没有 —— 而任务中心完全由审计构建，于是这条
+    # 线程从系统里彻底消失：列不出来，凭 thread_id 也续不了（数据源只记在
+    # 审计里，读不到就退回内置源）。2026-09-07 实测过一次，补上这条记录之后
+    # 同一个线程立刻恢复成 interrupted / resumable 并真的续上了。
+    #
+    # 它带的是"这条线程存在、归谁、打哪个库、问的什么"，不带结果与成本；
+    # read_records 默认把它滤掉，只有任务中心显式要。收尾记录与它共用
+    # trace_id，一到就把它顶掉（见 audit.tasks）。
+    write_audit(cfg.audit_log, {
+        "trace_id": trace_id, "ts": now_iso(), "kind": kind,
+        "phase": PHASE_STARTED,
+        "thread_id": thread_id,
+        "org_id": org, "question": question,
+        "role": cfg.role or "ANONYMOUS", "user": cfg.user or "",
+        "source": cfg.source_id or "builtin",
+        "source_name": cfg.source_name or cfg.path,
+        "rejected_by": None, "steps": [],
+    })
 
     interrupted: Exception | None = None
     out: dict[str, Any] = {}
