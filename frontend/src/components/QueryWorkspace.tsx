@@ -85,6 +85,9 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
       meta: `${c.type} · ${c.host || '—'} · 开放 ${c.table_count} 张表`,
       tables: c.table_count,
       dialect: DIALECT[c.type] ?? c.type,
+      // 右栏「数据库角色」按它报 PROD-RO / TEST-RO。此前没带过来，
+      // 于是不管连的是生产只读还是测试库，那一格都写着通用的 READ-ONLY
+      env: c.env,
     })),
   ]
   // 既没有内置源、运行时也一个都没加时，options 是空的 —— 兜住，别让 options[0]
@@ -492,6 +495,8 @@ interface SourceOption {
   code: string
   name: string
   meta: string
+  /** 环境归属（prod_ro / test）。内置源没有，右栏据此退回通用写法 */
+  env?: string
   /** 开放表数。0 张的源查不出任何东西 —— 与其让人查完撞 R-03，不如直接禁选 */
   tables: number
   /** SQL 方言。切了源方言就变了，SQL 页签要如实标 */
