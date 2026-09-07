@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { writeGuard } from './writeGuard'
 import { AppShell, PageHeader } from './components/AppShell'
 import { LoginScreen } from './components/LoginScreen'
@@ -14,7 +14,7 @@ import { PermissionsPage } from './pages/PermissionsPage'
 import { TasksPage } from './pages/TasksPage'
 import { TracesPage } from './pages/TracesPage'
 import type { ModalName, View } from './types'
-import { fetchMe, logout, type Me } from './api'
+import { fetchMe, logout, setLoginRequiredHandler, type Me } from './api'
 import { useHealth } from './useHealth'
 import { useSources } from './useSources'
 import './styles/theme.css'
@@ -52,6 +52,30 @@ function App() {
   // 页面上那些「当前能查什么」的显示不跟着变就是在说谎
   const reloadMe = () => { fetchMe().then(setMe).catch(() => setMe(null)) }
   useEffect(reloadMe, [])
+
+  // 登录成功后用它把当前页整块重挂。会话失效时页面上留着的是一批读失败的
+  // 空态与红条，登录只换回了身份，不会让那些已经发过的请求自己再来一次 ——
+  // 不重挂就要人再手动刷一次页面，那正是这次要消灭的那步。
+  const [sessionEpoch, setSessionEpoch] = useState(0)
+
+  // 会话在页面开着的时候失效（票过期、换了签名密钥、实例把 auth.required
+  // 打开了）：接口层统一抛 LoginRequired 并叫到这里。做两件事 —— 重取身份，
+  // 摆出登录页。此前没有这条线，后果是每个页面各自把 401 画成一条红色
+  // 「读取失败」，看的人会去查一个不存在的故障（2026-09-07 线上就是这样）。
+  //
+  // 只响应第一次：页面上有几处在轮询（追踪、离线回归），会话一失效它们会
+  // 一直撞同一堵墙，每撞一次就重取一次身份、再弹一次登录页纯属噪音。
+  // 登录页关掉或登录成功即复位，下一次失效照样能叫醒。
+  const sessionLost = useRef(false)
+  useEffect(() => {
+    setLoginRequiredHandler(() => {
+      if (sessionLost.current) return
+      sessionLost.current = true
+      reloadMe()
+      setLoginOpen(true)
+    })
+    return () => setLoginRequiredHandler(null)
+  }, [])
 
   // 登录页是**落地页**：未登录时一进来就显示它。
   //
@@ -111,7 +135,9 @@ function App() {
         onSignOut={() => { logout().then(() => { reloadMe(); notify('已退出，回到匿名可见范围') }) }}
         notice={<MockNotice view={view} />}
       >
-        {page}
+        {/* key 变了就整页重挂 —— 重新登录之后各页自己去把数据取回来。
+            Fragment 上挂 key 是为了不额外插一层 DOM 把栅格挤变形 */}
+        <Fragment key={sessionEpoch}>{page}</Fragment>
       </AppShell>
       {/* me 还没拿到时**不显示** —— 拿不准是不是要登录就先别糊一扇门上去，
           那会在每次刷新时闪一下。 */}
@@ -119,14 +145,16 @@ function App() {
         <LoginScreen
           me={me}
           dismissible={!gated}
-          onClose={() => setLoginOpen(false)}
+          onClose={() => { sessionLost.current = false; setLoginOpen(false) }}
           onDone={() => {
+            sessionLost.current = false
             setLoginOpen(false)
             // 登录成功就不再是"跳过"状态了，清掉标记：下次退出登录时
             // 应当重新落在登录页，而不是被上一次的跳过决定顺延
             sessionStorage.removeItem(SKIP_LOGIN_KEY)
             setSkipped(false)
             reloadMe()
+            setSessionEpoch(n => n + 1)
           }}
           onSkip={() => {
             sessionStorage.setItem(SKIP_LOGIN_KEY, '1')

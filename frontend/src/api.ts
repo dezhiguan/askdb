@@ -7,6 +7,53 @@
  * 其余页面仍在样例数据上，接口逐条接回来时在这里加函数，不要在组件里直接 fetch。
  */
 
+/** 会话整体不作数了。
+ *
+ *  后端两道门（server.py 的 _gate_reads / _gate_writes）统一用
+ *  `code: login_required` 说这件事，接口本身的 401 里没有 code —— 那类是
+ *  「这个动作要登录」（扫描数据源、创建任务），页面照常把话渲染出来即可。
+ *  这里说的是另一回事：**当前这张会话票整体不作数了**（票过期、换了签名
+ *  密钥，或者实例把 auth.required 打开了）。这时候画一条红色的「读取失败」
+ *  是把一扇门说成一场故障 —— 看的人会去查一个不存在的事故。 */
+export class LoginRequired extends Error {
+  readonly code: string
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = 'LoginRequired'
+    this.code = code
+  }
+}
+
+/** 会话失效时通知外壳去重取身份、把登录页摆出来。
+ *
+ *  挂在模块上而不是每个调用点各接一次：二十多个接口撞的是同一件事，
+ *  逐个接等于给「将来新增一个忘了接」留位置，而漏掉的那个会以红色故障条
+ *  的样子出现，没有任何信号说它其实只是没登录。 */
+let onLoginRequired: (() => void) | null = null
+
+export function setLoginRequiredHandler(handler: (() => void) | null): void {
+  onLoginRequired = handler
+}
+
+/** 带会话失效识别的 fetch。
+ *
+ *  本文件里除 /api/auth/me 与登录/退出自己那几条之外，一律走它 ——
+ *  /api/auth/me 是读门白名单，永远不会返回 login_required；真让它也走这里，
+ *  一旦哪天它 401，处理器又去重取它，就是一个自己喂自己的死循环。 */
+async function request(input: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(input, init)
+  if (response.status === 401) {
+    // clone 之后再读：正文只能消费一次，调用方还要拿它取 detail
+    const body = await response.clone().json().catch(() => null) as
+      { code?: string; detail?: string } | null
+    if (body?.code === 'login_required' || body?.code === 'login_unavailable') {
+      onLoginRequired?.()
+      throw new LoginRequired(body.code, body.detail || '会话已失效，请重新登录。')
+    }
+  }
+  return response
+}
+
 export interface Health {
   ok: boolean
   config: string
@@ -41,7 +88,7 @@ export interface Health {
 }
 
 export async function fetchHealth(): Promise<Health> {
-  const response = await fetch('/api/health')
+  const response = await request('/api/health')
   if (!response.ok) throw new Error(`/api/health ${response.status}`)
   return response.json()
 }
@@ -194,13 +241,13 @@ export async function fetchAudit(params: {
   })
   if (params.status) query.set('status', params.status)
   if (params.source !== undefined) query.set('source', params.source)
-  const response = await fetch(`/api/audit?${query}`)
+  const response = await request(`/api/audit?${query}`)
   if (!response.ok) throw new Error(`/api/audit ${response.status}`)
   return response.json()
 }
 
 export async function fetchAuditStats(days = 30): Promise<AuditStats> {
-  const response = await fetch(`/api/audit/stats?days=${days}`)
+  const response = await request(`/api/audit/stats?days=${days}`)
   if (!response.ok) throw new Error(`/api/audit/stats ${response.status}`)
   return response.json()
 }
@@ -248,7 +295,7 @@ export type TraceChainResult =
 export async function fetchTraceChain(traceId: string): Promise<TraceChainResult> {
   let response: Response
   try {
-    response = await fetch(`/api/trace?trace_id=${encodeURIComponent(traceId)}`)
+    response = await request(`/api/trace?trace_id=${encodeURIComponent(traceId)}`)
   } catch (e) {
     // 网络层的失败也要说出来。吞掉它就又回到"空白等于没有数据"。
     return { status: 'failed', message: String((e as Error).message || e) }
@@ -259,7 +306,7 @@ export async function fetchTraceChain(traceId: string): Promise<TraceChainResult
 }
 
 export async function fetchReplay(traceId: string): Promise<ReplayResult> {
-  const response = await fetch(`/api/replay?trace_id=${encodeURIComponent(traceId)}`)
+  const response = await request(`/api/replay?trace_id=${encodeURIComponent(traceId)}`)
   if (response.status === 429) return { status: 'rate_limited' }
   if (!response.ok) return { status: 'not_found' }
   return { status: 'ok', data: await response.json() }
@@ -359,7 +406,7 @@ function dataSourceReason(data: { error?: string; hint?: string }): string {
 }
 
 export async function checkMetrics(): Promise<{ checked_at: string; items: MetricCheck[] }> {
-  const response = await fetch('/api/metrics/check')
+  const response = await request('/api/metrics/check')
   if (!response.ok) throw new Error(`/api/metrics/check ${response.status}`)
   const data = await response.json()
   // 连不上库时 items 是空的。不拦下来就会显示成"一条口径都没有"，
@@ -409,13 +456,13 @@ export async function fetchSchema(source?: string): Promise<Schema> {
   // 不带 source 时取内置配置 —— 但查询页**必须**带上：推荐问题、示例 SQL
   // 都从这份 schema 生成，取错源就会把另一个库的表名推给用户。
   const query = source ? `?source=${encodeURIComponent(source)}` : ''
-  const response = await fetch(`/api/schema${query}`)
+  const response = await request(`/api/schema${query}`)
   if (!response.ok) throw new Error(`/api/schema ${response.status}`)
   return response.json()
 }
 
 export async function fetchSelfCheck(): Promise<SelfCheck> {
-  const response = await fetch('/api/selfcheck')
+  const response = await request('/api/selfcheck')
   if (!response.ok) throw new Error(`/api/selfcheck ${response.status}`)
   const data = await response.json()
   // 这里判 error 而不是判 ok：自检项没过同样是 ok:false，那是正常结果，
@@ -425,7 +472,7 @@ export async function fetchSelfCheck(): Promise<SelfCheck> {
 }
 
 export async function fetchIntrospect(): Promise<Introspect> {
-  const response = await fetch('/api/introspect')
+  const response = await request('/api/introspect')
   if (!response.ok) throw new Error(`/api/introspect ${response.status}`)
   return response.json()
 }
@@ -515,7 +562,7 @@ function rateLimited(response: Response, detail: string): RateLimited {
 /** 后端把不合规与连不上都表述成 detail 文本，原样抛给用户看 ——
  *  「操作失败」这种话对排查毫无帮助。 */
 async function post<T>(url: string, body: unknown, method = 'POST'): Promise<T> {
-  const response = await fetch(url, {
+  const response = await request(url, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -527,7 +574,7 @@ async function post<T>(url: string, body: unknown, method = 'POST'): Promise<T> 
 }
 
 export async function fetchSources(): Promise<SourceList> {
-  const response = await fetch('/api/sources')
+  const response = await request('/api/sources')
   if (!response.ok) throw new Error(`/api/sources ${response.status}`)
   return response.json()
 }
@@ -538,7 +585,7 @@ export const createSource = (input: SourceInput) =>
   post<{ source: SourceCard } & Probe>('/api/sources', input)
 
 export async function scanSource(id: string): Promise<Probe> {
-  const response = await fetch(`/api/sources/${id}/scan`)
+  const response = await request(`/api/sources/${id}/scan`)
   const data = await response.json().catch(() => null)
   if (response.status === 429) throw rateLimited(response, data?.detail)
   if (!response.ok) throw new Error(data?.detail || `扫描失败 ${response.status}`)
@@ -629,7 +676,7 @@ export const runSql = (sql: string, source = '', orgId?: number) =>
 /** 从断点续跑。thread_id 非法/不存在/已跑完/不属于当前账号，一律 404 且响应一致。
  *  枚举入口只对**已登录用户**开放，且只列自己的（见 /api/tasks）。 */
 export async function resumeTask(threadId: string): Promise<AskResult | null> {
-  const response = await fetch('/api/resume', {
+  const response = await request('/api/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ thread_id: threadId }),
@@ -680,7 +727,7 @@ export interface RoleMember {
 }
 
 export async function fetchRoles(): Promise<RolesResponse> {
-  const response = await fetch('/api/identity/roles')
+  const response = await request('/api/identity/roles')
   if (!response.ok) throw new Error(`/api/identity/roles ${response.status}`)
   return response.json()
 }
@@ -698,7 +745,7 @@ export class Forbidden extends Error {
 }
 
 export async function fetchMembers(roleCode: string): Promise<RoleMember[]> {
-  const response = await fetch(`/api/identity/members?role=${encodeURIComponent(roleCode)}`)
+  const response = await request(`/api/identity/members?role=${encodeURIComponent(roleCode)}`)
   if (response.status === 401 || response.status === 403) {
     throw new Forbidden(`/api/identity/members ${response.status}`)
   }
@@ -709,7 +756,7 @@ export async function fetchMembers(roleCode: string): Promise<RoleMember[]> {
 /** 管理员令牌只放在内存里，刷新即失效。
  *  它是部署方持有的共享口令，落进 localStorage 等于把它长期留在浏览器里。 */
 async function adminWrite(url: string, token: string, init: RequestInit): Promise<void> {
-  const response = await fetch(url, {
+  const response = await request(url, {
     ...init,
     headers: { 'Content-Type': 'application/json', 'X-Askdb-Admin-Token': token },
   })
@@ -756,6 +803,9 @@ export async function fetchMe(): Promise<Me> {
   return response.json()
 }
 
+/** 登录 / 退出自己不走 request()：口令不对时后端返回的 401 里没有 code，
+ *  本来也不会被当成"会话失效"，但这条路径是**恢复会话的那条路**，
+ *  让它去触发"会话失效"处理器只会绕回它自己。 */
 async function authPost(url: string, body: unknown): Promise<void> {
   const response = await fetch(url, {
     method: 'POST',
@@ -822,7 +872,7 @@ export interface TasksResult {
 }
 
 export async function fetchTasks(): Promise<TasksResult> {
-  const response = await fetch('/api/tasks')
+  const response = await request('/api/tasks')
   if (!response.ok) throw new Error(`/api/tasks ${response.status}`)
   const body = await response.json()
   return { items: body.items, user: body.user || '' }
@@ -893,7 +943,7 @@ export interface LiveQuality {
 }
 
 export async function fetchLiveQuality(days: number): Promise<LiveQuality> {
-  const response = await fetch(`/api/quality/live?days=${days}`)
+  const response = await request(`/api/quality/live?days=${days}`)
   if (!response.ok) throw new Error(`/api/quality/live ${response.status}`)
   return response.json()
 }
@@ -1051,7 +1101,7 @@ export interface EvalRunState {
 }
 
 export async function fetchEvalRun(): Promise<EvalRunState> {
-  const response = await fetch('/api/eval/run')
+  const response = await request('/api/eval/run')
   if (!response.ok) throw new Error(`/api/eval/run ${response.status}`)
   return response.json()
 }
@@ -1059,14 +1109,14 @@ export async function fetchEvalRun(): Promise<EvalRunState> {
 /** 触发一轮回归。已在跑（409）与本部署不含评测套件（501）都要把后端的
  *  说明原样带出来 —— 这两种情况页面上的处置完全不同。 */
 export async function startEvalRun(): Promise<EvalRunState> {
-  const response = await fetch('/api/eval/run', { method: 'POST' })
+  const response = await request('/api/eval/run', { method: 'POST' })
   const body = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(body?.detail || `/api/eval/run ${response.status}`)
   return body
 }
 
 export async function fetchOfflineQuality(): Promise<OfflineQuality> {
-  const response = await fetch('/api/eval')
+  const response = await request('/api/eval')
   if (!response.ok) throw new Error(`/api/eval ${response.status}`)
   return response.json()
 }
@@ -1097,7 +1147,7 @@ export interface ApprovalsResult {
 }
 
 export async function fetchApprovals(): Promise<ApprovalsResult> {
-  const response = await fetch('/api/approvals')
+  const response = await request('/api/approvals')
   if (!response.ok) throw new Error(`/api/approvals ${response.status}`)
   return response.json()
 }
@@ -1105,7 +1155,7 @@ export async function fetchApprovals(): Promise<ApprovalsResult> {
 export async function decideApproval(
   id: string, approved: boolean, note: string,
 ): Promise<Approval> {
-  const response = await fetch(`/api/approvals/${encodeURIComponent(id)}/decide`, {
+  const response = await request(`/api/approvals/${encodeURIComponent(id)}/decide`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ approved, note }),
