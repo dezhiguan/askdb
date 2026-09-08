@@ -36,6 +36,18 @@ from .qcache import build_answer_cache, make_key as _cache_key
 from .trace import now_iso as _now_iso, observability_status as _obs_status
 
 
+def _mask_pii(s: str) -> str:
+    """把 PII 文本脱敏成"看得出形状、读不出内容"：字母数字与 CJK 等字符一律换成
+    实心点,空格与 · / - . 等分隔符保留,长度不变。
+
+    用途:未登录查看成员名册时,姓名 / 网关用户名 / 备注在**下发前**就抹掉明文
+    —— 前端的模糊只是视觉层,真正不外泄靠这里(F12 看到的也只是圆点)。
+    保留分隔符与长度,是为了页面上仍能看出"有一列列真实成员",而不是一片空白。
+    """
+    keep = {" ", "\t", "\u00b7", "\u30fb", "-", "/", ".", ",", "@", "_", "#", "(", ")"}
+    return "".join(c if (c in keep or c.isspace()) else "\u2022" for c in (s or ""))
+
+
 def _quota_view(cfg: Config) -> dict[str, Any]:
     """配额现状。计数后端是 file 还是 redis 必须暴露出来 —— 多副本部署下
     file 后端等于每个副本各算各的，上限被悄悄乘以副本数。"""
@@ -1898,10 +1910,18 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         try:
             # 分页在库里做（LIMIT/OFFSET + COUNT），不是读全量再切：
             # 一个角色几百人时，出网的与读出来的都只有这一页
-            return _identity.members_page(cfg, role.strip(),
-                                          page=page, page_size=page_size)
+            result = _identity.members_page(cfg, role.strip(),
+                                            page=page, page_size=page_size)
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"身份库不可用：{e}") from e
+        # 未登录（匿名）：成员 PII 在下发前脱敏。前端还会再叠一层模糊，但明文
+        # 不外泄靠的是这里——响应体里就没有真名。登录用户按角色照常看真实值。
+        if _current_user(request) is None:
+            for m in result.get("items", []):
+                m["username"] = _mask_pii(m.get("username", ""))
+                m["display_name"] = _mask_pii(m.get("display_name", ""))
+                m["note"] = _mask_pii(m.get("note", ""))
+        return result
 
     @app.post("/api/identity/members")
     def identity_add_member(

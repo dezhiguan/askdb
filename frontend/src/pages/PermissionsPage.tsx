@@ -76,6 +76,9 @@ export function PermissionsPage({ notify, me }: {
   me: Me | null
 }) {
   const guard = writeGuard(me, '同步企业组织')
+  // 未登录（匿名，无网关用户名）时给成员数据行加模糊蒙版：隐约可见、看不清。
+  // 注意这是视觉层：明文仍在接口响应里，要真脱敏须后端对匿名收窄字段。
+  const masked = !me?.username
   const [data, setData] = useState<RolesResponse | null>(null)
   const [active, setActive] = useState<string>('PRODUCT')
   const [members, setMembers] = useState<MembersPage | null>(null)
@@ -240,11 +243,13 @@ export function PermissionsPage({ notify, me }: {
                 </thead>
                 <tbody>
                   {/* 内置条目 id 恒为 0，拿 id 当 key 会撞车 —— 角色内用户名唯一 */}
-                  {visibleMembers?.map(member => (
-                    <tr key={`${member.role_code}:${member.username}`}>
+                  {/* 脱敏后 username 会变成相同的圆点，不能再当 key —— 用页内索引 */}
+                  {visibleMembers?.map((member, i) => (
+                    <tr key={`${member.role_code}:${i}`}
+                        className={masked ? 'member-masked' : undefined}>
                       <td className="mono">{member.username}</td>
                       <td>{member.display_name || <span className="dim">—</span>}</td>
-                      <td className="audit-question" title={member.note}>
+                      <td className="audit-question" title={masked ? undefined : member.note}>
                         {member.note || <span className="dim">—</span>}
                       </td>
                       <td>

@@ -52,3 +52,13 @@
 /* 规则行组：原型里 .rule 是策略卡的直接子级，靠 border-top 通栏分隔，
    容器本身不带内边距。行样式见 proto-permissions.css。 */
 .policy-rules { display: block; }
+
+/* 未登录查看成员名册：数据列加模糊蒙版，隐约可见但看不清（不糊最后的操作列）。
+   仅视觉层——明文仍在接口响应里，如需真脱敏须后端对匿名收窄。 */
+.audit-table tbody tr.member-masked > td:not(:last-child) {
+  filter: blur(4.5px);
+  user-select: none;
+  -webkit-user-select: none;
+  /* 让蒙版下的内容不可点选/交互，读起来更像"锁住"而非渲染故障 */
+  cursor: default;
+}
