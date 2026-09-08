@@ -349,8 +349,8 @@ jobs:
           PY
           # 配置开关为真只说明"打算开"。再打一次错口令：401 才说明登录这条路
           # 真的通到了账号表 —— 缺 ASKDB_SESSION_SECRET 时这里会是 404。
-          # （/api/auth/demo 已随 61f4a8b「登录落地」下线，一键体验改为纯前端
-          #   跳过登录，因此不再有 demo_accounts 这个字段可断言。）
+          # （免登录账号接口已随 61f4a8b「登录落地」下线，一键体验改为纯前端
+          #   跳过登录，因此 /api/auth/me 里不再有内置账号列表可断言。）
           CODE="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' \
             -X POST "${BASE}/api/auth/login" -H 'Content-Type: application/json' \
             -d '{"username":"owner","password":"ci-smoke-wrong-password"}')"

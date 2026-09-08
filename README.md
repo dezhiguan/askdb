@@ -39,14 +39,23 @@ In one line: **a general-purpose agent is a probe; askdb is a production line.**
 
 | File | Contents |
 |---|---|
-| [`docs/tech-design.html`](docs/tech-design.html) | Technical design spec V1.1 — 11 chapters + 2 appendices: 17 guardrail rules, evaluation plan, production boundaries |
-| [`docs/prototype.html`](docs/prototype.html) | Interactive prototype — data onboarding wizard, query pipeline, multi-step planning |
-| [`docs/design-resume.html`](docs/design-resume.html) | Task resume design V1.1 — continue from checkpoint instead of restarting, with UI prototype; blocked on fixing R-17 counter reset |
-| [`docs/design-replay-api.html`](docs/design-replay-api.html) | Decision-chain replay API design V1.1 — turns checkpoints from CLI-only into page-visible; field allowlist and dual kill-switch |
-| [`docs/design-quota-multi-replica.html`](docs/design-quota-multi-replica.html) | Daily-quota multi-replica design V1.1 — counting moved to the model-call site with Redis storage; as-built, including the two premises the first draft got wrong |
+| [`docs/tech-design.html`](docs/tech-design.html) | Technical design spec V1.1 — 11 chapters + 2 appendices: guardrail rules, evaluation plan, production boundaries |
+| [`docs/design-rbac.md`](docs/design-rbac.md) · [`.html`](docs/design-rbac.html) | Roles and permissions design V1.4 — 27 permission points across 8 screens; all four stages shipped. V1.4 flattened the visible surface: every role, including anonymous, sees the same thing, and approval is the only remaining role difference |
+| [`docs/prototype.html`](docs/prototype.html) | **Product prototype** — the console across all four product phases, including screens with no backend behind them yet |
+| [`docs/design-resume.html`](docs/design-resume.html) | Task resume design V1.1 — continue from a checkpoint instead of restarting |
+| [`docs/design-replay-api.html`](docs/design-replay-api.html) | Decision-chain replay API design V1.1 — field allowlist and dual kill-switch |
+| [`docs/design-quota-multi-replica.html`](docs/design-quota-multi-replica.html) | Daily-quota multi-replica design V1.1 — counting moved to the model-call site with Redis storage |
+| [`deploy/README.md`](deploy/README.md) | **Deployment runbook** — secrets, database-side roles, ingress merge, smoke checks, rollback |
 
 Single-file HTML, no external dependencies — download and open in a browser (GitHub does not render HTML).
-**Every metric in those two documents is a design-stage placeholder** — the measured
+
+**The prototype deliberately covers more than what is built.** It is the product
+target, not a description of the current release: its phase-three and phase-four
+groups — connector nodes, developer tooling, the delivery roadmap — have no
+backend behind them. What actually ships is listed under
+[Web console](#web-console).
+
+**Every metric in the design documents is a design-stage placeholder** — the measured
 numbers are in [Measured results](#measured-results) below. See [`docs/README.md`](docs/README.md).
 
 ---
@@ -92,8 +101,20 @@ question
 | R-15 | Carry-over result size cap (multi-step) | control | ✅ |
 | R-16 | Total step cap (multi-step) | control | ✅ |
 | R-17 | Cumulative cost cap | control | ✅ |
+| R-19 | **Forced data-age window injection** (per-role visible time range) | rewrite | ✅ |
 
-¹ Covers table-qualified columns, and bare columns when exactly one table is in scope. Full resolution for bare columns under multi-table JOINs is pending.
+¹ Covers table-qualified columns, and bare columns when exactly one table is in scope.
+Full resolution for bare columns under multi-table JOINs is pending.
+
+**R-18 does not exist.** `docs/design-rbac.md` records that the data-age rule took
+R-19 because R-18 was already taken by a fan-out-amplification rule — but no such
+rule appears in the code or in the design spec. The number is reserved and unused;
+the gap in the sequence is intentional, not a missing implementation.
+
+Where each rule lives: R-01…R-10 and R-19 in `guard.py`, R-11…R-13 in
+`executor.py`, R-14 in the `graph.py` router, R-15…R-17 in `planner.py`.
+`guard.ENFORCED_ELSEWHERE` names the ones enforced outside the guard module, so
+nobody reads that file and concludes the guardrails are only what is in it.
 
 **Rewriting happens on the AST and the SQL is regenerated from it — no prompt can override it:**
 
@@ -110,6 +131,41 @@ LIMIT 1000;                   -- R-09, injected
 
 Tenant isolation is **two-layer**: application-level AST rewriting (R-10) **plus** database row-level security (PostgreSQL RLS).
 Application-level rewriting alone is not sufficient — a single missed branch in a subquery, CTE, UNION, or view is an escalation path.
+
+> **Runtime-registered sources deliberately run without tenant isolation.**
+> `sources.derive_config()` pins `tenant.enabled = False`, because one structural
+> scan cannot tell which column carries tenancy — in ragforge, `documents` is
+> attributed only indirectly through `kb_id`. Guessing wrong is a cross-tenant
+> read, so the rule is turned off rather than approximated, and the boundary moves
+> entirely onto the read-only database role. Read the header of
+> `config/public.yaml` before opening a source to anyone.
+
+---
+
+## Web console
+
+`askdb serve` mounts a React console (source in `frontend/`, built output committed
+to `askdb/web/` and served by FastAPI). Nine screens, grouped the way the prototype
+groups them:
+
+| Group | Screen | What it does |
+|---|---|---|
+| Workspace | **Query agent** | Ask in natural language. Every answer ships with the SQL, the rules that fired, and the predicates that were injected |
+| Workspace | **Task center** | Longer or multi-step runs, bucketed by outcome, resumable from their checkpoint |
+| Workspace | **Data sources** | Runtime registry — register a source, scan it, then open tables one allowlist at a time |
+| Governance | **Identity & access** | Roles, members, and the scope a role actually receives at query time |
+| Governance | **Business glossary** | Metric definitions and column semantics — the layer a model cannot infer |
+| Governance | **Agent quality** | Live health, plus offline replay against the frozen golden sets |
+| Governance | **Execution traces** | Per-call span tree; links out to Langfuse when observability is wired |
+| Governance | **Audit** | One record per call — including blocked calls and direct SQL |
+| — | **Approvals** | Over-threshold queries (R-11) queue here. The nav entry was pulled 2026-09-06; the page and `/api/approvals` both remain, so restoring it is one line |
+
+Result **review** is separate from approval and deliberately so: approval decides
+beforehand whether a query may run, review decides afterwards whether the number it
+produced counts.
+
+In the prototype but not implemented: connector nodes, developer tooling, the
+delivery roadmap.
 
 ---
 
@@ -134,34 +190,59 @@ Runs without connecting to anything external — the sample database ships with 
 askdb check                              # config + datasource self-check (run this first)
 askdb sql "SELECT file_name FROM documents WHERE status='PROCESSING'"
 askdb ask  "which documents have been stuck processing for over an hour"
-askdb serve                              # web UI at http://127.0.0.1:8000
+askdb serve                              # console at http://127.0.0.1:8000
 ```
 
 **`askdb sql` needs no model key.** It skips generation and runs guard → dry run → execute,
 so you can verify the entire guardrail chain before configuring anything.
 
+> **The data-source screen needs a PostgreSQL side database.** Since 2026-09-06 the
+> source registry lives in a table rather than in `var/sources/*.yaml`, reached via
+> `ASKDB_SOURCES_DSN`. Without it the service still starts and the configured source
+> still answers questions — the source endpoints return **503**
+> (`sources_store_unavailable`) instead of an empty list, deliberately: "cannot read
+> the registry" and "there are no sources" are different facts, and rendering the
+> second when the first is true makes a broken instance look healthy.
+
 ### Development
 
 ```bash
-uv pip install -e ".[dev]"
-pytest              # 230 tests · coverage gate at 81%
+uv pip install -e ".[dev]"     # dev installs every optional extra on purpose —
+                               # skip one and a batch of tests silently skips while CI stays green
+pytest                         # 752 tests · coverage gate at 81%
 python -m evals.replay --blind        # held-out set (the final score)
 python -m evals.ablation --groups A,B,C,D,E,F
+python -m evals.chaos                 # fault injection
 ```
+
+Frontend work has one extra step that is easy to miss:
+
+```bash
+cd frontend && npm ci && npm run build   # writes into ../askdb/web/
+cd .. && git add frontend askdb/web      # the build output is committed
+```
+
+The image contains no Node, so what runs in production is exactly the committed
+output. Forget the rebuild and every signal stays green while the UI stays one
+version behind — which is why CI rebuilds it and fails on any difference.
 
 ---
 
 ## Configuration
 
-Three YAML files with separate concerns:
+One YAML per deployment target. Each carries the same three concerns — data source,
+table allowlist, business metrics — split across files so the two that matter most
+can be edited without touching thresholds:
 
-| File | Contents |
+| File | Used for |
 |---|---|
-| `config/askdb.yaml` | Data source, tenant policy, guardrail thresholds, model |
-| `config/tables.yaml` | **Table allowlist and column semantics** |
-| `config/metrics.yaml` | **Business metric definitions** |
+| `config/askdb.yaml` | Local default — the bundled DuckDB sample database |
+| `config/tables.yaml` · `config/metrics.yaml` | **Table allowlist and metric definitions** for the sample database |
+| `config/public.yaml` | The public instance. Carries **no datasource block at all** — every source comes from the runtime registry |
+| `config/ragforge-prod.yaml` + `ragforge-prod-tables.yaml` + `ragforge-prod-metrics.yaml` | The ragforge production read replica, used for the production evaluation |
+| `config/ragforge-eval.yaml`, `ragforge-tight.yaml`, … | Frozen evaluation variants, kept so a published run stays reproducible |
 
-The last two determine accuracy far more than prompt tuning does:
+The allowlist and the metric file determine accuracy far more than prompt tuning does:
 
 ```yaml
 # tables.yaml — column names are not self-explanatory; supply the business meaning
@@ -180,9 +261,147 @@ org_id:
   predicate: "status = 'PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR"
 ```
 
+**Data sources are no longer configuration.** They live in the `askdb_sources`
+table and are added from the console at runtime, so changing one needs no restart
+and a source that breaks cannot stop the service from starting. Two replicas share
+one registry, which is the whole point of moving off per-pod files: previously each
+pod wrote its own host path, with no lock.
+
+Secrets never sit in a config file. Model keys, database passwords, the session
+signing key, the Redis URL and the observability keys all arrive as environment
+variables from Kubernetes Secrets — see [`deploy/README.md`](deploy/README.md).
+
+Two keys the public instance leaves unset on purpose:
+
+| Variable | Consequence | Why |
+|---|---|---|
+| `ASKDB_ADMIN_TOKEN` | Role-member writes are closed entirely (fail-closed) | An open instance has no trusted caller; setting it would let anyone edit the member list |
+| `ASKDB_SECRET_KEY` | A source added at runtime cannot take a literal password, only the name of an environment variable | No password ever reaches disk — which is exactly the posture this instance should have |
+
+---
+
+## Repository layout
+
+```
+askdb/                one module per concern
+  guard.py            static validation + forced AST rewriting   R-01…R-10, R-19
+  executor.py         read-only execution, EXPLAIN dry run, masking   R-11…R-13
+  planner.py          multi-step planning and its caps          R-15…R-17
+  graph.py            LangGraph state machine, checkpoints, retry routing   R-14
+  schema_rag.py       schema retrieval — keyword or vector mode
+  sources.py          runtime data-source registry (PostgreSQL-backed)
+  identity.py         roles, members, the scope each role gets at query time
+  auth.py             stateless signed sessions
+  approvals.py        pre-execution approval for over-threshold queries
+  reviews.py          after-the-fact result review — a separate decision
+  audit.py            one JSON record per call, risk-classified
+  trace.py            span capture and replay payloads
+  quota.py            daily model-call quota (Redis, or a file for single replica)
+  observe.py          Langfuse / LangSmith wiring
+  llm.py              model client — the quota is charged here, per model call
+  server.py           FastAPI · 34 API endpoints
+  mcp_server.py       stateless MCP surface (2026-07-28 spec)
+  cli.py              askdb ask / sql / check / seed / serve / replay
+  web/                built console, served by FastAPI — committed output
+frontend/             React + Vite source; `npm run build` writes into askdb/web/
+config/               one YAML per deployment target
+data/                 sample-database generator, audit logs, checkpoint stores
+evals/                golden sets, replay harness, ablation, chaos runner
+scripts/              database-side setup and rollback SQL, registry migration
+deploy/               k8s manifest, nginx server block, deployment runbook
+tests/                752 tests, coverage gate 81%
+docs/                 design documents and the product prototype
+```
+
+---
+
+## Deployment architecture
+
+The public instance runs at `askdb.ragforge.net`. Nothing here is dedicated
+hardware — askdb rides the footprint that already carries ragforge and CareerMate.
+
+```
+                          browser
+                             │  HTTPS
+                             ▼
+  Server 2 · 8.163.63.222 ─────────────────────────────────────────
+  nginx, in the ragforge-nginx container, shared by three sites
+    · TLS termination · HSTS, nosniff, DENY, no-referrer
+    · gzip — with gzip_proxied any, since everything here comes from proxy_pass
+    · /assets/ cached immutable for a year; index.html is no-store
+    · 5 r/s burst 10, except /api/ask, where the daily quota is the limit
+                             │  proxy_pass → 172.25.90.184:31100
+                             ▼
+  Server 3 · single-node k3s ──────────────────────────────────────
+  Deployment askdb · 2 replicas · NodePort 31100 · non-root uid 10001
+    · image tagged by commit sha, never latest
+    · initContainer chowns the host path so the container can write
+    · hostPath /opt/askdb/var — audit log and checkpoints survive a rebuild
+    · Secrets: askdb-llm, askdb-db (required — a pod that cannot reach its
+               database should not start) · askdb-sources, askdb-auth,
+               askdb-redis, askdb-langfuse (optional, each degrades one feature)
+                             │
+                             ▼
+  Data machine · 172.25.90.183 (public 8.163.30.216) ──────────────
+  PostgreSQL   askdb_meta    source registry — the only read-write database
+               ragforge      read-only role over all tables
+               careermate    read-only role
+  Redis        shared daily-quota counter (db 2)
+  Langfuse     self-hosted trace collection, port 3000
+```
+
+Pods reach the data machine on its **private** address. The public one times out
+from Server 3 — a detail worth keeping, because the symptom is a data source that
+looks correctly configured and simply never connects.
+
+**Two replicas are only safe because of three specific things**, all of which rest
+on both pods sharing one host path: the daily quota counts in Redis rather than per
+process, the checkpoint store runs in WAL mode with a busy timeout, and audit
+writes are single `O_APPEND` writes. That holds on a single node. Add a second node
+and the checkpoint store needs a PostgreSQL backend and audit needs central
+collection — raising `replicas` is not the whole change.
+
+**Ingress is not deployed from this repository.** `deploy/nginx-askdb.conf` has to
+be merged into rag-forge's `nginx.conf`, which serves three sites from one file and
+is pushed by rag-forge's own CI — and that pipeline does not run `nginx -t`.
+Validate the candidate on Server 2 first; one stray semicolon takes all three sites
+down.
+
+### Release path
+
+Push to `main` → `.github/workflows/ci-cd.yml`:
+
+```
+tests (with a PostgreSQL service container)
+  → frontend gate — rebuilds the console and fails if the output differs from the tree
+  → image build, tagged by commit sha
+  → push to ACR
+  → SSH via the jump host → kubectl apply → wait for rollout
+  → smoke
+```
+
+The smoke step is written against the failures that actually happen: it fetches
+every `/assets/*` the index page references (catching "all endpoints green, page
+blank"), asserts login is genuinely wired rather than merely switched on, and pins
+the guardrail contract — a rejected statement is `200` with `ok: false` and
+`rejected_by`, never a 5xx.
+
+Rollback is `kubectl -n askdb rollout undo deployment/askdb`. The full runbook —
+database-side role setup, secret creation, and the order in which sources must be
+registered — is in [`deploy/README.md`](deploy/README.md).
+
 ---
 
 ## Measured results
+
+> **This section reports the runs of 2026-08-12 and has not been re-cut since.**
+> Later runs exist in `evals/results/` — a larger ragforge set and a first
+> careermate set, both scored against different question sets and a different
+> model. They are **not** folded in here: replacing a published held-out score
+> with a better one from a differently-composed set is precisely the move §6.4
+> of the design spec exists to prevent, and doing it as part of a documentation
+> refresh would be worse. Whoever re-cuts this section should state the new
+> composition and keep the run below for comparison.
 
 Two evaluations, run against **two different databases**. They are reported
 together because the contrast is itself the finding.
@@ -340,7 +559,8 @@ of why scores measured on a database you built yourself can mislead.
 
 ## Status and roadmap
 
-**Runnable end to end. All 17 guardrail rules enforced, evaluation complete — measured numbers are in the section above.**
+**Runnable end to end, and deployed.** All 18 guardrail rules enforced, evaluation
+complete — measured numbers are in the section above.
 
 | Phase | Contents | Target | Status |
 |---|---|---|---|
@@ -351,10 +571,19 @@ of why scores measured on a database you built yourself can mislead.
 | P3 | **58-question golden set, replay harness, six ablation groups** | 2026-08-25 | ✅ |
 | P4 | MCP packaging (stateless spec) | 2026-08-28 | ✅ |
 | P5 | Multi-step query planning (R-15…R-17), ablation group F | 2026-09-02 | ✅ |
-| P6 | Audit & replay page; `/api/replay` per the replay-API design (field allowlist + dual kill-switch); every call — including blocked ones and direct SQL — now leaves one audit record; optional LangSmith wiring | 2026-08-24 | ✅ |
-| P7 | Login (fixed accounts, stateless session), role-based scoping enforced on every query path, and a role-membership registry (write path gated by a deployment-held admin token until auth-gateway identity is wired) | 2026-09-02 | ✅ |
+| P6 | Audit & replay page; `/api/replay` per the replay-API design (field allowlist + dual kill-switch); every call — including blocked ones and direct SQL — now leaves one audit record; optional observability wiring | 2026-08-24 | ✅ |
+| P7 | Login (fixed accounts, stateless session), role-based scoping enforced on every query path, role-membership registry | 2026-09-02 | ✅ |
+| P8 | **Public instance** — nginx + k3s, two replicas, Redis-backed quota, self-hosted Langfuse; standalone React console replacing the single-file page, with a CI gate on the committed build output | 2026-09-02 | ✅ |
+| P9 | **Roles and permissions per `design-rbac.md`, all four stages** — write middleware, environment scope, masking and the R-19 data-age window, approval loop. V1.4 then flattened the visible surface: all roles see the same thing, approval is the only role difference, anonymous can read but not write | 2026-09-06 | ✅ |
+| P10 | **Runtime data-source registry** — sources move from config and per-pod files into PostgreSQL, editable from the console; ragforge and careermate both registered as ordinary sources; result review added alongside approval; task center bucketed by outcome; quality centre wired to real judgements | 2026-09-07 | ✅ |
 
-> **Not yet built:** binding members to real **auth-gateway** identities (JWKS / token-exchange) — until then login uses fixed accounts and member writes fall back to a shared admin token. Datasources are limited to DuckDB and PostgreSQL. Multi-step planning (P5) ships but is off by default (ablation F).
+> **Not yet built:** binding members to real **auth-gateway** identities (JWKS /
+> token-exchange) — until then login uses fixed accounts and member writes fall back
+> to a shared admin token, which the public instance leaves unset. Data sources are
+> limited to DuckDB and PostgreSQL. Multi-step planning (P5) ships but is off by
+> default (ablation F). Runtime-registered sources carry no tenant isolation by
+> design (see [Guardrails](#guardrails)). The prototype's phase-three and
+> phase-four screens — connector nodes and developer tooling — are not implemented.
 
 > **No unmeasured metric appears in this README.** Every figure above was actually run,
 > published alongside the held-out set score and the unfiltered distribution of failure categories.
@@ -365,11 +594,15 @@ of why scores measured on a database you built yourself can mislead.
 
 | Layer | Choice | Why |
 |---|---|---|
-| Orchestration | `langgraph` | Needs conditional routing and state persistence |
+| Orchestration | `langgraph` + `langgraph-checkpoint-sqlite` | Needs conditional routing and state persistence; checkpoints are what make failure replay and resume possible |
 | Abstractions / model | `langchain-core`, `langchain-openai` | Structured output; OpenAI-compatible endpoints |
 | **SQL parsing & rewriting** | `sqlglot` | A rewritable AST is the prerequisite for forced injection |
-| Data | DuckDB (bundled sample) / PostgreSQL | |
+| Queried data | DuckDB (bundled sample) / PostgreSQL | |
+| Source registry | PostgreSQL via `psycopg[binary,pool]` | A main dependency, not an extra — without it an instance cannot list its own sources. Pooled, because every query path reads it once |
+| Console | React + Vite, served by FastAPI | Build output is committed; the image ships no Node |
 | Interface | FastAPI + MCP | MCP per the 2026-07-28 stateless spec |
+| Observability | Langfuse (self-hosted), LangSmith optional | Both optional. Neither configured, and the audit page says "not wired" rather than pretending |
+| Quota counter | Redis | Multi-replica correctness; falls back to a file, which is still correct on one replica |
 
 **The `langchain` meta-package is deliberately not used.** `AgentExecutor` supports neither conditional routing nor state persistence, and cannot resume from an intermediate node after a failure — all three are requirements here.
 
@@ -382,6 +615,14 @@ of why scores measured on a database you built yourself can mislead.
 | Connect to a **primary** production database | **Prohibited** — unattended aggregate queries can realistically take down the primary |
 | Connect to a **read replica**, for people who can read SQL | Conditionally allowed — 8 admission criteria (read-only role, RLS, audit, quota, …) |
 | Expose to **end users** | **Prohibited** — end users cannot verify the SQL, so a wrong metric definition goes straight into a decision |
+
+> **The public instance does not satisfy its own first row, and that is a
+> knowingly taken risk, not an oversight.** `askdb.ragforge.net` reads the
+> ragforge and careermate **primaries** — through dedicated read-only roles, with
+> a statement timeout, a row cap, an EXPLAIN threshold and a daily quota in front
+> of them, but they are primaries, not replicas. The table above says what should
+> be true of a deployment someone else depends on. If you are copying this setup
+> for a database with real load on it, point it at a replica.
 
 **On the word "trustworthy":** as long as an LLM writes the SQL, "the result is always correct" does not exist.
 What this project claims is a **trustworthy process** — dangerous operations are blocked, results are self-verifiable, decisions are traceable — **not trustworthy results**. Output always ships with the SQL that produced it.
