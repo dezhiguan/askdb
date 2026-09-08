@@ -294,6 +294,19 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             "goal": plan.goal or "", "enough": False, **_spent(state, usage)}
 
 
+# 模型没出 SQL（NO_SQL）时给用户的"下一步"。原来是一句写死的
+# "在 config/tables.yaml 中开放更多表" —— 对匿名访客暴露内部配置路径、也没人改得了，
+# 而且对"删库/预测/返回密码"这类被拦的请求同样弹这句，把安全拒绝说成"表不够"，误导。
+# 改为按模型 reasoning 的意图分型给友好文案，且**任何身份都不出现内部文件路径**。
+_WRITE_MARKERS = ("写操作", "只读", "update", "delete", "insert", "改名", "修改", "删除",
+                  "插入", "新建", "更新", "truncate", "drop", "alter", "授权", "权限", "写入")
+def _no_sql_hint(reasoning: str) -> str:
+    low = (reasoning or "").lower()
+    if any(m in low for m in _WRITE_MARKERS):
+        return "本工具只做只读查询，改动数据、表结构或权限的请求不会执行；换成查询类问题再试。"
+    return "换一个更贴近现有数据的问法试试；若确实需要更多数据范围，可联系管理员开放。"
+
+
 def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     d = _deps(config)
     attempt = state.get("attempt", 0)
@@ -341,7 +354,7 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
                      cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
         return {
             "error": draft.reasoning or "模型判断当前表结构无法回答该问题。",
-            "error_hint": "换个问法，或在 config/tables.yaml 中开放更多表。",
+            "error_hint": _no_sql_hint(draft.reasoning or ""),
             "rejected_by": "NO_SQL",
             "reasoning": draft.reasoning,
             **_spent(state, usage),
