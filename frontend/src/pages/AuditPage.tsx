@@ -152,9 +152,6 @@ export function AuditPage({ me }: { me: Me | null }) {
           <option value="sql">直查 SQL</option>
           <option value="resume">续跑</option>
         </select>
-        <select value={pageSize} onChange={event => { setPageSize(Number(event.target.value)); setPage(1) }}>
-          {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
-        </select>
         <button
           className="secondary"
           onClick={() => { setQuery(queryInput.trim()); setPage(1) }}
@@ -187,6 +184,10 @@ export function AuditPage({ me }: { me: Me | null }) {
         <div className="audit-pager">
           <span>共 {list.total} 条 · 第 {list.page} / {pages} 页</span>
           <span>
+            {/* 每页条数原来在上面的筛选条里，与任务中心不是同一处 —— 收进分页条 */}
+            <select value={pageSize} onChange={event => { setPageSize(Number(event.target.value)); setPage(1) }}>
+              {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
+            </select>
             <button className="ghost" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>‹ 上一页</button>
             <button className="ghost" disabled={page >= pages} onClick={() => setPage(p => p + 1)}>下一页 ›</button>
           </span>

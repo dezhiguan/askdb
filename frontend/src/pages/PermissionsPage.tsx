@@ -79,6 +79,11 @@ export function PermissionsPage({ notify, me }: {
   const [form, setForm] = useState({ username: '', display_name: '', note: '' })
   const [busy, setBusy] = useState(false)
 
+  /* 成员表切页。名册一次全量返回（左栏那个角色计数要算全量），所以在**客户端**切页；
+     分页条与任务中心、审计中心同一套结构与类名，三页的操作手感必须一致。 */
+  const [memberPage, setMemberPage] = useState(1)
+  const [memberPageSize, setMemberPageSize] = useState(10)
+
   useEffect(() => {
     let alive = true
     fetchRoles()
@@ -104,6 +109,17 @@ export function PermissionsPage({ notify, me }: {
   }, [active, data?.enabled, reload])
 
   const role = data?.roles.find(r => r.code === active)
+
+  const memberTotal = members?.length ?? 0
+  const memberPages = Math.max(Math.ceil(memberTotal / memberPageSize), 1)
+  const memberCurrent = Math.min(memberPage, memberPages)
+  const visibleMembers = members?.slice(
+    (memberCurrent - 1) * memberPageSize,
+    memberCurrent * memberPageSize,
+  )
+
+  // 换角色、换每页条数都回到第一页 —— 停在第 3 页而新角色只有 2 个人，会看到一片空白
+  useEffect(() => { setMemberPage(1) }, [active, memberPageSize, reload])
 
   /** 原型上这个按钮没有行为。真实实例里企业目录同步还没接入，
    *  所以它只做当下唯一诚实的动作：重新读取角色与成员。 */
@@ -211,7 +227,7 @@ export function PermissionsPage({ notify, me }: {
                 </thead>
                 <tbody>
                   {/* 内置条目 id 恒为 0，拿 id 当 key 会撞车 —— 角色内用户名唯一 */}
-                  {members?.map(member => (
+                  {visibleMembers?.map(member => (
                     <tr key={`${member.role_code}:${member.username}`}>
                       <td className="mono">{member.username}</td>
                       <td>{member.display_name || <span className="dim">—</span>}</td>
@@ -251,6 +267,21 @@ export function PermissionsPage({ notify, me }: {
                   )}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {data?.enabled && memberTotal > 0 && (
+            <div className="audit-pager">
+              <span>共 {memberTotal} 人 · 第 {memberCurrent} / {memberPages} 页</span>
+              <span>
+                <select value={memberPageSize} onChange={event => setMemberPageSize(Number(event.target.value))}>
+                  {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
+                </select>
+                <button className="ghost" disabled={memberCurrent <= 1}
+                        onClick={() => setMemberPage(p => p - 1)}>‹ 上一页</button>
+                <button className="ghost" disabled={memberCurrent >= memberPages}
+                        onClick={() => setMemberPage(p => p + 1)}>下一页 ›</button>
+              </span>
             </div>
           )}
 
