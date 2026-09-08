@@ -554,6 +554,60 @@ def list_members(cfg: Config, role_code: str = "") -> list[dict[str, Any]]:
     return out
 
 
+def members_page(cfg: Config, role_code: str = "", *,
+                 page: int = 1, page_size: int = 10) -> dict[str, Any]:
+    """成员名册的一页 —— 与 list_members 同一份名单，但只读出这一页。
+
+    名册由两段拼成：配置内置的那些（auth.accounts，进程内、条数固定）排在前，
+    库表登记的排在后。所以分页也分两段算：起点还落在内置段里就先从内置切，
+    剩下的额度再拿去库里 LIMIT/OFFSET；起点越过内置段之后，偏移量要**减掉
+    内置的条数**，否则每页都会跳过同样多的行。
+
+    去重必须落到 SQL 的 WHERE 里，不能像 list_members 那样读出来再滤：
+    读出来再滤的话，count 数的行与最终列出的行不是同一批，页码会算错 ——
+    最后一页可能是空的，而总数显示得比实际多。
+    """
+    page = max(int(page), 1)
+    page_size = min(max(int(page_size), 1), 100)
+
+    builtins = builtin_members(cfg, role_code)
+    where: list[str] = []
+    params: list[Any] = []
+    if role_code:
+        where.append("role_code = %s")
+        params.append(role_code)
+    # 与内置条目是同一个人的不重复列（list_members 的 seen 集合，搬到 SQL 上）
+    for m in builtins:
+        where.append("NOT (role_code = %s AND lower(username) = %s)")
+        params.extend([m["role_code"], m["username"].lower()])
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+    counted = _rows(cfg, "SELECT COUNT(*) FROM askdb_role_members" + clause,
+                    tuple(params))
+    db_total = int(counted[0][0]) if counted else 0
+    total = len(builtins) + db_total
+
+    start = (page - 1) * page_size
+    out = builtins[start:start + page_size]
+    want = page_size - len(out)
+    if want > 0:
+        rows = _rows(
+            cfg,
+            "SELECT id, role_code, auth_user_id, username, display_name, note,"
+            " created_at, created_by FROM askdb_role_members" + clause +
+            " ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s",
+            tuple(params) + (want, max(start - len(builtins), 0)),
+        )
+        for r in rows:
+            out.append(
+                {"id": r[0], "role_code": r[1], "auth_user_id": r[2], "username": r[3],
+                 "display_name": r[4], "note": r[5],
+                 "created_at": r[6].isoformat(), "created_by": r[7],
+                 # 登录接入前一律未绑定。如实标出来，别让人以为已经关联上网关账号了
+                 "bound": r[2] is not None, "builtin": False})
+    return {"items": out, "total": total, "page": page, "page_size": page_size}
+
+
 def add_member(cfg: Config, *, role_code: str, username: str,
                display_name: str = "", note: str = "", created_by: str = "") -> dict[str, Any]:
     if role_code not in ROLE_BY_CODE:

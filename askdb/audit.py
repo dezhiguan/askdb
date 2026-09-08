@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -463,6 +463,136 @@ def tasks(path: Path, only_user: str | None = None, *,
 
     out.sort(key=lambda r: str(r.get("ts", "")), reverse=True)
     return out
+
+
+#: 任务列表的筛选取值里，``all`` 是"不筛"，空串是**一个合法的档**
+#: （未记录数据源 / 匿名发起）。用空串当"不筛"的哨兵，这两档就永远选不中 ——
+#: /api/audit 的 source 参数踩过同一个坑，那里用 None 区分，这里用 all，
+#: 因为界面上的下拉本来就是 all 打头，一路传到底不必再翻译一次。
+FILTER_ANY = "all"
+
+#: 发起时间档，与界面上那四项一一对应。写在这里而不是在 server 上，
+#: 是为了让"合法取值"只有一份定义 —— 两份就会漂。
+SINCE_CHOICES = ("all", "today", "7d", "30d")
+
+TASK_STATUSES = (
+    RUNNING, DONE, WAITING_REVIEW, REVIEW_RETURNED, REJECTED,
+    WAITING_INPUT, WAITING_APPROVAL, NEEDS_OPERATOR, INTERRUPTED,
+)
+
+RISK_LEVELS = ("HIGH", "MEDIUM", "LOW")
+
+
+def _day_of(ts: str) -> date | None:
+    t = _parse_ts(ts)
+    return t.date() if t is not None else None
+
+
+def _within_since(ts: str, since: str, now: datetime) -> bool:
+    """发起时间档。**解析不出来的时间不放行** —— 选了"今天"却混进一条
+    时间不明的记录，比少一条更糟：它会被当成今天发生的。
+    """
+    if since in ("", FILTER_ANY):
+        return True
+    t = _parse_ts(ts)
+    if t is None:
+        return False
+    if since == "today":
+        return t.date() == now.date()
+    days = {"7d": 7, "30d": 30}.get(since, 0)
+    if not days:
+        return True
+    # 记录带时区、now 也带（_now 用 astimezone），减法才成立
+    return (now - t) <= timedelta(days=days)
+
+
+def paginate_tasks(
+    items: list[dict[str, Any]], *, page: int = 1, page_size: int = 10,
+    status: str = FILTER_ANY, source: str = FILTER_ANY,
+    risk: str = FILTER_ANY, user: str = FILTER_ANY, since: str = FILTER_ANY,
+) -> dict[str, Any]:
+    """把 tasks() 的全量线程筛好、统计好、切好页 —— 一次返回给页面。
+
+    **统计与下拉选项算在筛选之前，分页算在筛选之后。** 这三段顺序是这个
+    接口的全部要害：
+
+      · 四张统计卡讲的是"这套系统当下的处境"（多少在跑、多少等人动手），
+        它不该随手上的筛选变 —— 跟着筛选走的话，筛完"已完成"再看
+        「待处理」永远是 0，那个数字就没有意义了。
+      · 筛选下拉的可选值同理：只列**当前列表里真出现过的**数据源与发起人，
+        但如果它跟着筛选收窄，选中一个源之后下拉里就只剩这一个，人就退不
+        回去了（/api/audit 的 sources 是同一条口径，见 list_audits）。
+      · total 则必须是**筛完之后**的条数，否则页码算出来是错的。
+
+    这三个数原来都在浏览器里算，代价是每次打开都要把全部线程发过去
+    （实测一次一千四百多条）。搬到这里之后出网的只有当前这一页，
+    而页面上那几个数字一个不少。
+    """
+    now = datetime.now().astimezone()
+
+    counts = Counter(str(it.get("status") or "") for it in items)
+    done = [it for it in items if it.get("status") == DONE]
+    # 时间解析不出来的不计入今天 —— 与 _within_since 同一条口径，
+    # 宁可少算一条，也不要把一条时间不明的记录报成"今日完成"
+    done_today = sum(1 for it in done
+                     if _day_of(str(it.get("ts", ""))) == now.date())
+    # 成功率的分母只算**真收尾**的：等补充、等审批、等运维都还有下一步，
+    # 把它们记成失败，这个数字就会随"有多少人问得含糊"上下浮动，与系统好坏无关。
+    settled = len(done) + counts[REJECTED]
+    stats = {
+        "running": counts[RUNNING],
+        "waiting_input": counts[WAITING_INPUT],
+        "waiting_approval": counts[WAITING_APPROVAL],
+        "waiting_review": counts[WAITING_REVIEW],
+        "review_returned": counts[REVIEW_RETURNED],
+        "needs_operator": counts[NEEDS_OPERATOR],
+        "interrupted": counts[INTERRUPTED],
+        "rejected": counts[REJECTED],
+        "done": len(done),
+        "done_today": done_today,
+        # 没有收尾记录时给 None 而不是 0 ——「成功率 0.0%」和"还没有可判的样本"
+        # 是两回事，前者是在报一个没发生过的失败
+        "success_rate": round(len(done) / settled * 100, 1) if settled else None,
+    }
+
+    seen_sources: dict[str, str] = {}
+    for it in items:
+        sid = str(it.get("source") or "")
+        if sid not in seen_sources:
+            seen_sources[sid] = str(it.get("source_name") or it.get("source")
+                                    or "（未记录数据源）")
+    sources = [{"value": sid, "label": name} for sid, name in seen_sources.items()]
+    seen_users: list[str] = []
+    for it in items:
+        who = str(it.get("user") or "")
+        if who not in seen_users:
+            seen_users.append(who)
+    users = [{"value": who, "label": who or "匿名"} for who in seen_users]
+
+    matched = items
+    if status != FILTER_ANY:
+        matched = [it for it in matched if it.get("status") == status]
+    if source != FILTER_ANY:
+        matched = [it for it in matched if str(it.get("source") or "") == source]
+    if risk != FILTER_ANY:
+        matched = [it for it in matched if str(it.get("risk") or "") == risk]
+    if user != FILTER_ANY:
+        matched = [it for it in matched if str(it.get("user") or "") == user]
+    if since != FILTER_ANY:
+        matched = [it for it in matched if _within_since(str(it.get("ts", "")), since, now)]
+
+    page = max(int(page), 1)
+    page_size = min(max(int(page_size), 1), 100)
+    start = (page - 1) * page_size
+    return {
+        "items": matched[start:start + page_size],
+        "total": len(matched),
+        # 筛选之前有多少条。页面上「共 N 条（全部发起人）」说的是这个数，
+        # 也是"一条都没有"与"筛完没有"两句不同提示的判据
+        "total_all": len(items),
+        "page": page, "page_size": page_size,
+        "stats": stats, "sources": sources, "users": users,
+    }
 
 
 def resumable(path: Path, user: str) -> list[dict[str, Any]]:

@@ -2,7 +2,7 @@ import { PageHeader } from '../components/AppShell'
 import { useEffect, useState } from 'react'
 import {
   addMember, fetchMembers, fetchRoles, removeMember, Forbidden,
-  type RoleInfo, type RoleMember, type RolesResponse,
+  type MembersPage, type RoleInfo, type RoleMember, type RolesResponse,
  type Me,
 } from '../api'
 import { writeGuard, type WriteGuard } from '../writeGuard'
@@ -66,7 +66,7 @@ export function PermissionsPage({ notify, me }: {
   const guard = writeGuard(me, '同步企业组织')
   const [data, setData] = useState<RolesResponse | null>(null)
   const [active, setActive] = useState<string>('PRODUCT')
-  const [members, setMembers] = useState<RoleMember[] | null>(null)
+  const [members, setMembers] = useState<MembersPage | null>(null)
   // 名册取不到有两种：没权限看（按设计）和真出错。合成一个 error 会把
   // 权限边界渲染成红色的「读取失败」，看的人去查一个不存在的故障
   const [membersDenied, setMembersDenied] = useState(false)
@@ -79,7 +79,8 @@ export function PermissionsPage({ notify, me }: {
   const [form, setForm] = useState({ username: '', display_name: '', note: '' })
   const [busy, setBusy] = useState(false)
 
-  /* 成员表切页。名册一次全量返回（左栏那个角色计数要算全量），所以在**客户端**切页；
+  /* 成员表切页。页码与每页条数传给 /api/identity/members，库里 LIMIT/OFFSET
+     取这一页 —— 一个角色几百人时，出网的与读出来的都只有这十行。
      分页条与任务中心、审计中心同一套结构与类名，三页的操作手感必须一致。 */
   const [memberPage, setMemberPage] = useState(1)
   const [memberPageSize, setMemberPageSize] = useState(10)
@@ -96,7 +97,7 @@ export function PermissionsPage({ notify, me }: {
     if (!data?.enabled) return
     let alive = true
     setMembersDenied(false)
-    fetchMembers(active)
+    fetchMembers(active, memberPage, memberPageSize)
       .then(value => { if (alive) { setMembers(value); setMembersDenied(false) } })
       .catch(e => {
         if (!alive) return
@@ -106,20 +107,20 @@ export function PermissionsPage({ notify, me }: {
         setError(String((e as Error).message || e))
       })
     return () => { alive = false }
-  }, [active, data?.enabled, reload])
+  }, [active, data?.enabled, reload, memberPage, memberPageSize])
 
   const role = data?.roles.find(r => r.code === active)
 
-  const memberTotal = members?.length ?? 0
+  // total 是整个角色的人数，由服务端给 —— 这一页只有十条，拿它算页码会永远只有一页
+  const memberTotal = members?.total ?? 0
   const memberPages = Math.max(Math.ceil(memberTotal / memberPageSize), 1)
-  const memberCurrent = Math.min(memberPage, memberPages)
-  const visibleMembers = members?.slice(
-    (memberCurrent - 1) * memberPageSize,
-    memberCurrent * memberPageSize,
-  )
+  const memberCurrent = Math.min(members?.page ?? memberPage, memberPages)
+  const visibleMembers = members?.items
 
-  // 换角色、换每页条数都回到第一页 —— 停在第 3 页而新角色只有 2 个人，会看到一片空白
-  useEffect(() => { setMemberPage(1) }, [active, memberPageSize, reload])
+  /* 换角色、换每页条数都在各自的入口处一并把页码设回 1（停在第 3 页而新角色
+     只有 2 个人，会看到一片空白）。这里只管重新读取那一路：同步组织之后
+     名单可能变短，页码留在原处会指到空页上。 */
+  useEffect(() => { setMemberPage(1) }, [reload])
 
   /** 原型上这个按钮没有行为。真实实例里企业目录同步还没接入，
    *  所以它只做当下唯一诚实的动作：重新读取角色与成员。 */
@@ -189,7 +190,7 @@ export function PermissionsPage({ notify, me }: {
               <button
                 className={`role-item${active === item.code ? ' active' : ''}`}
                 key={item.code}
-                onClick={() => { setActive(item.code); setMembers(null) }}
+                onClick={() => { setActive(item.code); setMembers(null); setMemberPage(1) }}
               >
                 <span><strong>{item.name}</strong><small>{ROLE_SUBTITLE[item.code] ?? item.scope}</small></span>
                 <span className="role-count">{item.members}</span>
@@ -215,7 +216,7 @@ export function PermissionsPage({ notify, me }: {
             <span className="section-note">
               {!data?.enabled ? '未启用'
                 : membersDenied ? '不可见'
-                : members ? `${members.length} 人` : '读取中'}
+                : members ? `${members.total} 人` : '读取中'}
             </span>
           </h4>
 
@@ -253,7 +254,7 @@ export function PermissionsPage({ notify, me }: {
                       </td>
                     </tr>
                   ))}
-                  {members?.length === 0 && (
+                  {members?.items.length === 0 && (
                     <tr><td colSpan={6} className="audit-empty">这个角色还没有成员</td></tr>
                   )}
                   {membersDenied && (
@@ -274,7 +275,8 @@ export function PermissionsPage({ notify, me }: {
             <div className="audit-pager">
               <span>共 {memberTotal} 人 · 第 {memberCurrent} / {memberPages} 页</span>
               <span>
-                <select value={memberPageSize} onChange={event => setMemberPageSize(Number(event.target.value))}>
+                <select value={memberPageSize}
+                        onChange={event => { setMemberPageSize(Number(event.target.value)); setMemberPage(1) }}>
                   {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
                 </select>
                 <button className="ghost" disabled={memberCurrent <= 1}

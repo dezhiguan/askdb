@@ -1876,7 +1876,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         }
 
     @app.get("/api/identity/members")
-    def identity_members(request: Request, role: str = "") -> dict[str, Any]:
+    def identity_members(request: Request, role: str = "",
+                         page: int = 1, page_size: int = 10) -> dict[str, Any]:
         """成员名册。跨角色要 MEMBERS_READ，**看自己所属角色不需要**。
 
         为什么留这个口子：一个人有权知道自己和谁同组 —— 那是他所在角色的
@@ -1891,7 +1892,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             _require_cap(request, _identity.MEMBERS_READ, "查看其他角色的成员名册")
         _require_identity()
         try:
-            return {"items": _identity.list_members(cfg, role.strip())}
+            # 分页在库里做（LIMIT/OFFSET + COUNT），不是读全量再切：
+            # 一个角色几百人时，出网的与读出来的都只有这一页
+            return _identity.members_page(cfg, role.strip(),
+                                          page=page, page_size=page_size)
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"身份库不可用：{e}") from e
 
@@ -2036,8 +2040,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return out
 
     @app.get("/api/tasks")
-    def tasks(request: Request) -> dict[str, Any]:
-        """当前账号名下的**全部执行线程**，新的在前。
+    def tasks(request: Request, page: int = 1, page_size: int = 10,
+              status: str = "all", source: str = "all", risk: str = "all",
+              user: str = "all", since: str = "all") -> dict[str, Any]:
+        """执行线程一页，新的在前。筛选、统计与切页都在这里做。
 
         列全部而不是只列中断的：中断只在异常逃出执行图时才发生（进程故障、
         递归超限、检查点库异常），是故障态不是常规流程 —— 只列中断等于这一页
@@ -2054,7 +2060,28 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         **看得见不等于动得了**：续跑（/api/resume）的归属校验一行没改，
         别人的线程列得出来但续不了，前端据 owner 字段把入口置灰 ——
         与"未登录可读不可写"是同一条轴。
+
+        **分页在服务端（2026-09-08）。** 原来这里一次把全部线程发出去，
+        由浏览器筛、统计、切页 —— 实测一次一千四百多条，而屏幕上只有十行。
+        现在筛选与统计都交给 audit.paginate_tasks：统计卡与筛选下拉算在筛选
+        之前（否则四个数字会跟着筛选变，那就不是"系统当下的处境"了），
+        分页算在筛选之后。出网的只剩当前这一页。
+
+        筛选取值里 ``all`` 是不筛，空串是**合法的一档**（未记录数据源 /
+        匿名发起）；非法取值一律 400，当成"不筛"处理会让人以为筛过了。
+
+        检查点核实（is_resumable）也跟着只做**本页这几条**：它每条要开一次
+        检查点库，原来是按全部线程数做的，那才是这个接口真正的开销。
         """
+        for name, value, allowed in (
+            ("status", status, _audit.TASK_STATUSES),
+            ("risk", risk, _audit.RISK_LEVELS),
+            ("since", since, _audit.SINCE_CHOICES),
+        ):
+            if value != "all" and value not in allowed:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{name} 只能是 all / " + " / ".join(allowed))
         username = _current_user(request) or ""
         from .audit import tasks as _tasks
         from .graph import is_resumable
@@ -2093,14 +2120,18 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 只按审计标 resumable，会出现"这里说能续、点下去 404"。
         # 以检查点为准再核一遍：真正在跑的线程此刻没有可续的断点，
         # 会在这里被核回 False；被杀掉那条留着现场，核得过。
-        for it in items:
+        result = _audit.paginate_tasks(
+            items, page=page, page_size=page_size, status=status,
+            source=source, risk=risk, user=user, since=since)
+        for it in result["items"]:
             if it.get("resumable"):
                 state = is_resumable(str(it.get("thread_id") or ""), cfg)
                 if state is not None:
                     it["resumable"] = state
         # user 是**当前账号**，不是过滤条件：页面拿它与每条的 owner 比，
         # 判断哪些是自己的、续跑入口对谁开。匿名时为空串。
-        return {"items": items, "user": username}
+        result["user"] = username
+        return result
 
     @app.post("/api/resume")
     def resume_task(req: ResumeRequest, request: Request) -> JSONResponse:

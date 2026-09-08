@@ -9,6 +9,7 @@ import {
   resumeTask,
   type Replay,
   type Task,
+  type TaskStats,
   type TasksResult,
  type Me,
 } from '../api'
@@ -63,16 +64,12 @@ function fmtDuration(ms: number | null | undefined): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(2)}S` : `${Math.round(ms)}MS`
 }
 
-/** 发起时间档。ts 解析不出来时**不放行** —— 选了"今天"却混进一条时间不明的记录，
- *  比少一条更糟：它会被当成今天发生的。 */
-function withinSince(ts: string, since: string): boolean {
-  if (since === 'all') return true
-  const date = new Date(ts)
-  if (!ts || Number.isNaN(date.getTime())) return false
-  if (since === 'today') return date.toDateString() === new Date().toDateString()
-  const days = since === '7d' ? 7 : since === '30d' ? 30 : 0
-  if (!days) return true
-  return Date.now() - date.getTime() <= days * 86400000
+/** 还没读到数据时的统计占位。全 0 而不是隐藏那一排 —— 卡片先在位，
+ *  数字随后到位，否则列表出现前整页会先跳一次。 */
+const EMPTY_STATS: TaskStats = {
+  running: 0, waiting_input: 0, waiting_approval: 0, waiting_review: 0,
+  review_returned: 0, needs_operator: 0, interrupted: 0, rejected: 0,
+  done: 0, done_today: 0, success_rate: null,
 }
 
 const STATUS_LABEL: Record<Task['status'], string> = {
@@ -116,16 +113,19 @@ const STATE_GLYPH: Record<Task['status'], string> = {
    折算（audit.stage），并落发起记录，运行中与等待审批不再是空档。
    「待执行」是唯一还没有数据的一档 —— askdb 不排队，收到即执行，留在这里是
    为了让状态口径完整可读，选中后由空态文案说明。 */
-type StatusFilter = 'all' | 'pending' | 'running' | 'interrupted' | 'waiting_input'
+/* 档位与后端的线程状态**一一对应**（askdb/audit.py 的那九个常量）。
+   原来这里还有一档「待执行 / pending」，而没有任何线程会是这个状态 ——
+   选中它列表必然是空的，看的人只会以为"这会儿真没有待执行的"。
+   筛选搬到服务端之后这种档位更留不得：传过去就是一个非法取值。 */
+type StatusFilter = 'all' | 'running' | 'interrupted' | 'waiting_input'
   | 'waiting_approval' | 'waiting_review' | 'review_returned' | 'needs_operator'
   | 'done' | 'rejected'
 
-const FILTER_ORDER: StatusFilter[] = ['all', 'pending', 'running', 'waiting_input',
+const FILTER_ORDER: StatusFilter[] = ['all', 'running', 'waiting_input',
   'waiting_approval', 'waiting_review', 'needs_operator', 'interrupted', 'done',
   'review_returned', 'rejected']
 const FILTER_LABEL: Record<StatusFilter, string> = {
   all: '全部状态',
-  pending: '待执行',
   running: '运行中',
   waiting_input: '等待补充',
   waiting_approval: '等待审批',
@@ -138,7 +138,6 @@ const FILTER_LABEL: Record<StatusFilter, string> = {
 }
 const FILTER_CODE: Record<StatusFilter, string> = {
   all: 'ALL',
-  pending: 'NEW',
   running: 'RUN',
   waiting_input: 'INPUT',
   waiting_approval: 'APPROVAL',
@@ -174,6 +173,9 @@ export function TasksPage({ onNavigate, notify, me }: {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [statusOpen, setStatusOpen] = useState(false)
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_TASK_FILTERS)
+  /* 页码。**换筛选条件的地方一并把它设回 1**，而不是靠一个 useEffect 去追 ——
+     追的写法会先按旧页码请求一次、再按第 1 页请求一次，列表跳两下。
+     停在第 7 页而筛完只剩 2 条，看到的会是一片空白。 */
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [sources, setSources] = useState<TaskSourceOption[]>([])
@@ -184,11 +186,20 @@ export function TasksPage({ onNavigate, notify, me }: {
      七档里只看得见四档。 */
   const [statusAt, setStatusAt] = useState<{ top: number; right: number } | null>(null)
 
+  /* 筛选、切页都走服务端：/api/tasks 收筛选条件与页码，返回这一页 + 统计 +
+     下拉可选值。参数一变就重新取，与"点了刷新"是同一条链路 —— 两条链路会漂。 */
   const load = useCallback(() => {
-    fetchTasks()
+    fetchTasks({
+      page, pageSize,
+      status: statusFilter,
+      source: filters.source,
+      risk: filters.risk,
+      user: filters.user,
+      since: filters.since,
+    })
       .then(value => { setResult(value); setError('') })
       .catch(e => setError(String(e.message || e)))
-  }, [])
+  }, [page, pageSize, statusFilter, filters])
 
   useEffect(load, [load])
 
@@ -231,63 +242,25 @@ export function TasksPage({ onNavigate, notify, me }: {
       .catch(() => setSources([]))
   }, [])
 
-  const items = useMemo(() => result?.items ?? [], [result])
+  /* 这一页拿到的是**当前页**的行；统计卡、筛选下拉的可选值、两个总数都由
+     服务端一并给出（audit.paginate_tasks）。原来这三样都在浏览器里从全量
+     列表算，代价是每次打开要把一千四百多条线程发过来，而屏幕上只有十行。
 
-  const stats = useMemo(() => {
-    const today = new Date().toDateString()
-    const interrupted = items.filter(task => task.status === 'interrupted').length
-    const waitingInput = items.filter(task => task.status === 'waiting_input').length
-    const waitingApproval = items.filter(task => task.status === 'waiting_approval').length
-    const needsOperator = items.filter(task => task.status === 'needs_operator').length
-    const waitingReview = items.filter(task => task.status === 'waiting_review').length
-    const reviewReturned = items.filter(task => task.status === 'review_returned').length
-    const running = items.filter(task => task.status === 'running').length
-    const rejected = items.filter(task => task.status === 'rejected').length
-    const done = items.filter(task => task.status === 'done')
-    const doneToday = done.filter(task => new Date(task.ts).toDateString() === today).length
-    // 成功率的分母只算**真收尾**的：等补充、等审批、等运维都还有下一步，
-    // 把它们记成失败，这个数字就会随"有多少人问得含糊"上下浮动，与系统好坏无关。
-    const settled = done.length + rejected
-    const rate = settled ? `成功率 ${((done.length / settled) * 100).toFixed(1)}%` : '暂无收尾记录'
-    return { interrupted, waitingInput, waitingApproval, waitingReview, reviewReturned,
-             needsOperator, running, rejected, doneToday, rate }
-  }, [items])
+     统计仍然算在**筛选之前**：这四个数讲的是系统当下的处境，跟着筛选变的话，
+     筛完「已完成」再看「待处理」永远是 0。下拉可选值同理，跟着收窄就退不回去。 */
+  const visible = useMemo(() => result?.items ?? [], [result])
+  const stats = result?.stats ?? EMPTY_STATS
+  const total = result?.total ?? 0
+  const totalAll = result?.total_all ?? 0
+  const sourceOptions = result?.sources ?? []
+  const userOptions = result?.users ?? []
+  // 成功率没有收尾样本时给 null，不是 0% —— 后者是在报一个没发生过的失败
+  const rateLabel = stats.success_rate === null
+    ? '暂无收尾记录'
+    : `成功率 ${stats.success_rate.toFixed(1)}%`
 
-  const matched = useMemo(() => items.filter(task => {
-    if (statusFilter !== 'all' && task.status !== statusFilter) return false
-    if (filters.source !== 'all' && (task.source ?? '') !== filters.source) return false
-    if (filters.risk !== 'all' && (task.risk ?? '') !== filters.risk) return false
-    if (filters.user !== 'all' && (task.user ?? '') !== filters.user) return false
-    if (!withinSince(task.ts, filters.since)) return false
-    return true
-  }), [items, statusFilter, filters])
-
-  /* 下拉的可选值只从**当前列表里真有的**值来：列出一个筛完是空的数据源，
-     等于让人自己去撞哪个有数据。 */
-  const sourceOptions = useMemo(() => {
-    const seen = new Map<string, string>()
-    items.forEach(task => {
-      const value = task.source ?? ''
-      if (!seen.has(value)) seen.set(value, task.source_name || task.source || '（未记录数据源）')
-    })
-    return Array.from(seen, ([value, label]) => ({ value, label }))
-  }, [items])
-
-  const userOptions = useMemo(() => {
-    const seen = new Set<string>()
-    items.forEach(task => seen.add(task.user ?? ''))
-    return Array.from(seen, value => ({ value, label: value || '匿名' }))
-  }, [items])
-
-  /* 分页。/api/tasks 一次返回全部线程（统计卡要算全量），所以这里在**客户端**切页，
-     与筛选、关键词同一条链路 —— 服务端分页会让上面那四个统计数字失真。
-     切页本身也是必须的：这一页曾经一次渲染一千四百多行，DOM 高七万多像素。 */
-  const pages = Math.max(Math.ceil(matched.length / pageSize), 1)
-  const current = Math.min(page, pages)
-  const visible = useMemo(
-    () => matched.slice((current - 1) * pageSize, current * pageSize),
-    [matched, current, pageSize],
-  )
+  const pages = Math.max(Math.ceil(total / pageSize), 1)
+  const current = Math.min(result?.page ?? page, pages)
 
   // 筛选条件一变就回到第一页 —— 停在第 7 页而结果只剩 2 条，会看到一片空白
   useEffect(() => { setPage(1) }, [statusFilter, filters, pageSize])
@@ -373,15 +346,15 @@ export function TasksPage({ onNavigate, notify, me }: {
             合成一个数字就等于让人自己去猜该找谁。审批那格原来写死 0。 */}
         <div className="stat">
           <span>待处理</span>
-          <strong>{stats.waitingInput + stats.waitingApproval + stats.waitingReview
-                   + stats.needsOperator + stats.interrupted}</strong>
+          <strong>{stats.waiting_input + stats.waiting_approval + stats.waiting_review
+                   + stats.needs_operator + stats.interrupted}</strong>
           <small>
-            {stats.waitingInput} 补充信息 · {stats.waitingApproval} 审批
-            · {stats.waitingReview} 复核 · {stats.needsOperator} 运维
+            {stats.waiting_input} 补充信息 · {stats.waiting_approval} 审批
+            · {stats.waiting_review} 复核 · {stats.needs_operator} 运维
             · {stats.interrupted} 可续跑
           </small>
         </div>
-        <div className="stat"><span>今日完成</span><strong>{stats.doneToday}</strong><small>{stats.rate}</small></div>
+        <div className="stat"><span>今日完成</span><strong>{stats.done_today}</strong><small>{rateLabel}</small></div>
         {/* 小字只说这一档真正是什么：护栏拦下的。"模型答不上来"已经分到
             「等待补充」，不再混进这个数字里 —— 原来 62 条 rejected 里 57 条
             是 NO_SQL，而这行小字写着"越权或写入意图"。 */}
@@ -395,7 +368,7 @@ export function TasksPage({ onNavigate, notify, me }: {
           <div className="card-head">
             <div>
               <strong>查询任务</strong>
-              <p>每个任务拥有独立状态、执行轨迹和审计记录。共 {items.length} 条（全部发起人）
+              <p>每个任务拥有独立状态、执行轨迹和审计记录。共 {totalAll} 条（全部发起人）
                   {result.user ? ` · 当前账号 ${result.user}，只有自己发起的线程能续跑` : ' · 未登录，可以浏览但不能续跑'}。</p>
             </div>
             <div className="card-actions">
@@ -421,7 +394,7 @@ export function TasksPage({ onNavigate, notify, me }: {
                         role="option"
                         aria-selected={value === statusFilter}
                         className={value === statusFilter ? 'on' : ''}
-                        onClick={() => { setStatusFilter(value); setStatusOpen(false) }}
+                        onClick={() => { setStatusFilter(value); setPage(1); setStatusOpen(false) }}
                       >
                         <span>{FILTER_LABEL[value]}</span><b>{FILTER_CODE[value]}</b>
                       </button>
@@ -513,11 +486,11 @@ export function TasksPage({ onNavigate, notify, me }: {
             </div>
           ))}
 
-          {matched.length === 0 && (
+          {visible.length === 0 && (
             <div className="task-empty">
-              <strong>{items.length ? '当前筛选条件下没有任务。' : '还没有任何执行记录。'}</strong>
+              <strong>{totalAll ? '当前筛选条件下没有任务。' : '还没有任何执行记录。'}</strong>
               <span>
-                {items.length
+                {totalAll
                   ? '换个状态，或在筛选里重置数据源、发起人与时间再看。'
                   : '任务由提问产生 —— 到查询 Agent 问一次，或在这里创建任务，这里就会出现对应的线程。这一页列全部发起人的线程，不只是当前账号的。'}
               </span>
@@ -527,11 +500,12 @@ export function TasksPage({ onNavigate, notify, me }: {
       )}
 
       {/* 分页条与审计中心同一套结构与类名，两页的操作手感必须一致 */}
-      {matched.length > 0 && (
+      {total > 0 && (
         <div className="audit-pager">
-          <span>共 {matched.length} 条 · 第 {current} / {pages} 页</span>
+          <span>共 {total} 条 · 第 {current} / {pages} 页</span>
           <span>
-            <select value={pageSize} onChange={event => setPageSize(Number(event.target.value))}>
+            <select value={pageSize}
+                    onChange={event => { setPageSize(Number(event.target.value)); setPage(1) }}>
               {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
             </select>
             <button className="ghost" disabled={current <= 1} onClick={() => setPage(p => p - 1)}>‹ 上一页</button>
@@ -549,7 +523,7 @@ export function TasksPage({ onNavigate, notify, me }: {
             sources={sourceOptions}
             users={userOptions}
             onClose={() => setModal({ kind: 'none' })}
-            onApply={next => { setFilters(next); setModal({ kind: 'none' }) }}
+            onApply={next => { setFilters(next); setPage(1); setModal({ kind: 'none' }) }}
           />
         </ModalShell>
       )}

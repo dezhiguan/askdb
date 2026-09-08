@@ -809,13 +809,31 @@ export class Forbidden extends Error {
   }
 }
 
-export async function fetchMembers(roleCode: string): Promise<RoleMember[]> {
-  const response = await request(`/api/identity/members?role=${encodeURIComponent(roleCode)}`)
+/** 名册一页。total 是**整个角色**的人数，不是这一页的条数 ——
+ *  卡片标题上的「N 人」和页码都靠它。 */
+export interface MembersPage {
+  items: RoleMember[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export async function fetchMembers(
+  roleCode: string, page = 1, pageSize = 10,
+): Promise<MembersPage> {
+  const query = new URLSearchParams({
+    role: roleCode, page: String(page), page_size: String(pageSize),
+  })
+  const response = await request(`/api/identity/members?${query}`)
   if (response.status === 401 || response.status === 403) {
     throw new Forbidden(`/api/identity/members ${response.status}`)
   }
   if (!response.ok) throw new Error(`/api/identity/members ${response.status}`)
-  return (await response.json()).items
+  const body = await response.json()
+  return {
+    items: body.items ?? [], total: body.total ?? 0,
+    page: body.page ?? page, page_size: body.page_size ?? pageSize,
+  }
 }
 
 /** 管理员令牌只放在内存里，刷新即失效。
@@ -943,19 +961,88 @@ export interface Task {
   owner: string
 }
 
-/** 任务列表列**全部**线程（2026-09-06 起不再按发起人收窄）。
+/** 任务中心的统计卡。**算在筛选之前**（服务端 audit.paginate_tasks）——
+ *  这四个数讲的是系统当下的处境，跟着筛选变就不是这回事了。
+ *  success_rate 为 null = 还没有收尾记录，不是 0%。 */
+export interface TaskStats {
+  running: number
+  waiting_input: number
+  waiting_approval: number
+  waiting_review: number
+  review_returned: number
+  needs_operator: number
+  interrupted: number
+  rejected: number
+  done: number
+  done_today: number
+  success_rate: number | null
+}
+
+export interface TaskFilterOptionDto { value: string; label: string }
+
+/** 任务列表的筛选取值。`all` 是不筛，空串是**合法的一档**
+ *  （未记录数据源 / 匿名发起）—— 用空串当"不筛"，那两档就永远选不中。 */
+export interface TaskQuery {
+  page?: number
+  pageSize?: number
+  status?: string
+  source?: string
+  risk?: string
+  user?: string
+  since?: string
+}
+
+/** 任务列表列**全部**线程（2026-09-06 起不再按发起人收窄），
+ *  但一次只出一页（2026-09-08 起分页在服务端）。
+ *
+ *  items 是当前这一页；total 是筛完的条数（页码按它算）；total_all 是筛之前
+ *  的条数（卡片标题上的「共 N 条」、以及"一条都没有"与"筛完没有"两句不同
+ *  提示的判据）。stats / sources / users 都算在筛选之前，由服务端给。
+ *
  *  user 是当前账号，不是过滤条件：页面拿它与每条的 owner 比，决定续跑入口
  *  对谁开。空串即匿名。 */
 export interface TasksResult {
   items: Task[]
+  total: number
+  total_all: number
+  page: number
+  page_size: number
+  stats: TaskStats
+  sources: TaskFilterOptionDto[]
+  users: TaskFilterOptionDto[]
   user: string
 }
 
-export async function fetchTasks(): Promise<TasksResult> {
-  const response = await request('/api/tasks')
+const EMPTY_TASK_STATS: TaskStats = {
+  running: 0, waiting_input: 0, waiting_approval: 0, waiting_review: 0,
+  review_returned: 0, needs_operator: 0, interrupted: 0, rejected: 0,
+  done: 0, done_today: 0, success_rate: null,
+}
+
+export async function fetchTasks(query: TaskQuery = {}): Promise<TasksResult> {
+  const params = new URLSearchParams({
+    page: String(query.page ?? 1),
+    page_size: String(query.pageSize ?? 10),
+    status: query.status ?? 'all',
+    source: query.source ?? 'all',
+    risk: query.risk ?? 'all',
+    user: query.user ?? 'all',
+    since: query.since ?? 'all',
+  })
+  const response = await request(`/api/tasks?${params}`)
   if (!response.ok) throw new Error(`/api/tasks ${response.status}`)
   const body = await response.json()
-  return { items: body.items, user: body.user || '' }
+  return {
+    items: body.items ?? [],
+    total: body.total ?? 0,
+    total_all: body.total_all ?? 0,
+    page: body.page ?? 1,
+    page_size: body.page_size ?? 10,
+    stats: body.stats ?? EMPTY_TASK_STATS,
+    sources: body.sources ?? [],
+    users: body.users ?? [],
+    user: body.user || '',
+  }
 }
 
 /* ---------------- Agent 质量中心 ---------------- */
