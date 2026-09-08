@@ -599,7 +599,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 with Executor(probe_cfg) as ex:
                     # 走护栏改写后的那条：租户谓词与 LIMIT 都是它注入的，
                     # 绕过去验出来的"有数据"回答的是另一个问题
-                    has_rows = bool(ex.run(probe_sql.sql).rows)
+                    has_rows = bool(ex.run(probe_sql.sql, limit_capped="R-09" in probe_sql.rules_fired).rows)
         except DataSourceError:
             has_rows = None
 
@@ -903,7 +903,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                         out.append(row)
                         continue
                     try:
-                        res = ex.run(g.sql)
+                        res = ex.run(g.sql, limit_capped="R-09" in g.rules_fired)
                     except DataSourceError as e:
                         row.update(status="error", detail=str(e))
                         out.append(row)
@@ -2434,7 +2434,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                           "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
             try:
                 ex.set_org(org)
-                res = ex.run(g.sql)
+                res = ex.run(g.sql, limit_capped="R-09" in g.rules_fired)
             except DataSourceError as e:
                 steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
                 _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,

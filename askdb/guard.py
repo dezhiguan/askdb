@@ -594,6 +594,24 @@ def _table_flags(cfg: Config, table: str) -> dict[str, bool] | None:
     return {c.name.lower(): c.sensitive for c in t.columns.values()}
 
 
+def _is_email_domain(node: exp.Expression) -> bool:
+    """是不是"取邮箱 @ 后段（域名）"这一种确定写法：SPLIT_PART(列, '@', 2)。
+
+    只认这一个形状：分隔符必须是字符串 '@'、段号必须是数字 2、被切的必须是
+    一个裸列。段号 1（本地名，含个人信息）、其它 substring/正则切法一律不认 ——
+    脱敏放宽必须是精确的、可枚举的，不能给一个能提取任意子串的通用口子。
+    """
+    if not isinstance(node, exp.SplitPart):
+        return False
+    if not isinstance(node.this, exp.Column):
+        return False
+    delim = node.args.get("delimiter")
+    part = node.args.get("part_index")
+    return (isinstance(delim, exp.Literal) and delim.is_string and delim.this == "@"
+            and isinstance(part, exp.Literal) and not part.is_string
+            and str(part.this) == "2")
+
+
 def _select_flags(select: exp.Select, cfg: Config,
                   outer: dict[str, dict[str, bool]] | None = None,
                   ) -> list[tuple[str, bool]] | None:
@@ -665,6 +683,13 @@ def _select_flags(select: exp.Select, cfg: Config,
         if isinstance(inner, exp.Count):
             # COUNT 只暴露"有多少个"，不暴露值本身；把它脱敏等于把数字毁掉。
             # MIN/MAX 不在此列 —— 它们原样吐出某一行的真值。
+            flag = False
+        elif _is_email_domain(inner):
+            # 邮箱域名（@ 后段）不是个人标识信息：gmail.com / qq.com 指向的是
+            # 服务商而非某个人。而按域名分组统计（SPLIT_PART(email,'@',2) 再
+            # GROUP BY）是常见的合法分析，把域名整列打成星号会让聚合结果不可读。
+            # **只豁免第 2 段这一种确定写法** —— 第 1 段是本地名（含个人信息）、
+            # 其它 substring/切法一律不认，从严兜底，绕过面仅限"域名"本身。
             flag = False
         elif cols:
             flag = any(_col_sensitive(c) for c in cols)

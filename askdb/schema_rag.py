@@ -314,6 +314,13 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     budget = int(cfg.raw["schema_rag"].get("token_budget", 1500))
     top_k = int(cfg.raw["schema_rag"].get("top_k", 3))
     max_k = int(cfg.raw["schema_rag"].get("max_k", 5))
+    # 盲选兜底的专用预算。常规 budget（默认 1500）限制的是**正常召回**时别注入
+    # 太多表挤占上下文；但盲选意味着关键词全落空，此时"让模型看得见全部表名"的
+    # 价值远大于省那几千 token —— 全量注入实测仅 ~3000+ token（成本可忽略），却能
+    # 把"问 A 答 B / 假称没有某表"从根上挡掉。用常规 budget 判全量回退，等于全量
+    # 永远塞不进、回退形同虚设，正是这次要修的：把判据放宽到这条专用预算。
+    blind_budget = max(budget, int(cfg.raw["schema_rag"].get("blind_budget", 8000)))
+    eff_budget = budget
 
     all_tables = list(cfg.tables.values())
     metrics = [m for m in cfg.metrics if m.matches(question)]
@@ -397,13 +404,16 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         why = ("没有一张表的语义相似度达到阈值" if mode == "vector"
                else "关键词召回一张表都没命中")
         whole = _render(all_tables, metrics)
-        if all_tables and _est_tokens(whole) <= budget:
+        if all_tables and _est_tokens(whole) <= blind_budget:
             picked = all_tables
             # 全库都给了，模型手上不再有"看不见的表"，这就不算盲选了 ——
             # 只有"给了 3 张、真正该用的那张不在里面"才需要向用户示警。
             blind = False
+            # 下面的裁剪循环若仍用常规 budget，会把刚给的全量又按尾部裁回去，
+            # 白忙一场。采纳全量兜底时，裁剪也跟着放宽到 blind_budget。
+            eff_budget = blind_budget
             said = (f"{why}，已改为把全部 {len(all_tables)} 张表"
-                    f"交给模型自行判断（仍在 token 预算内）")
+                    f"交给模型自行判断（盲选兜底预算内）")
         else:
             said = (f"{why}，下列 {len(picked)} 张表是按"
                     + ("相似度顺序" if mode == "vector" else "白名单顺序")
@@ -425,7 +435,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     truncated: list[str] = []
     while picked:
         text = _render(picked, metrics)
-        if _est_tokens(text) <= budget or len(picked) == 1:
+        if _est_tokens(text) <= eff_budget or len(picked) == 1:
             break
         truncated.append(picked[-1].name)
         picked = picked[:-1]
