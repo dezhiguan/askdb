@@ -194,6 +194,30 @@ observability:
     # 直查 SQL 链路不调模型、不过配额，Redis 挂了它照常可用。
     on_backend_error: block
 
+# ---------------------------------------------------------------------------
+# 应答缓存（2026-09-08 增）
+#
+# 相同提问在 TTL 内直接返回上次的**完整结果**，不再调用模型 —— 命中即
+# 零模型调用、零配额消耗、零 SQL 执行，服务端处理从 ~1.1s 降到个位数 ms。
+#
+# 只作用于 /api/ask（自然语言）。直查 SQL 本就 ~40ms，不缓存。
+#
+# 复用配额那一个 Redis（observability.quota.redis_url_env）——两者本就该指
+# 同一实例，因此这里不再单配 redis_url_env，留空即自动沿用。走 Redis 而非
+# 进程内缓存，是为了让两个副本共享命中；进程内缓存会各存各的、命中不一致。
+#
+# **失败取舍与配额相反**：配额 Redis 挂了 fail-closed（拒绝放行），
+# 缓存 Redis 挂了 fail-open（当作未命中、照常走模型）。缓存是优化不是护栏，
+# 绝不该成为查询返回 500 的原因。
+#
+# 只有"干净的成功"进缓存：被护栏拦、超配额、挂起审批、创建任务的响应都不缓存。
+# key 带 (问题原文 + 数据源 + 组织 + 角色)，少一维就是跨源/跨身份串结果。
+answer_cache:
+  enabled: true
+  ttl_seconds: 60
+  key_prefix: askdb:qcache:public
+  # redis_url_env: 留空 —— 自动复用 observability.quota.redis_url_env
+
 tables_file: ./config/ragforge-prod-tables.yaml
 metrics_file: ./config/ragforge-prod-metrics.yaml
 
