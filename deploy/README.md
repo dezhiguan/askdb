@@ -28,14 +28,33 @@ askdb **不设账号体系** —— 设计文档 §1.1 写明"数据库连接本
 
    | 层 | 做法 | 挡什么 |
    |---|---|---|
-   | 便宜的模型 | `qwen3.8-flash`，约 ¥0.0011 / 次 | 单价 |
-   | 每日配额 | `daily_quota: 500`，**按模型调用次数计** | 总量 |
+   | 便宜的模型 | `qwen3.8-flash`，约 ¥0.0043 / 次 | 单价 |
+   | 每日配额 | `daily_quota: 12000`，**按模型调用次数计** | 总量 |
+   | 应答缓存 | `answer_cache.ttl_seconds: 600`，命中即零调用 | 同一个问题被反复问 |
    | 共享计数 | 计数存 Redis（`ASKDB_REDIS_URL`） | 多副本各算各的 |
-   | 入口限流 | nginx 对**其余接口**限 5r/s（突发 10） | 脚本刷直查链路 |
+   | 入口限流 | nginx 按路径三档（见下表） | 一个人刷光全站额度 |
 
-   > 2026-08-25 起 `/api/ask` **不再做每 IP 限流**（运营决定，只保留应用层
-   > 每日配额）。上表最后一行因此只覆盖直查等接口 —— 别再按"6r/min per IP"
-   > 去核，`deploy/nginx-askdb.conf` 里那个 location 已经没有 `limit_req` 了。
+   2026-09-09 按日访问量 10 万级重配（`deploy/nginx-askdb.conf`）：
+
+   | 路径 | 速率（per IP） | 突发 | 为什么是这个价 |
+   |---|---|---|---|
+   | 静态资源 + 只读接口 | 30 r/s | 120 / 60 | 一次冷加载就要 11 个请求，给窄了是自己挡自己 |
+   | `/api/sql` | 2 r/s | 20 | 一条真打到生产库的语句 + sqlglot 解析 |
+   | `/api/ask` | **20 r/min** | 10 | 唯一花钱的路径 |
+
+   > 上一版这里写的是"`/api/ask` 不再做每 IP 限流"（2026-08-25 运营决定）。
+   > 两处需要更正：
+   >
+   > 1. **那句话当时就与实际行为不符。** nginx 的 `limit_req` 只在本层一条
+   >    都没写时才继承上层；那个 location 里一条都没写，所以它一直在吃
+   >    server 块的 5 r/s，而不是"不限"。
+   > 2. 额度从 500 提到 12000 之后，"单人刷光全天额度"的代价从几块钱变成
+   >    几十块 + 全站当天不可用，所以这一档必须显式存在。现在两条
+   >    `limit_req` 都写在 location 里，行为与文档一致。
+
+   `¥0.0011/次` 那个旧口径也不能再用了 —— 它是样例库 + keyword 召回 +
+   `token_budget: 1500` 时候的数。现在 `schema_rag` 是 vector 召回、top_k 8、
+   预算 4000，注入的 schema 本身就能到 4000 token，实际约 ¥0.0043/次。
 
    配额扣在 `LlmClient` 里，一次调用扣一次 —— **不是一次提问扣一次**。
    一次提问会调好几次模型（多步规划每步一次生成 + 一次评估，反思重试再各来
@@ -169,6 +188,7 @@ python -m scripts.migrate_sources_to_pg -c config/public.yaml             # 再�
 建完用 `curl -s https://askdb.ragforge.net/api/health | jq .quota` 确认
 `backend` 是 `redis`、`multi_replica_safe` 是 `true`。若显示 `file`，说明
 Secret 没生效 —— 此时**不要**把 replicas 调大于 1，配额会变成 N 倍。
+（当前 `replicas: 4`，所以这条 Secret 是硬前提，不是可选项。）
 
 ### 接入 ragforge 与 careermate 两个数据源（2026-09-07）
 
@@ -327,8 +347,11 @@ cd .. && git add frontend askdb/web
 curl -s https://askdb.ragforge.net/api/health | python3 -m json.tool
 ```
 
-应看到 `datasource.type = duckdb`（对外实例只能连样例库）、
-`guard.daily_quota = 500`、`quota.backend = redis` 且 `multi_replica_safe = true`。
+应看到 `guard.daily_quota = 12000`、`quota.backend = redis` 且
+`multi_replica_safe = true`。
+
+> `datasource.type = duckdb` 这句已作废：2026-09-03 起对外实例直连 ragforge
+> 生产主库，2026-09-07 起两个源都走运行时注册表，都不是 duckdb。
 
 > `llm.disabled` 现在是 `false` —— 实例已接模型，成本由"便宜的模型 + 每日配额 +
 > 共享计数"三层兜住，不再靠"不接模型"。旧版本这里写的是 `disabled = true`，
@@ -413,9 +436,17 @@ nginx 侧回滚：还原 rag-forge 仓库的 `nginx.conf` 并重推。
   `/opt/askdb/var`，**重建不丢**。位置很关键：每日配额靠数当天的审计条数实现，
   日志一丢配额就归零，等于形同虚设。（早期版本写在 `/app/data`、随容器重建丢失，
   那是挂卷之前的状态。）
-- **限流**分三层：nginx 5r/s 突发 10（`/api/ask` 除外，见上）；应用侧对
-  出站建连 10 次/分、登录失败 10 次/分（`server.py` 的 `_SOURCE_RL` /
-  `_LOGIN_RL`，**进程内计数**，两副本实际是两倍）；以及每日模型调用配额 500
-  （走 Redis 共享计数，副本间是准的）。
-- **资源**：requests 50m CPU / 192Mi，limits 500m / 512Mi。
-  样例库 5MB 级，DuckDB 常驻内存很小。
+- **限流**分三层：nginx 按路径三档（30 r/s ／ `/api/sql` 2 r/s ／
+  `/api/ask` 20 r/min，见上表）；应用侧对出站建连 10 次/分、登录失败
+  10 次/分（`server.py` 的 `_SOURCE_DIAL_RL` / `_LOGIN_RL`，**进程内计数**，
+  N 副本实际是 N 倍）；以及每日模型调用配额 12000（走 Redis 共享计数，
+  副本间是准的）。
+
+  > 应用侧那几个"按 IP 分桶"的限流器，2026-09-09 之前在**线上是失效的**：
+  > 进程前面隔着 nginx 和 NodePort，`request.client.host` 对所有访客都是
+  > 同一个值，等于全站共用一个桶。现在改读 nginx 写入的 `X-Real-IP`
+  > （`server.py` 的 `_client_ip`）。`_LOGIN_RL` 更早连 key 都没传，
+  > 是字面意义上的全局桶 —— 任何人每分钟 10 个请求就能让所有人登不上去。
+- **资源**：requests 200m CPU / 256Mi，limits 1000m / 768Mi，4 副本。
+  每个 Pod 是单个 uvicorn worker，一个 Python 进程吃不满一个核 ——
+  扩容靠加副本，把 CPU limit 提到 1 核以上没有意义。
