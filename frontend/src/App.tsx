@@ -41,6 +41,10 @@ function App() {
   const [me, setMe] = useState<Me | null>(null)
   const [loginOpen, setLoginOpen] = useState(false)
   const [view, setView] = useState<View>('query')
+  /** 跳「执行追踪」时要定位的那条 trace。本站没有 URL 路由（view 是状态），
+   *  参数就走这里 —— 侧栏「Agent 执行链路」按的是刚跑完的那一条，
+   *  落到追踪页最近一条上等于点了个碰运气的按钮。 */
+  const [focusTrace, setFocusTrace] = useState<string | null>(null)
   const [modal, setModal] = useState<ModalName>(null)
   const [toast, setToast] = useState('')
   // 侧栏「发起快捷查询」重开一次工作台
@@ -91,6 +95,13 @@ function App() {
   const needsIdentity = !!me && me.enabled && !me.username
   const gated = needsIdentity && (me.required || !skipped)
 
+  /** 统一的换页入口。第二个参数只在目标页认得它时有意义（当前只有追踪页）；
+   *  不带就清掉 —— 否则从导航栏点进追踪页还会停在上一次定位的那条上。 */
+  const navigate = (next: View, focus?: string) => {
+    setFocusTrace(focus ?? null)
+    setView(next)
+  }
+
   const notify = (message: string) => {
     setToast(message)
     window.setTimeout(() => setToast(''), 1900)
@@ -105,20 +116,23 @@ function App() {
           /* 这只是跳转，但它通向的「创建任务」要登录 —— 入口和目的地状态不一致，
              会让人点进去才发现做不了 */
           action={<button className="secondary" {...writeGuard(me, '创建任务').props}
-            onClick={() => setView('tasks')}>创建复杂任务</button>}
+            onClick={() => navigate('tasks')}>创建复杂任务</button>}
         />
         {/* key 变化即整块重挂 —— 侧栏「发起快捷查询」照原型要回到空态 */}
-        <QueryWorkspace key={queryEpoch} health={health} sources={sources} onNavigate={setView} notify={notify} me={me} />
+        <QueryWorkspace key={queryEpoch} health={health} sources={sources} onNavigate={navigate} notify={notify} me={me} />
       </div>
     )
-    if (view === 'tasks') return <TasksPage onNavigate={setView} notify={notify} me={me} />
+    if (view === 'tasks') return <TasksPage onNavigate={navigate} notify={notify} me={me} />
     if (view === 'sources') return <DataSourcesPage health={health} me={me} />
     if (view === 'permissions') return <PermissionsPage notify={notify} me={me} />
-    if (view === 'glossary') return <GlossaryPage onNavigate={setView} notify={notify} me={me} />
+    if (view === 'glossary') return <GlossaryPage onNavigate={navigate} notify={notify} me={me} />
     if (view === 'approvals') return <ApprovalsPage notify={notify} />
     if (view === 'audit') return <AuditPage me={me} />
-    if (view === 'evaluation') return <EvaluationPage onNavigate={setView} />
-    if (view === 'traces') return <TracesPage onNavigate={setView} onOpenModal={setModal} me={me} />
+    if (view === 'evaluation') return <EvaluationPage onNavigate={navigate} />
+    // key 带上 focusTrace：已经停在这一页时再定位另一条，靠重挂让左栏
+    // 的搜索框与选中项一起复位（它们是页内初始状态）
+    if (view === 'traces') return <TracesPage key={focusTrace ?? ''} focusTrace={focusTrace}
+                                              onNavigate={navigate} onOpenModal={setModal} me={me} />
     return <AuditPage me={me} />
   })()
 
@@ -128,8 +142,8 @@ function App() {
         activeView={view}
         health={health}
         source={sources.current}
-        onNavigate={setView}
-        onQuickNew={() => { setQueryEpoch(n => n + 1); setView('query') }}
+        onNavigate={navigate}
+        onQuickNew={() => { setQueryEpoch(n => n + 1); navigate('query') }}
         me={me}
         onOpenLogin={() => setLoginOpen(true)}
         onSignOut={() => { logout().then(() => { reloadMe(); notify('已退出，回到匿名可见范围') }) }}
