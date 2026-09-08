@@ -1653,9 +1653,22 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         from .audit import stats as _stats
 
         days = min(max(int(days), 1), 365)
+        owner = _audit_owner_filter(request)
+        # 审批汇总在这里合，不在 audit.stats() 里读 —— 与任务中心
+        # （见 /api/tasks 的 open_approval_ids）同一条口径：审计不认识
+        # approvals 存储，也不该认识，那是两套存储。
+        #
+        # only_user 传的是同一个 owner：三张卡收敛到本人、审批那张给全量，
+        # 就是一次可见范围泄露（谁在申请跑大查询、被驳回几次一眼可见）。
+        try:
+            approval = _approvals.summary(cfg, days=days, only_user=owner)
+        except Exception:
+            # 审批存储不可用不该让整张审计页打不开。给 None 而不是 0 ——
+            # 0 会被读成"没有待审批"，而实际是"这次没算出来"。
+            approval = {"pending": None, "decided": None, "avg_decide_ms": None}
         return {
-            **_stats(cfg.audit_log, days=days,
-                     only_user=_audit_owner_filter(request)),
+            **_stats(cfg.audit_log, days=days, only_user=owner),
+            "approval": approval,
             "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
             "tracing": _obs_status(),
         }

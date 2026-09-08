@@ -210,12 +210,35 @@ function todayVsYesterday(stats: AuditStats): { today: number; delta: string } {
   return { today, delta: `较昨日 ${ratio >= 0 ? '+' : ''}${ratio}%` }
 }
 
+/** 审批放行耗时。分钟到小时是这条链路的常态（要等人），
+ *  所以不套用别处的 ms/s 写法 —— 「4231s」没人读得出那是一小时多。 */
+function fmtWait(ms: number | null | undefined): string {
+  if (ms == null) return DASH
+  const sec = Math.round(ms / 1000)
+  if (sec < 60) return `${sec} 秒`
+  if (sec < 3600) return `${Math.round(sec / 60)} 分钟`
+  const h = sec / 3600
+  return h < 24 ? `${h.toFixed(1)} 小时` : `${(h / 24).toFixed(1)} 天`
+}
+
+/** 这张卡的两个数窗口不同，不解释清楚会被当成同一个口径读。
+ *  只进 title，不落到页面上 —— 版式照原型，旁白不上屏。 */
+function approvalHint(stats: AuditStats): string {
+  const a = stats.approval
+  if (!a || a.pending == null) return '审批流水这次没读出来，不是没有待审批'
+  const tail = a.decided ? `；平均放行按近 ${stats.days} 天做出的 ${a.decided} 次决策计算`
+                         : `；近 ${stats.days} 天没有做出过审批决策，故无平均值`
+  return `当前 ${a.pending} 条待审批（与任务中心同源，不受时间窗约束）${tail}`
+}
+
 function StatTiles({ stats }: { stats: AuditStats | null }) {
   if (!stats) return <div className="stats"><div className="stat"><span>读取中…</span></div></div>
 
   const { today, delta } = todayVsYesterday(stats)
   const passed = stats.calls - stats.blocked
   const passRate = stats.calls > 0 ? `通过率 ${(passed / stats.calls * 100).toFixed(1)}%` : DASH
+  // 老后端不返回 approval —— 缺字段与"读不出来"是同一件事，都走 null 分支
+  const approval = stats.approval ?? { pending: null, decided: null, avg_decide_ms: null }
 
   return (
     <div className="stats">
@@ -224,9 +247,9 @@ function StatTiles({ stats }: { stats: AuditStats | null }) {
         <span>策略通过</span><strong>{passed.toLocaleString()}</strong>
         <small>{passRate} · 近 {stats.days} 天</small>
       </div>
-      {/* 人工审批环节后端尚未落库，按原型排版占位，不拿别的指标顶替 */}
-      <div className="stat" title="人工审批环节尚未接入，审计记录里没有这项">
-        <span>人工审批</span><strong>{DASH}</strong><small>平均 {DASH}</small>
+      <div className="stat" title={approvalHint(stats)}>
+        <span>人工审批</span><strong>{approval.pending ?? DASH}</strong>
+        <small>平均 {fmtWait(approval.avg_decide_ms)} · 近 {stats.days} 天</small>
       </div>
       <div className="stat">
         <span>安全拦截</span><strong>{stats.blocked}</strong>

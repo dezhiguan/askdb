@@ -38,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -208,3 +209,61 @@ def listing(cfg: Config, *, only_user: str | None = None) -> list[dict[str, Any]
     order = {REQUESTED: 0, APPROVED: 1, REJECTED: 2, CONSUMED: 3}
     return sorted(rows, key=lambda r: (order.get(r.get("status", ""), 9),
                                        str(r.get("ts", ""))), reverse=False)
+
+
+def _ts(value: Any) -> datetime | None:
+    """审批流水里的时间戳。写入方永远是 now_iso()，所以正常情况一定解析得出；
+    解析不出就当没有 —— 宁可少算一条，不要拿一个假时间去算耗时。
+    """
+    try:
+        return datetime.fromisoformat(str(value or ""))
+    except (ValueError, TypeError):
+        return None
+
+
+def summary(cfg: Config, *, days: int, only_user: str | None = None) -> dict[str, Any]:
+    """审批的窗口汇总。给审计中心那张卡用，与 listing() 分工：
+    那个给审批队列页，要的是每一条；这里只要三个数。
+
+    **两个数的时间口径不同，是有意的：**
+
+      · ``pending`` 是**当前**未决数，不受窗口约束，与任务中心「等待审批」
+        同源（都是 REQUESTED 的净状态）。挂了三个月没人批的单子正是这张卡
+        该喊出来的东西，按窗口滤掉等于越久越看不见。
+      · ``decided`` / ``avg_decide_ms`` 按**决策时刻**切窗口 —— 问的是
+        "最近这些天批下来的平均花了多久"。按申请时刻切会把窗口外提的、
+        窗口内批的那些漏掉，而它们恰恰是耗时最长的样本。
+
+    only_user 必须与 /api/audit/stats 的 only_user 一起收敛：同一页上三张卡
+    只给本人、审批那张给全量，就是一次可见范围泄露（谁在申请跑大查询、
+    被驳回几次，一眼可见）。
+
+    没有已决样本时 avg_decide_ms 为 None —— 不是 0。0 会被读成"秒批"。
+    """
+    rows = list(state(cfg).values())
+    if only_user is not None:
+        rows = [r for r in rows if (r.get("user") or "") == only_user]
+
+    cut = datetime.now().astimezone() - timedelta(days=days)
+    pending = sum(1 for r in rows if r.get("status") == REQUESTED)
+    decided = 0
+    waits: list[int] = []
+    for r in rows:
+        if r.get("status") == REQUESTED:
+            continue
+        end = _ts(r.get("decided_ts"))
+        if end is None or end < cut:
+            continue
+        decided += 1
+        # 申请时刻取 REQUESTED 那条留下的 ts。decide() 写的记录里没有 ts 键，
+        # 靠 state() 的字典合并保住它 —— 别在 decide() 里补写 ts，那会把
+        # 申请时刻静默改成决策时刻，平均耗时直接变 0 且不会报错。
+        start = _ts(r.get("ts"))
+        if start is not None and end >= start:
+            waits.append(int((end - start).total_seconds() * 1000))
+
+    return {
+        "pending": pending,
+        "decided": decided,
+        "avg_decide_ms": round(sum(waits) / len(waits)) if waits else None,
+    }

@@ -168,6 +168,18 @@ export interface AuditStats {
   by_kind: Record<string, number>
   by_rule: Record<string, number>
   by_model: Record<string, { calls: number; cost_cny: number }>
+  /** 审批汇总。来自审批流水（另一条流水），不在审计记录里 —— 服务端合进来的。
+   *
+   *  pending 是**当前**未决数、不受 days 约束，与任务中心「等待审批」同源；
+   *  decided / avg_decide_ms 按决策时刻落在 days 窗口内计。两个口径不同是
+   *  有意的，渲染时别把它们并成一句"近 N 天"。
+   *
+   *  整块字段为 null = 审批存储这次没读出来，不是"没有待审批"。 */
+  approval: {
+    pending: number | null
+    decided: number | null
+    avg_decide_ms: number | null
+  }
   replay_api: boolean
   tracing: Tracing
 }
