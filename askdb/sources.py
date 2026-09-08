@@ -7,7 +7,10 @@
 迁移见 scripts/migrate_sources_to_pg.py）。连接串只从环境变量来 —— 数据源
 不进配置文件，因此改数据源不必重启，数据源出问题也影响不到启动。
 
-内置源不可编辑，但**可以删除**（`drop_default_source`）—— 一套只用运行时数据源
+内置源不可编辑，也不可在页面上删除 —— 它是**配置**，改它要改配置文件并发版。
+（2026-09-09 撤掉原来的 drop_default_source：那条路径直接重写配置文件，
+而容器里那份是镜像内容，写了也是假的持久化，Pod 一重启就回滚。）
+一套只用运行时数据源
 的部署，不该被逼着在配置里留一个用不上的库。删除受与新增同一个开关约束，
 且必须先有别的数据源可用：删到一个源都不剩，等于把实例变砖。
 
@@ -377,40 +380,6 @@ def record_probe(cfg: Config, src: Source, *, ok: bool,
             "last_latency_ms = %s, last_visible_count = %s WHERE id = %s",
             (src.last_checked_at, src.last_ok, src.last_latency_ms,
              src.last_visible_count, _check_id(src.id)))
-
-
-def drop_default_source(cfg: Config) -> None:
-    """把配置文件里的 `datasource:` 段整段删掉，并同步内存里的这份配置。
-
-    直接改文本而不是 yaml.safe_dump 回写：这份配置里每一段都带着解释性注释，
-    dump 一次全没了 —— 配置文件的注释就是这套部署的决策记录，
-    删一个数据源不该顺手把它烧掉。
-
-    删除范围是「datasource: 行 + 其下所有缩进行」，紧贴在它上面的注释块
-    （中间不隔空行的连续 # 行）一并带走 —— 那些注释讲的就是这个数据源，
-    留着会变成指向不存在配置的说明。
-    """
-    path = (cfg.root / cfg.path) if not Path(cfg.path).is_absolute() else Path(cfg.path)
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-
-    start = next((i for i, ln in enumerate(lines) if ln.startswith("datasource:")), None)
-    if start is None:
-        cfg.raw.pop("datasource", None)
-        return
-
-    end = start + 1
-    while end < len(lines) and (not lines[end].strip() or lines[end][:1] in (" ", "\t")):
-        end += 1
-    # 尾随空行留一个就够，多的收掉，免得删几次配置文件就散成一片空白
-    while end < len(lines) and not lines[end].strip():
-        end += 1
-
-    while start > 0 and lines[start - 1].lstrip().startswith("#"):
-        start -= 1
-
-    rest = lines[:start] + lines[end:]
-    path.write_text("".join(rest), encoding="utf-8")
-    cfg.raw.pop("datasource", None)
 
 
 def delete_source(cfg: Config, sid: str) -> bool:

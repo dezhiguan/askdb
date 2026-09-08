@@ -138,15 +138,24 @@ def start(cfg: Config, cfg_of_source, golden_rel: str = "") -> dict[str, Any]:
                              verbose=False, golden=golden_rel or str(golden),
                              on_progress=_progress)
             import json
-            out.parent.mkdir(parents=True, exist_ok=True)
-            # 覆盖前把上一轮成绩留一份存档。「这一轮比上一轮省了多少 token」
-            # 这句话只有存着上一轮才说得出来 —— 覆盖掉就永远只能不出环比。
-            # 复制而不是改名：写新文件万一挂了，当前成绩还在原地。
-            if out.exists():
-                out.with_name(out.stem + ".prev.json").write_text(
-                    out.read_text(encoding="utf-8"), encoding="utf-8")
-            out.write_text(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2),
-                           encoding="utf-8")
+
+            from . import evalstore
+
+            if evalstore.enabled(cfg):
+                # 一轮一行、只增不改：环比要的"上一轮"就是同一个 name 的前一行。
+                # 换库之前这份成绩写在容器里 —— 两个副本各写各的，发一次版
+                # 就全没了，而它恰恰是"这一版比上一版好在哪"的唯一依据。
+                evalstore.save(out.stem, rep.to_dict())
+            else:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                # 覆盖前把上一轮成绩留一份存档。「这一轮比上一轮省了多少 token」
+                # 这句话只有存着上一轮才说得出来 —— 覆盖掉就永远只能不出环比。
+                # 复制而不是改名：写新文件万一挂了，当前成绩还在原地。
+                if out.exists():
+                    out.with_name(out.stem + ".prev.json").write_text(
+                        out.read_text(encoding="utf-8"), encoding="utf-8")
+                out.write_text(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2),
+                               encoding="utf-8")
             with _lock:
                 _state.status = "done"
                 _state.finished_at = now_iso()

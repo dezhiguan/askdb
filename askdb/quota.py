@@ -209,6 +209,79 @@ class RedisQuota(_Backend):
         return "redis"
 
 
+class PgQuota(_Backend):
+    """计数落 PostgreSQL —— 多副本共享，且不需要额外的 Redis。
+
+    为什么补这个后端：本地文件那条路要求所有副本共享同一块盘（生产靠
+    hostPath 撑着），而这轮改造正是要把这个前提去掉。Redis 那条仍然更快、
+    仍然是首选；这条是"没有 Redis 但有库"时的正确落点，而不是退回文件。
+
+    占名额与判上限在**同一条语句**里完成：先读后写会在两个副本之间竞态，
+    表现为限额被悄悄突破（而配额的全部意义就是不被突破）。
+    WHERE used < limit 不成立时不返回行，此时读一次当前值抛 QuotaExceeded。
+    """
+
+    _DDL = """
+    CREATE TABLE IF NOT EXISTS askdb_quota (
+        prefix text NOT NULL,
+        day    date NOT NULL,
+        used   integer NOT NULL DEFAULT 0,
+        PRIMARY KEY (prefix, day)
+    );
+    """
+    _ready = False
+
+    def __init__(self, prefix: str) -> None:
+        self.prefix = prefix
+
+    def _setup(self) -> None:
+        from . import pgstore
+
+        if PgQuota._ready:
+            return
+        with pgstore.connect() as con:
+            con.execute(self._DDL)
+        PgQuota._ready = True
+
+    def peek(self) -> int:
+        from . import pgstore
+
+        try:
+            self._setup()
+            rows = pgstore.rows(
+                "SELECT used FROM askdb_quota WHERE prefix = %s AND day = %s",
+                (self.prefix, _today()))
+            return int(rows[0][0]) if rows else 0
+        except Exception as e:
+            raise QuotaBackendError(f"配额库不可用：{e}") from e
+
+    def reserve(self, limit: int) -> int:
+        from . import pgstore
+
+        try:
+            self._setup()
+            with pgstore.connect() as con:
+                got = con.execute(
+                    "INSERT INTO askdb_quota (prefix, day, used) VALUES (%s,%s,1)"
+                    " ON CONFLICT (prefix, day) DO UPDATE SET used = askdb_quota.used + 1"
+                    " WHERE askdb_quota.used < %s RETURNING used",
+                    (self.prefix, _today(), limit)).fetchone()
+                if got:
+                    return int(got[0])
+                cur = con.execute(
+                    "SELECT used FROM askdb_quota WHERE prefix = %s AND day = %s",
+                    (self.prefix, _today())).fetchone()
+        except QuotaExceeded:
+            raise
+        except Exception as e:
+            raise QuotaBackendError(f"配额库不可用：{e}") from e
+        raise QuotaExceeded(int(cur[0]) if cur else limit, limit)
+
+    @property
+    def kind(self) -> str:
+        return "postgres"
+
+
 class DailyQuota:
     """对外的统一入口：上限 + 后端 + 后端故障时的取舍。"""
 
@@ -263,9 +336,12 @@ _CACHE: dict[tuple, DailyQuota] = {}
 def build_quota(cfg) -> DailyQuota:
     """按配置装配配额器。
 
-    选后端的规则只有一条：配了 Redis 就用 Redis，没配就用本地文件。
-    不做"先试 Redis 连不上再退回文件"的自动降级 —— 那会让多副本部署在
-    Redis 抖动时静默变成每副本各算各的，正是这个模块要解决的问题。
+    选后端的顺序：Redis > PostgreSQL（observability.store 选了 postgres 时）
+    > 本地文件。**不做"先试再退回"的自动降级** —— 那会让多副本部署在后端
+    抖动时静默变成每副本各算各的，正是这个模块要解决的问题。
+
+    补上 PG 这一档是因为本地文件要求所有副本共享同一块盘（生产靠 hostPath
+    撑着），而凭据迁库之后这个前提正在被去掉。Redis 仍然更快、仍是首选。
     """
     obs = cfg.raw.get("observability", {}) or {}
     q = obs.get("quota", {}) or {}
@@ -276,10 +352,18 @@ def build_quota(cfg) -> DailyQuota:
     prefix = str(q.get("key_prefix") or "askdb:quota")
     on_err = str(q.get("on_backend_error") or "block").lower()
 
+    # store=postgres 时，凭据都在库里了，配额没有理由再回落到本地文件 ——
+    # 那条路要求所有副本共享同一块盘，而这轮改造正是要去掉这个前提。
+    from . import auditstore
+
+    use_pg = auditstore.enabled(cfg)
+
     if limit <= 0:
         key = ("none",)
     elif url:
         key = ("redis", url, prefix, limit, on_err)
+    elif use_pg:
+        key = ("pg", prefix, limit, on_err)
     else:
         key = ("file", str(cfg.audit_log), limit)
 
@@ -292,6 +376,8 @@ def build_quota(cfg) -> DailyQuota:
         backend = NoQuota()
     elif url:
         backend = RedisQuota(url, prefix)
+    elif use_pg:
+        backend = PgQuota(prefix)
     else:
         # 与审计日志同目录、同实例名 —— public 与本机开发各算各的，
         # 不会因为共用一个计数文件而互相扣额度。

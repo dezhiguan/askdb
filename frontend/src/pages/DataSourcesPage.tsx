@@ -266,8 +266,8 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
               className="ghost"
               disabled={!builtinCard?.deletable}
               title={builtinCard?.deletable ? undefined
-                : '删除默认数据源会改写配置文件：需要开启 datasources.allow_runtime_add，'
-                  + '且至少已添加一个别的数据源接手'}
+                : '内置数据源来自配置文件，页面上删不了 —— 容器里的配置随镜像发布，'
+                  + '改了下次发版就会回滚。要撤掉它，删配置里的 datasource: 段并重新发布'}
               onClick={removeBuiltin}
             >删除</button>
           </div>
