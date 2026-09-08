@@ -27,6 +27,7 @@ from . import auth as _auth
 from . import evalrun as _evalrun
 from . import guard
 from . import identity as _identity
+from . import pgstore as _pgstore
 from . import sources as _sources
 from .config import Config, load
 from .executor import DataSourceError, Executor
@@ -482,6 +483,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                             content={"code": "sources_store_unavailable",
                                      "detail": str(exc)})
 
+    @app.exception_handler(_pgstore.StoreUnavailable)
+    async def _audit_store_unavailable(_request: Request, exc: _pgstore.StoreUnavailable):
+        """凭据库（审计 / 审批 / 复核）不可用 —— 503，原因原样给出去。
+
+        与数据源那条同理，但这里更要紧：审计接口读不到时若退化成空列表，
+        页面会显示"一条记录都没有"——那是一句谎话，而看的人正是在查问题。
+        """
+        return JSONResponse(status_code=503,
+                            content={"code": "audit_store_unavailable",
+                                     "detail": str(exc)})
+
     @app.exception_handler(RequestValidationError)
     async def _invalid_input(_request: Request, exc: RequestValidationError):
         """输入校验失败 —— 返回一句中文 detail，而不是 Pydantic 的英文错误数组。
@@ -827,7 +839,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         # 窗口按天，上限 90 —— 审计是全量读文件，放开会让这个接口变成慢查询
         days = max(1, min(int(days), 90))
-        out = _quality(cfg.audit_log, days=days)
+        out = _quality(cfg, days=days)
         # 「当前生产版本」那一格要有真东西可显示：包版本 + 实际应答的模型。
         # 这两项不是从审计里算的，而是本进程此刻的事实，所以在这里补 ——
         # 审计层不该知道自己跑在哪个版本上。
@@ -1701,7 +1713,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         if wanted and wanted not in ("ok", "rejected", "interrupted"):
             raise HTTPException(status_code=400,
                                 detail="status 只能是 ok / rejected / interrupted")
-        return list_audits(cfg.audit_log, page=page, page_size=page_size,
+        return list_audits(cfg, page=page, page_size=page_size,
                            q=q.strip(), kind=kind.strip(),
                            with_text=_can(request, _identity.AUDIT_CONTENT),
                            only_user=_audit_owner_filter(request),
@@ -1733,7 +1745,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 0 会被读成"没有待审批"，而实际是"这次没算出来"。
             approval = {"pending": None, "decided": None, "avg_decide_ms": None}
         return {
-            **_stats(cfg.audit_log, days=days, only_user=owner),
+            **_stats(cfg, days=days, only_user=owner),
             "approval": approval,
             "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
             "tracing": _obs_status(),
@@ -1763,7 +1775,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         from .audit import get_audit, trace_chain
 
-        rec = get_audit(cfg.audit_log, trace_id)
+        rec = get_audit(cfg, trace_id)
         if rec is None:
             return not_found
 
@@ -1804,7 +1816,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         from .audit import REPLAY_FIELDS, get_audit
 
-        rec = get_audit(cfg.audit_log, trace_id)
+        rec = get_audit(cfg, trace_id)
         if rec is None:
             return not_found
 
@@ -2019,7 +2031,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         can_review = _can(request, _identity.APPROVE)
         me = _current_user(request) or ""
         items = _tasks(
-            cfg.audit_log,
+            cfg,
             None if can_review else me,
             max_rows=cfg.max_rows,
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
@@ -2048,7 +2060,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         from .audit import get_audit
 
-        rec = get_audit(cfg.audit_log, trace_id)
+        rec = get_audit(cfg, trace_id)
         if rec is None or not _audit.needs_review(rec):
             # 不存在、已被拦下、或本就不需要复核 —— 合并成同一句：
             # 复核队列不是一个可以拿来试探"某条记录存不存在"的入口。
@@ -2132,7 +2144,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         # 阈值传进去做风险折算（审计里没有风险字段，见 audit._risk 的说明）
         items = _tasks(
-            cfg.audit_log,
+            cfg,
             None if _can(request, _identity.TASKS_ALL) else username,
             max_rows=cfg.max_rows,
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
@@ -2178,7 +2190,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # **带上发起记录**（include_started）：进程被杀那种线程只剩这一条，
         # 而归属与数据源正是从它取。滤掉它就等于"任务中心说能续跑、这里说
         # 你当初跑在 builtin 上" —— 实测过一次，就是这条 400。
-        for rec in read_records(cfg.audit_log, include_started=True):
+        for rec in read_records(cfg, include_started=True):
             if (rec.get("thread_id") or rec.get("trace_id")) == req.thread_id:
                 owner = rec.get("user") or ""
                 # 续跑必须回到**当初那个数据源**。审计里存了它（_audit_of 的
@@ -2510,7 +2522,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                          "note": "命中应答缓存，未调用模型"})
         out.update({"trace_id": tid, "cached": True, "steps": steps,
                     "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0})
-        _wa(scoped.audit_log, {
+        _wa(scoped, {
             "trace_id": tid, "ts": _ni(), "kind": "ask", "cached": True,
             "model": "cache", "org_id": org, "role": scoped.role,
             "user": scoped.user, "question": question,
@@ -2619,7 +2631,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                    explain_rows: int | None = None, rows_returned: int = 0,
                    masked_columns: list[str] | None = None,
                    mask_degraded: bool = False) -> None:
-            write_audit(scoped.audit_log, {
+            write_audit(scoped, {
                 "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
                 "model": None,
                 "org_id": org, "role": scoped.role, "user": scoped.user,

@@ -305,6 +305,50 @@ def cmd_session_secret() -> None:
     print(f"ASKDB_SESSION_SECRET={_secrets.token_urlsafe(32)}")
 
 
+@app.command("migrate-store")
+def cmd_migrate_store(
+    config: str = CONFIG,
+    dry_run: bool = typer.Option(False, "--dry-run", help="只报要迁多少条，不写库"),
+) -> None:
+    """把审计 / 审批 / 复核三份 JSONL 灌进 PostgreSQL。
+
+    **可以反复跑。** 判重按自然键（审计=trace_id+ts+phase，审批与复核=id+ts+status），
+    已经在库里的跳过 —— 迁移当天写入还在继续，一次跑不干净是常态。
+
+    顺序建议：先跑一次（把历史灌进去），再改配置 observability.store: postgres
+    并发版，发版后再跑一次（把切换前那几分钟的尾巴收掉）。
+    反过来做会丢中间那段。
+    """
+    from . import auditstore
+    from .audit import read_records
+    from .approvals import _read as _read_approvals, store as approvals_store
+    from .reviews import _read as _read_reviews, store as reviews_store
+
+    cfg = _load(config)
+    streams = [
+        (auditstore.AUDIT, "审计", read_records(cfg.audit_log, include_started=True)),
+        (auditstore.APPROVALS, "审批", _read_approvals(approvals_store(cfg))),
+        (auditstore.REVIEWS, "复核", _read_reviews(reviews_store(cfg))),
+    ]
+    if dry_run:
+        for _, label, recs in streams:
+            con.print(f"{label}：文件里 {len(recs)} 条")
+        return
+
+    try:
+        before = auditstore.counts()
+        for stream, label, recs in streams:
+            r = auditstore.import_records(stream, recs)
+            con.print(f"{label}：文件 {r['total']} 条，导入 {r['imported']}，"
+                      f"已存在跳过 {r['skipped']}")
+        after = auditstore.counts()
+    except Exception as e:                              # 连不上/没权限：说清楚
+        _fail(f"凭据库不可用：{e}",
+              "设置 ASKDB_STORE_DSN（或复用 ASKDB_SOURCES_DSN），口令走 "
+              "ASKDB_STORE_PASSWORD / ASKDB_SOURCES_PASSWORD。")
+    con.print(f"[dim]库中总数：{before} → {after}[/]")
+
+
 def _load(path: str):
     try:
         return load(path)

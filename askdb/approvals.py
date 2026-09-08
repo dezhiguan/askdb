@@ -63,6 +63,29 @@ def fingerprint(text: str) -> str:
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:16]
 
 
+def _records(cfg: Config) -> list[dict[str, Any]]:
+    """审批流水的全部事件，按写入顺序。库或文件由部署决定。"""
+    from . import auditstore
+
+    if auditstore.enabled(cfg):
+        return auditstore.read_approvals()
+    return _read(store(cfg))
+
+
+def _write(cfg: Config, rec: dict[str, Any]) -> None:
+    """落一条审批事件。
+
+    **写失败要抛**（与审计相反）：审计是旁路，丢一条是损失；而这里的写入
+    就是"批准/驳回"这个操作本身 —— 静默失败会让人以为批过了，而流水里没有。
+    """
+    from . import auditstore
+
+    if auditstore.enabled(cfg):
+        auditstore.append_approval(rec)
+        return
+    _append(store(cfg), rec)
+
+
 def _append(path: Path, rec: dict[str, Any]) -> None:
     # 与 trace.write_audit 同一套写法：绕开缓冲层，整行一次交给内核。
     # 多副本共享同一个文件时，这是"撕不撕行"的关键 —— 审批记录不能有半行。
@@ -98,7 +121,7 @@ def state(cfg: Config) -> dict[str, dict[str, Any]]:
     半更新的记录 —— 而半更新的审批记录会让人不知道到底批没批。
     """
     cur: dict[str, dict[str, Any]] = {}
-    for rec in _read(store(cfg)):
+    for rec in _records(cfg):
         aid = str(rec.get("id") or "")
         if not aid:
             continue
@@ -126,7 +149,7 @@ def request(cfg: Config, *, trace_id: str, user: str, roles: list[str],
         "fingerprint": fingerprint(match_text),
         "est_rows": est_rows, "threshold": threshold, "source": source,
     }
-    _append(store(cfg), rec)
+    _write(cfg, rec)
     return rec
 
 
@@ -161,7 +184,7 @@ def decide(cfg: Config, aid: str, *, approver: str, approved: bool,
         # 如实记下审批人为了判断而看到了什么
         "approver_saw_content": True,
     }
-    _append(store(cfg), rec)
+    _write(cfg, rec)
     return {**cur, **rec}
 
 
@@ -194,7 +217,7 @@ def waiver(cfg: Config, aid: str, *, user: str, kind: str, text: str) -> str:
 
 def consume(cfg: Config, aid: str) -> None:
     """把放行标记为已用。**执行之后才调** —— 执行失败不该白烧一次审批。"""
-    _append(store(cfg), {"id": aid, "status": CONSUMED, "consumed_ts": now_iso()})
+    _write(cfg, {"id": aid, "status": CONSUMED, "consumed_ts": now_iso()})
 
 
 def listing(cfg: Config, *, only_user: str | None = None) -> list[dict[str, Any]]:

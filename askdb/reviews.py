@@ -85,10 +85,29 @@ def _append(path: Path, rec: dict[str, Any]) -> None:
         os.close(fd)
 
 
+def _records(cfg: Config) -> list[dict[str, Any]]:
+    """复核流水的全部事件，按写入顺序。库或文件由部署决定（与审批同一开关）。"""
+    from . import auditstore
+
+    if auditstore.enabled(cfg):
+        return auditstore.read_reviews()
+    return _read(store(cfg))
+
+
+def _write(cfg: Config, rec: dict[str, Any]) -> None:
+    """落一条复核事件。写失败要抛 —— 理由同 approvals._write。"""
+    from . import auditstore
+
+    if auditstore.enabled(cfg):
+        auditstore.append_review(rec)
+        return
+    _append(store(cfg), rec)
+
+
 def state(cfg: Config) -> dict[str, dict[str, Any]]:
     """回放出每条复核的当前状态。后写的覆盖先写的。"""
     cur: dict[str, dict[str, Any]] = {}
-    for rec in _read(store(cfg)):
+    for rec in _records(cfg):
         rid = str(rec.get("id") or "")
         if not rid:
             continue
@@ -132,7 +151,7 @@ def decide(cfg: Config, trace_id: str, *, reviewer: str, accepted: bool,
         "decided_ts": now_iso(), "reviewer": reviewer, "note": note,
         "owner": owner,
     }
-    _append(store(cfg), rec)
+    _write(cfg, rec)
     return rec
 
 

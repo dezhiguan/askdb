@@ -151,21 +151,38 @@ def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def write_audit(path: Path, record: dict[str, Any]) -> None:
-    """审计记录追加落盘。写失败不能影响主链路 —— 查询已经完成了。
+def write_audit(target: Any, record: dict[str, Any]) -> None:
+    """落一条审计。写失败不能影响主链路 —— 查询已经完成了。
 
-    多副本共享同一个审计文件时，"一条记录一次 write" 是撕不撕行的关键：
-    带缓冲的写可能把一条记录拆成多次系统调用，两个进程的片段交错落盘，
-    整行 JSON 就废了 —— 而审计恰恰是出事后唯一的凭据，不能有半行。
-    O_APPEND 下单次 write 的定位与写入是原子的，所以这里绕开 Python 的
-    缓冲层，把整行一次性交给内核。
+    **target 是 Config 就写库，是 Path 就写文件。** 2026-09-09 起生产走
+    PostgreSQL（见 auditstore 模块开头那段：共享 hostPath 的前提没有任何
+    调度约束在守，且文件方案只增不减、每次请求全量读）。文件这条路留着，
+    本机开发与样例配置仍然用它 —— 那时想要的就是一个能 grep、能删的文件。
+
+    文件写法保持原样：多副本共享同一个文件时，"一条记录一次 write" 是撕不撕
+    行的关键 —— 带缓冲的写可能把一条记录拆成多次系统调用，两个进程的片段
+    交错落盘，整行 JSON 就废了。O_APPEND 下单次 write 的定位与写入是原子的，
+    所以这里绕开 Python 的缓冲层，把整行一次性交给内核。
     """
+    if not isinstance(target, Path):
+        from . import auditstore
+
+        if auditstore.enabled(target):
+            auditstore.append_audit(record)
+            return
+        target = target.audit_log
+
+    path = target
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         line = (json.dumps(record, ensure_ascii=False, default=str) + "\n").encode("utf-8")
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            os.write(fd, line)
+            # 循环写到写完：os.write 允许短写（信号打断、磁盘写满），
+            # 不管返回值就会留下半行，而读侧对半行只能跳过 —— 表现为
+            # "审计悄悄少了一条"，比写失败更难发现
+            while line:
+                line = line[os.write(fd, line):]
         finally:
             os.close(fd)
     except OSError:

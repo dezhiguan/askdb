@@ -20,6 +20,11 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+# 下面这些入口（list_audits / tasks / stats / quality / get_audit / resumable）
+# 的第一个参数既可以是审计文件的 Path，也可以是 Config —— 由 read_records 决定
+# 读库还是读文件（2026-09-09 起生产读 PostgreSQL）。它们自己不碰存储，只是把
+# 这个参数转手，所以标注成 Any，而不是在六处各写一遍联合类型。
+
 # 出现在流水列表里的字段。白名单式：新加字段须显式列入，
 # 避免未来往审计记录里塞了敏感字段后被列表接口顺手带出去。
 SUMMARY_FIELDS = (
@@ -75,13 +80,26 @@ REPLAY_FIELDS = (
 PHASE_STARTED = "started"
 
 
-def read_records(path: Path, *, include_started: bool = False) -> list[dict[str, Any]]:
-    """读出全部审计记录，保持文件（时间）顺序。
+def read_records(src: Any, *, include_started: bool = False) -> list[dict[str, Any]]:
+    """读出全部审计记录，保持写入顺序。
+
+    **src 是 Config 就读库，是 Path 就读文件。** 2026-09-09 起生产的凭据落在
+    PostgreSQL（见 auditstore 模块开头）；文件那条路留给本机开发与样例配置。
+    两边返回的是同一种东西 —— 原样那条 dict，所以下面所有的统计、分页、
+    任务聚合一行都不用改。
 
     **默认滤掉发起记录**（phase=started）：它没有结果、没有成本、没有收尾码，
     进了统计就是把每次调用数成两次、把成功率稀释一半。只有任务中心需要它
     （那一页要回答"有没有一条线程正在跑/跑一半没了"），显式传参取。
     """
+    if not isinstance(src, Path):
+        from . import auditstore
+
+        if auditstore.enabled(src):
+            return auditstore.read_audit(include_started=include_started)
+        src = src.audit_log
+
+    path = src
     if not path.exists():
         return []
     out: list[dict[str, Any]] = []
@@ -114,7 +132,7 @@ def _summary(rec: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_audits(
-    path: Path, page: int = 1, page_size: int = 10,
+    path: Any, page: int = 1, page_size: int = 10,
     q: str = "", kind: str = "", with_text: bool = True,
     only_user: str | None = None, status: str = "", source: str | None = None,
 ) -> dict[str, Any]:
@@ -382,7 +400,7 @@ _NEXT_ACTOR = {
 }
 
 
-def tasks(path: Path, only_user: str | None = None, *,
+def tasks(path: Any, only_user: str | None = None, *,
           max_rows: int = 0, max_scan_rows: int = 0,
           open_approval_ids: Any = None,
           review_status: dict[str, str] | None = None) -> list[dict[str, Any]]:
@@ -596,7 +614,7 @@ def paginate_tasks(
     }
 
 
-def resumable(path: Path, user: str) -> list[dict[str, Any]]:
+def resumable(path: Any, user: str) -> list[dict[str, Any]]:
     """某个账号名下**尚可续跑**的任务 —— tasks() 里状态仍为中断的那些。
 
     /api/resume 按 thread_id 从断点继续，只有主人能续 —— 所以这里**仍按
@@ -606,7 +624,7 @@ def resumable(path: Path, user: str) -> list[dict[str, Any]]:
     return [t for t in tasks(path, user) if t["resumable"]]
 
 
-def get_audit(path: Path, trace_id: str) -> dict[str, Any] | None:
+def get_audit(path: Any, trace_id: str) -> dict[str, Any] | None:
     """按 trace_id 取完整记录。同 id 多条时取最后一条（重放/重投递场景）。"""
     found = None
     for rec in read_records(path):
@@ -654,7 +672,7 @@ def _percentile(values: list[int], q: float) -> int | None:
     return values[k]
 
 
-def stats(path: Path, days: int = 30, only_user: str | None = None) -> dict[str, Any]:
+def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, Any]:
     """时间窗内的调用/拦截/成本统计与按日序列。
 
     trace_complete 按"记录里带步骤级 trace 的占比"如实计算，
@@ -733,7 +751,7 @@ def _pctl_of(values: list[int], q: float) -> int | None:
     return _percentile(sorted(values), q)
 
 
-def quality(path: Path, days: int = 1) -> dict[str, Any]:
+def quality(path: Any, days: int = 1) -> dict[str, Any]:
     """线上运行质量：按**真实调用**算，不用黄金集分母。
 
     与 stats() 的分工：stats 服务审计页（流水、成本、按规则分布），

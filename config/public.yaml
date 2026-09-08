@@ -167,8 +167,27 @@ evaluation:
   out: evals/results/careermate-blind.json
 
 observability:
+  # 审计 / 审批 / 复核三份凭据存在哪：postgres | file（默认 file）。
+  #
+  # 2026-09-09 由 file 改为 postgres。改的原因不是"文件写法有问题"——
+  # O_APPEND 单次 write 在本地盘上不会撕行，那条是对的；问题在于它成立的
+  # 前提「所有副本落在同一台机器的同一块本地盘」**没有任何调度约束在守**：
+  # 集群加一个节点、副本被调度过去，两个 Pod 就各写各的 hostPath，
+  # 审计、任务中心、配额一起分裂，而且不报错，只表现为"刷新一下数字变了"。
+  #
+  # 另外三条硬上限一并解决：只增不减没有轮转；每次打开审计页都要把整份文件
+  # 读进内存逐行解析（磁盘撑爆之前先 OOM）；节点没了凭据就没了。
+  #
+  # 连接串复用数据源注册表那把（ASKDB_STORE_DSN → ASKDB_SOURCES_DSN →
+  # ASKDB_IDENTITY_DSN），生产上三者本来就是同一个库，不必多配一份凭据。
+  # 库连不上时**审计接口返回 503 而不是空列表**：把"读不到"显示成"没有记录"
+  # 会让人以为系统很干净，而他正在查问题。
+  store: postgres
   # 写在 ./var 而不是 ./data —— data 目录里是随镜像固化的样例库，
-  # 往它上面挂卷会把样例库遮掉。var 单独挂卷，用于持久化审计日志。
+  # 往它上面挂卷会把样例库遮掉。var 单独挂卷。
+  #
+  # store: postgres 之后这一行**只剩两个用途**：迁移时从这里读历史
+  # （askdb migrate-store），以及万一要临时切回 file 时的落点。
   audit_log: ./var/audit-public.jsonl
   checkpoint_db: ./var/checkpoints-public.sqlite
   # 判定链路回放接口（设计说明 §5.2）。
