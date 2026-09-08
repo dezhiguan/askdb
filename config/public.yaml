@@ -75,6 +75,11 @@ guard:
   max_scan_rows: 200000              # R-11
   statement_timeout_ms: 3000         # R-12，样例库上正常查询远低于此
   max_retry: 2                       # R-14（直查模式下用不上）
+  # R-20 解析预算：护栏的 AST 解析成本随体量超线性增长，R-12 的语句超时只管
+  # PG 执行、管不到解析阶段。这两条在进 sqlglot 之前用 O(n) 字符扫描拦掉病态输入
+  # （实测 19KB 的合法 UNION ALL 仅解析就占 CPU ~4s）。对外实例上正常查询远低于此。
+  max_sql_chars: 6000                # 文本长度上限；超过在解析前直接拒
+  max_nesting_depth: 100             # 括号嵌套深度上限；挡"短而深"的病态输入
   allow_select_star: false           # R-05：改写为显式列，这一条最能看出改写效果
   deny_functions:                    # R-07
     - read_csv
