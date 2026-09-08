@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
@@ -426,6 +427,29 @@ class ResumeRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=64)
 
 
+def _friendly_validation_message(errors: list[dict]) -> str:
+    """把 Pydantic 校验错误翻成给终端用户看的中文。
+
+    前端各处都按 `detail` 是**字符串**来读（body.detail || 兜底句，见 frontend/src/api.ts），
+    而 FastAPI 默认把 RequestValidationError 的 detail 塞成错误对象数组 —— 于是空/超长输入时
+    用户看到的是 "String should have at most 500 characters" 加一坨 JSON。这里按字段+类型给
+    一句人话，长度上限从 ctx 动态取、不写死。
+    """
+    for e in errors or []:
+        loc = e.get("loc") or ()
+        field = loc[-1] if loc else ""
+        t = e.get("type", "")
+        ctx = e.get("ctx") or {}
+        if field == "question":
+            if t == "string_too_long":
+                return f"问题太长了，请精简到 {ctx.get('max_length', 500)} 字以内再试。"
+            if t in ("string_too_short", "missing") or "too_short" in t:
+                return "请先输入问题再提交。"
+        if field == "sql" and t == "string_too_long":
+            return f"SQL 太长了，请精简到 {ctx.get('max_length', 20000)} 字以内。"
+    return "提交的内容不符合要求，请检查后重试。"
+
+
 def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     cfg: Config = load(config_path)
     app = FastAPI(title="askdb", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -444,6 +468,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return JSONResponse(status_code=503,
                             content={"code": "sources_store_unavailable",
                                      "detail": str(exc)})
+
+    @app.exception_handler(RequestValidationError)
+    async def _invalid_input(_request: Request, exc: RequestValidationError):
+        """输入校验失败 —— 返回一句中文 detail，而不是 Pydantic 的英文错误数组。
+
+        前端统一按字符串 detail 展示（frontend/src/api.ts）；默认的数组结构会让空/超长
+        输入直接把英文技术错误 + JSON 漏到用户面前。状态码仍是 422，只换呈现。
+        """
+        return JSONResponse(status_code=422,
+                            content={"code": "invalid_input",
+                                     "detail": _friendly_validation_message(exc.errors())})
 
     @app.middleware("http")
     async def _gate_writes(request: Request, call_next):
