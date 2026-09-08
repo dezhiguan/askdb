@@ -281,3 +281,31 @@ auth:
       roles: [DATA_OWNER]
       note: 实例白名单内全部可见
       password_hash: "scrypt$16384$8$1$5eQ0nqqMH2JJl4MhJ5ZAPg==$Yq9nGQYvZZzojLlLDgfJG4brluHvVcb4LQLoh0iklyo="
+
+# ---------------------------------------------------------------------------
+# 身份与权限：角色成员名单
+#
+# 2026-09-08 开启。此前这一段不存在，因此 identity.enabled() 恒为 false ——
+# 页面上「身份与权限」只显示上面 accounts 里那三个配置内置账号，
+# 而左栏各角色的人数全是 0 或 1。开启之后成员名单落在 PostgreSQL 的
+# askdb_role_members 表里，由管理员登记。
+#
+# **它管的不是登录。** 这里存的只是「谁属于哪个角色」；认证仍然不归 askdb
+# （见 askdb/identity.py 开头那段边界说明）。auth-gateway 尚未对接，
+# 所以每条成员的 auth_user_id 都是空的，页面会如实标「未绑定网关用户」——
+# 别把它读成「这些人能登录了」，他们不能。
+#
+# 连接串只走环境变量 ASKDB_IDENTITY_DSN（口令另走 password_env），
+# 与 ASKDB_SOURCES_DSN 同一条纪律：库地址与账号不进仓库。
+# 生产上这两者指向同一个库（askdb_meta）—— 数据源注册表与成员名单都是
+# askdb 自己的元数据，没有分库的理由，分了反而多一套要维护的凭据。
+#
+# 缺环境变量时的表现是**功能整体关闭而不是报错**（IdentityDisabled）：
+# 接口返回「未启用」，服务照常起。这是有意的 —— 元数据库连不上不该让站点挂掉。
+identity:
+  enabled: true
+  # 同库部署，不再单独建一份凭据：连接串由 identity._raw_dsn 回落到
+  # ASKDB_SOURCES_DSN（那把已经在 Pod 里，数据源注册表正用着它），
+  # 口令因此也指向同一把。要把成员名册分到另一个库，显式设 ASKDB_IDENTITY_DSN
+  # 与对应的 password_env —— 两者是覆盖关系，不是并存关系。
+  password_env: ASKDB_SOURCES_PASSWORD

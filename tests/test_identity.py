@@ -76,7 +76,11 @@ def enabled_client(cfg, monkeypatch):
 
 def test_roles_are_fixed_and_cover_the_agreed_set():
     codes = [r.code for r in identity.ROLES]
-    assert codes == ["PRODUCT", "DEV", "QA", "DATA_OWNER", "SYS_ADMIN"]
+    assert codes == ["PRODUCT", "DEV", "QA", "DATA_OWNER",
+                     # 2026-09-08 新增的四个业务角色，不带任何额外权限，
+                     # 见 identity.ROLES 那段说明。
+                     "OPERATIONS", "FINANCE", "HR", "MANAGEMENT",
+                     "SYS_ADMIN"]
     assert len(set(codes)) == len(codes)
 
 
@@ -108,7 +112,7 @@ def test_roles_endpoint_answers_even_when_disabled(client):
     assert r.status_code == 200
     body = r.json()
     assert body["enabled"] is False
-    assert len(body["roles"]) == 5
+    assert len(body["roles"]) == len(identity.ROLES) == 9
 
 
 def test_member_endpoints_404_when_disabled(client):
@@ -193,17 +197,34 @@ def test_writable_flag_reflects_token_presence(enabled_client, monkeypatch):
 
 # ---------- 配置边界 ----------
 
-def test_public_instance_never_enables_identity():
-    """对外开放实例无法区分调用方。身份功能一旦在那里打开，
-    写接口就只剩一把共享令牌挡着 —— 那不是给公网用的。
+def test_public_instance_may_read_identity_but_can_never_write_it():
+    """对外实例的身份功能：**读可以开，写必须不可能。**
+
+    这条用例原来钉的是「对外实例不得启用身份与权限」，理由是"写接口就只剩
+    一把共享令牌挡着"。2026-09-08 该实例需要把角色成员名单显示出来，
+    于是读被打开了 —— 但它防的那件事一步没让：
+
+      · 写接口要 MEMBERS_WRITE，而该能力位只属于 SYS_ADMIN；
+      · public.yaml 的内置账号里**没有一个是 SYS_ADMIN**，
+        因此这个实例上不存在任何能通过判定的调用方；
+      · 未登录的写请求另有 server._gate_writes 按 HTTP 方法拦下。
+
+    所以真正要钉住的不是"别开这个功能"，而是"开了之后没有人写得动"。
+    往 public.yaml 的 accounts 里加一个系统管理员账号，这条会立刻红 ——
+    那正是它存在的意义。
     """
     from pathlib import Path
 
+    from askdb import auth
     from askdb.config import load
 
     root = Path(__file__).resolve().parent.parent
     c = load(root / "config" / "public.yaml")
-    assert not identity.enabled(c), "对外实例不得启用身份与权限"
+
+    for acc in auth.accounts(c).values():
+        assert not identity.can(list(acc.roles), identity.MEMBERS_WRITE), (
+            f"对外实例的内置账号 {acc.username} 持有成员写权限")
+        assert "SYS_ADMIN" not in acc.roles
 
 
 def test_add_member_rejects_unknown_role(cfg, monkeypatch):

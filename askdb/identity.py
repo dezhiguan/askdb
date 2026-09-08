@@ -78,6 +78,29 @@ ROLES: tuple[Role, ...] = (
     Role("DATA_OWNER", "数据负责人", "平台可见面",
          "配置口径与数据源。可见面与其他角色相同；审批由系统管理员放行，"
          "提出与放行分属两人。"),
+    # 2026-09-08 新增四个业务角色（产品决定）。
+    #
+    # 原来那五个角色描述的是**平台自身**的分工（产品、开发、测试、数据、
+    # 管理员）。可查数的人大多不属于其中任何一个：运营、客服、财务、人力、
+    # 管理层进来只能统统记成「产品」，角色这一栏于是不再描述任何事实。
+    #
+    # 加这四个**不改变任何权限**：可见面与其余角色完全相同，能力位取
+    # _READ | _WRITE，一位不多。它们表达的是「这个人是干什么的」，
+    # 不是「他能看到什么」—— 后者仍然只有 SYS_ADMIN 那一条差别（审批）。
+    # 这与 2026-09-06 拍平可见面的决定不冲突：那次撤的是角色之间的**能力**
+    # 差别，不是角色本身。
+    Role("OPERATIONS", "运营", "平台可见面",
+         "查询商品、交易、履约与用户行为数据，用于日常经营决策。"
+         "可见面与其他角色相同；个人信息列一律脱敏。"),
+    Role("FINANCE", "财务", "平台可见面",
+         "查询交易、支付、对账与成本数据。可见面与其他角色相同；"
+         "个人信息列一律脱敏。"),
+    Role("HR", "人力", "平台可见面",
+         "查询组织与人员相关数据。可见面与其他角色相同；"
+         "个人信息列一律脱敏 —— 人力角色也不例外，脱敏对所有人生效。"),
+    Role("MANAGEMENT", "管理", "平台可见面",
+         "查询各业务域的汇总口径。可见面与其他角色相同 —— "
+         "职级高不等于看得多，这一条是有意的。"),
     Role("SYS_ADMIN", "系统管理员", "平台可见面 + 审批",
          "管理角色成员，并审批高成本查询与数据源变更。"
          "**这是唯一一个多出权限的角色**，多出来的只有审批这一项。",
@@ -227,6 +250,13 @@ CAPABILITIES: dict[str, frozenset[str]] = {
     "DEV": _READ | _WRITE,
     "QA": _READ | _WRITE,
     "DATA_OWNER": _READ | _WRITE,
+    # 2026-09-08 新增的四个业务角色，与上面几个**逐位相同**。
+    # 新增角色时若忘了在这里登记，caps_of 会给出空集 —— 那个人进不了任何
+    # 功能页，而角色页上他看着一切正常。这里是唯一一处必须同步的地方。
+    "OPERATIONS": _READ | _WRITE,
+    "FINANCE": _READ | _WRITE,
+    "HR": _READ | _WRITE,
+    "MANAGEMENT": _READ | _WRITE,
     "SYS_ADMIN": _READ | _WRITE | {APPROVE, MEMBERS_WRITE},
     ANONYMOUS: _READ,
 }
@@ -375,8 +405,20 @@ DSN_ENV = "ASKDB_IDENTITY_DSN"
 
 
 def _raw_dsn(cfg: Config) -> str:
+    """连接串。环境变量优先，其次配置里的 identity.dsn。
+
+    **回落到 ASKDB_SOURCES_DSN 是有意的**，且与 sources.py 那边完全对称
+    （它缺省回落到 ASKDB_IDENTITY_DSN）：成员名册与数据源注册表同属
+    「askdb 自己的元数据」，默认同库，配任意一个变量即可跑起来 —— 少一把
+    要分发、要轮转、要在两处保持一致的凭据。要把两者分库，显式设另一个。
+
+    口令仍由 identity.password_env 指定，因此同库部署时把它指向
+    ASKDB_SOURCES_PASSWORD 即可，不必再建一份。
+    """
     section = cfg.raw.get("identity") or {}
-    return (os.environ.get(DSN_ENV) or str(section.get("dsn") or "")).strip()
+    return (os.environ.get(DSN_ENV)
+            or os.environ.get("ASKDB_SOURCES_DSN")
+            or str(section.get("dsn") or "")).strip()
 
 
 def enabled(cfg: Config) -> bool:
