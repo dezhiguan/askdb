@@ -32,6 +32,7 @@ from .config import Config, load
 from .executor import DataSourceError, Executor
 from .graph import ask as run_ask, jsonable, resume as run_resume
 from .quota import build_quota
+from .qcache import build_answer_cache, make_key as _cache_key
 from .trace import now_iso as _now_iso, observability_status as _obs_status
 
 
@@ -722,6 +723,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 配额用量与计数后端。后端是 file 还是 redis 直接决定了多副本下
             # 上限还成不成立，属于运维要一眼看到的信息，不能只写在配置里。
             "quota": _quota_view(cfg),
+            # 应答缓存现状：命中/未命中是本副本的局部计数，仅供观测；enabled
+            # 反映是否真的接上了 Redis（配了却连不上会退化为 False）。
+            "answer_cache": build_answer_cache(cfg).stats(),
             "observability": {
                 "tracing": _obs_status(),
                 "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
@@ -2467,6 +2471,44 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         except Exception:
             return cfg
 
+    def _serve_cached_ask(cached: dict[str, Any], scoped: Config,
+                          question: str, org: int) -> dict[str, Any]:
+        """把一条命中的缓存包装成本次响应：换新 trace_id、标 cached、补审计。
+
+        命中不调模型、不扣配额、不执行 SQL。审计仍写一条（一调用一条留痕），
+        但明确标 cached、成本 0，与真正跑过模型的记录区分开。
+        """
+        import copy
+        import uuid as _uuid
+
+        from .trace import now_iso as _ni, write_audit as _wa
+
+        out = copy.deepcopy(cached)
+        tid = _uuid.uuid4().hex[:12]
+        steps = list(out.get("steps") or [])
+        steps.insert(0, {"step": "cache", "ms": 0, "status": "hit",
+                         "note": "命中应答缓存，未调用模型"})
+        out.update({"trace_id": tid, "cached": True, "steps": steps,
+                    "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0})
+        _wa(scoped.audit_log, {
+            "trace_id": tid, "ts": _ni(), "kind": "ask", "cached": True,
+            "model": "cache", "org_id": org, "role": scoped.role,
+            "user": scoped.user, "question": question,
+            "source": scoped.source_id or "builtin",
+            "source_name": scoped.source_name or scoped.path,
+            "tables_hit": out.get("tables_hit") or [], "metrics_hit": [],
+            "sql_raw": "", "sql_final": out.get("sql_final") or "",
+            "rules_fired": [], "rejected_by": None, "attempts": 0,
+            "explain_rows": out.get("explain_rows"), "step_count": len(steps),
+            "multi_step": False, "converged_early": "",
+            "rows_returned": out.get("row_count") or 0,
+            "masked_columns": out.get("masked_columns") or [],
+            "mask_degraded": bool(out.get("mask_degraded")),
+            "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0,
+            "steps": steps,
+        })
+        return out
+
     @app.post("/api/ask")
     def ask(req: AskRequest, request: Request) -> JSONResponse:
         # 按角色收窄后再进链路。护栏、执行器、Schema 召回全部从配置取值，
@@ -2491,18 +2533,38 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         _require_cap(request, _identity.QUERY, "发起查询")
         scoped = _apply_waiver(scoped, request, aid=req.approval_id,
                                kind="ask", text=req.question)
-        r = run_ask(req.question.strip(), scoped, org_id=req.org_id)
+
+        # ---------- 应答缓存：命中即"零模型、零配额、零执行" ----------
+        # 只对普通提问缓存；任务（有归属、可续跑）与审批豁免（一次性）都跳过。
+        # 缓存是优化不是护栏：qcache 把一切 Redis 异常吞成未命中，这里不会因它抛错。
+        q_text = req.question.strip()
+        eff_org = scoped.default_org if req.org_id is None else req.org_id
+        cache = build_answer_cache(scoped)
+        ckey: str | None = None
+        if cache.enabled and not req.as_task and not req.approval_id and not scoped.scan_waiver:
+            ckey = _cache_key(question=q_text, source_id=scoped.source_id,
+                              org_id=eff_org, role=scoped.role)
+            hit = cache.get(ckey)
+            if hit is not None:
+                return JSONResponse(_serve_cached_ask(hit, scoped, q_text, eff_org))
+
+        r = run_ask(q_text, scoped, org_id=req.org_id)
         out = r.to_dict()
         if r.rejected_by == "R-11" and not scoped.scan_waiver:
             # 与直查同一条口径：超阈值挂起，不是终结。
             # 绑定的是**问题原文**，因为再问一次生成的 SQL 未必逐字相同。
             out.update(_open_approval(scoped, request, trace_id=r.trace_id, kind="ask",
-                                      question=req.question.strip(),
+                                      question=q_text,
                                       sql=r.sql_final or r.sql_raw,
-                                      match_text=req.question.strip(),
+                                      match_text=q_text,
                                       est_rows=getattr(r, "explain_rows", None)))
         if scoped.scan_waiver and r.ok:
             _approvals.consume(cfg, req.approval_id)
+        # 只缓存"干净的成功"：ok 且无任何拦截、无挂起审批。失败/被拦/挂起都是
+        # 有状态或一次性的，缓存它们即错误（详见 qcache 模块头注）。
+        if (ckey is not None and r.ok and r.rejected_by is None
+                and not out.get("approval_id")):
+            cache.put(ckey, out, cache.ttl)
         return JSONResponse(out)
 
     @app.post("/api/sql")

@@ -142,6 +142,14 @@ observability:
   # 生产配置（ragforge*.yaml）仍按 100～200 从严。
   daily_quota: 3000
 
+# 应答缓存（见 config/public.yaml 的同名段有完整说明）。
+# 本地默认开着但没配 Redis 时自动降级为禁用 —— enabled:true 是安全的。
+answer_cache:
+  enabled: true
+  ttl_seconds: 60
+  key_prefix: askdb:qcache:dev
+  redis_url_env: ASKDB_REDIS_URL
+
 tables_file: ./config/tables-ragforge.yaml
 metrics_file: ./config/metrics-ragforge.yaml
 
