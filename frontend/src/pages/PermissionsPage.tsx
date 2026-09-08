@@ -25,11 +25,17 @@ const ROLE_SUBTITLE: Record<string, string> = {
   PRODUCT: '与其他角色同一可见面',
   DEV: '与其他角色同一可见面',
   QA: '与其他角色同一可见面',
+  DESIGN: '与其他角色同一可见面',
   DATA_OWNER: '与其他角色同一可见面',
   OPERATIONS: '与其他角色同一可见面',
+  SALES: '与其他角色同一可见面',
+  MARKETING: '与其他角色同一可见面',
+  SUPPORT: '与其他角色同一可见面',
   FINANCE: '与其他角色同一可见面',
   HR: '与其他角色同一可见面',
+  LEGAL: '与其他角色同一可见面',
   MANAGEMENT: '与其他角色同一可见面',
+  OTHER: '与其他角色同一可见面',
   SYS_ADMIN: '同一可见面 + 审批',
 }
 
@@ -38,11 +44,17 @@ const ROLE_TITLE: Record<string, string> = {
   PRODUCT: '产品角色 · Product',
   DEV: '开发角色 · Developer',
   QA: '测试角色 · QA',
-  DATA_OWNER: '数据负责人 · Data Owner',
+  DESIGN: '设计角色 · Design',
+  DATA_OWNER: '数据角色 · Data',
   OPERATIONS: '运营角色 · Operations',
+  SALES: '销售角色 · Sales',
+  MARKETING: '市场角色 · Marketing',
+  SUPPORT: '客服角色 · Support',
   FINANCE: '财务角色 · Finance',
   HR: '人力角色 · HR',
+  LEGAL: '法务合规角色 · Legal & Compliance',
   MANAGEMENT: '管理角色 · Management',
+  OTHER: '其他 · Unassigned',
 }
 
 /** 四个维度全部取后端真值。

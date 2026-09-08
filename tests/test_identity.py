@@ -76,10 +76,11 @@ def enabled_client(cfg, monkeypatch):
 
 def test_roles_are_fixed_and_cover_the_agreed_set():
     codes = [r.code for r in identity.ROLES]
-    assert codes == ["PRODUCT", "DEV", "QA", "DATA_OWNER",
-                     # 2026-09-08 新增的四个业务角色，不带任何额外权限，
-                     # 见 identity.ROLES 那段说明。
-                     "OPERATIONS", "FINANCE", "HR", "MANAGEMENT",
+    assert codes == ["PRODUCT", "DEV", "QA", "DESIGN", "DATA_OWNER",
+                     # 2026-09-08 新增的十个业务角色，不带任何额外权限，
+                     # 见 identity.ROLES 那两段说明。
+                     "OPERATIONS", "SALES", "MARKETING", "SUPPORT",
+                     "FINANCE", "HR", "LEGAL", "MANAGEMENT", "OTHER",
                      "SYS_ADMIN"]
     assert len(set(codes)) == len(codes)
 
@@ -112,7 +113,7 @@ def test_roles_endpoint_answers_even_when_disabled(client):
     assert r.status_code == 200
     body = r.json()
     assert body["enabled"] is False
-    assert len(body["roles"]) == len(identity.ROLES) == 9
+    assert len(body["roles"]) == len(identity.ROLES) == 15
 
 
 def test_member_endpoints_404_when_disabled(client):
