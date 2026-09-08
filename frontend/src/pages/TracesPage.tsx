@@ -33,7 +33,15 @@ const PAGE_SIZE = 12
 const toolCalls = (steps: ReplayStep[]) =>
   steps.filter(s => STEP_TYPE[s.step] === 'TOOL' || STEP_TYPE[s.step] === 'DB').length
 
-export function TracesPage({ onNavigate, onOpenModal, me }: {
+export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
+  /** 要定位的 trace_id。工作台右栏「Agent 执行链路」带着刚跑完那条的 id
+   *  进来，页面必须停在它身上 —— 默认选中的是最近一条，并发查询下那不是
+   *  同一条，而两条长得一样，看的人不会发现自己在读别人的链路。
+   *
+   *  实现上就是把它当搜索词落进左栏：q 服务端本来就匹配 trace_id，
+   *  于是列表收到这一条、右栏自然选中它，而搜索框里明摆着那个 id，
+   *  清掉就回到完整流水 —— 不需要再造一套"高亮并滚动到某条"的机制。 */
+  focusTrace?: string | null
   /** App 未传时退回点击侧栏导航（见 goTasks 注释） */
   onNavigate?: (view: View) => void
   /** 「接入 Langfuse」弹窗由 App 的 ModalLayer 挂载，未传时按钮置灰 */
@@ -50,7 +58,7 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
   const [items, setItems] = useState<AuditItem[] | null>(null)
   /* 左栏改成"搜索 + 两个下拉 + 滚动分页"。三个筛选条件都走**服务端**：
      只筛已加载的那一页，等于"搜不到"和"这一页里没有"分不开。 */
-  const [keyword, setKeyword] = useState('')
+  const [keyword, setKeyword] = useState(focusTrace ?? '')
   const [status, setStatus] = useState('')
   /** 数据源筛选。undefined = 不筛；'' 是合法取值（未记录数据源那一档） */
   const [source, setSource] = useState<string | undefined>(undefined)
@@ -58,7 +66,7 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [selected, setSelected] = useState<string | null>(null)
+  const [selected, setSelected] = useState<string | null>(focusTrace ?? null)
   // 存成 {key, result}，切换 trace 时靠 key 不匹配自然回到「读取中」，
   // 不需要在 effect 里先同步 setChain(null) —— 那会多触发一轮渲染
   const [chain, setChain] = useState<{ key: string; result: TraceChainResult } | null>(null)
@@ -74,7 +82,7 @@ export function TracesPage({ onNavigate, onOpenModal, me }: {
 
   /* 输入即请求会把每个字母都打成一次查询。300ms 防抖后再落到 query 上，
      筛选条件一变回到第一页 —— 停在第 5 页而结果只剩 3 条会看到一片空白。 */
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(focusTrace ?? '')
   useEffect(() => {
     const timer = setTimeout(() => setQuery(keyword.trim()), 300)
     return () => clearTimeout(timer)

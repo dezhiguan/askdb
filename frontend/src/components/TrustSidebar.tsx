@@ -31,7 +31,8 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
   /** 「身份」一格要的当前登录态 */
   me?: Me | null
   onResultTab: (tab: ResultTab) => void
-  onNavigate: (view: View) => void
+  /** 第二个参数是要定位的 trace_id */
+  onNavigate: (view: View, focusTrace?: string) => void
 }) {
   const ready = health.status === 'ready' ? health.health : null
   const canExecute = !!ready?.datasource.ok
@@ -145,7 +146,11 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
           <button className="evidence-action" disabled={!result} onClick={() => onResultTab('sql')}>
             <i>SQL</i><span><strong>原生 SQL</strong><small>查看、复制并在客户端复核</small></span><b>→</b>
           </button>
-          <button className="evidence-action open-trace" disabled={!result} onClick={() => onResultTab('chain')}>
+          {/* 这一格给的是「模型、工具和策略节点」，那是执行追踪页的内容，
+              页内的执行链路页签只有节点概览 —— 所以直接送到那一页去，
+              并带上本次的 trace_id 定位到这条查询而不是最近一条。 */}
+          <button className="evidence-action open-trace" disabled={!result}
+                  onClick={() => onNavigate('traces', result?.trace_id || undefined)}>
             <i>TR</i><span><strong>Agent 执行链路</strong><small>查看模型、工具和策略节点</small></span><b>→</b>
           </button>
         </div>

@@ -20,7 +20,9 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   /** 数据源选择与顶栏共用同一份状态 —— 各存一份必然漂移，
    *  而漂移的表现是"正在查 A 库、顶栏说你在 B 库" */
   sources: SourcesState
-  onNavigate: (view: View) => void
+  /** 第二个参数是要定位的 trace_id —— 跳「执行追踪」时带上，
+   *  否则落在最近一条上，看的不一定是刚跑完的这一条 */
+  onNavigate: (view: View, focusTrace?: string) => void
   /** 全局 toast —— 原型在切源、回填历史、删历史时都会提示一句 */
   notify?: (message: string) => void
   /** 右栏「身份」一格用 */
@@ -216,7 +218,7 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
         {result
           ? <ResultTabs result={result} active={tab} dialect={current.dialect}
                         onChange={setTab} onResumed={setResult}
-                        onOpenTrace={() => onNavigate('traces')} />
+                        onOpenTrace={() => onNavigate('traces', result.trace_id || undefined)} />
           : <Welcome
               mode={mode}
               schema={schema}
