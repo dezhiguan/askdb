@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -502,9 +502,41 @@ TASK_STATUSES = (
 RISK_LEVELS = ("HIGH", "MEDIUM", "LOW")
 
 
-def _day_of(ts: str) -> date | None:
+def day_tz(src: Any = None) -> Any:
+    """按哪个时区算"一天"。
+
+    **必须显式声明，不能跟着进程走。** 线上容器的时钟是 UTC，直接拿
+    datetime.now() 的日期当"今天"，北京时间要到早上八点才翻页 —— 于是
+    「今日查询」在整个上半天显示的都是昨天那个数，而看的人以为是今天的。
+    存 UTC 是对的（带偏移量、跨时区不歧义），错的是展示时不折算回来。
+
+    部署方在 observability.day_utc_offset_hours 里声明（写小时数而不是
+    Asia/Shanghai 这种名字：精简镜像里往往没有 tzdata，按名字取时区会在
+    生产上直接抛异常，而这件事没有任何本地测试能提前发现）。
+    没声明就取进程本地时区 —— 本机开发所见即所得，行为与改动前一致。
+    """
+    raw = getattr(src, "raw", None)
+    if isinstance(raw, dict):
+        v = (raw.get("observability") or {}).get("day_utc_offset_hours")
+        if v is not None:
+            try:
+                return timezone(timedelta(hours=float(v)))
+            except (TypeError, ValueError):
+                pass                     # 配置写坏了就退回本地，别让页面整个起不来
+    return datetime.now().astimezone().tzinfo
+
+
+def _now_in(tz: Any) -> datetime:
+    return datetime.now(tz) if tz is not None else datetime.now().astimezone()
+
+
+def _day_of(ts: str, tz: Any = None) -> date | None:
+    """记录落在哪一天。**tz 决定日界**；不给就按记录自己的偏移量算
+    （老行为，仅用于没有配置在手的调用点）。"""
     t = _parse_ts(ts)
-    return t.date() if t is not None else None
+    if t is None:
+        return None
+    return (t.astimezone(tz) if tz is not None else t).date()
 
 
 def _within_since(ts: str, since: str, now: datetime) -> bool:
@@ -517,7 +549,9 @@ def _within_since(ts: str, since: str, now: datetime) -> bool:
     if t is None:
         return False
     if since == "today":
-        return t.date() == now.date()
+        # 折算到 now 所在时区再比日期 —— now 由调用方按声明时区构造，
+        # 两边不在同一个时区上比，"今天"就会差出八小时
+        return t.astimezone(now.tzinfo).date() == now.date()
     days = {"7d": 7, "30d": 30}.get(since, 0)
     if not days:
         return True
@@ -529,6 +563,7 @@ def paginate_tasks(
     items: list[dict[str, Any]], *, page: int = 1, page_size: int = 10,
     status: str = FILTER_ANY, source: str = FILTER_ANY,
     risk: str = FILTER_ANY, user: str = FILTER_ANY, since: str = FILTER_ANY,
+    tz: Any = None,
 ) -> dict[str, Any]:
     """把 tasks() 的全量线程筛好、统计好、切好页 —— 一次返回给页面。
 
@@ -547,14 +582,17 @@ def paginate_tasks(
     （实测一次一千四百多条）。搬到这里之后出网的只有当前这一页，
     而页面上那几个数字一个不少。
     """
-    now = datetime.now().astimezone()
+    # tz 由调用方按 observability.day_utc_offset_hours 传进来。不给就退回本地
+    # 时区 —— 但在生产（容器时钟为 UTC）那等于按 UTC 计日，「今日完成」会到
+    # 北京时间早上八点才翻页
+    now = _now_in(tz)
 
     counts = Counter(str(it.get("status") or "") for it in items)
     done = [it for it in items if it.get("status") == DONE]
     # 时间解析不出来的不计入今天 —— 与 _within_since 同一条口径，
     # 宁可少算一条，也不要把一条时间不明的记录报成"今日完成"
     done_today = sum(1 for it in done
-                     if _day_of(str(it.get("ts", ""))) == now.date())
+                     if _day_of(str(it.get("ts", "")), now.tzinfo) == now.date())
     # 成功率的分母只算**真收尾**的：等补充、等审批、等运维都还有下一步，
     # 把它们记成失败，这个数字就会随"有多少人问得含糊"上下浮动，与系统好坏无关。
     settled = len(done) + counts[REJECTED]
@@ -704,12 +742,19 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
     model_calls = len(model_steps)
     model_failed = sum(1 for s in model_steps if s.get("status") != "ok")
 
+    # 日界按**声明的时区**算，不是记录字符串的前十位。
+    #
+    # 原来直接切前十位，等于跟着记录自己的偏移量走（线上是 UTC）：北京时间
+    # 凌晨到早八点之间，这些记录还算在"昨天"，于是页面上的「今日查询」在
+    # 整个上半天显示的都是昨天的数。
+    tz = day_tz(path)
     daily: dict[str, dict[str, Any]] = {}
     by_kind: dict[str, int] = {}
     by_rule: dict[str, int] = {}
     by_model: dict[str, dict[str, Any]] = {}
     for r in recent:
-        day = str(r.get("ts", ""))[:10]
+        d0 = _day_of(str(r.get("ts", "")), tz)
+        day = d0.isoformat() if d0 else str(r.get("ts", ""))[:10]
         d = daily.setdefault(day, {"date": day, "calls": 0, "cost_cny": 0.0})
         d["calls"] += 1
         d["cost_cny"] = round(d["cost_cny"] + float(r.get("cost_cny") or 0), 6)
@@ -739,11 +784,39 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
         "model_success": round((model_calls - model_failed) / model_calls, 4) if model_calls else None,
         "elapsed_p50_ms": _percentile(elapsed, 0.5),
         "elapsed_p95_ms": _percentile(elapsed, 0.95),
-        "daily": sorted(daily.values(), key=lambda d: d["date"]),
+        # **窗口内每一天都要有一条，没记录的补 0。**
+        # 缺天不补的后果不是"少一根柱子"：页面取的是这个序列的最后一条当
+        # 「今日」、倒数第二条当「昨日」，一旦今天还没人查，最后一条就是
+        # 最近有数据的那天 —— 于是「今日查询」显示的是昨天甚至上周的数字，
+        # 而且不会归零。
+        "daily": _fill_days(daily, _now_in(tz), days),
         "by_kind": by_kind,
         "by_rule": dict(sorted(by_rule.items(), key=lambda kv: -kv[1])),
         "by_model": dict(sorted(by_model.items(), key=lambda kv: -kv[1]["cost_cny"])),
     }
+
+
+def _fill_days(daily: dict[str, dict[str, Any]], now: datetime,
+               days: int) -> list[dict[str, Any]]:
+    """把窗口内缺席的日子补成 0，并保证**最后一条就是今天**。
+
+    窗口起点与 stats 的 cutoff 对齐（now - days），终点固定是今天 ——
+    "今天还没有任何调用"是一个要如实说出来的状态，不是"这一天不存在"。
+    """
+    out: list[dict[str, Any]] = []
+    start = (now - timedelta(days=days)).date()
+    today = now.date()
+    seen = set()
+    cur = start
+    while cur <= today:
+        key = cur.isoformat()
+        seen.add(key)
+        out.append(daily.get(key) or {"date": key, "calls": 0, "cost_cny": 0.0})
+        cur += timedelta(days=1)
+    # 窗口之外的记录（时间戳解析不出来、或时钟漂到未来）照样列出来，
+    # 别让它们从统计里凭空消失
+    out.extend(v for k, v in daily.items() if k not in seen)
+    return sorted(out, key=lambda d: d["date"])
 
 
 def _pctl_of(values: list[int], q: float) -> int | None:

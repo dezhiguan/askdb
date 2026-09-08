@@ -128,7 +128,12 @@ def test_stats_window_and_block_rate(tmp_path: Path):
     assert st["by_model"] == {"（未记录）": {"calls": 1, "cost_cny": 0.002}}
     # 带步骤 trace 的只有 1/2 —— 这格必须按实情算，不写死 100%
     assert st["trace_complete"] == 0.5
-    assert len(st["daily"]) == 2
+    # 窗口内每天一条（30 天窗口 + 今天 = 31），没记录的补 0：页面取最后一条
+    # 当「今日」、倒数第二条当「昨日」，缺天不补就会把最近有数据的那天显示成
+    # 今天 —— 今天没人查时那个数字既不归零也不会变
+    assert len(st["daily"]) == 31
+    assert st["daily"][-1]["date"] == datetime.now().astimezone().date().isoformat()
+    assert sum(d["calls"] for d in st["daily"]) == 2
 
 
 def test_sql_endpoint_writes_audit_even_when_blocked(cfg, monkeypatch):

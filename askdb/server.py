@@ -2205,7 +2205,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 会在这里被核回 False；被杀掉那条留着现场，核得过。
         result = _audit.paginate_tasks(
             items, page=page, page_size=page_size, status=status,
-            source=source, risk=risk, user=user, since=since)
+            source=source, risk=risk, user=user, since=since,
+            # 日界按配置声明的时区算：容器时钟是 UTC，不传这个，「今日完成」
+            # 会到北京时间早上八点才翻页
+            tz=_audit.day_tz(cfg))
         for it in result["items"]:
             if it.get("resumable"):
                 state = is_resumable(str(it.get("thread_id") or ""), cfg)

@@ -64,9 +64,25 @@ return n
 """
 
 
+#: 日界的时区偏移。由 build_quota 按 observability.day_utc_offset_hours 设定；
+#: 没配就是 None，退回进程本地时区。
+#:
+#: 为什么配额也要跟着走：线上容器时钟是 UTC，"每日 500 次"实际是在北京时间
+#: 早上八点清零 —— 而写这条限额的人和看它的人想的都是"每天零点"。
+_DAY_TZ: Any = None
+
+
+def set_day_tz(tz: Any) -> None:
+    """由 build_quota 装配时设定。进程级而不是逐次传参：三个后端都要用它，
+    而它在一个进程里只会有一个取值（同一份配置）。"""
+    global _DAY_TZ
+    _DAY_TZ = tz
+
+
 def _today() -> str:
-    """按本地时区算"今天"。多副本部署在同一时区，口径一致。"""
-    return datetime.now().astimezone().date().isoformat()
+    """按声明时区算"今天"；没声明就用进程本地时区。"""
+    now = datetime.now(_DAY_TZ) if _DAY_TZ is not None else datetime.now().astimezone()
+    return now.date().isoformat()
 
 
 class _Backend:
@@ -346,6 +362,12 @@ def build_quota(cfg) -> DailyQuota:
     obs = cfg.raw.get("observability", {}) or {}
     q = obs.get("quota", {}) or {}
     limit = cfg.daily_quota
+
+    # 日界与审计口径对齐 —— 两处各算各的，就会出现"页面说今天用了 3 次、
+    # 配额说已经用了 480 次"，而两句话都没错，只是不在同一天上
+    from .audit import day_tz
+
+    set_day_tz(day_tz(cfg))
 
     url_env = str(q.get("redis_url_env") or "").strip()
     url = (os.environ.get(url_env) or "").strip() if url_env else ""
