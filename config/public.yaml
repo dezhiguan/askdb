@@ -310,6 +310,14 @@ auth:
       roles: [DATA_OWNER]
       note: 实例白名单内全部可见
       password_hash: "scrypt$16384$8$1$5eQ0nqqMH2JJl4MhJ5ZAPg==$Yq9nGQYvZZzojLlLDgfJG4brluHvVcb4LQLoh0iklyo="
+    # 2026-09-08 加。列多个角色是为了让「身份与权限」页那几份成员名单里都有本人 ——
+    # 名册的口径是"配置内置 ∪ 库表登记"（identity.builtin_members），写在这里的人
+    # 就是实打实的角色持有者，不必再去库表登记一遍。
+    - username: guandezhi
+      display_name: 官德志
+      roles: [PRODUCT, DEV, QA, DESIGN]
+      note: 平台负责人
+      password_hash: "scrypt$16384$8$1$/KvNKD5fh4sCZ4f0dVywTw==$elUkPBeIHNa+F25GjPl07qYCtYA+/cz+It9DNkCa0xE="
 
 # ---------------------------------------------------------------------------
 # 身份与权限：角色成员名单
