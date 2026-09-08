@@ -114,12 +114,15 @@ def _get_pool():
 
 
 def reset_pool() -> None:
-    """丢弃当前连接池。测试换库、换 schema 时调；生产用不到。"""
-    global _pool, _pool_key
+    """丢弃当前连接池（两个都丢）。测试换库、换 schema 时调；生产用不到。"""
+    global _pool, _pool_key, _dict_pool, _dict_key
     with _lock:
         if _pool is not None:
             _pool.close()
+        if _dict_pool is not None:
+            _dict_pool.close()
         _pool, _pool_key = None, None
+        _dict_pool, _dict_key = None, None
 
 
 @contextmanager
@@ -134,6 +137,46 @@ def connect():
         raise
     except Exception as e:                             # 建连失败、认证失败、超时
         raise StoreUnavailable(f"凭据库连接失败：{e}") from e
+
+
+_dict_pool: Any = None
+_dict_key: tuple[str, str] | None = None
+
+
+def dict_pool():
+    """行工厂为 dict 的连接池 —— **langgraph 的 PostgresSaver 只认这种**。
+
+    单开一个池而不是把主池改成 dict_row：本模块自己的查询按元组读（列顺序
+    与 SQL 一一对应），换成字典要改一圈调用点，而检查点是外部库在用，
+    它的要求不该反过来决定我们自己的读法。
+
+    检查点的写入频率比审计高一个量级（一次问答每个节点一次），所以单独给它
+    池子还有一个好处：写检查点的尖峰不会把审计写入的连接吃光。
+    """
+    global _dict_pool, _dict_key
+    key = (dsn(), schema())
+    with _lock:
+        if _dict_pool is not None and _dict_key == key:
+            return _dict_pool
+        if _dict_pool is not None:
+            _dict_pool.close()
+            _dict_pool, _dict_key = None, None
+        try:
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+        except ImportError as e:                       # pragma: no cover
+            raise StoreUnavailable(
+                '未安装 psycopg_pool：uv pip install "psycopg[binary,pool]"') from e
+        conn_dsn, name = key
+        _dict_pool = ConnectionPool(
+            conn_dsn, min_size=0, max_size=6, timeout=5, max_idle=300,
+            kwargs={"autocommit": True, "connect_timeout": 5, "row_factory": dict_row},
+            configure=(None if name == "public"
+                       else lambda con, s=name: con.execute(f"SET search_path TO {s}")),
+            open=True, name="askdb-checkpoints",
+        )
+        _dict_key = key
+        return _dict_pool
 
 
 def rows(sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:

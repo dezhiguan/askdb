@@ -645,12 +645,27 @@ def _build_skeleton() -> StateGraph:
     return g
 
 
-def build_graph(checkpoint_db: Path | None = None):
+def build_graph(target: Any = None):
     """编译状态机。
 
     接检查点的目的是**失败样本可原样复现**（技术设计说明书 §5），
     用于 P3 评测归因，不是在线断点续跑。
+
+    target 三种：None 不接检查点；Path 走 SQLite；Config 由部署决定 ——
+    `observability.store: postgres` 时落 PostgreSQL，否则仍是配置里那个
+    SQLite 文件。**检查点跟着凭据走同一个开关**，不单独设一个：两者分家
+    配置，就会出现"审计在库里、检查点还在某台机器的本地盘上"，而一次
+    失败复现需要两者对得上。
     """
+    if target is not None and not isinstance(target, Path):
+        from . import auditstore
+
+        cfg = target
+        if not auditstore.enabled(cfg):
+            return build_graph(cfg.checkpoint_db)
+        return _build_pg(_build_skeleton())
+
+    checkpoint_db = target
     g = _build_skeleton()
     if checkpoint_db is None:
         return g.compile()
@@ -676,13 +691,32 @@ def build_graph(checkpoint_db: Path | None = None):
     return compiled
 
 
+def _build_pg(g):
+    """检查点落 PostgreSQL。
+
+    多副本共享检查点这件事，SQLite 那条路是靠"同一台机器的本地盘 + WAL"
+    撑住的；换成 PG 之后这个前提不再需要 —— 副本落在哪个节点都一样，
+    而这正是原来那套写法唯一守不住的地方。
+
+    行工厂必须是 dict（saver 的硬要求），所以走 pgstore 的第二个池子。
+    setup() 幂等，建表建索引，每个进程跑一次即可。
+    """
+    from langgraph.checkpoint.postgres import PostgresSaver
+
+    from . import pgstore
+
+    saver = PostgresSaver(pgstore.dict_pool())
+    saver.setup()
+    return g.compile(checkpointer=saver)
+
+
 _GRAPH = None
 _GRAPH_KEY: str | None = None
 
 
 def replay(trace_id: str, cfg: Config) -> list[dict[str, Any]]:
     """取回某次调用的全部检查点快照，用于失败复现与归因（P3）。"""
-    g = build_graph(cfg.checkpoint_db)
+    g = build_graph(cfg)
     out: list[dict[str, Any]] = []
     for snap in g.get_state_history({"configurable": {"thread_id": trace_id}}):
         out.append({
@@ -697,12 +731,22 @@ def replay(trace_id: str, cfg: Config) -> list[dict[str, Any]]:
 
 
 def _ensure_graph(cfg: Config):
+    from . import auditstore
+
     global _GRAPH, _GRAPH_KEY
-    key = str(cfg.checkpoint_db)
+    # 换库/换文件都要重编：缓存键必须能区分这两种落点，否则本机切一次
+    # store 开关，进程里还拿着上一个 saver
+    key = ("pg:" + _pg_key()) if auditstore.enabled(cfg) else str(cfg.checkpoint_db)
     if _GRAPH is None or _GRAPH_KEY != key:
-        _GRAPH = build_graph(cfg.checkpoint_db)
+        _GRAPH = build_graph(cfg)
         _GRAPH_KEY = key
     return _GRAPH
+
+
+def _pg_key() -> str:
+    from . import pgstore
+
+    return f"{pgstore.raw_dsn()}|{pgstore.schema()}"
 
 
 def is_resumable(thread_id: str, cfg: Config) -> bool | None:

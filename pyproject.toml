@@ -12,6 +12,9 @@ dependencies = [
     # 少了它 graph.build_graph() 直接 ImportError —— 失败样本原样复现、
     # 回放归因这些能力全部落空，属于主依赖而不是可选项。
     "langgraph-checkpoint-sqlite>=2.0",
+    # 检查点的 PostgreSQL 后端（2026-09-09 起生产用它）。与 sqlite 那个
+    # 并存而不是替换：本机开发、样例配置仍走文件，那时不该要求本地有库。
+    "langgraph-checkpoint-postgres>=2.0",
     "langchain-core>=0.3",
     "langchain-openai>=0.3",
     # LLM 观测（自托管 Langfuse，v2 服务端配 v2 SDK；import 路径在 v3 有变，锁大版本）

@@ -246,9 +246,13 @@ def cmd_replay(
     cfg = _load(config)
     snaps = do_replay(trace_id, cfg)
     if not snaps:
+        from . import auditstore, pgstore
+
+        where = (f"PostgreSQL（{pgstore.raw_dsn() or '未配置连接串'}）"
+                 if auditstore.enabled(cfg) else str(cfg.checkpoint_db))
         _fail(f"检查点里没有 {trace_id}",
-              f"确认配置是否对得上：这份用的检查点库是 {cfg.checkpoint_db}。"
-              "不同数据源的检查点分开存放。")
+              f"确认配置是否对得上：这份配置的检查点落在 {where}。"
+              "本机与线上落点不同，别拿本机的配置去查线上的 trace。")
 
     con.print(f"[bold]复现[/] {trace_id}   共 {len(snaps)} 个检查点\n")
     first_bad = None
