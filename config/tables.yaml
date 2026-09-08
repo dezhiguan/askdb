@@ -22,7 +22,7 @@ tables:
   - name: knowledge_bases
     desc: 知识库
     aliases: [知识库, 库]
-    # 维表：没有时间维度。漏标的表在有数据期限的角色下会被 R-18 拒掉，
+    # 维表：没有时间维度。漏标的表在有数据期限的角色下会被 R-19 拒掉，
     # 所以这里必须显式说清楚，不能靠遗漏。
     time_exempt: true
     columns:

@@ -39,13 +39,21 @@
 
 | 文件 | 内容 |
 |---|---|
-| [`docs/tech-design.html`](docs/tech-design.html) | 技术设计说明书 V1.1 —— 11 章 + 2 附录，含 17 条护栏规则、评测方案、生产使用边界 |
-| [`docs/prototype.html`](docs/prototype.html) | 交互原型 —— 数据接入向导、提问链路、多步规划 |
-| [`docs/design-resume.html`](docs/design-resume.html) | 任务中断恢复设计 V1.1 —— 失败后从检查点续跑而非从头再来，含界面原型；前置修复 R-17 计数被重置 |
-| [`docs/design-replay-api.html`](docs/design-replay-api.html) | 判定链路回放接口设计 V1.1 —— 把检查点从「命令行可查」做成「页面可查」，含字段白名单与双开关的安全设计 |
+| [`docs/tech-design.html`](docs/tech-design.html) | 技术设计说明书 V1.1 —— 11 章 + 2 附录，含护栏规则、评测方案、生产使用边界 |
+| [`docs/design-rbac.md`](docs/design-rbac.md) · [`.html`](docs/design-rbac.html) | 角色与权限设计 V1.4 —— 8 个功能页上的 27 个权限点，四个阶段全部落地。V1.4 把可见面拍平：所有角色（含未登录）看到的完全相同，唯一的角色差别是审批 |
+| [`docs/prototype.html`](docs/prototype.html) | **产品原型** —— 四个产品阶段的完整控制台，含尚无后端支撑的页面 |
+| [`docs/design-resume.html`](docs/design-resume.html) | 任务中断恢复设计 V1.1 —— 失败后从检查点续跑而非从头再来 |
+| [`docs/design-replay-api.html`](docs/design-replay-api.html) | 判定链路回放接口设计 V1.1 —— 字段白名单与双开关 |
+| [`docs/design-quota-multi-replica.html`](docs/design-quota-multi-replica.html) | 每日配额多副本设计 V1.1 —— 计数下沉到模型调用处，改存 Redis |
+| [`deploy/README.md`](deploy/README.md) | **部署手册** —— 密钥、库侧角色、入口合并、冒烟、回滚 |
 
 单文件 HTML，下载后浏览器直接打开（GitHub 网页不渲染 HTML）。
-**这两份文档里的全部指标均为设计阶段占位值** —— 实测数字见下方
+
+**原型有意画得比已建成的多。** 它是产品目标，不是当前版本的说明：侧栏「阶段三 /
+阶段四」那一组 —— Connector 节点、开发者工具、产品落地路线 —— 背后没有任何后端。
+真正上线的部分见 [Web 控制台](#web-控制台)。
+
+**设计文档里的全部指标均为设计阶段占位值** —— 实测数字见下方
 [实测结果](#实测结果)。说明见 [`docs/README.md`](docs/README.md)。
 
 ---
@@ -91,8 +99,17 @@
 | R-15 | 中间结果规模上限（多步） | 链路控制 | ✅ |
 | R-16 | 总步数上限（多步） | 链路控制 | ✅ |
 | R-17 | 累计成本上限 | 链路控制 | ✅ |
+| R-19 | **强制数据期限窗口注入**（角色可见的时间范围） | 强制改写 | ✅ |
 
 ¹ 已覆盖带表限定的字段、以及作用域内只有一张表时的裸字段；多表 JOIN 下的裸字段解析待补。
+
+**R-18 不存在。** `docs/design-rbac.md` 里写数据期限规则取 R-19 是因为 R-18 已被
+「扇出放大」占用 —— 但代码与技术设计说明书里都找不到这条规则。这个编号是空占的，
+序号断档是有意的，不是漏实现。
+
+各条规则的落点：R-01～R-10 与 R-19 在 `guard.py`，R-11～R-13 在 `executor.py`，
+R-14 在 `graph.py` 的路由，R-15～R-17 在 `planner.py`。`guard.ENFORCED_ELSEWHERE`
+显式列出了在护栏模块之外执行的那几条 —— 免得有人只读了那一个文件，就以为护栏只有那些。
 
 **强制改写在 AST 上完成后重新生成 SQL，模型无法通过任何提示词手段覆盖：**
 
@@ -109,6 +126,36 @@ LIMIT 1000;                   -- R-09 强制注入
 
 多租户隔离采用双层：**应用层 AST 改写**（R-10）+ **数据库行级安全 RLS**（PostgreSQL）。
 仅靠应用层改写不足以保证隔离 —— 子查询、CTE、UNION、视图任一分支遗漏即构成越权路径。
+
+> **运行时注册的数据源有意不做租户隔离。** `sources.derive_config()` 写死
+> `tenant.enabled = False`：一次结构扫描看不出哪一列代表租户 —— ragforge 的
+> `documents` 甚至是靠 `kb_id` 间接归属的，猜错就是一次越权读。所以这条规则是
+> **关掉**而不是近似，边界整个移到只读库角色上。把某个源开放给别人之前，先读
+> `config/public.yaml` 开头那段。
+
+---
+
+## Web 控制台
+
+`askdb serve` 会挂载一个 React 控制台（源码在 `frontend/`，构建产物提交在
+`askdb/web/`，由 FastAPI 托管）。九个页面，分组与原型一致：
+
+| 分组 | 页面 | 做什么 |
+|---|---|---|
+| Workspace | **查询 Agent** | 自然语言提问。每个回答都带着 SQL、触发的规则、以及被注入的谓词 |
+| Workspace | **任务中心** | 耗时较长或多步的执行线程，按收尾码分档，可从检查点续跑 |
+| Workspace | **数据源** | 运行时注册表 —— 注册、扫描，再逐个把表开进白名单 |
+| Governance | **身份与权限** | 角色、成员，以及角色在查询时**真正**拿到的范围 |
+| Governance | **业务口径** | 指标定义与字段语义 —— 模型永远推不出来的那一层 |
+| Governance | **Agent 质量中心** | 线上运行健康，加上对冻结黄金集的离线回放 |
+| Governance | **执行追踪** | 单次调用的 Span 树；接了观测时跳转 Langfuse |
+| Governance | **审计中心** | 每次调用一条记录 —— 含被拦下的和直查 SQL |
+| — | **高成本审批** | 超阈值查询（R-11）在这里排队。入口 2026-09-06 撤下，**页面与 `/api/approvals` 都还在**，加回一行即恢复 |
+
+**结果复核**与审批是两件事，也有意分开：审批在事前决定这条查询能不能跑，复核在
+事后决定它算出来的那个数字算不算数。
+
+原型上有、这一版没实现的：Connector 节点、开发者工具、产品落地路线。
 
 ---
 
@@ -133,34 +180,56 @@ cp .env.example .env   # 填入 DASHSCOPE_API_KEY
 askdb check                              # 配置与数据源自检，先跑这个
 askdb sql "SELECT file_name FROM documents WHERE status='PROCESSING'"
 askdb ask  "有哪些文档卡在处理中超过一小时"
-askdb serve                              # Web 界面 http://127.0.0.1:8000
+askdb serve                              # 控制台 http://127.0.0.1:8000
 ```
 
 **`askdb sql` 不需要模型密钥** —— 跳过生成，直接跑 护栏 → 干跑 → 执行，
 在配置任何东西之前就能把整条护栏链路验证一遍。
 
+> **数据源页需要一个 PostgreSQL 侧库。** 2026-09-06 起数据源注册表存在库里而不是
+> `var/sources/*.yaml`，连接串取自 `ASKDB_SOURCES_DSN`。没配也能起、配置里那个源
+> 照常答题，只是数据源相关接口返回 **503**（`sources_store_unavailable`）而不是空
+> 列表 —— 这是有意的：「读不到注册表」和「一个源都没有」是两回事，把后者显示出来
+> 会让一个坏掉的实例看起来很正常。
+
 ### 开发
 
 ```bash
-uv pip install -e ".[dev]"
-pytest              # 230 个用例 · 覆盖率门槛 81%
+uv pip install -e ".[dev]"     # dev 有意装齐全部可选能力 ——
+                               # 少装一个就会有一批用例静默 skip，而报告还是绿的
+pytest                         # 752 个用例 · 覆盖率门槛 81%
 python -m evals.replay --blind        # 盲测集（最终成绩）
 python -m evals.ablation --groups A,B,C,D,E,F
+python -m evals.chaos                 # 故障注入
 ```
+
+改前端多一步，而且是最容易漏的一步：
+
+```bash
+cd frontend && npm ci && npm run build   # 产物写进 ../askdb/web/
+cd .. && git add frontend askdb/web      # 构建产物入 git
+```
+
+镜像里没有 Node，线上跑的就是仓库里这份产物。忘了重新构建的话，单测、镜像、
+rollout、健康检查全绿，只有界面停在上一版 —— CI 因此自己重新构建一遍，
+产物对不上就直接红。
 
 ---
 
 ## 配置
 
-三份 YAML，职责分离：
+一个部署目标一份 YAML。每份内部都是同样三件事 —— 数据源、表白名单、业务口径 ——
+拆成多个文件，是为了让最要紧的那两份不必碰阈值就能改：
 
-| 文件 | 内容 |
+| 文件 | 用于 |
 |---|---|
-| `config/askdb.yaml` | 数据源、租户策略、护栏阈值、模型 |
-| `config/tables.yaml` | **表白名单与字段语义注释** |
-| `config/metrics.yaml` | **业务口径定义** |
+| `config/askdb.yaml` | 本机默认 —— 自带的 DuckDB 样例库 |
+| `config/tables.yaml` · `config/metrics.yaml` | 样例库的**表白名单与业务口径定义** |
+| `config/public.yaml` | 对外实例。**整段没有 datasource** —— 所有数据源都来自运行时注册表 |
+| `config/ragforge-prod.yaml` + `ragforge-prod-tables.yaml` + `ragforge-prod-metrics.yaml` | ragforge 生产库，生产实测那一轮用的就是它 |
+| `config/ragforge-eval.yaml`、`ragforge-tight.yaml` …… | 冻结的评测变体，留着是为了让已公开的那几轮还能复现 |
 
-后两份是准确率的决定因素，而不是提示词调优：
+白名单与口径这两份是准确率的决定因素，而不是提示词调优：
 
 ```yaml
 # tables.yaml —— 字段名不具自解释性，必须补业务语义
@@ -179,9 +248,136 @@ org_id:
   predicate: "status = 'PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR"
 ```
 
+**数据源不再是配置。** 它们存在 `askdb_sources` 表里，在控制台上运行时添加 ——
+改数据源不用重启，数据源出问题也不影响启动。两个副本共用同一份注册表，这正是
+从「每个 Pod 各写各的文件、且无锁」换过来的直接收益。
+
+密钥一律不进配置文件。模型密钥、库口令、会话签名密钥、Redis 地址、观测密钥
+全部由 k8s Secret 以环境变量注入，见 [`deploy/README.md`](deploy/README.md)。
+
+有两把密钥，对外实例**有意不配**：
+
+| 环境变量 | 后果 | 为什么 |
+|---|---|---|
+| `ASKDB_ADMIN_TOKEN` | 角色成员的写入整体关闭（fail-closed） | 对外实例没有可信调用方，开了等于谁都能改成员名单 |
+| `ASKDB_SECRET_KEY` | 运行时添加数据源时不接受明文口令，只能填环境变量名 | 口令一个字不落盘，这正是这个实例该有的姿态 |
+
+---
+
+## 仓库结构
+
+```
+askdb/                一个关注点一个模块
+  guard.py            静态校验 + 强制 AST 改写            R-01～R-10、R-19
+  executor.py         只读执行、EXPLAIN 干跑、脱敏        R-11～R-13
+  planner.py          多步规划及其上限                    R-15～R-17
+  graph.py            LangGraph 状态机、检查点、重试路由  R-14
+  schema_rag.py       Schema 召回 —— keyword / vector 两种模式
+  sources.py          运行时数据源注册表（存 PostgreSQL）
+  identity.py         角色、成员、角色在查询时拿到的范围
+  auth.py             无状态签名会话
+  approvals.py        高成本查询的事前审批
+  reviews.py          结果复核 —— 与事前审批分开的另一个判定
+  audit.py            每次调用一条 JSON 记录，带风险分级
+  trace.py            Span 采集与回放载荷
+  quota.py            每日模型调用配额（Redis；单副本可退回文件）
+  observe.py          Langfuse / LangSmith 接线
+  llm.py              模型客户端 —— 配额扣在这里，按模型调用次数计
+  server.py           FastAPI · 34 个 API 接口
+  mcp_server.py       无状态 MCP 服务（2026-07-28 规范）
+  cli.py              askdb ask / sql / check / seed / serve / replay
+  web/                构建好的控制台，由 FastAPI 托管 —— 产物入 git
+frontend/             React + Vite 源码；`npm run build` 写进 askdb/web/
+config/               一个部署目标一份 YAML
+data/                 样例库生成器、审计日志、检查点库
+evals/                黄金集、回放、消融、故障注入
+scripts/              库侧建权限与回滚 SQL、注册表迁移
+deploy/               k8s 清单、nginx server 块、部署手册
+tests/                752 个用例，覆盖率门槛 81%
+docs/                 设计文档与产品原型
+```
+
+---
+
+## 部署架构
+
+对外实例跑在 `askdb.ragforge.net`。没有一台是专门为它买的机器 —— askdb 是搭在
+ragforge / CareerMate 已有的那套上面。
+
+```
+                          浏览器
+                             │  HTTPS
+                             ▼
+  Server 2 · 8.163.63.222 ─────────────────────────────────────────
+  nginx（跑在 ragforge-nginx 容器里，三个站点共用同一份配置）
+    · TLS 终结 · HSTS、nosniff、DENY、no-referrer
+    · gzip —— 必须带 gzip_proxied any，因为这里的一切都来自 proxy_pass
+    · /assets/ 长缓存一年 immutable；index.html 由后端发 no-store
+    · 5r/s 突发 10，但 /api/ask 除外 —— 那条路由由每日配额兜
+                             │  proxy_pass → 172.25.90.184:31100
+                             ▼
+  Server 3 · 单节点 k3s ────────────────────────────────────────────
+  Deployment askdb · 2 副本 · NodePort 31100 · 非 root uid 10001
+    · 镜像 tag 取 commit sha，不用 latest
+    · initContainer 改 hostPath 属主，否则容器写不进去
+    · hostPath /opt/askdb/var —— 审计日志与检查点重建不丢
+    · Secret：askdb-llm、askdb-db（必需 —— 连不上库的实例本来就不该起来）
+              askdb-sources、askdb-auth、askdb-redis、askdb-langfuse
+              （可选，各自缺失只降级一项能力）
+                             │
+                             ▼
+  数据机 · 172.25.90.183（公网 8.163.30.216）────────────────────────
+  PostgreSQL   askdb_meta    数据源注册表 —— 唯一一个可写的库
+               ragforge      全库只读角色
+               careermate    只读角色
+  Redis        每日配额的共享计数（db 2）
+  Langfuse     自托管调用链采集，3000 端口
+```
+
+Pod 走**内网**地址连数据机。公网那个从 Server 3 过去是超时的 —— 这条值得记住，
+因为症状是「数据源配置看起来完全正确，就是连不上」。
+
+**两副本能成立只因为三件具体的事**，而这三件都依赖两个 Pod 共用同一个 hostPath：
+每日配额算在 Redis 而不是各算各的、检查点库开了 WAL + busy_timeout、审计日志改成
+单次 `O_APPEND` 写。这在单节点上成立。真要跨节点，检查点得换 PG 后端、审计得换集中
+收集 —— 不是把 `replicas` 调大就完事。
+
+**入口不由本仓库部署。** `deploy/nginx-askdb.conf` 要合并进 rag-forge 仓库的
+`nginx.conf`：那一份文件同时服务三个站点，由 rag-forge 自己的 CI 推送，**而那条
+流水线不跑 `nginx -t`**。合并后先在 Server 2 上验语法再推 —— 写错一个分号，
+三个站点一起挂。
+
+### 发布链路
+
+推 `main` → `.github/workflows/ci-cd.yml`：
+
+```
+测试（带一个 PostgreSQL service 容器）
+  → 前端关卡 —— 自己重新构建一遍，产物与仓库里对不上就红
+  → 构建镜像，tag 取 commit sha
+  → 推 ACR
+  → 经跳板机 SSH → kubectl apply → 等 rollout
+  → 冒烟
+```
+
+冒烟这一步是照着真实发生过的故障写的：逐个取一遍首页引用的每个 `/assets/*`
+（挡「接口全绿但页面白屏」）、验证登录是真的通到账号表而不只是开关为真、
+以及钉住护栏的接口约定 —— 被拒的语句是 `200` + `ok: false` + `rejected_by`，
+不是 5xx。
+
+回滚是 `kubectl -n askdb rollout undo deployment/askdb`。完整手册 ——
+库侧角色怎么建、Secret 怎么建、数据源必须按什么顺序注册 —— 在
+[`deploy/README.md`](deploy/README.md)。
+
 ---
 
 ## 实测结果
+
+> **本节报告的是 2026-08-12 那几轮，此后没有重跑重写。** `evals/results/` 里有更
+> 新的结果 —— 一套更大的 ragforge 集与第一套 careermate 集，用的是不同的题集与
+> 不同的模型。它们**没有**被并进来：拿一个组成不同的题集上更好看的成绩去替换已
+> 公开的盲测分，正是设计说明书 §6.4 要防的那件事，而在一次文档更新里顺手做掉更
+> 糟。将来重切这一节的人，请写清新题集的组成，并保留下面这一轮作对照。
 
 两套评测，跑在**两个不同的库**上。放在一起是因为对比本身就是结论。
 
@@ -320,7 +516,7 @@ plan/assess 两次额外模型调用上）。判据是消融脚本里预先写�
 
 ## 状态与路线图
 
-**已可端到端运行。17 条护栏规则全部落地，评测已完成 —— 实测数字见上一节。**
+**已可端到端运行，且已上线部署。** 18 条护栏规则全部落地，评测已完成 —— 实测数字见上一节。
 
 | 阶段 | 内容 | 目标日期 | 状态 |
 |---|---|---|---|
@@ -331,7 +527,17 @@ plan/assess 两次额外模型调用上）。判据是消融脚本里预先写�
 | P3 | **黄金集 58 题、回放脚本、六组消融实验** | 2026-08-25 | ✅ |
 | P4 | MCP 封装（无状态规范） | 2026-08-28 | ✅ |
 | P5 | 多步查询规划（R-15～R-17）、消融组 F | 2026-09-02 | ✅ |
-| P6 | 审计与复放页；/api/replay 按回放接口设计落地（字段白名单+双开关）；所有调用——含被拦截的与直查 SQL——一调用一条审计；LangSmith 可选接线 | 2026-08-24 | ✅ |
+| P6 | 审计与复放页；`/api/replay` 按回放接口设计落地（字段白名单 + 双开关）；所有调用 —— 含被拦截的与直查 SQL —— 一调用一条审计；可选的观测接线 | 2026-08-24 | ✅ |
+| P7 | 登录（内置账号、无状态会话）、角色范围在每条查询路径上真正执行、角色成员登记 | 2026-09-02 | ✅ |
+| P8 | **对外实例上线** —— nginx + k3s 两副本、配额走 Redis、自托管 Langfuse；单文件页面换成独立的 React 控制台工程，并在 CI 上加一道构建产物关卡 | 2026-09-02 | ✅ |
+| P9 | **角色与权限按 `design-rbac.md` 四个阶段全部落地** —— 写入中间件、环境范围、脱敏与 R-19 数据期限、审批闭环。随后 V1.4 把可见面拍平：所有角色看到的一样，唯一差别是审批，未登录可读不可写 | 2026-09-06 | ✅ |
+| P10 | **运行时数据源注册表** —— 数据源从配置与各 Pod 的文件搬进 PostgreSQL，控制台上可改；ragforge 与 careermate 都作为普通数据源注册进来；结果复核与事前审批并行落地；任务态按收尾码分档；质量中心接上真实判定 | 2026-09-07 | ✅ |
+
+> **尚未建成：** 成员与真实 **auth-gateway** 身份的绑定（JWKS / 令牌交换）——
+> 在那之前登录用内置账号，成员写入退回共享管理员令牌，而对外实例有意不配这把令牌。
+> 数据源仅支持 DuckDB 与 PostgreSQL。多步规划（P5）已上线但默认关闭（消融组 F）。
+> 运行时注册的数据源按设计不做租户隔离（见[护栏规则](#护栏规则)）。原型上的
+> 阶段三 / 阶段四页面 —— Connector 节点与开发者工具 —— 未实现。
 
 > **README 中不会出现未经实测的指标。** 上方全部数字均为实跑所得，
 > 并已公开盲测集成绩与未经筛选的失败样本分类分布。
@@ -342,11 +548,15 @@ plan/assess 两次额外模型调用上）。判据是消融脚本里预先写�
 
 | 层 | 选型 | 说明 |
 |---|---|---|
-| 编排 | `langgraph` | 需要条件路由与状态持久化 |
+| 编排 | `langgraph` + `langgraph-checkpoint-sqlite` | 需要条件路由与状态持久化；检查点是失败复现与断点续跑成立的前提 |
 | 抽象 / 模型 | `langchain-core`、`langchain-openai` | 结构化输出；OpenAI 兼容端点 |
 | **SQL 解析与改写** | `sqlglot` | AST 可改写，是强制注入的前提 |
-| 数据 | DuckDB（内置样例）/ PostgreSQL | |
+| 被查询的数据 | DuckDB（内置样例）/ PostgreSQL | |
+| 数据源注册表 | PostgreSQL，走 `psycopg[binary,pool]` | **主依赖不是可选项** —— 没有它连"有哪些数据源"都读不出来。用连接池，因为每条查询路径都要读一次 |
+| 控制台 | React + Vite，由 FastAPI 托管 | 构建产物入 git；镜像里不带 Node |
 | 对外 | FastAPI + MCP | MCP 按 2026-07-28 无状态规范 |
+| 观测 | Langfuse（自托管），LangSmith 可选 | 两者都可选。都没配时审计页如实显示"未接入"，不装作接了 |
+| 配额计数 | Redis | 多副本下才准；退回文件计数在单副本下依然正确 |
 
 **不使用 `langchain` 主包**：`AgentExecutor` 不支持条件路由与状态持久化，失败无法从中间节点续跑，而这三项是本设计的必要条件。
 
@@ -359,6 +569,12 @@ plan/assess 两次额外模型调用上）。判据是消融脚本里预先写�
 | 连接生产**主库** | **禁止** —— 无人值守的聚合查询有拖垮主库的现实风险 |
 | 连接**只读副本**，限具备 SQL 阅读能力的人员使用 | 有条件允许（需满足只读账号 + RLS + 审计 + 配额等 8 项准入条件） |
 | 面向**终端用户**开放 | **禁止** —— 终端用户无法核对 SQL，错误口径将直接进入决策 |
+
+> **对外实例并不满足上表第一行，这是明知而为的取舍，不是疏漏。**
+> `askdb.ragforge.net` 读的是 ragforge 与 careermate 的**主库** —— 走的是专门的
+> 只读角色，前面压着语句超时、结果行上限、EXPLAIN 扫描阈值与每日配额，但它们
+> 是主库，不是只读副本。上表写的是"别人要依赖的部署应该是什么样"。如果你照这套
+> 去接一个真有负载的库，请指向副本。
 
 **关于"可信"的定义**：只要底层由 LLM 生成 SQL，就不存在"结果一定正确"。
 本项目所称可信指**过程可信**（危险操作可被拦截、结果可被自验、判定链路可被追溯），

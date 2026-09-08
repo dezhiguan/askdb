@@ -357,8 +357,9 @@ curl -s https://askdb.ragforge.net/api/auth/me | python3 -m json.tool
 `required: true`，那段时间的旧记录按 `false` 去核会误判）、`scope.tables` 非空。
 若 `enabled` 是 `false`，去建 `askdb-auth`（见上文），不是代码问题。
 
-> `demo_accounts` 已随 61f4a8b「登录落地」下线（一键体验改为纯前端跳过登录，
-> 不再有内置演示账号），旧版本这里要求它非空，按那句话去核会误判成配置坏了。
+> `/api/auth/me` 里那份内置账号列表已随 61f4a8b「登录落地」下线（一键体验改为
+> 纯前端跳过登录，不再有内置的免登录账号），旧版本这里要求它非空，按那句话去核
+> 会误判成配置坏了。
 
 写门是否还在（未登录不该改得动配置）：
 

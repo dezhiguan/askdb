@@ -181,7 +181,7 @@ def test_login_disabled_without_secret(acfg, monkeypatch):
     assert c.get("/api/auth/me").json()["enabled"] is False
 
 
-# ---------- 演示实例的配置意图 ----------
+# ---------- 对外实例的配置意图 ----------
 
 def test_anonymous_read_on_a_real_database_keeps_its_replacement_boundaries():
     """匿名可读与"连的是什么库"必须绑在一起判，不能各自漂。
