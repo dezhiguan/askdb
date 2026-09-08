@@ -189,6 +189,22 @@ class Config:
         """
         return bool(self.raw.get("datasource"))
 
+    @property
+    def default_source_ref(self) -> str:
+        """部署方指定的**默认运行时数据源**（写 id 或写名字都认），没写就是空串。
+
+        为什么需要这一行：`datasource:` 段撤掉之后，"不带 source 的调用落到哪个
+        库"实际上由注册顺序决定（界面回落到列表第一个）—— 而注册顺序不表达
+        任何意图。线上就出现过这个后果：启动配置里的白名单与业务口径全是
+        ragforge 的表，界面默认选中的却是先注册的 careermate 库，于是口径页
+        整页标"不可查"，看的人只会以为口径配错了。
+
+        它**不是**内置数据源的替身：连接串仍然只在注册表里，这里写的只是
+        "同样这几个源，默认用哪一个"。指到一个不存在或重名的源上，
+        不会悄悄回落到别的库 —— 由调用处如实报出来（server._default_source）。
+        """
+        return str(self.raw.get("datasources", {}).get("default", "") or "").strip()
+
     def _ds(self) -> dict[str, Any]:
         if not self.has_default_source:
             raise ValueError(

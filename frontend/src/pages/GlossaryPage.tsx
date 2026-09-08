@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { checkMetrics, fetchSchema, type MetricCheck, type Me, type Schema, type SchemaMetric } from '../api'
 import { MetricConfigHelp } from '../components/MetricConfigHelp'
 import type { View } from '../types'
+import type { SourcesState } from '../useSources'
 import { writeGuard } from '../writeGuard'
 
 const KIND_LABEL: Record<string, string> = {
@@ -10,30 +11,46 @@ const KIND_LABEL: Record<string, string> = {
   predicate: '谓词 · 进 WHERE',
 }
 
-export function GlossaryPage({ onNavigate, notify, me }: {
+export function GlossaryPage({ onNavigate, notify, me, sources }: {
   onNavigate: (view: View) => void
   notify: (message: string) => void
   me: Me | null
+  /** 顶栏「当前空间」用的同一份状态。这一页没有自己的源选择器 ——
+   *  两处各选各的，会出现"顶栏说在 A 库、核对结果跑在 B 库"。 */
+  sources: SourcesState
 }) {
   const guard = writeGuard(me, '新建指标')
+  // 空串意为内置源；本实例没有内置源时 current 已经回落到第一个运行时源
+  const sourceId = sources.current?.id ?? sources.sourceId
+  const sourceName = sources.current?.name ?? ''
   const [schema, setSchema] = useState<Schema | null>(null)
   const [error, setError] = useState('')
   const [picked, setPicked] = useState('')
   const [showAdd, setShowAdd] = useState(false)
   const [query, setQuery] = useState('')
+  // 区分度：按定义算 vs 凭直觉算差多少。按需跑 —— 每条口径一次库查询。
+  // 换源后旧结果一律作废：同一条口径在另一个库上的数不是同一个数
+  const [checks, setChecks] = useState<Record<string, MetricCheck>>({})
+  const [checking, setChecking] = useState(false)
 
   useEffect(() => {
     let alive = true
-    fetchSchema()
-      .then(value => { if (alive) setSchema(value) })
+    // 带上数据源：不带取的是启动配置的白名单，于是「可查」标的是另一个库的
+    // 表。核对跑在当前源上，标记就必须按同一个源算，否则页面标着可查、
+    // 点核对却条条被 R-03 拦。
+    fetchSchema(sourceId)
+      .then(value => { if (alive) { setSchema(value); setChecks({}) } })
       .catch(e => { if (alive) setError(String(e.message || e)) })
     return () => { alive = false }
-  }, [])
+  }, [sourceId])
 
   const metrics = schema?.metrics ?? []
   // 口径一律列出来（词典是给人读的），但「核对区分度」要按真实数据跑 ——
-  // 当前角色一条都查不了时它跑出来必然是 0 条，那就该说清楚而不是让人点空
+  // 当前源／角色下一条都查不了时它跑出来必然是 0 条，那就该说清楚而不是让人点空
   const checkable = metrics.filter(m => m.queryable).length
+  // 游客不给跑：这是这一页上唯一会真的压库的动作（每条口径一次查询），
+  // 而未登录身份连是谁都不知道。置灰只是把结论提前告诉人，边界仍在服务端。
+  const canCheck = !!me?.username
   const tableNames = useMemo(
     () => (schema?.tables ?? []).map(t => t.name),
     [schema?.tables],
@@ -52,17 +69,13 @@ export function GlossaryPage({ onNavigate, notify, me }: {
 
   const current = visible.find(m => m.name === picked) ?? visible[0]
 
-  // 区分度：按定义算 vs 凭直觉算差多少。按需跑 —— 每条口径一次库查询
-  const [checks, setChecks] = useState<Record<string, MetricCheck>>({})
-  const [checking, setChecking] = useState(false)
-
   const runCheck = async () => {
     setChecking(true)
     try {
-      const r = await checkMetrics()
+      const r = await checkMetrics(sourceId)
       setChecks(Object.fromEntries(r.items.map(i => [i.name, i])))
       setError('')                       // 上一次失败的红条要跟着这次成功消掉
-      notify(`已按当前数据核对 ${r.items.length} 条口径的区分度`)
+      notify(`已按${sourceName || '当前数据源'}的真实数据核对 ${r.items.length} 条口径的区分度`)
     } catch (e) {
       setError(String((e as Error).message || e))
     } finally {
@@ -79,9 +92,11 @@ export function GlossaryPage({ onNavigate, notify, me }: {
           <div className="card-actions">
             <button
               className="secondary"
-              disabled={checking || !checkable}
-              title={checkable ? undefined
-                : '核对要按真实数据跑，而当前角色可查的口径为 0'}
+              disabled={checking || !canCheck || !checkable}
+              title={!canCheck
+                ? '核对区分度要按真实数据逐条跑查询，登录后才能执行；未登录可以读口径定义'
+                : checkable ? undefined
+                  : `核对要按真实数据跑，而当前数据源${sourceName ? `「${sourceName}」` : ''}下可查的口径为 0`}
               onClick={runCheck}
             >
               {checking ? '核对中…' : '核对区分度'}
@@ -134,7 +149,7 @@ export function GlossaryPage({ onNavigate, notify, me }: {
                     {!m.queryable && (
                       <span
                         className="status wait"
-                        title="这条口径引用的表在当前角色下不可见，定义可读但问不出数"
+                        title="这条口径引用的表在当前数据源与角色下不可见，定义可读但问不出数"
                       >不可查</span>
                     )}
                     {m.queryable && check?.status === 'ok' && (
@@ -190,10 +205,10 @@ function MetricDetail({ metric, check, onNavigate }: {
           拿到的是 R-03 拦截，报错指向一个跟这一页对不上的地方 */}
       {!metric.queryable && (
         <div className="notice warn">
-          <div className="t">当前角色不可查</div>
+          <div className="t">当前不可查</div>
           <div className="why">
-            这条口径引用的表（{metric.scope.join('、') || '未声明'}）在当前角色下不可见 ——
-            定义可以读，但按它提问会被 R-03 拦下。登录后按角色重新判定。
+            这条口径引用的表（{metric.scope.join('、') || '未声明'}）在当前数据源与角色下
+            不可见 —— 定义可以读，但按它提问会被 R-03 拦下。换数据源或登录后重新判定。
           </div>
         </div>
       )}

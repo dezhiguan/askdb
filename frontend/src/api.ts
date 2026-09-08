@@ -417,8 +417,12 @@ function dataSourceReason(data: { error?: string; hint?: string }): string {
   return [data.error, data.hint].filter(Boolean).join(' · ')
 }
 
-export async function checkMetrics(): Promise<{ checked_at: string; items: MetricCheck[] }> {
-  const response = await request('/api/metrics/check')
+export async function checkMetrics(source?: string): Promise<{ checked_at: string; items: MetricCheck[] }> {
+  // 必须带上当前数据源：核对是**按真实数据跑**的，不带就落到启动配置上，
+  // 而这套部署的启动配置里没有 datasource 段（两个库都在运行时注册表里），
+  // 结果是整页一条红字而一条口径都没核对到。
+  const query = source ? `?source=${encodeURIComponent(source)}` : ''
+  const response = await request(`/api/metrics/check${query}`)
   if (!response.ok) throw new Error(`/api/metrics/check ${response.status}`)
   const data = await response.json()
   // 连不上库时 items 是空的。不拦下来就会显示成"一条口径都没有"，
@@ -559,6 +563,13 @@ export interface SourceList {
   supported_types: string[]
   /** 主密钥没配就只有「环境变量名」这一条路，表单据此禁用明文口令 */
   can_store_password: boolean
+  /** 部署方在配置里指定的默认数据源（datasources.default）。空串 = 没指定，
+   *  或本实例有内置源（那时默认就是它）。界面据此决定一进来停在哪个库 ——
+   *  没有它就只能取列表第一个，而注册顺序不表达任何意图。 */
+  default_source_id: string
+  /** 指定了默认源却取不到的原因（名字写错、源已删、注册表连不上）。
+   *  空串 = 没有这个问题。**取不到时服务端不会替它挑一个源**。 */
+  default_source_error: string
   items: SourceCard[]
 }
 

@@ -37,7 +37,7 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   const [error, setError] = useState('')
   const [tab, setTab] = useState<ResultTab>('result')
   const [schema, setSchema] = useState<Schema | null>(null)
-  const { items: sourceCards, sourceId, setSourceId } = sources
+  const { items: sourceCards, sourceId, setSourceId, defaultId } = sources
   const guard = writeGuard(me ?? null, '清空历史记录')
   const [menuOpen, setMenuOpen] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -92,9 +92,14 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
       env: c.env,
     })),
   ]
+  // 没选时停在部署方指定的那个源（datasources.default）；没指定才取第一项 ——
+  // 注册顺序不表达任何意图，而顶栏走的是同一条回落（useSources），
+  // 两处不一致就会是"顶栏说 A 库、下面的选择器选中 B 库"。
   // 既没有内置源、运行时也一个都没加时，options 是空的 —— 兜住，别让 options[0]
   // 是 undefined 一路 undefined.tables 崩掉整页
-  const current = options.find(o => o.id === sourceId) ?? options[0] ?? EMPTY_SOURCE
+  const current = options.find(o => o.id === sourceId)
+    ?? options.find(o => o.id === defaultId)
+    ?? options[0] ?? EMPTY_SOURCE
   const usable = (mode === 'ask' ? canAsk : canSql) && current.tables > 0
 
   // schema 跟着数据源走：推荐问题、示例 SQL 全从这份 schema 生成，

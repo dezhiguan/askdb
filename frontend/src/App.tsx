@@ -125,7 +125,7 @@ function App() {
     if (view === 'tasks') return <TasksPage onNavigate={navigate} notify={notify} me={me} />
     if (view === 'sources') return <DataSourcesPage health={health} me={me} />
     if (view === 'permissions') return <PermissionsPage notify={notify} me={me} />
-    if (view === 'glossary') return <GlossaryPage onNavigate={navigate} notify={notify} me={me} />
+    if (view === 'glossary') return <GlossaryPage onNavigate={navigate} notify={notify} me={me} sources={sources} />
     if (view === 'approvals') return <ApprovalsPage notify={notify} />
     if (view === 'audit') return <AuditPage me={me} />
     if (view === 'evaluation') return <EvaluationPage onNavigate={navigate} />

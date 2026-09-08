@@ -73,7 +73,14 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
   useEffect(() => {
     let alive = true
     fetchSources()
-      .then(value => { if (alive) setSources(value) })
+      .then(value => {
+        if (!alive) return
+        setSources(value)
+        // 配置指定了默认源却取不到（名字写错、源已被删）：服务端不会替它挑一个
+        // 顶上，界面就只是"停在了另一个库上"—— 从卡片上看不出是配置的问题，
+        // 而这一页正是改配置的人会来的地方
+        if (value.default_source_error) setError(value.default_source_error)
+      })
       .catch(e => { if (alive) setError(`读取数据源信息失败：${String(e.message || e)}`) })
     return () => { alive = false }
   }, [reload])

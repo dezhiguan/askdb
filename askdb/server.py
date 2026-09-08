@@ -890,7 +890,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return _evalrun.state()
 
     @app.get("/api/metrics/check")
-    def metrics_check(request: Request) -> dict[str, Any]:
+    def metrics_check(request: Request, source: str = "") -> dict[str, Any]:
         """逐条核对业务口径的**区分度**：按定义算 vs 凭直觉算，差多少。
 
         为什么这件事必须能自动跑：口径写错不报错、不越权，护栏 R-01～R-17
@@ -902,13 +902,34 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         配置注释里标注（"⚠ 当前退化：库中无 PENDING 文档"），现在按真实数据算。
 
         SQL 走**同一套护栏**再执行：口径的 SQL 自己都过不了护栏，本身就是要报的事。
+
+        **按数据源取**（source 参数，2026-09-08 补）。这个接口原来只认启动配置，
+        而对外实例自 2026-09-07 起内置 datasource 段整段撤掉、两个库都走运行时
+        注册表 —— 于是 Executor 拿到一个空的 datasource 段起不来，页面上收到的是
+        "暂不支持的数据源类型："，把"这次没指定数据源"讲成"类型不认识"，
+        排查方向直接错掉（duckdb 只是 Executor 支持类型清单里的一项，
+        与这个故障无关）。
+
+        **口径列表仍取启动配置那一份**，不跟着源走：运行时数据源根本不带口径
+        （sources.derive_config 里写死 metrics=[]），跟着源取会让这个接口
+        对任何运行时源都返回 0 条。这也与 /api/schema 一致 —— 页面列出来的
+        和这里核对的必须是同一批，否则"核对了 N 条"对不上眼前的列表。
+        表与护栏则一律用派生出的那份：口径能不能在这个库上跑，正是要核对的事，
+        跑不了由 R-03 如实报出来，而不是这里替它猜。
         """
         _require_cap(request, _identity.GLOSSARY_READ, "校验业务口径")
-        cfg = _scoped(request)
+        try:
+            scoped = _scoped(request, _cfg_for(source, request))
+        except HTTPException as e:
+            # 源不存在 / 没开放表 / 本实例没有默认源：都是"这次核对没法开始"的
+            # 同一类事，与建连失败同一条出口（下面那个 except），让页面拿到一句
+            # 能照着做的话，而不是一个状态码。
+            return {"checked_at": _now_iso(), "ok": False,
+                    "error": str(e.detail), "hint": "", "items": []}
         out: list[dict[str, Any]] = []
 
         try:
-            with Executor(cfg) as ex:
+            with Executor(scoped) as ex:
                 for m in cfg.metrics:
                     row: dict[str, Any] = {"name": m.name, "status": "", "detail": ""}
 
@@ -932,7 +953,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                         continue
 
                     sql = f"SELECT {metric_sql} AS a, {naive_sql} AS b FROM {table}"
-                    g = guard.check(sql, cfg, org_id=cfg.default_org, dialect=cfg.dialect)
+                    g = guard.check(sql, scoped, org_id=scoped.default_org,
+                                    dialect=scoped.dialect)
                     if not g.ok:
                         row.update(status="blocked", detail=f"{g.rejected_by} {g.reason}")
                         out.append(row)
@@ -961,10 +983,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return {"checked_at": _now_iso(), "ok": True, "items": out}
 
     @app.get("/api/selfcheck")
-    def selfcheck(request: Request) -> dict[str, Any]:
+    def selfcheck(request: Request, source: str = "") -> dict[str, Any]:
+        """自检哪个库：不带 source 就是"默认那个"——有内置源用内置源，
+        没有则用部署方指定的（datasources.default）。
+
+        这里原来写死内置配置，于是撤掉内置源之后它恒报"暂不支持的数据源类型："
+        ——自检的用途正是回答"库到底通不通"，而它自己先答不出来。
+        """
         _require_cap(request, _identity.SELFCHECK, "运行数据源自检")
         try:
-            with Executor(cfg) as ex:
+            target = _cfg_for(source, request)
+        except HTTPException as e:
+            return {"ok": False, "error": str(e.detail), "hint": "",
+                    "checks": [], "latency_ms": None}
+        try:
+            with Executor(target) as ex:
                 checks = ex.self_check()
         except DataSourceError as e:
             # 自检的用途就是"库到底通不通"，连不上正是它要回答的那种情况，
@@ -976,24 +1009,32 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "latency_ms": latency}
 
     @app.get("/api/introspect")
-    def introspect(request: Request) -> dict[str, Any]:
+    def introspect(request: Request, source: str = "") -> dict[str, Any]:
         """列出数据源里全部的表，供接入向导第 2 步选表。
 
         白名单之外的表也要列出来 —— 用户得先看见，才谈得上决定开不开放。
         """
         _require_cap(request, _identity.INTROSPECT, "内省库结构")
+        # 与自检同一条：不带 source 就是默认那个库。写死内置配置的话，
+        # 撤掉内置源的部署上这一页只剩一句"暂不支持的数据源类型："
         try:
-            with Executor(cfg) as ex:
+            target = _cfg_for(source, request)
+        except HTTPException as e:
+            return {"ok": False, "error": str(e.detail), "hint": "", "tables": []}
+        try:
+            with Executor(target) as ex:
                 found = ex.introspect()
         except DataSourceError as e:
             return {"ok": False, "error": str(e), "hint": e.hint, "tables": []}
 
         import re as _re
 
-        tcol = cfg.tenant_column
+        # 白名单与租户策略都按**这次内省的那个库**取，不是启动配置：
+        # 运行时源自己带白名单，拿内置配置去标"开放/未开放"，标的是另一个库
+        tcol = target.tenant_column
         out = []
         for t in found:
-            spec = cfg.tables.get(t["name"])
+            spec = target.tables.get(t["name"])
             described = sum(1 for c in spec.columns.values() if c.desc) if spec else 0
             total = len(spec.columns) if spec else t["cols"]
 
@@ -1094,11 +1135,20 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     def sources_list(request: Request) -> dict[str, Any]:
         """列表恒可读；能不能新增由 can_add 告诉前端，而不是让它点了才知道。"""
         _require_cap(request, _identity.SOURCES_READ, "查看数据源")
+        default_src, default_err = (None, "") if cfg.has_default_source else _default_source()
+        default_id = default_src.id if default_src else ""
         return {
             "can_add": _sources.enabled(cfg),
             "supported_types": list(_sources.SUPPORTED_TYPES),
             # 主密钥没配就只能用环境变量名那条路，前端据此决定表单里的默认项
             "can_store_password": bool(os.environ.get("ASKDB_SECRET_KEY", "").strip()),
+            # 部署方指定的默认源（datasources.default）。界面据此决定"一进来
+            # 停在哪个库"，没有它就只能按注册顺序取第一个 —— 那不表达任何意图。
+            # 内置源存在时为空串：那时候默认就是内置源，界面走它自己那张卡。
+            "default_source_id": default_id,
+            # 指定了却取不到时把原因原话给出去。这一页正是改它的地方，
+            # 而"界面停在了另一个库上"本身看不出是配置写错了。
+            "default_source_error": default_err,
             "items": _visible_sources(request),
         }
 
@@ -2307,16 +2357,27 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """
         sid = (source or "").strip()
         if not sid or sid == "builtin":
-            if not cfg.has_default_source:
+            if cfg.has_default_source:
+                return cfg
+            # 没有内置源时落到部署方指定的那个（datasources.default）。
+            # 没指定就仍然拒绝，**不挑一个源顶上** —— "碰巧排在第一个的库"
+            # 与"部署方要的库"是两件事，猜错时结果照样出得来，只是答的是
+            # 另一个库的数，比报错难发现得多。
+            src, why = _default_source()
+            if src is None:
                 raise HTTPException(
                     status_code=400,
-                    detail="本实例未配置默认数据源，查询必须指定数据源。"
-                           "到「数据源」页选一个已添加的源再发起。",
+                    detail=why or "本实例未配置默认数据源，查询必须指定数据源。"
+                                  "到「数据源」页选一个已添加的源再发起。",
                 )
-            return cfg
+            return _derived(src)
         src = _sources.get_source(cfg, sid)
         if src is None:
             raise HTTPException(status_code=404, detail="数据源不存在")
+        return _derived(src)
+
+    def _derived(src: "_sources.Source") -> Config:
+        """一条注册表记录 → 可直接用的配置。白名单为空是拒绝，不是空结果集。"""
         if not src.tables:
             raise HTTPException(
                 status_code=400,
@@ -2324,6 +2385,32 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                        "白名单同时是安全边界与准确率边界。",
             )
         return _sources.derive_config(cfg, src)
+
+    def _default_source() -> tuple["_sources.Source | None", str]:
+        """部署方指定的默认运行时数据源，连同"为什么没取到"。
+
+        返回 (None, "") 表示压根没指定 —— 那是合法配置（每次调用都显式带源），
+        不是错，调用方照旧报"必须指定数据源"那句话。
+
+        指定了却取不到时**返回原因而不是回落**：名字写错、源被删掉、注册表这会儿
+        连不上，三种情况处置完全不同；随便挑一个源顶上会让站点看起来正常，
+        而它答的是另一个库的数。
+        """
+        ref = cfg.default_source_ref
+        if not ref:
+            return None, ""
+        try:
+            items = _sources.list_sources(cfg)
+        except Exception as e:
+            return None, f"数据源注册表暂时读不出来，默认数据源「{ref}」取不到：{e}"
+        hit = [s for s in items if s.id == ref] or [s for s in items if s.name == ref]
+        if not hit:
+            return None, (f"配置指定的默认数据源「{ref}」在注册表里不存在 —— "
+                          f"到「数据源」页核对名字，或在调用时显式指定数据源。")
+        if len(hit) > 1:
+            return None, (f"配置指定的默认数据源「{ref}」对应 {len(hit)} 个源，"
+                          f"名字不唯一 —— 请改用数据源 id。")
+        return hit[0], ""
 
     def _cfg_of_record(rec: dict[str, Any], request: Request) -> Config:
         """一条审计记录**当初跑在哪个源上**，就按那个源的配置判可见性。
