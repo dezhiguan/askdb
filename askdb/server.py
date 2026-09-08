@@ -1918,7 +1918,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 不外泄靠的是这里——响应体里就没有真名。登录用户按角色照常看真实值。
         if _current_user(request) is None:
             for m in result.get("items", []):
-                m["username"] = _mask_pii(m.get("username", ""))
+                # 网关用户名按产品决定放出来看，只脱敏姓名与备注
                 m["display_name"] = _mask_pii(m.get("display_name", ""))
                 m["note"] = _mask_pii(m.get("note", ""))
         return result

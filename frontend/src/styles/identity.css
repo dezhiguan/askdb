@@ -53,9 +53,10 @@
    容器本身不带内边距。行样式见 proto-permissions.css。 */
 .policy-rules { display: block; }
 
-/* 未登录查看成员名册：数据列加模糊蒙版，隐约可见但看不清（不糊最后的操作列）。
+/* 未登录查看成员名册：姓名/备注/关联状态/加入 加模糊蒙版，隐约可见但看不清。
+   网关用户名（第一列）与操作列（最后一列）不糊。
    仅视觉层——明文仍在接口响应里，如需真脱敏须后端对匿名收窄。 */
-.audit-table tbody tr.member-masked > td:not(:last-child) {
+.audit-table tbody tr.member-masked > td:not(:first-child):not(:last-child) {
   filter: blur(4.5px);
   user-select: none;
   -webkit-user-select: none;
