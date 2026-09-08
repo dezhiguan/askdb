@@ -44,6 +44,10 @@ spec:
         # 去宿主机建目录，而 Server 3 没有公网出口，helper 镜像拉不下来 ——
         # PVC 会一直卡在 Pending（实测 create process timeout after 120 seconds）。
         # 单节点场景本来也不需要动态供应，宿主机目录就够。
+        # 2026-09-09 起审计/审批/复核/检查点/成绩/配额都在 PostgreSQL 里
+        # （observability.store: postgres），这个卷**只剩两个用途**：连接串缺失
+        # 时的退路，以及迁移时从旧 JSONL 里读历史。确认库里数据完整、观察一段
+        # 时间之后即可拆掉它 —— 拆之前先把 migrate-store 跑干净。
         - name: var
           hostPath:
             path: /opt/askdb/var
