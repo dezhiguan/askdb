@@ -90,6 +90,7 @@ def test_generic_words_alone_do_not_count_as_a_hit(cfg):
                   "agent_messages", "agent_sessions", "users", "resumes", "job_matches")
     }
     cfg.raw["schema_rag"]["token_budget"] = 60      # 塞不下全库，只能走兜底那条
+    cfg.raw["schema_rag"]["blind_budget"] = 60      # 盲选兜底预算也压死，测示警支
     r = schema_rag.recall("有多少条聊天记录", cfg)
     assert r.blind, "只靠泛词得分，必须仍按盲选处理并示警"
 
@@ -134,6 +135,7 @@ def test_vector_mode_keeps_top_k_even_below_threshold(cfg):
     cfg.raw["schema_rag"]["mode"] = "vector"
     cfg.raw["schema_rag"]["top_k"] = 2
     cfg.raw["schema_rag"]["token_budget"] = 60
+    cfg.raw["schema_rag"]["blind_budget"] = 60      # 盲选兜底也压死，测保底 top_k 那支
     idx = FakeIndex(("table:documents", 0.05), ("table:orgs", 0.04))
     r = schema_rag.recall("完全无关的问题", cfg, index=idx)
     assert len(r.tables) >= 1
@@ -306,6 +308,7 @@ def test_recall_is_marked_blind_when_nothing_matches(cfg):
     """一张表都没命中时必须**说出来**，而不是把兜底当成召回结果往下跑。"""
     c = _wide_cfg(cfg, CAREERMATE_LIKE)
     c.raw["schema_rag"]["token_budget"] = 200          # 塞不下全库，只能兜底
+    c.raw["schema_rag"]["blind_budget"] = 200          # 盲选兜底预算也压死，测示警支
     r = schema_rag.recall("今天天气怎么样", c)
     assert r.blind
     assert r.note

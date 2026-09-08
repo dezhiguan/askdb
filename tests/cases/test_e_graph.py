@@ -97,11 +97,11 @@ def test_e09_execution_error_triggers_reflection(cfg, ex, monkeypatch):
     calls = {"n": 0}
     orig = ex.run
 
-    def boom(sql):
+    def boom(sql, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("Binder Error: 函数用法错")
-        return orig(sql)
+        return orig(sql, **kw)
     monkeypatch.setattr(ex, "run", boom)
     r = graph.ask("q", cfg, executor=ex, llm=FakeLlm(OK_SQL, OK_SQL))
     assert r.attempts == 2, "SQL 语义错必须回灌重试（§4.5）"
@@ -113,12 +113,12 @@ def test_e09b_timeout_is_retryable(cfg, ex, monkeypatch):
     calls = {"n": 0}
     orig = ex.run
 
-    def slow(sql):
+    def slow(sql, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise DataSourceError("查询超时（超过 8000 ms 已中断）",
                                   hint="缩小范围", retryable=True)
-        return orig(sql)
+        return orig(sql, **kw)
     monkeypatch.setattr(ex, "run", slow)
     r = graph.ask("q", cfg, executor=ex, llm=FakeLlm(OK_SQL, OK_SQL))
     assert r.attempts == 2 and r.ok
@@ -128,7 +128,7 @@ def test_e09c_datasource_down_is_not_retried(cfg, ex, monkeypatch):
     """连接不可达重试纯属浪费，还会白烧模型 token。"""
     from askdb.executor import DataSourceError
     f = FakeLlm(OK_SQL, OK_SQL)
-    monkeypatch.setattr(ex, "run", lambda sql: (_ for _ in ()).throw(
+    monkeypatch.setattr(ex, "run", lambda sql, **kw: (_ for _ in ()).throw(
         DataSourceError("无法连接数据库", hint="检查连接串")))
     r = graph.ask("q", cfg, executor=ex, llm=f)
     assert not r.ok and r.attempts == 1 and len(f.calls) == 1

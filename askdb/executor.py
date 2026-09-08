@@ -591,10 +591,28 @@ class Executor:
 
     # ---------- 执行 ----------
 
-    def run(self, sql: str) -> QueryResult:
+    def run(self, sql: str, limit_capped: bool | None = None) -> QueryResult:
+        """执行并按行上限截断。
+
+        `limit_capped` = 这条 SQL 的外层 LIMIT 是不是**护栏强加的上限**（R-09 注入
+        或下调），而不是用户/口径自己写的更小上限。只有前者才需要探测"是否还有更多"
+        并据此标 truncated；后者是用户主动要少拿，多探一行反而会超出其预期。
+        调用方（graph / server）拿得到 guard 的 rules_fired，应显式传 `"R-09" in fired`。
+        传 None 时（直连 SQL、单测等无护栏上下文）退回看 SQL 自身：外层 LIMIT 缺失
+        或 > cap 才认为 cap 会绑定。
+        """
         cap = self.cfg.max_rows
+        if limit_capped is None:
+            limit_capped = self._outer_limit_binds(sql, cap)
+        # R-13 纵深防御：R-09 把外层 LIMIT 注入成 cap 后，DB 恰好只吐 cap 行，
+        # backend.fetch 里 fetchmany(cap+1) 想多取的那一行被 SQL 的 LIMIT 掐死，
+        # len(rows) > cap 永远不成立，truncated 就永远是 False —— 命中上限的结果被当
+        # 成"全量"。cap 绑定时把执行用的外层 LIMIT 抬到 cap+1 探一行：真有第 cap+1 行
+        # 才判 truncated，随后砍回 cap。对外展示的 sql_final 仍是 R-09 那条 LIMIT cap
+        # （不改对外契约），差的这一行只用于判断有没有更多。
+        probe_sql = self._probe_limit(sql, cap) if limit_capped else sql
         t0 = time.perf_counter()
-        columns, rows, as_of = self.backend.fetch(sql, cap)
+        columns, rows, as_of = self.backend.fetch(probe_sql, cap)
         elapsed = int((time.perf_counter() - t0) * 1000)
 
         truncated = len(rows) > cap
@@ -612,6 +630,46 @@ class Executor:
             mask_degraded=degraded,
             masked_columns=[names[i] for i in hit],
         )
+
+    def _outer_limit_binds(self, sql: str, cap: int) -> bool:
+        """无护栏信号时的兜底判断：外层 LIMIT 缺失或 > cap → cap 会绑定（要探测）。
+
+        用户自己写了 <= cap 的 LIMIT（含恰好等于 cap）算用户主动限量，不探。
+        解析失败从严当作 cap 绑定 —— 宁可多探一行，也不要漏标截断。
+        """
+        try:
+            import sqlglot
+            root = sqlglot.parse_one(sql, dialect=self.cfg.dialect)
+            lim = root.args.get("limit")
+            if lim is None:
+                return True
+            return int(lim.expression.name) > cap
+        except Exception:                              # pragma: no cover - 解析器兜底
+            return True
+
+    def _probe_limit(self, sql: str, cap: int) -> str:
+        """只有当外层 LIMIT 恰好被 cap 卡住时，才把它抬到 cap+1 探一行。
+
+        用户/口径自己写了比 cap 更小的 LIMIT（如 LIMIT 5）时**保持不动** ——
+        那是用户主动要少拿，不是被上限截断，多探一行会返回超出用户预期的行数，
+        truncated 也不该为真。只有 LIMIT 缺失或 ≥ cap（即 R-09 注入的那个上限在
+        真正兜底）时，才需要探测第 cap+1 行来判断是否还有更多。
+        解析失败原样返回 —— 探不到截断也不能让查询本身跑不起来。
+        """
+        try:
+            import sqlglot
+            root = sqlglot.parse_one(sql, dialect=self.cfg.dialect)
+            lim = root.args.get("limit")
+            if lim is not None:
+                try:
+                    n = int(lim.expression.name)
+                    if n < cap:                        # 用户自己的更小上限，保持
+                        return sql
+                except (AttributeError, ValueError):
+                    pass                               # 不可静态求值，按 cap 绑定处理
+            return root.limit(cap + 1).sql(dialect=self.cfg.dialect)
+        except Exception:                              # pragma: no cover - 解析器兜底
+            return sql
 
     def _mask(self, columns: list[str], rows: list[list], sql: str = "",
               ) -> tuple[list[list], list[int], bool]:

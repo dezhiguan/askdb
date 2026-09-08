@@ -308,6 +308,7 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         draft, usage = d.llm.generate_sql(
             question=state["question"],
             schema_prompt=state["schema_prompt"],
+            dialect=d.cfg.dialect,
             last_sql=state.get("sql_raw", ""),
             error=state.get("error") or "",
             step=step_ctx,
@@ -407,7 +408,8 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     t = d.tracer.start()
     try:
         d.executor.set_org(state["org_id"])   # RLS 兜底层读这个上下文
-        res = d.executor.run(state["sql_final"])
+        res = d.executor.run(state["sql_final"],
+                             limit_capped="R-09" in (state.get("rules_fired") or []))
     except DataSourceError as e:
         d.tracer.add("execute", t, str(e), status="failed")
         return {"error": str(e), "error_hint": e.hint, "rejected_by": "EXEC",
