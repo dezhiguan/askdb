@@ -28,6 +28,8 @@ tenant:
 
 guard:
   max_rows: 1000                     # R-13
+  max_sql_chars: 6000                # R-20 文本长度上限
+  max_nesting_depth: 100             # R-20 括号嵌套深度上限
   max_scan_rows: 500000              # R-11（P1 接入 EXPLAIN 后生效）
   statement_timeout_ms: 8000         # R-12（PostgreSQL 生效；DuckDB 见 executor 说明）
   max_retry: 2                       # R-14，按步重置

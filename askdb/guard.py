@@ -7,7 +7,7 @@
   3. 表引用收集必须遍历完整 AST：FROM / JOIN / 子查询 / CTE / IN(SELECT) / EXISTS / UNION。
      **漏掉任一分支即构成绕过路径。**
 
-本模块实现 R-01～R-10 与 R-19；R-11～R-14 在 executor / graph，R-15～R-17 在 planner。
+本模块实现 R-01～R-10、R-19 与 R-20；R-11～R-14 在 executor / graph，R-15～R-17 在 planner。
 """
 
 from __future__ import annotations
@@ -137,7 +137,9 @@ def referenced_tables(sql: str, dialect: str = "duckdb") -> set[str]:
 def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardResult:
     """校验并改写。返回的 sql 才是允许执行的那条。"""
     r = _check(sql, cfg, org_id, dialect)
-    if not r.tables:
+    # R-20 是"解析成本超预算"的拒绝：绝不能再走 referenced_tables 解析一次 ——
+    # 那正是它要避开的那次昂贵解析（否则超长 SQL 在这里又被完整 parse 一遍）。
+    if not r.tables and r.rejected_by != "R-20":
         r.tables = referenced_tables(sql, dialect)
     return r
 
@@ -145,6 +147,46 @@ def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardR
 def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardResult:
     fired: list[str] = []
     rewrites: list[str] = []
+
+    # ---------- R-20 解析预算（在 sqlglot.parse 之前，纯字符扫描）----------
+    # 护栏的 AST 解析成本随 SQL 体量**超线性**增长：实测一条 19KB 的合法
+    # UNION ALL 仅解析就占 CPU ~4s，而 R-12 的语句超时只管 PG 执行阶段、
+    # 管不到解析。0.5 核副本上十来个这种请求即可把它拖垮。所以在进解析器
+    # 之前先用两个 O(n) 的廉价指标拒掉：文本长度、括号嵌套深度。
+    #
+    # 两个指标缺一不可：长度挡"长而浅"（UNION ALL ×N、超长算术链），
+    # 深度挡"短而深"（4KB 文本嵌套两千层括号，长度过关但解析照样吃 CPU）。
+    gcfg = cfg.raw.get("guard", {})
+    max_chars = int(gcfg.get("max_sql_chars", 6000))
+    if max_chars > 0 and len(sql) > max_chars:
+        return GuardResult(
+            ok=False, rejected_by="R-20",
+            reason=f"SQL 文本 {len(sql)} 字符，超过上限 {max_chars}；"
+                   "过长文本仅解析就可能占满 CPU，已在解析前拒绝。",
+        )
+    max_depth = int(gcfg.get("max_nesting_depth", 100))
+    if max_depth > 0:
+        depth = peak = 0
+        in_str = False
+        for ch in sql:
+            # 跳过单引号字符串内的括号：WHERE note = '(a(b' 不该算嵌套。
+            # 简单切换即可——这是解析前的粗筛，不需要处理 '' 转义的每个边角。
+            if ch == "'":
+                in_str = not in_str
+            elif not in_str:
+                if ch == "(":
+                    depth += 1
+                    if depth > peak:
+                        peak = depth
+                elif ch == ")":
+                    if depth > 0:
+                        depth -= 1
+        if peak > max_depth:
+            return GuardResult(
+                ok=False, rejected_by="R-20",
+                reason=f"SQL 括号嵌套深度 {peak}，超过上限 {max_depth}；"
+                       "深层嵌套仅解析就可能占满 CPU，已在解析前拒绝。",
+            )
 
     # ---------- R-01 单语句限制 ----------
     try:
