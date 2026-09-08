@@ -518,6 +518,14 @@ function SourceSelector({ open, onToggle, onPick, current, options }: {
   options: SourceOption[]
 }) {
   const usable = options.filter(o => o.tables > 0).length
+  // 打开时把当前选中项滚进视野。列表现在有自己的滚动条，选中的源排在第 9 位时
+  // 打开菜单只会看到一片没选中的选项，读起来像"当前没选任何源"
+  const listRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!open) return
+    listRef.current?.querySelector('.source-option.active')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [open])
   return (
     <div className={`source-selector ${open ? 'open' : ''}`} onClick={e => e.stopPropagation()}>
       <button className="source-trigger" onClick={onToggle}>
@@ -530,18 +538,22 @@ function SourceSelector({ open, onToggle, onPick, current, options }: {
           <span>选择本次查询的数据源</span>
           <span>{usable} / {options.length} 可查</span>
         </div>
-        {options.map(option => (
-          <button
-            key={option.id || 'builtin'}
-            className={`source-option ${option.tables > 0 ? '' : 'disabled'} ${option.id === current.id ? 'active' : ''}`}
-            title={option.tables > 0 ? undefined : '该数据源还没有开放任何表，到「数据源」页勾选后才能查'}
-            onClick={() => option.tables > 0 && onPick(option.id)}
-          >
-            <span className="source-db">{option.code}</span>
-            <span><strong>{option.name}</strong><small>{option.meta}</small></span>
-            <span className="source-option-status">{option.tables > 0 ? '● 可查' : '未开放表'}</span>
-          </button>
-        ))}
+        {/* 列表单独滚：源多起来之后整份菜单比视口还高，下半截点不到。
+            标题那行留在滚动区外，滚到第 10 个源时仍然看得见"这是在选数据源"。 */}
+        <div className="source-menu-list" ref={listRef}>
+          {options.map(option => (
+            <button
+              key={option.id || 'builtin'}
+              className={`source-option ${option.tables > 0 ? '' : 'disabled'} ${option.id === current.id ? 'active' : ''}`}
+              title={option.tables > 0 ? undefined : '该数据源还没有开放任何表，到「数据源」页勾选后才能查'}
+              onClick={() => option.tables > 0 && onPick(option.id)}
+            >
+              <span className="source-db">{option.code}</span>
+              <span><strong>{option.name}</strong><small>{option.meta}</small></span>
+              <span className="source-option-status">{option.tables > 0 ? '● 可查' : '未开放表'}</span>
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   )

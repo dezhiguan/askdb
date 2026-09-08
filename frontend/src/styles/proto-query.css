@@ -62,6 +62,18 @@
 }
 .source-selector.open .source-menu { display: block; animation: protoViewIn .18s ease both; }
 
+/* 菜单自己滚，不跟着页面长。数据源多起来之后（线上已 12 个）整份列表比视口还高，
+   下半截压根点不到 —— 而选数据源是发起查询的第一步。
+   上限跟视口走：矮屏上写死一个 px 值同样会被截掉。 */
+.source-menu-list {
+  max-height: min(320px, 52vh);
+  overflow-y: auto;
+  /* 给滚动条让出位置：macOS 的覆盖式滚动条会压在右侧「可查」那一列上 */
+  padding-right: 5px;
+  /* 菜单滚到底之后别把滚动继续传给页面 —— 那会让整页跟着窜一下 */
+  overscroll-behavior: contain;
+}
+
 .source-menu-label {
   display: flex;
   justify-content: space-between;
@@ -73,6 +85,9 @@
 }
 
 .source-option {
+  /* 选项间距原来落在 components.css 的 .source-menu > button 上（相邻兄弟按钮的
+     margin-top）。列表外包了一层滚动容器之后那条子选择器不再命中，所以补在这里 */
+  margin-top: 2px;
   width: 100%;
   display: grid;
   grid-template-columns: 27px 1fr auto;
