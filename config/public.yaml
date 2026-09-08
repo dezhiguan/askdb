@@ -100,11 +100,32 @@ planner:
   cost_cap_tokens: 12000
   on_cap_reached: converge
 
+# 2026-09-09 三处一起改。起因是一次实测：问「哪些商品缺货了」，召回给出
+# inventory_stats_daily / batch_stocks / batches 三张表，**一张明细表都没进来**，
+# 模型只能答「查不了」。而 stock_alerts 的注释里明写着「问『哪些商品要缺货』用这张表」。
+#
+# 三个原因叠加，缺一个都不会错得这么彻底：
+#
+#   1. mode 还是 keyword。这行的注释「不接模型」早就过时了 —— 本实例接了
+#      qwen3.8-flash，也有 DASHSCOPE_API_KEY，向量召回一直可用却没启用。
+#      关键词召回对中文语义问题本就弱：「缺货」只是字面命中，
+#      inventory_stats_daily 因为注释里有「缺货 SKU 数量」而得分，
+#      语义上真正对口的 stock_snapshots（available_qty=0）反而排不进去。
+#   2. top_k 一直是 3，而数据源的表数从 4 涨到了 16–32。召回面翻了几倍，
+#      名额没动，等于每次只让模型看到不到两成的表。
+#   3. token_budget 1500 装不下 8 张表的 schema —— 提了 top_k 不提预算，
+#      多召回的表会被预算截掉，等于没提。
+#
+# 向量召回不可用时会自动回落关键词（vectors.EmbeddingUnavailable），
+# 所以这次改动没有"模型挂了就全站不能查"的风险。
 schema_rag:
-  mode: keyword                      # 不接模型，召回只用于页面展示 schema
-  top_k: 3
-  max_k: 5
-  token_budget: 1500
+  mode: vector
+  # top_k 是**保底下限**、max_k 才是上限（见 schema_rag.recall）：
+  # 过线的表取到 max_k 张为止；一张都没过线时按相似度补齐到 top_k 张，
+  # 并把 recall_blind 置为 true。
+  top_k: 8
+  max_k: 12
+  token_budget: 4000
   embedding_model: text-embedding-v4
   min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求
                          # 「召回 Top-K（默认 3）表」，所以过线的表不足 top_k 张时，
