@@ -160,7 +160,29 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
   // 内置卡的去留以 /api/sources 为准，不看 health —— health 只在页面加载时取一次，
   // 删完之后它还会说"有默认源"，卡片就会赖在那儿不走。
   const builtinCard = sources?.items.find(item => item.builtin) ?? null
-  const showBuiltin = sources ? !!builtinCard : true
+
+  /* 卡片切页。分页条与审计中心、任务中心、身份与权限同一套结构与类名，
+     四页的操作手感必须一致。
+
+     **切在前端，不走服务端**：/api/sources 本来就一次把所有源给全（它不连库，
+     只读注册表），源的数量是运维手动加出来的、量级在几十，为它加一套
+     LIMIT/OFFSET 只会多一条要对齐的口径。这与审计/成员表不同 ——
+     那两处的数据是无上限增长的，不在服务端切就得把整库拉进浏览器。
+
+     内置卡算作列表里的第一张，跟着一起翻页：它和运行时源在这一页上是同一种
+     东西（同一个网格、同样的操作），钉在每一页顶上会让"每页 10 条"变成 11 张。 */
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(10)
+  const allCards = sources?.items ?? []
+  const total = allCards.length
+  const pages = Math.max(Math.ceil(total / pageSize), 1)
+  // 删到页数变少时不要卡在一个空页上（停在第 3 页而只剩 2 页 = 一片空白）
+  const current = Math.min(page, pages)
+  const pageCards = allCards.slice((current - 1) * pageSize, current * pageSize)
+  // 还没读到列表时先按"有内置源"画骨架卡，与原来一致；读到之后由这一页的
+  // 切片说了算
+  const showBuiltin = sources ? pageCards.some(item => item.builtin) : true
+  const runtimeCards = pageCards.filter(item => !item.builtin)
 
   return (
     <div className="page">
@@ -252,7 +274,7 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
         </article>
         )}
 
-        {sources?.items.filter(item => !item.builtin).map(card => {
+        {runtimeCards.map(card => {
           // 一张表都没开放 = 原型里的「待配置」：连上了但模型什么也看不见，
           // 这时候该催的是去勾表，不是去测连接
           const pending = card.table_count === 0
@@ -336,6 +358,22 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
           )
         })}
       </div>
+
+      {total > 0 && (
+        <div className="audit-pager">
+          <span>共 {total} 个数据源 · 第 {current} / {pages} 页</span>
+          <span>
+            <select value={pageSize}
+                    onChange={event => { setPageSize(Number(event.target.value)); setPage(1) }}>
+              {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
+            </select>
+            <button className="ghost" disabled={current <= 1}
+                    onClick={() => setPage(current - 1)}>‹ 上一页</button>
+            <button className="ghost" disabled={current >= pages}
+                    onClick={() => setPage(current + 1)}>下一页 ›</button>
+          </span>
+        </div>
+      )}
 
       {showAdd && sources && (
         <AddSourceModal
