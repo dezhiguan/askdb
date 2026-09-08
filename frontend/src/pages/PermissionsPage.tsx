@@ -26,6 +26,10 @@ const ROLE_SUBTITLE: Record<string, string> = {
   DEV: '与其他角色同一可见面',
   QA: '与其他角色同一可见面',
   DATA_OWNER: '与其他角色同一可见面',
+  OPERATIONS: '与其他角色同一可见面',
+  FINANCE: '与其他角色同一可见面',
+  HR: '与其他角色同一可见面',
+  MANAGEMENT: '与其他角色同一可见面',
   SYS_ADMIN: '同一可见面 + 审批',
 }
 
@@ -35,6 +39,10 @@ const ROLE_TITLE: Record<string, string> = {
   DEV: '开发角色 · Developer',
   QA: '测试角色 · QA',
   DATA_OWNER: '数据负责人 · Data Owner',
+  OPERATIONS: '运营角色 · Operations',
+  FINANCE: '财务角色 · Finance',
+  HR: '人力角色 · HR',
+  MANAGEMENT: '管理角色 · Management',
 }
 
 /** 四个维度全部取后端真值。
