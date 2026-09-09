@@ -136,6 +136,15 @@ schema_rag:
   # 度量的是**关键词回落路径**（vectors.EmbeddingUnavailable 时才走），
   # 向量路径下的召回率尚未实测 —— 要测得有 embedding 密钥，跑不了离线。
   token_budget: 4000
+  # 盲选兜底专用预算：关键词一张表都没命中时，与其在白名单里硬凑几张（"问 A
+  # 答 B"、"假称库里没有这类数据"），不如把全部表名交给模型自己挑。
+  # 判据必须是这条独立预算而不是上面的 token_budget —— 后者限的是常态注入
+  # 别太挤，拿它判全量回退，回退就永远塞不进、形同虚设。
+  # 运行时大表源（careermate 33 张表，扫描出的列多、desc 多为空）完整 render
+  # 约 6k–9k token，正好在代码默认的 8000 上下震荡，导致兜底时灵时不灵
+  # （见 schema_rag.recall 里 blind_budget 的取值）。放宽到 24000 稳定覆盖。
+  # 盲选是罕见的兜底路径，这点增量成本可忽略。
+  blind_budget: 24000
   embedding_model: text-embedding-v4
   min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求
                          # 「召回 Top-K（默认 3）表」，所以过线的表不足 top_k 张时，

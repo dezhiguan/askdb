@@ -63,12 +63,18 @@ function fmtDuration(ms: number | null | undefined): string {
 }
 
 /** 还没读到数据时的统计占位。全 0 而不是隐藏那一排 —— 卡片先在位，
- *  数字随后到位，否则列表出现前整页会先跳一次。 */
+ *  数字随后到位，否则列表出现前整页会先跳一次。
+ *
+ *  **这几个 0 不能直接渲染**：卡片在位靠的是 DASH 占位，不是把 0 当真数字给
+ *  出去。见页面里的 loading。 */
 const EMPTY_STATS: TaskStats = {
   running: 0, waiting_input: 0, waiting_approval: 0, waiting_review: 0,
   review_returned: 0, needs_operator: 0, interrupted: 0, rejected: 0,
   done: 0, done_today: 0, success_rate: null,
 }
+
+/** 数字未知时的占位。与执行追踪页同一个字符，两页并排看不出差异。 */
+const DASH = '—'
 
 const STATUS_LABEL: Record<Task['status'], string> = {
   running: '运行中',
@@ -224,13 +230,18 @@ export function TasksPage({ onNavigate, notify, me }: {
      筛完「已完成」再看「待处理」永远是 0。下拉可选值同理，跟着收窄就退不回去。 */
   const visible = useMemo(() => result?.items ?? [], [result])
   const stats = result?.stats ?? EMPTY_STATS
+  /* 首帧 result 还没回来，stats 退化成 EMPTY_STATS（全 0）。把那几个 0 当成
+     真数字渲染，看的人读到的是"任务中心是空的"，而其实只是还没加载完 ——
+     "还不知道"和"确实是 0"在页面上必须分开。列表区本来就有「读取中…」，
+     上面这四格是当时漏掉的另一半。 */
+  const loading = !result && !error
   const total = result?.total ?? 0
   const totalAll = result?.total_all ?? 0
   const sourceOptions = result?.sources ?? []
   const userOptions = result?.users ?? []
   // 成功率没有收尾样本时给 null，不是 0% —— 后者是在报一个没发生过的失败
-  const rateLabel = stats.success_rate === null
-    ? '暂无收尾记录'
+  const rateLabel = loading ? '读取中…'
+    : stats.success_rate === null ? '暂无收尾记录'
     : `成功率 ${stats.success_rate.toFixed(1)}%`
 
   const pages = Math.max(Math.ceil(total / pageSize), 1)
@@ -346,24 +357,27 @@ export function TasksPage({ onNavigate, notify, me }: {
       <div className="stats">
         {/* 2026-09-07 起后端在发起时先落一条记录，「运行中」才有真数字可给。
             它同时也是"跑一半进程没了"那一档 —— 那种线程原来整片从系统里消失。 */}
-        <div className="stat"><span>运行中</span><strong>{stats.running}</strong><small>已发起未收尾</small></div>
+        <div className="stat"><span>运行中</span><strong>{loading ? DASH : stats.running}</strong><small>已发起未收尾</small></div>
         {/* 「待处理」= 还等着**某个人**动手的那些。三档分开写：等谁动手不一样，
             合成一个数字就等于让人自己去猜该找谁。审批那格原来写死 0。 */}
         <div className="stat">
           <span>待处理</span>
-          <strong>{stats.waiting_input + stats.waiting_approval + stats.waiting_review
-                   + stats.needs_operator + stats.interrupted}</strong>
+          <strong>{loading ? DASH
+                   : stats.waiting_input + stats.waiting_approval + stats.waiting_review
+                     + stats.needs_operator + stats.interrupted}</strong>
           <small>
-            {stats.waiting_input} 补充信息 · {stats.waiting_approval} 审批
-            · {stats.waiting_review} 复核 · {stats.needs_operator} 运维
-            · {stats.interrupted} 可续跑
+            {loading ? '读取中…' : <>
+              {stats.waiting_input} 补充信息 · {stats.waiting_approval} 审批
+              · {stats.waiting_review} 复核 · {stats.needs_operator} 运维
+              · {stats.interrupted} 可续跑
+            </>}
           </small>
         </div>
-        <div className="stat"><span>今日完成</span><strong>{stats.done_today}</strong><small>{rateLabel}</small></div>
+        <div className="stat"><span>今日完成</span><strong>{loading ? DASH : stats.done_today}</strong><small>{rateLabel}</small></div>
         {/* 小字只说这一档真正是什么：护栏拦下的。"模型答不上来"已经分到
             「等待补充」，不再混进这个数字里 —— 原来 62 条 rejected 里 57 条
             是 NO_SQL，而这行小字写着"越权或写入意图"。 */}
-        <div className="stat"><span>已拦截</span><strong>{stats.rejected}</strong><small>触碰安全边界</small></div>
+        <div className="stat"><span>已拦截</span><strong>{loading ? DASH : stats.rejected}</strong><small>触碰安全边界</small></div>
       </div>
 
       {error && <div className="audit-error">读取任务失败：{error}</div>}
