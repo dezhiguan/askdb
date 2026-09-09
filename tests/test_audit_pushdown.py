@@ -237,3 +237,60 @@ def test_column_projection_matches_writer():
                  'rec.get("kind")', 'rec.get("user")', 'rec.get("source")',
                  'rec.get("rejected_by")', '_ts_of(rec)'):
         assert expr in src, f"append_audit 不再这样取 {expr}，_cols 需要同步"
+
+
+# ---------------------------------------------------------------------------
+# 写入路由 —— 2026-09-09 线上事故的回归守卫
+#
+# 那次改造把审计的**读**全部切到了 PostgreSQL，写却漏了 graph.py：五处
+# 调用传的都是 cfg.audit_log（Path），于是 write_audit 一进门就走了文件分支，
+# auditstore 那条路永远进不去。
+#
+# 症状极难定位：查询成功、页面出结果、日志无报错，只是审计中心、任务中心、
+# 执行追踪三个页面同时看不到任何新记录 —— 看起来像"延迟很大"，实际是
+# 写到 A、读的是 B。线上因此丢了整整一个部署周期的审计。
+#
+# 下面两条一条钉行为、一条钉调用点，缺一个都挡不住它重演。
+# ---------------------------------------------------------------------------
+
+def test_write_audit_routes_to_store_when_given_a_config(monkeypatch, tmp_path):
+    """给 Config 就必须写库；给 Path 才写文件。**这是路由本身的契约。**"""
+    from pathlib import Path
+
+    from askdb import auditstore as store_mod
+    from askdb import trace
+
+    landed: list[dict] = []
+    monkeypatch.setattr(store_mod, "enabled", lambda _cfg: True)
+    monkeypatch.setattr(store_mod, "append_audit", lambda rec: landed.append(rec))
+
+    class _Cfg:                       # 只需要 audit_log 这一个属性
+        audit_log = tmp_path / "should-not-be-written.jsonl"
+
+    trace.write_audit(_Cfg(), {"trace_id": "t1", "ts": "2026-09-09T00:00:00+00:00"})
+    assert landed == [{"trace_id": "t1", "ts": "2026-09-09T00:00:00+00:00"}]
+    assert not _Cfg.audit_log.exists(), "给了 Config 却把记录写进了文件"
+
+    # 反向：Path 一律走文件，不碰库
+    landed.clear()
+    fpath = Path(tmp_path / "file.jsonl")
+    trace.write_audit(fpath, {"trace_id": "t2", "ts": "2026-09-09T00:00:01+00:00"})
+    assert landed == [], "给了 Path 却写进了库"
+    assert "t2" in fpath.read_text(encoding="utf-8")
+
+
+def test_graph_hands_write_audit_the_config_not_the_path():
+    """graph.py 的每一处调用都必须传 cfg 本身。
+
+    传 cfg.audit_log 不会报错、不会少写一条 —— 只会全部落到文件里，
+    而读侧在库里什么也看不到。正因为没有任何失败信号，才需要在这里钉住。
+    """
+    import inspect
+
+    from askdb import graph
+
+    src = inspect.getsource(graph)
+    assert "write_audit(cfg.audit_log" not in src, (
+        "graph.py 又把 Path 传给了 write_audit —— 审计会写进文件而读侧读库，"
+        "两边分裂且没有任何报错")
+    assert src.count("write_audit(cfg,") >= 5, "write_audit 的调用点少了，确认是否漏改"

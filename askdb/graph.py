@@ -1067,7 +1067,7 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
             hint="明日自动恢复；也可调高配置中的 observability.daily_quota。",
             steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
         )
-        write_audit(cfg.audit_log, _audit_of(result, cfg, kind))
+        write_audit(cfg, _audit_of(result, cfg, kind))
         return result
 
     own_exec = executor is None
@@ -1085,7 +1085,7 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
     # 它带的是"这条线程存在、归谁、打哪个库、问的什么"，不带结果与成本；
     # read_records 默认把它滤掉，只有任务中心显式要。收尾记录与它共用
     # trace_id，一到就把它顶掉（见 audit.tasks）。
-    write_audit(cfg.audit_log, {
+    write_audit(cfg, {
         "trace_id": trace_id, "ts": now_iso(), "kind": kind,
         "phase": PHASE_STARTED,
         "thread_id": thread_id,
@@ -1139,7 +1139,7 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
             cost_cny=spent_cny,
         )
         rec = _audit_of(result, cfg, kind)
-        write_audit(cfg.audit_log, rec)
+        write_audit(cfg, rec)
         observe.report(rec)
         return result
 
@@ -1174,7 +1174,7 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
         cost_cny=spent_cny,
     )
     rec = _audit_of(result, cfg, kind, explain_rows=out.get("explain_rows"))
-    write_audit(cfg.audit_log, rec)
+    write_audit(cfg, rec)
     observe.report(rec)          # 观测双写：同一条记录，异步旁路
     return result
 
@@ -1248,7 +1248,7 @@ def resume(
             steps=[{"step": "resume_precheck", "status": "blocked",
                     "ms": 0, "note": block.error}],
         )
-        write_audit(cfg.audit_log, _audit_of(result, cfg, "resume"))
+        write_audit(cfg, _audit_of(result, cfg, "resume"))
         return result
 
     return _execute(cfg, question=question, org=org, trace_id=trace_id,
