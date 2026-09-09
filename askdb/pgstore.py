@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import re
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -189,6 +190,36 @@ def rows(sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
             return con.execute(sql, params).fetchall()
     except psycopg.errors.UndefinedTable:
         return []
+
+
+def iter_rows(sql: str, params: tuple[Any, ...] = (), *,
+              batch_size: int = 500) -> Iterator[tuple[Any, ...]]:
+    """流式读一次库 —— **结果不整份落进内存**，按批从服务端取回。
+
+    与 rows() 的差别只在这一点，而这一点决定了审计那几页能不能开：
+    rows() 走的是客户端游标，libpq 会先把整个结果集收进内存再交给
+    Python，于是"一个月 45 万行审计"这种查询在拿到第一行之前就已经把
+    Pod 撑爆了。命名游标让 PostgreSQL 保管结果集，客户端每次只取 batch_size 行。
+
+    **调用方必须把它消费完，或者及时关掉。** 生成器活着的时候占着一条池子
+    里的连接（池子只有 6 条），挂在那里不动会把连接耗光。for 循环正常跑完、
+    break、以及生成器被回收，三种情况 psycopg 都会收尾，不必手工关。
+
+    命名游标要在事务里 DECLARE，而池子开的是 autocommit —— 不显式开事务块
+    的话，每条 FETCH 各自隐式提交，游标当场就没了。这就是 with con.transaction()
+    在这里的作用，不是为了写入的原子性。
+    """
+    import psycopg
+
+    try:
+        with connect() as con:
+            with con.transaction():
+                with con.cursor(name="askdb_stream") as cur:
+                    cur.itersize = batch_size
+                    cur.execute(sql, params)
+                    yield from cur
+    except psycopg.errors.UndefinedTable:
+        return                                         # 与 rows() 同一条口径
 
 
 def execute(sql: str, params: tuple[Any, ...] = ()) -> None:

@@ -11,6 +11,7 @@ import dataclasses
 import os
 import secrets
 import time
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -2240,6 +2241,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # user 是**当前账号**，不是过滤条件：页面拿它与每条的 owner 比，
         # 判断哪些是自己的、续跑入口对谁开。匿名时为空串。
         result["user"] = username
+        # 这一页只看最近 TASKS_MAX_THREADS 条线程（见 audit.tasks 那段说明）。
+        # **把上限说出来**：不说的话，"最近这些线程里没有"会被读成"没有"，
+        # 而那正是这套界面反复要消灭的那种静默收窄。
+        result["window"] = {
+            "max_threads": _audit.TASKS_MAX_THREADS,
+            "truncated": len(items) >= _audit.TASKS_MAX_THREADS,
+        }
         return result
 
     @app.post("/api/resume")
@@ -2256,15 +2264,24 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 归属校验：有主的任务只能由发起人续跑。
         # 匿名发起的任务保持原语义（凭 thread_id 续跑）—— 那是登录之前的行为，
         # 不因为加了账号就把老任务锁死。
-        from .audit import read_records
+        from .audit import AuditFilter, iter_records
 
         owner = ""
         origin_source = ""
         # **带上发起记录**（include_started）：进程被杀那种线程只剩这一条，
         # 而归属与数据源正是从它取。滤掉它就等于"任务中心说能续跑、这里说
         # 你当初跑在 builtin 上" —— 实测过一次，就是这条 400。
-        for rec in read_records(cfg, include_started=True):
-            if (rec.get("thread_id") or rec.get("trace_id")) == req.thread_id:
+        #
+        # 2026-09-09：按 thread_id 下推。原来是把**全部审计记录**读回来再逐条
+        # 比对，为了一条线程读几十万条；现在筛选进 SQL，取到第一条就 break，
+        # 库后端因此只发生一次 FETCH。
+        # closing 是必需的，不是讲究：只取第一条就 break，而生成器一旦提前
+        # 离开，库后端那条服务端游标就还占着池子里的一条连接（池子只有 6 条）。
+        # 靠垃圾回收顺手关掉能work，但那是在赌 CPython 的引用计数时机。
+        stream = iter_records(cfg, AuditFilter(include_started=True,
+                                               thread_ids=(req.thread_id,)))
+        with closing(stream):
+            for rec in stream:
                 owner = rec.get("user") or ""
                 # 续跑必须回到**当初那个数据源**。审计里存了它（_audit_of 的
                 # source 字段），所以不需要调用方再传一次 —— 传参既多一处
