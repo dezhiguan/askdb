@@ -11,6 +11,13 @@
   · 只增不减，没有轮转与保留策略；
   · 每次 /api/audit、/api/tasks、/api/audit/stats 都把整份文件读进内存
     逐行解析 —— 磁盘撑爆之前先 OOM；
+
+**换介质本身治不好最后那条。** 2026-09-09 首版把 read_audit 写成了
+``SELECT record FROM askdb_audit ORDER BY id``：无 LIMIT、无时间窗，
+再经 pgstore.rows 的 fetchall 全量缓冲，等于把同一个 OOM 从文件搬到了库上
+（而且峰值更高——文件那版至少是逐行流式解析的）。同日补上下推：筛选条件
+由 _where 翻成 SQL，分页 page_audit、计数 count_audit、下拉取值 audit_facets
+各自只带回自己那点数据，必须整遍的场景走 iter_audit 的服务端游标。
   · 节点没了凭据就没了，而审计恰恰是出事后唯一的凭据。
 
 **存储换了，语义一条不改**：仍然是 append-only 的事件流，状态仍然靠回放
@@ -176,19 +183,221 @@ def append_audit(rec: dict[str, Any]) -> None:
         log.warning("审计写入失败（记录已丢失）：%s", e)
 
 
-def read_audit(*, include_started: bool = False) -> list[dict[str, Any]]:
-    """读出全部审计记录，**保持写入顺序**（与文件版的"文件顺序"等价）。
+#: 「现场还在检查点里」的两个收尾码。与 audit._OPEN_CODES 同一份取值 ——
+#: 那边是判定的出处，这里只是把它翻成 SQL。改一处必须改两处，
+#: tests/test_audit_pushdown.py 会在两者分叉时失败。
+_OPEN_CODES_SQL = ("INTERRUPTED", "RESUME_BLOCKED")
 
-    默认滤掉发起记录（phase=started），与 audit.read_records 同一条口径：
-    它没有结果、没有成本，进了统计就是把每次调用数成两次。
+#: 记录归属哪条线程。与 audit._thread_of 是同一条口径的两种写法。
+_THREAD_EXPR = "COALESCE(NULLIF(thread_id, ''), trace_id)"
+
+
+def _where(f: Any) -> tuple[str, list[Any]]:
+    """_clauses 拼成一句 WHERE。取值口径见 _clauses。"""
+    clauses, args = _clauses(f)
+    return " AND ".join(clauses), args
+
+
+def _clauses(f: Any) -> tuple[list[str], list[Any]]:
+    """把 AuditFilter 翻成一组 WHERE 子句。
+
+    **契约是「超集」，不是「相等」**：_clauses 允许多带回来一些，不允许漏。
+    判定的出处始终是 audit.matches。
+
+    绝大多数维度上两边是逐条相等的 —— kind 那一处本来对不齐（列上分不出
+    "键不在"与"键是空串"），2026-09-09 的修法是让 matches 也不去分，
+    而不是让 SQL 去猜。**分不出的差别不该在判定侧制造出来。**
+
+    留下的差异只剩一处：ts 解析不出来的记录，列上填的是入库时刻，SQL 因此
+    可能把它算进时间窗而 matches 不算。这是写坏的记录才会有的形状，
+    为它把畸形处理复制到 SQL 里，换来的是"列上说 A、原文说 B"，不划算。
+
+    所以分工是：SQL 负责把量降下来（这是性能），matches 负责下最终判断
+    （这是口径）。read_audit / iter_audit 拿到结果后**再过一遍 matches**，
+    因此聚合类调用与文件后端逐条一致。
+
+    例外是 count_audit / page_audit / audit_facets：它们只信 SQL —— 分页要求
+    「第 N 页有多少条」在库里就定死，事后再筛会让页与页之间错位。代价是
+    写坏的记录在这三处与文件后端可能差一条，这是知情的取舍，不是疏忽。
+
+    这里每一条都落在建了索引的列上（ts / trace_id / username），
+    所以下推之后审计页不再是全表扫。
+
+    trace_id <> '' 那条对应 Python 侧「没有 trace_id 的记录不算数」：
+    列是 NOT NULL，但写入时取的是 str(rec.get("trace_id") or "")，空串进得来。
     """
+    where: list[str] = ["trace_id <> ''"]
+    args: list[Any] = []
+    if not f.include_started:
+        where.append("phase <> 'started'")
+    if f.since is not None:
+        where.append("ts >= %s")
+        args.append(f.since)
+    if f.trace_id is not None:
+        where.append("trace_id = %s")
+        args.append(f.trace_id)
+    if f.username is not None:
+        where.append("username = %s")
+        args.append(f.username)
+    if f.kind is not None:
+        if f.kind == "ask":
+            # 老记录没有 kind 字段，入库时落成空串，而 Python 侧按 "ask"
+            # 兜底（rec.get("kind", "ask")）。不认这个空串，筛「问答」就会
+            # 把所有历史记录漏掉 —— 而且是静默漏掉。
+            where.append("kind IN ('ask', '')")
+        else:
+            where.append("kind = %s")
+            args.append(f.kind)
+    if f.source is not None:
+        where.append("source = %s")
+        args.append(f.source)
+    if f.thread_ids is not None:
+        # 与 audit._thread_of 对应：没有 thread_id 的老记录按 trace_id 自成一线程。
+        # 空元组要真的筛掉全部，别让 ANY(空数组) 之外的分支把它当"不筛"。
+        where.append(f"{_THREAD_EXPR} = ANY(%s)")
+        args.append(list(f.thread_ids))
+    if f.status is not None:
+        if f.status == "ok":
+            where.append("rejected_by = ''")
+        elif f.status == "interrupted":
+            where.append("rejected_by = ANY(%s)")
+            args.append(list(_OPEN_CODES_SQL))
+        elif f.status == "rejected":
+            # 整条包起来：现在只靠 AND 的结合律才碰巧对，将来这串里插进
+            # 任何一个 OR，"已拦截"这一档就会悄悄放行全部记录。
+            where.append("(rejected_by <> '' AND NOT (rejected_by = ANY(%s)))")
+            args.append(list(_OPEN_CODES_SQL))
+        else:
+            # 认不出来的档不能当"不筛"放过去 —— 那会把全部记录当成命中，
+            # 页面上看起来像是筛选没生效，实际是边界失效。
+            where.append("false")
+    return where, args
+
+
+def read_audit(f: Any = None, *, limit: int | None = None,
+               include_started: bool = False) -> list[dict[str, Any]]:
+    """读出过筛的审计记录，**保持写入顺序**（与文件版的"文件顺序"等价）。
+
+    limit 取**最新的 N 条**：SQL 里按 id DESC 取，返回前再翻回来，
+    所以调用方拿到的顺序与不带 limit 时一致（旧的在前）。
+    """
+    from .audit import AuditFilter
+
     ensure_schema()
-    where = "" if include_started else " WHERE phase <> 'started'"
-    out = []
-    for (rec,) in pgstore.rows(f"SELECT record FROM askdb_audit{where} ORDER BY id"):
-        if isinstance(rec, dict) and rec.get("trace_id"):
-            out.append(rec)
-    return out
+    f = f if f is not None else AuditFilter(include_started=include_started)
+    where, args = _where(f)
+    if limit is None:
+        sql = f"SELECT record FROM askdb_audit WHERE {where} ORDER BY id"
+    else:
+        sql = (f"SELECT record FROM askdb_audit WHERE {where}"
+               f" ORDER BY id DESC LIMIT {int(limit)}")
+    from .audit import matches
+
+    out = [rec for (rec,) in pgstore.rows(sql, tuple(args))
+           if isinstance(rec, dict) and matches(rec, f)]
+    return out[::-1] if limit is not None else out
+
+
+def iter_audit(f: Any = None) -> Any:
+    """流式读出过筛的记录，按写入顺序。**结果不整份落进内存。**
+
+    走服务端游标（pgstore.iter_rows）—— 生成器活着就占着一条池子连接，
+    调用方必须消费完或及时 break。
+    """
+    from .audit import AuditFilter
+
+    ensure_schema()
+    f = f if f is not None else AuditFilter()
+    where, args = _where(f)
+    from .audit import matches
+
+    sql = f"SELECT record FROM askdb_audit WHERE {where} ORDER BY id"
+    for (rec,) in pgstore.iter_rows(sql, tuple(args)):
+        if isinstance(rec, dict) and matches(rec, f):
+            yield rec
+
+
+def count_audit(f: Any = None) -> int:
+    """过筛记录有多少条 —— 分页的 total 走这里，不靠把记录读回来数。"""
+    from .audit import AuditFilter
+
+    ensure_schema()
+    f = f if f is not None else AuditFilter()
+    where, args = _where(f)
+    got = pgstore.rows(f"SELECT count(*) FROM askdb_audit WHERE {where}", tuple(args))
+    return int(got[0][0]) if got else 0
+
+
+def page_audit(f: Any = None, *, offset: int = 0, limit: int = 10) -> list[dict[str, Any]]:
+    """取一页，**新的在前**（与审计页的展示顺序一致）。
+
+    这一条是整轮下推的落点：页面要 10 条，就只有 10 条离开数据库。
+    ts DESC, id DESC 那个索引正好吃这个排序。
+    """
+    from .audit import AuditFilter
+
+    ensure_schema()
+    f = f if f is not None else AuditFilter()
+    where, args = _where(f)
+    sql = (f"SELECT record FROM askdb_audit WHERE {where}"
+           f" ORDER BY id DESC OFFSET {int(offset)} LIMIT {int(limit)}")
+    return [rec for (rec,) in pgstore.rows(sql, tuple(args))
+            if isinstance(rec, dict) and rec.get("trace_id")]
+
+
+def recent_thread_ids(f: Any = None, *, limit: int = 2000) -> list[str]:
+    """最近有过动静的 N 条线程 id，新的在前。
+
+    任务中心要的是"最近这些线程"，而它此前的做法是把全部记录读回来、
+    在内存里按 thread_id 聚合再排序 —— 线程只有几千条，记录却有几十万条。
+    这一步先在库里把线程定下来，再只取这些线程的记录。
+
+    排序按线程上**最后一条**记录（max(id)），不是第一条：任务中心那一页
+    问的是"最近发生了什么"，一条老线程今天被续跑过就该排在前面。
+    """
+    from .audit import AuditFilter
+
+    ensure_schema()
+    f = f if f is not None else AuditFilter(include_started=True)
+    where, args = _where(f)
+    rows_ = pgstore.rows(
+        f"SELECT t FROM (SELECT {_THREAD_EXPR} AS t, max(id) AS mx"
+        f" FROM askdb_audit WHERE {where} GROUP BY 1"
+        f" ORDER BY mx DESC LIMIT {int(limit)}) x ORDER BY mx DESC", tuple(args))
+    return [t for (t,) in rows_ if t]
+
+
+def audit_facets(f: Any = None) -> dict[str, list[Any]]:
+    """筛选条上那两个下拉的取值：**可见范围内真出现过的**数据源与发起人。
+
+    在 SQL 里 DISTINCT，而不是把记录读回来去重 —— 这两份名单的基数是几十，
+    却曾经要求把几十万条记录读进内存才能算出来。
+
+    数据源名取该 id **最近一条**记录里的写法（DISTINCT ON + id DESC），
+    与文件版"从新往旧扫、第一次见到的那个名字"一致：源改过名之后，
+    下拉里该显示新名字。
+    """
+    from .audit import AuditFilter
+
+    ensure_schema()
+    f = f if f is not None else AuditFilter()
+    where, args = _where(f)
+    # 两层排序各有职责，别合并：内层 DISTINCT ON 必须按 source 排（PostgreSQL
+    # 的语法要求），外层再按 id DESC 排 —— 下拉的顺序是"最近用过的在前"，
+    # 而不是按 id 字母序。文件后端也是这个顺序，两边必须一致。
+    src_rows = pgstore.rows(
+        f"SELECT source, name FROM ("
+        f" SELECT DISTINCT ON (source) source, record->>'source_name' AS name, id"
+        f" FROM askdb_audit WHERE {where} ORDER BY source, id DESC) t"
+        f" ORDER BY id DESC", tuple(args))
+    sources = [{"id": sid, "name": name or sid or "（未记录数据源）"}
+               for sid, name in src_rows]
+    user_rows = pgstore.rows(
+        f"SELECT username FROM ("
+        f" SELECT DISTINCT ON (username) username, id FROM askdb_audit"
+        f" WHERE {where} ORDER BY username, id DESC) t"
+        f" ORDER BY id DESC", tuple(args))
+    return {"sources": sources, "users": [u for (u,) in user_rows]}
 
 
 def append_approval(rec: dict[str, Any]) -> None:

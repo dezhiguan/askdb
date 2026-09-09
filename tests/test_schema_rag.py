@@ -387,35 +387,73 @@ def test_summary_hint_is_empty_when_the_source_has_none(cfg):
     assert schema_rag.summary_hint(cfg) == ""
 
 
-# ------------------------------------------------- 召回后端的降级必须体检得出来
+# ---------------------------------------------------------------- 降级留痕
 
-def test_backend_status_reports_declared_mode(cfg):
-    from askdb import schema_rag
+def test_vector_fallback_is_recorded_not_just_noted(cfg, monkeypatch):
+    """配置声明 vector、实际在跑 keyword，**必须有一处常驻状态说出来**。
 
-    cfg.raw["schema_rag"]["mode"] = "keyword"
-    st = schema_rag.backend_status(cfg)
-    assert st["mode"] == "keyword" and st["effective"] == "keyword"
-    assert not st["degraded"]
-
-
-def test_backend_status_flags_missing_vector_backend(cfg, monkeypatch):
-    """声明 vector、装不上 chromadb —— 生产上就这么静默回落了很久。
-
-    健康检查必须说得出这件事：它决定了模型到底看得见哪几张表。
+    这条是被一次真实事故加的：2026-09-07 把对外实例切到 mode: vector，而当时
+    向量依赖没进镜像，于是每一次请求都在回落 —— 唯一的线索是单次结果里的
+    recall_note，那行字只有点开某一条结果才看得见，两天没人发现。
+    note 照旧要有，但它是**这一次**的解释；这里钉的是**这台实例现在的状态**。
     """
-    import builtins
+    from askdb import vectors
 
-    from askdb import schema_rag
-
+    schema_rag.reset_degradation()
+    monkeypatch.setattr(vectors, "get_index", lambda _cfg: _Broken())
     cfg.raw["schema_rag"]["mode"] = "vector"
-    real = builtins.__import__
+    r = schema_rag.recall("文档", cfg)
 
-    def no_chroma(name, *a, **k):
-        if name == "chromadb":
-            raise ImportError("No module named 'chromadb'")
-        return real(name, *a, **k)
+    assert r.mode == "keyword"                     # 回落照旧发生
+    d = schema_rag.degradation()
+    assert d["degraded"] is True
+    assert d["declared"] == "vector" and d["effective"] == "keyword"
+    assert "没装" in d["reason"]
+    assert d["since"] and d["count"] == 1
 
-    monkeypatch.setattr(builtins, "__import__", no_chroma)
-    st = schema_rag.backend_status(cfg)
-    assert st["degraded"] and st["effective"] == "keyword"
-    assert "chromadb" in st["reason"]
+
+class _Broken:
+    def search(self, question, k):
+        from askdb.vectors import EmbeddingUnavailable
+        raise EmbeddingUnavailable("pgvector 没装")
+
+
+def test_repeated_fallbacks_accumulate_under_one_state(cfg, monkeypatch):
+    """同一个原因是**状态**不是事件：计数累加，不该变成 N 条互相覆盖的记录。"""
+    from askdb import vectors
+
+    schema_rag.reset_degradation()
+    monkeypatch.setattr(vectors, "get_index", lambda _cfg: _Broken())
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    first = schema_rag.recall("文档", cfg)
+    schema_rag.recall("组织", cfg)
+    since = schema_rag.degradation()["since"]
+
+    assert first.mode == "keyword"
+    assert schema_rag.degradation()["count"] == 2
+    assert schema_rag.degradation()["since"] == since, "起始时刻不该被后续请求刷新"
+
+
+def test_recovery_clears_the_degraded_state(cfg, monkeypatch):
+    """恢复了就得清掉 —— 留着旧告警会让人去查一个已经不存在的问题。"""
+    from askdb import vectors
+
+    schema_rag.reset_degradation()
+    monkeypatch.setattr(vectors, "get_index", lambda _cfg: _Broken())
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    schema_rag.recall("文档", cfg)
+    assert schema_rag.degradation()["degraded"] is True
+
+    monkeypatch.setattr(vectors, "get_index",
+                        lambda _cfg: FakeIndex(("table:documents", 0.9)))
+    schema_rag.recall("文档", cfg)
+    d = schema_rag.degradation()
+    assert d["degraded"] is False and d["effective"] == "vector"
+
+
+def test_keyword_mode_is_not_a_degradation(cfg):
+    """按 keyword 配、按 keyword 跑，是正常状态，不该报降级。"""
+    schema_rag.reset_degradation()
+    cfg.raw["schema_rag"]["mode"] = "keyword"
+    schema_rag.recall("文档", cfg)
+    assert schema_rag.degradation()["degraded"] is False

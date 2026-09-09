@@ -298,7 +298,7 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
       <tr><td><code>llm.py</code> <span class="tag done">V1.2 补列</span></td><td>模型客户端、备选模型兜底、结构化输出、用量与成本折算</td><td class="num">170</td><td class="c"><span class="tag soft">中</span></td></tr>
       <tr><td><code>cli.py</code> <span class="tag done">V1.2 补列</span></td><td>命令行入口：问答、直查、自检、回放、起服务</td><td class="num">160</td><td class="c"><span class="tag soft">中</span></td></tr>
       <tr><td><code>mcp_server.py</code> <span class="tag done">V1.2 补列</span></td><td>MCP 无状态封装，三个工具（原并入 <code>server.py</code> 估算，实为独立模块）</td><td class="num">125</td><td class="c"><span class="tag soft">中</span></td></tr>
-      <tr><td><code>vectors.py</code> <span class="tag done">V1.2 补列</span></td><td>Chroma 索引构建与指纹绑定（原并入 <code>schema_rag.py</code> 估算）</td><td class="num">90</td><td class="c"><span class="tag soft">中</span></td></tr>
+      <tr><td><code>vectors.py</code> <span class="tag done">V1.2 补列</span></td><td>向量索引构建与指纹绑定；2026-09-09 起落 PostgreSQL（pgvector），此前为 Chroma 嵌入式</td><td class="num">90</td><td class="c"><span class="tag soft">中</span></td></tr>
       <tr><td colspan="2" style="text-align:right"><b>合计（不含评测）</b></td><td class="num"><b>≈ 2 015</b></td><td></td></tr>
     </tbody>
   </table></div>
@@ -321,7 +321,7 @@ hr{border:0;border-top:1px solid var(--border);margin:32px 0}
       <tr><td>编排</td><td>LangGraph</td><td>需要条件边与重试回边；检查点支持断点续跑</td><td>裸 Chain（无状态、不可续跑）</td></tr>
       <tr><td>SQL 解析</td><td>sqlglot</td><td>多方言 AST，支持解析后重新生成，是强制改写的前提</td><td>正则、sqlparse（不产出可改写 AST）</td></tr>
       <tr><td>模型</td><td>Qwen3.8-Max，DeepSeek-V4 备选</td><td>OpenAI 兼容端点，便于对照实验；成本可控</td><td>—</td></tr>
-      <tr><td>向量</td><td>Chroma（嵌入式）</td><td>schema 文档量级在百条内，无需独立服务</td><td>Qdrant / PGVector（过重）</td></tr>
+      <tr><td>向量</td><td>PostgreSQL + pgvector（2026-09-09 起）</td><td>schema 文档量级在百条内，无需独立服务；索引与审计/审批/数据源同库，多副本共享、rollout 不丢。此前用 Chroma 嵌入式，索引落容器本地目录 —— 三副本各建各的、重启即丢，且依赖在可选 extra 里没进镜像，导致 vector 模式长期静默回落</td><td>Chroma（嵌入式，已换掉）、Qdrant（过重）</td></tr>
       <tr><td>接口</td><td>FastAPI + MCP</td><td>MCP 按 2026-07-28 无状态规范实现，可被其他 Agent 直接调用</td><td>—</td></tr>
       <tr><td>可观测</td><td>结构化日志 + 成本归因脚本</td><td>规模不需要完整 OTel 链路</td><td>完整 OTel Collector</td></tr>
     </tbody>

@@ -10,11 +10,79 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config, Metric, Table
+
+log = logging.getLogger("askdb.schema_rag")
+
+
+# --------------------------------------------------------------------------
+# 降级留痕
+# --------------------------------------------------------------------------
+#
+# 2026-09-09 加。配置写着 mode: vector、运行时却每一次都回落 keyword，
+# 这件事在线上持续了两天没被发现 —— 唯一的线索是单次结果里的 recall_note，
+# 而那行字只有点开某一条结果才看得见。**声明的模式与实际跑的模式不一致，
+# 属于部署级故障**，得像故障一样报出来：进程日志里 WARNING 一次，
+# /api/health 常驻一格。
+#
+# 只记"最后一次"而不是全量计数明细：这里要回答的问题只有一个 ——
+# "现在这台实例的向量召回到底在不在跑"，多余的维度只会让人多读几眼。
+
+_deg_lock = threading.Lock()
+_degraded: dict[str, Any] = {"declared": "", "effective": "", "reason": "",
+                             "since": 0.0, "count": 0}
+
+
+def note_degraded(declared: str, effective: str, reason: str) -> None:
+    """记一次"没按声明的模式跑"。**同一个原因只在日志里喊一次** ——
+    每次问答都 WARNING 一行会把日志淹掉，而它要传达的信息是状态不是事件。"""
+    with _deg_lock:
+        first = _degraded["reason"] != reason or _degraded["effective"] != effective
+        if first:
+            _degraded.update(declared=declared, effective=effective,
+                             reason=reason, since=time.time(), count=0)
+        _degraded["count"] += 1
+    if first:
+        log.warning("schema 召回降级：配置声明 %s，实际在跑 %s —— %s",
+                    declared, effective, reason)
+
+
+def note_healthy(mode: str) -> None:
+    """这一次是按声明跑的。恢复了就把降级状态清掉 —— 留着旧告警会让人
+    去查一个已经不存在的问题。"""
+    with _deg_lock:
+        if _degraded["reason"]:
+            log.info("schema 召回已恢复：%s", mode)
+        _degraded.update(declared=mode, effective=mode, reason="",
+                         since=0.0, count=0)
+
+
+def degradation() -> dict[str, Any]:
+    """当前降级状态。给 /api/health 用；没降级时 degraded 为 False。"""
+    with _deg_lock:
+        d = dict(_degraded)
+    return {
+        "declared": d["declared"],
+        "effective": d["effective"],
+        "degraded": bool(d["reason"]),
+        "reason": d["reason"],
+        "since": (time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(d["since"]))
+                  if d["since"] else ""),
+        "count": d["count"],
+    }
+
+
+def reset_degradation() -> None:
+    """测试用。"""
+    with _deg_lock:
+        _degraded.update(declared="", effective="", reason="", since=0.0, count=0)
 
 
 @dataclass
@@ -406,11 +474,12 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     blind = False
 
     if mode == "all":
+        note_healthy("all")
         picked = all_tables
     elif mode == "vector":
-        from .vectors import EmbeddingUnavailable, VectorIndex
+        from .vectors import EmbeddingUnavailable, get_index
 
-        idx = index or VectorIndex(cfg)
+        idx = index if index is not None else get_index(cfg)
         # 表和口径在同一个索引里，若只取 max_k 条，两者会互相挤占名额 ——
         # 于是多取一些，再各自按配额与阈值筛。
         want = max_k + len(cfg.metrics) + 2
@@ -419,10 +488,15 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         try:
             hits = idx.search(question, want)
         except EmbeddingUnavailable as e:
-            # 召回退化只是准确率下降，不该让整条链路不可用
+            # 召回退化只是准确率下降，不该让整条链路不可用。
+            # **但它必须留痕**：配置声明 vector 而实际在跑 keyword，这件事
+            # 只写在单次结果的 note 里就等于没人知道（2026-09-07 切过来之后
+            # 线上两天都在回落，没有任何一处报出来）。
+            note_degraded("vector", "keyword", str(e))
             picked, blind = _keyword_pick(question, cfg, top_k, max_k)
             mode, note = "keyword", f"向量召回不可用，已回落关键词：{e}"
         else:
+            note_healthy("vector")
             ranked = [(h.score, cfg.tables[h.key.split(":", 1)[1]])
                       for h in hits
                       if h.key.startswith("table:") and h.key.split(":", 1)[1] in cfg.tables]
@@ -462,6 +536,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
                     if len(picked) >= top_k:
                         break
     else:
+        note_healthy("keyword")
         picked, blind = _keyword_pick(question, cfg, top_k, max_k)
 
     # 一张表都没命中 = 这次召回是**盲选**，挑出来的只是白名单前几张。
@@ -557,34 +632,3 @@ def _render(tables: list[Table], metrics: list[Metric]) -> str:
         parts.append("\n【业务口径 —— 涉及以下概念时必须使用给定定义】")
         parts += [metric_doc(m) for m in metrics]
     return "\n\n".join(parts)
-
-
-def backend_status(cfg: Config) -> dict[str, Any]:
-    """声明的召回模式，与**真正会生效**的那个。
-
-    2026-09-09 发现生产上这两者已经不一致了很久：config 写着 mode: vector，
-    镜像里没装 chromadb，于是每一次提问都静默回落到关键词召回 —— 唯一的痕迹
-    是判定链路里一行小字，没人会去逐条翻。后果不是"稍差一点"：同一个源、
-    同一批表，命中哪几张变成由提问措辞决定，模型据此断言"本库没有运单表"。
-
-    放进 /api/health 是因为**降级必须体检得出来**。这里只做静态探测
-    （能不能 import、有没有密钥），不建索引、不发嵌入请求 ——
-    健康检查不该为了确认一件事而花钱。
-    """
-    mode = cfg.raw.get("schema_rag", {}).get("mode", "keyword")
-    out: dict[str, Any] = {"mode": mode, "effective": mode, "degraded": False,
-                           "reason": ""}
-    if mode != "vector":
-        return out
-    try:
-        import chromadb                                    # noqa: F401
-    except Exception as e:
-        out.update(effective="keyword", degraded=True,
-                   reason=f"未安装向量索引依赖，已回落关键词召回：{e}。"
-                          f"装 askdb[vectors]，或把 schema_rag.mode 改成 keyword")
-        return out
-    if not cfg.api_key():
-        out.update(effective="keyword", degraded=True,
-                   reason=f"未配置 {cfg.llm.get('api_key_env', '')}，"
-                          f"生成不了向量，已回落关键词召回")
-    return out

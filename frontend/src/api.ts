@@ -122,6 +122,9 @@ export interface AuditItem {
   source: string | null
   source_name: string | null
   ok: boolean
+  /** 命中应答缓存的那次调用：没跑模型、没执行 SQL，耗时与成本都是 0。
+   *  不标出来的话，流水上它和一次真跑长得一样，只是快得离谱。 */
+  cached?: boolean | null
 }
 
 export interface AuditList {
@@ -300,6 +303,10 @@ export interface TraceChain {
   source_name: string | null
   steps: ReplayStep[]
   sql_hash: string | null
+  /** 这次调用是不是命中了应答缓存 —— 命中时整条链路只有一个 cache 节点 */
+  cached?: boolean | null
+  /** 命中缓存时，答案是哪一次真跑留下的。空串表示旧格式缓存里没记 */
+  cached_from?: string | null
 }
 
 /** 节点链的三种结局。**取不到不能再collapse成 null**：
@@ -745,6 +752,11 @@ export interface AskResult {
   tok_in?: number
   tok_out?: number
   cost_cny?: number
+  /** 这次没跑模型也没执行 SQL，答案直接来自应答缓存。
+   *  此时 steps 里只有一个 cache 节点，耗时/token/成本全是 0 —— 那是真的。 */
+  cached?: boolean
+  /** 答案出自哪一次真跑。执行追踪页据此提供"看首跑链路"的入口 */
+  cached_from?: string
 }
 
 /** source 是运行时数据源 id；留空走启动配置里的内置源。

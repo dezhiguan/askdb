@@ -222,6 +222,17 @@
 .span-table td.span-note { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 一行都没有时那句状态。跟表体同一套字号，不做成提示条 ——
    它是这张表的内容，不是页面上另起的一段说明 */
+/* 「命中缓存」那一行通向首跑链路的入口。表格里唯一可点的东西，
+   所以要看得出是可点的，又不能撑破这张 7px 的表 */
+.span-origin {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--blue);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
 .span-table tr.span-empty td { color: var(--muted); text-align: center; padding: 16px 8px; white-space: normal; }
 .span-type { display: inline-flex; padding: 2px 4px; border-radius: 3px; color: var(--green); background: var(--green-wash); }
 .span-type.model { color: var(--blue); background: var(--blue-wash); }

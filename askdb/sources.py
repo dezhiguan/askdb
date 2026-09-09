@@ -16,13 +16,17 @@
 
 三条纪律，都是被"页面能改连接"这件事本身逼出来的：
 
-- **默认关闭。** 服务端会按用户填的地址主动发起连接，而 askdb 不设账号体系。
-  在公开实例上开放它，等于给出一个无鉴权的内网探测入口。因此由配置开关
-  `datasources.allow_runtime_add` 控制，默认 false，对外实例显式写死为 false。
+- **默认关闭，但对外实例 2026-09-01 起是开着的。** 服务端会按用户填的地址
+  主动发起连接，而未登录不设账号体系。开关是 `datasources.allow_runtime_add`，
+  代码默认 false；`config/public.yaml` 按 @guandezhi 的决定显式写成 true，
+  彼处的注释记着放开之后还剩哪两道约束。**这里原来写着"对外实例显式写死为
+  false"，与线上正好相反** —— 照着它判断会得出"这条路走不通"的结论，
+  而实际上任何登录用户都走得通（2026-09-09 更正）。
 
 - **口令优先走环境变量。** 直接提交的密码用主密钥加密后落盘；主密钥自身只从
   环境变量来，没配主密钥就拒绝保存明文口令 —— 宁可这条路走不通，
-  也不要在磁盘上留一份可读的数据库口令。
+  也不要在磁盘上留一份可读的数据库口令。连接串里内嵌 `password=` 是同一件事
+  的另一条路，一并拒（见 build）。
 
 - **新源的表默认全不开放。** 扫描只负责"看得见"，开放与否是单独一步。
   白名单同时是安全边界与准确率边界，默认全开等于把两条边界一起取消。
@@ -51,6 +55,9 @@ SUPPORTED_TYPES = ("postgresql", "duckdb")
 
 _ID_RE = re.compile(r"src_[0-9a-f]{12}")
 _ENV_RE = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
+#: 连接串里的口令。keyword/value 与 URI 两种写法都要认 ——
+#: 只拦一种等于没拦，另一种就是绕过去的那条路。
+_DSN_PASSWORD_RE = re.compile(r"(?:^|[\s?&])password\s*=|://[^/\s@]*:[^/\s@]*@")
 
 
 class SourceError(ValueError):
@@ -430,6 +437,19 @@ def build(*, name: str, type_: str, dsn: str, env: str = "test",
         raise SourceError("环境变量名不合规：需为大写字母开头的 3-64 位大写字母/数字/下划线")
     if password_env and password:
         raise SourceError("环境变量名与明文口令只能二选一")
+    # 连接串里内嵌口令 = 绕开上面那条纪律的后门。
+    #
+    # 明文口令这条路由 encrypt_password 把着：没配 ASKDB_SECRET_KEY 就存不下，
+    # 界面上那一档也是灰的。但 dsn 是**原样透传**的（derive_config 直接拿去连），
+    # 于是 "host=… user=… password=明文" 完全合法，口令就明文躺在
+    # askdb_sources.dsn 列里 —— 而 to_public 不出 dsn，界面上再也看不见它。
+    # 一条纪律只要有一条绕过去的路，它就不是纪律。
+    if _DSN_PASSWORD_RE.search(dsn):
+        raise SourceError(
+            "连接串里不要写 password —— 口令请填「环境变量名」，"
+            "或在服务端配置 ASKDB_SECRET_KEY 后用口令输入框提交。"
+            "写在连接串里会明文落库，且界面上看不见。"
+        )
 
     return Source(
         id=f"src_{uuid.uuid4().hex[:12]}",

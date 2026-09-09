@@ -119,7 +119,28 @@ def test_public_instance_config_is_safe():
         "回放会返回 SQL 全文，连真实库时必须关"
 
     # ---- 成本边界 ----
-    assert 0 < c.daily_quota <= 500, f"每日配额必须设置且不得过宽：{c.daily_quota}"
+    #
+    # 2026-09-09 由 "<= 500" 改成按**钱**钉（@guandezhi：站点要撑日访问 10 万级，
+    # 500 次只够约 460 次提问/天）。改的是表达方式，不是放宽约束：
+    #
+    # 次数本身不是成本 —— 换一个贵四倍的模型、次数一个不动，账单照样翻四倍，
+    # 而写成 "<= N 次" 的断言对此完全看不见。这条护栏要挡的从来是账单，
+    # 所以它现在直接算账单。
+    #
+    # 单次用量按 config/public.yaml 里那份口径（schema_rag 是 vector 召回、
+    # top_k 8、token_budget 4000）：入约 5000 token、出约 120 token。
+    IN_TOK, OUT_TOK = 5000, 120
+    per_call = (c.llm["price_input_per_1k"] * IN_TOK / 1000
+                + c.llm["price_output_per_1k"] * OUT_TOK / 1000)
+    ceiling_cny = c.daily_quota * per_call
+    assert c.daily_quota > 0, "每日配额必须设置 —— 不设等于不限量"
+    assert ceiling_cny <= 60, (
+        f"额度被打满时的日成本上限 ¥{ceiling_cny:.1f} 超过 ¥60（约 ¥1800/月）。"
+        f"当前 daily_quota={c.daily_quota}、单次 ¥{per_call:.4f}。"
+        f"要放宽就在这里连同理由一起改，别默默调大 daily_quota")
+    # 次数本身仍留一条结构性上限：单价万一配成 0（模型免费/漏配），
+    # 上面那条按钱算的断言会恒真，等于没有护栏。
+    assert c.daily_quota <= 20000, f"每日配额不得过宽：{c.daily_quota}"
     # 单价须不高于开发配置用的模型 —— 对外成本要按"被刷满"估，不是按正常使用估
     assert c.llm["price_input_per_1k"] <= dev.llm["price_input_per_1k"]
     assert c.llm["price_output_per_1k"] <= dev.llm["price_output_per_1k"]

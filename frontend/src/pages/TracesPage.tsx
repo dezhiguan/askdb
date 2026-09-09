@@ -7,7 +7,7 @@ import {
 } from '../api'
 import type { ModalName, View } from '../types'
 import { writeGuard } from '../writeGuard'
-import { KIND_NAMES, STEP_NAMES, STEP_TYPE } from '../traceSteps'
+import { KIND_NAMES, STEP_NAMES, STEP_TYPE, stepFailed } from '../traceSteps'
 
 
 function fmtTime(ts: string): string {
@@ -141,6 +141,15 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
   const currentChain = currentResult.status === 'ok' ? currentResult.data : null
   const currentItem = items?.find(i => i.trace_id === selected) ?? null
 
+  /** 跳到另一条 trace（目前只有"命中缓存 → 首跑链路"这一处用）。
+   *  与 focusTrace 同一个做法：把 id 落进左栏搜索词，列表收到那一条、右栏选中它，
+   *  搜索框里明摆着 id，清掉就回到完整流水。直接 setSelected 不够 ——
+   *  首跑那条未必在已加载的这几页里，右栏会因为找不到 item 而退回空态。 */
+  const focusOn = useCallback((traceId: string) => {
+    setKeyword(traceId)
+    setSelected(traceId)
+  }, [])
+
   const tracing = stats?.tracing
   const link = stats && selected && tracing?.enabled ? tracingLink(tracing, selected) : null
 
@@ -249,7 +258,8 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
                   <strong>{item.question || `（${KIND_NAMES[item.kind] ?? item.kind}）`}</strong>
                   <small>
                     {item.role || '未记录'} · {fmtTime(item.ts)} ·{' '}
-                    {item.ok ? secs(item.elapsed_ms) : item.rejected_by === 'INTERRUPTED' ? '已中断' : '已拦截'}
+                    {!item.ok ? (item.rejected_by === 'INTERRUPTED' ? '已中断' : '已拦截')
+                      : item.cached ? '命中缓存' : secs(item.elapsed_ms)}
                   </small>
                 </span>
                 <code>{item.trace_id.slice(0, 6)}</code>
@@ -277,7 +287,8 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
         </div>
 
         <div className="card trace-detail">
-          <TraceDetail item={currentItem} chain={currentChain} result={currentResult} />
+          <TraceDetail item={currentItem} chain={currentChain} result={currentResult}
+                       onFocusTrace={focusOn} />
         </div>
       </div>
 
@@ -324,9 +335,11 @@ function StatTiles({ stats, today }: { stats: AuditStats | null; today: AuditSta
   )
 }
 
-function TraceDetail({ item, chain, result }: {
+function TraceDetail({ item, chain, result, onFocusTrace }: {
   item: AuditItem | null
   chain: TraceChain | null
+  /** 从"命中缓存"那一行跳到首跑链路。见 TracesPage 里的 focusOn */
+  onFocusTrace?: (traceId: string) => void
   /** 节点链这一次取的结果。chain 是它的 ok 分支，两个都要传：
    *  上面六格只需要值，下面的 Span 表还要说清"为什么没有值"。 */
   result: TraceChainResult | { status: 'loading' }
@@ -337,13 +350,19 @@ function TraceDetail({ item, chain, result }: {
   const outcome = item.ok
     ? 'SUCCESS'
     : item.rejected_by === 'INTERRUPTED' ? 'INTERRUPTED' : `BLOCKED · ${item.rejected_by}`
+  /* 命中缓存要写在这一行里：下面六格的总耗时 0.00s、Token —— 都是真的，
+     但只有知道"这次没跑模型"才读得懂，否则看起来像一次没记全的调用。 */
+  const cached = Boolean(chain?.cached ?? item.cached)
 
   return (
     <>
       <div className="trace-detail-head">
         <div>
           <h3>{item.question || `（${KIND_NAMES[item.kind] ?? item.kind}）`}</h3>
-          <p>{item.trace_id} · {outcome} · {item.multi_step ? 'MULTI-STEP' : 'ONE-SHOT'}</p>
+          <p>
+            {item.trace_id} · {outcome} ·{' '}
+            {cached ? 'CACHED' : item.multi_step ? 'MULTI-STEP' : 'ONE-SHOT'}
+          </p>
         </div>
         {/* 原型这枚角标是「可信度 96」。askdb 不打可信度分，版位留着不编数。 */}
         <span className={`status ${item.ok ? '' : 'wait'}`}>可信度 {NA}</span>
@@ -360,7 +379,8 @@ function TraceDetail({ item, chain, result }: {
         <div className="trace-fact"><span>数据源</span><strong title={item.source_name ?? ''}>{item.source_name || NA}</strong></div>
       </div>
 
-      <TraceNodes steps={steps} result={result} />
+      <TraceNodes steps={steps} result={result}
+                  cachedFrom={chain?.cached_from} onFocusTrace={onFocusTrace} />
     </>
   )
 }
@@ -380,9 +400,12 @@ function shortHash(hash: string | null | undefined): string {
 
 /** 链路条与 Span 明细。版式照原型，不另起说明段落 ——
  *  唯一的例外是空表里那一行状态，它替代的是原来那片无从解释的空白。 */
-function TraceNodes({ steps, result }: {
+function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
   steps: ReplayStep[]
   result: TraceChainResult | { status: 'loading' }
+  /** 命中缓存时，答案出自哪一次真跑。空/缺省表示不是缓存命中，或旧格式缓存没记 */
+  cachedFrom?: string | null
+  onFocusTrace?: (traceId: string) => void
 }) {
   /* 一行都没有时，那一行说的是**为什么**没有。
    *
@@ -404,7 +427,7 @@ function TraceNodes({ steps, result }: {
         <div className="trace-flow">
           {steps.map((step, i) => (
             <Fragment key={`${step.step}-${i}`}>
-              <div className={`trace-node ${(STEP_TYPE[step.step] ?? '').toLowerCase()} ${step.status === 'ok' ? '' : 'warn'}`}>
+              <div className={`trace-node ${(STEP_TYPE[step.step] ?? '').toLowerCase()} ${stepFailed(step.status) ? 'warn' : ''}`}>
                 <strong>{STEP_NAMES[step.step] ?? step.step}</strong>
                 <small>{step.ms}ms</small>
               </div>
@@ -433,12 +456,23 @@ function TraceNodes({ steps, result }: {
                   <td>{STEP_NAMES[step.step] ?? step.step}</td>
                   {/* 原型这两列是「输入/输出摘要」。askdb 只记一条 note（该步的结果说明），
                       放在输出侧；输入侧只有 prompt token 数是真的，没有就留占位。 */}
-                  <td>{step.tok_in ? `prompt ${step.tok_in.toLocaleString()} tok` : NA}</td>
+                  {/* 缓存命中这一行的"输入"就是首跑那条记录 —— 整条链路只有这一个
+                      节点，模型、工具、数据库一个都没跑，看的人要能一键走到真跑的那条。
+                      cached_from 为空（旧格式缓存没记 trace_id）时退回占位符，不给死链。 */}
+                  <td>
+                    {step.step === 'cache' && cachedFrom
+                      ? <button
+                          className="span-origin"
+                          title={`答案出自 ${cachedFrom} 那次执行，点击查看它的完整链路`}
+                          onClick={() => onFocusTrace?.(cachedFrom)}
+                        >首跑 {cachedFrom.slice(0, 6)} ↗</button>
+                      : step.tok_in ? `prompt ${step.tok_in.toLocaleString()} tok` : NA}
+                  </td>
                   <td className="span-note" title={step.note ?? ''}>
                     {step.note || NA}{step.tok_out ? ` · ${step.tok_out.toLocaleString()} tok` : ''}
                   </td>
                   <td>{step.ms}ms</td>
-                  <td className={step.status === 'ok' ? 'good' : 'bad'}>{step.status.toUpperCase()}</td>
+                  <td className={stepFailed(step.status) ? 'bad' : 'good'}>{step.status.toUpperCase()}</td>
                 </tr>
               ))}
             </tbody>
@@ -516,7 +550,9 @@ function exportOtel(item: AuditItem, chain: TraceChain | null) {
         ...(step.tok_out ? [attr('llm.usage.completion_tokens', step.tok_out)] : []),
         ...(step.note ? [attr('askdb.note', step.note)] : []),
       ],
-      status: { code: step.status === 'ok' ? 1 : 2 },
+      // OTLP 的 2 是 ERROR。hit 不是错，导出成 ERROR 会让观测后端把
+      // 每一次缓存命中都算进错误率里
+      status: { code: stepFailed(step.status) ? 2 : 1 },
     })
     cursor = end
   }
