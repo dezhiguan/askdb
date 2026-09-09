@@ -44,6 +44,28 @@ def test_health_reports_datasource_and_llm(client, cfg, monkeypatch):
     assert d["ok"] is False          # 缺密钥即整体未就绪
 
 
+def test_health_exposes_schema_recall_degradation(client, cfg):
+    """声明的召回模式与**实际在跑的**模式，健康检查要同时给出。
+
+    只有 mode 那一格是不够的：2026-09-07 到 09-09 之间，对外实例配置写着
+    vector，运行时每一次都回落 keyword（向量依赖没进镜像），而 health 上
+    看不出任何异常 —— 冒烟、看板、值班全都以为它在跑向量。
+    """
+    from askdb import schema_rag
+
+    schema_rag.reset_degradation()
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    healthy = client.get("/api/health").json()["schema_recall"]
+    assert healthy["mode"] == "vector" and healthy["degraded"] is False
+
+    schema_rag.note_degraded("vector", "keyword", "pgvector 没装")
+    d = client.get("/api/health").json()["schema_recall"]
+    assert d["mode"] == "vector", "声明的模式仍照配置给"
+    assert d["degraded"] is True and d["effective"] == "keyword"
+    assert "pgvector" in d["reason"] and d["since"]
+    schema_rag.reset_degradation()
+
+
 def test_health_flags_missing_datasource(cfg, tmp_path, monkeypatch):
     broken = copy.deepcopy(cfg)
     broken.raw = copy.deepcopy(cfg.raw)

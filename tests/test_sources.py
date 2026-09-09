@@ -185,6 +185,30 @@ def test_connection_string_never_leaves_the_server(client, sample_db):
         assert not (leaky & set(item)), f"列表接口带出了敏感字段：{leaky & set(item)}"
 
 
+def test_password_inside_the_dsn_is_rejected(monkeypatch):
+    """连接串里内嵌口令 = 绕开"没有主密钥就不存明文口令"那条纪律的后门。
+
+    明文输入框那条路由 encrypt_password 把着，界面上没有主密钥时那一档还是
+    灰的；但 dsn 是原样透传的，"host=… password=明文" 一直是合法的，口令
+    就明文落在 askdb_sources.dsn 列里，而 to_public 不出 dsn —— 存进去之后
+    界面上再也看不见它。一条纪律只要有一条绕过去的路，它就不是纪律。
+    """
+    monkeypatch.setenv("ASKDB_SECRET_KEY", "master-key-for-test")
+    for dsn in ("host=h port=5432 dbname=d user=u password=hunter2",
+                "postgresql://u:hunter2@h:5432/d",
+                "host=h?password=hunter2"):
+        with pytest.raises(sources.SourceError, match="连接串"):
+            sources.build(name="x", type_="postgresql", dsn=dsn)
+
+
+def test_a_clean_dsn_still_builds(monkeypatch):
+    """拦截不能误伤：正常连接串、以及 dbname 里带 password 字样的，都要过。"""
+    src = sources.build(name="x", type_="postgresql",
+                        dsn="host=h port=5432 dbname=password_store user=u",
+                        password_env="SOME_RO_PASSWORD")
+    assert src.password_env == "SOME_RO_PASSWORD"
+
+
 def test_plaintext_password_needs_a_master_key(monkeypatch):
     monkeypatch.delenv("ASKDB_SECRET_KEY", raising=False)
     with pytest.raises(sources.SourceError, match="ASKDB_SECRET_KEY"):

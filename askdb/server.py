@@ -29,6 +29,7 @@ from . import evalrun as _evalrun
 from . import guard
 from . import identity as _identity
 from . import pgstore as _pgstore
+from . import schema_rag as _schema_rag
 from . import sources as _sources
 from .config import Config, load
 from .executor import DataSourceError, Executor
@@ -754,6 +755,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "observability": {
                 "tracing": _obs_status(),
                 "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
+            },
+            # Schema 召回**声明的模式与实际在跑的模式**。两者不一致是部署级
+            # 故障，而它此前只写在单次结果的 recall_note 里：2026-09-07 切到
+            # vector 之后，线上因为镜像里没装向量依赖而每次都回落 keyword，
+            # 两天无人发现。这一格就是为那件事加的 —— 页面与冒烟都看得到。
+            "schema_recall": {
+                "mode": cfg.raw["schema_rag"].get("mode", "keyword"),
+                **_schema_rag.degradation(),
             },
         }
         if probe:
