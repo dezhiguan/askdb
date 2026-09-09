@@ -14,16 +14,17 @@ metadata:
   name: askdb
   namespace: askdb
 spec:
-  # 多副本的三处前提都已落地，缺一不可：
-  #   1. 每日配额走 Redis 共享计数（askdb/quota.py）—— 否则每个副本各数各的，
-  #      上限直接变成 N 倍。
-  #   2. 检查点库开 WAL + busy_timeout（graph.build_graph）—— 否则两个 Pod
-  #      同时写会把 database is locked 打到正常查询上。
-  #   3. 审计日志改成 O_APPEND 单次 write（trace.write_audit）—— 否则两个进程
-  #      的片段交错落盘，整行 JSON 作废。
+  # 多副本的前提：**共享状态一律不落本机磁盘**。
   #
-  # 这三条都依赖**同一台机器的同一个 hostPath**：单节点 k3s 才成立。
-  # 真要跨节点，检查点得换 PG 后端、审计得换集中式收集，别只把这里调大。
+  # 2026-09-09 起审计、审批、复核、检查点、成绩、配额全部在 PostgreSQL
+  # （observability.store: postgres），配额另可走 Redis。所以副本数不再受
+  # "所有 Pod 必须落在同一台机器的同一块 hostPath 上"约束 —— 这条约束在
+  # 换库之前是真的，写在这里是因为它曾经决定了副本数只能是 2。
+  #
+  # 换句话说，现在唯一还需要人工确认的是那个 Redis Secret（askdb-redis）：
+  # 缺了它配额退回本地文件计数，每个副本各数各的，上限直接变成 N 倍。
+  # 上线前核 /api/health 的 quota.multi_replica_safe 必须为 true。
+  #
   # 2026-09-09 由 2 提到 4，按日访问量 10 万级（@guandezhi）。
   #
   # 容量口径：100,000 PV/天、峰值小时约 42 r/s。入口 nginx 接管了 /assets/
