@@ -30,54 +30,15 @@
 .tasks-page .card-actions .ghost { background: #fff; }
 .tasks-page .card-actions .ghost.on { border-color: var(--green); color: var(--green); background: var(--green-wash); }
 
-/* 状态筛选下拉。原来是"点一下换一档"的循环按钮：七档以后循环意味着要盲点六次才能
-   回到想要的那档，且看不到有哪些档 —— 改成明示全部选项的菜单。
-   菜单画在 body 上（React portal + position:fixed，坐标由 TasksPage 现算）：任务卡
-   是 overflow:hidden 的，菜单留在卡片里会被裁掉半截，列表被筛空时更是只剩四档可见。
-   坐标只在展开的那一刻量一次，滚动即关 —— 不做跟随，省得踩 shell.css 里记的
-   transform 包含块那类坑。 */
-.tasks-page .status-select { position: relative; display: inline-flex; }
-.tasks-page .status-select .ghost { display: inline-flex; align-items: center; gap: 3px; }
-.tasks-page .status-select .caret { font-style: normal; font-size: 7px; line-height: 1; transform: translateY(-1px); }
-
-.task-status-menu {
-  position: fixed;
-  z-index: 60;
-  min-width: 150px;
-  padding: 4px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: white;
-  box-shadow: 0 10px 26px rgba(31,41,36,.14);
-  animation: statusMenuIn .14s ease both;
-}
-@keyframes statusMenuIn { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
-
-.task-status-menu button {
-  display: flex;
-  width: 100%;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 7px 9px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--ink-2);
-  font-size: 8px;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-}
-.task-status-menu button b { color: var(--muted); font: 6.5px var(--mono); font-weight: 400; letter-spacing: .04em; }
-.task-status-menu button:hover { background: var(--paper-2); }
-.task-status-menu button.on { color: var(--green); background: var(--green-wash); font-weight: 700; }
-.task-status-menu button.on b { color: var(--green); }
-
+/* 状态筛选下拉曾经是一个画在 body 上的自绘菜单（portal + fixed 定位，
+   坐标现量、滚动即关）。筛选条常驻页面之后它连同那一套定位代码一起删了 ——
+   条件行本来就在卡片外沿的常规文档流里，用原生 select 不会被 overflow:hidden
+   裁掉，也就不需要 portal。 */
 
 .tasks-page .task-row {
   display: grid;
-  grid-template-columns: 34px minmax(170px, 1.5fr) .8fr .8fr .8fr auto;
+  /* 列宽定义在 filterbar.css 的 --task-cols 上，表头与行共用同一份 */
+  grid-template-columns: var(--task-cols);
   gap: 9px;
   align-items: center;
   min-width: 0;

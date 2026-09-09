@@ -1733,7 +1733,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     @app.get("/api/audit")
     def audit_list(request: Request, page: int = 1, page_size: int = 10,
                    q: str = "", kind: str = "", status: str = "",
-                   source: str | None = None) -> dict[str, Any]:
+                   source: str | None = None, user: str | None = None,
+                   since: str = "all") -> dict[str, Any]:
         """审计流水（摘要分页）。列表有意不含 SQL 文本与结果行 ——
         细节只经 /api/replay 的白名单+开关出去。
 
@@ -1753,19 +1754,31 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         的开关出去，写入类接口仍由写入中间件按登录态拒绝。
         """
         _require_cap(request, _identity.AUDIT_READ, "查看审计流水")
-        from .audit import list_audits
+        from .audit import SINCE_CHOICES, list_audits
 
         # status 只认这三档：非法值当"不筛"处理会让人以为筛过了，直接拒
         wanted = status.strip()
         if wanted and wanted not in ("ok", "rejected", "interrupted"):
             raise HTTPException(status_code=400,
                                 detail="status 只能是 ok / rejected / interrupted")
+        window = since.strip() or "all"
+        if window not in SINCE_CHOICES:
+            raise HTTPException(status_code=400,
+                                detail="since 只能是 " + " / ".join(SINCE_CHOICES))
+        with_text = _can(request, _identity.AUDIT_CONTENT)
+        # 看不到原文的身份不接受按发起人筛：那是一个预言机（"某某有 12 条命中"
+        # 本身就把内容说出去了）。静默忽略更糟 —— 页面会以为筛过了。
+        if user is not None and not with_text:
+            raise HTTPException(status_code=403,
+                                detail="当前身份看不到发起人，不能按发起人筛选")
         return list_audits(cfg, page=page, page_size=page_size,
                            q=q.strip(), kind=kind.strip(),
-                           with_text=_can(request, _identity.AUDIT_CONTENT),
+                           with_text=with_text,
                            only_user=_audit_owner_filter(request),
                            status=wanted,
-                           source=None if source is None else source.strip())
+                           source=None if source is None else source.strip(),
+                           user=None if user is None else user.strip(),
+                           since=window)
 
     @app.get("/api/audit/stats")
     def audit_stats(request: Request, days: int = 30) -> dict[str, Any]:
@@ -1952,7 +1965,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
     @app.get("/api/identity/members")
     def identity_members(request: Request, role: str = "",
-                         page: int = 1, page_size: int = 10) -> dict[str, Any]:
+                         page: int = 1, page_size: int = 10,
+                         q: str = "", bound: str = "all",
+                         since: str = "all") -> dict[str, Any]:
         """成员名册。跨角色要 MEMBERS_READ，**看自己所属角色不需要**。
 
         为什么留这个口子：一个人有权知道自己和谁同组 —— 那是他所在角色的
@@ -1966,11 +1981,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         if not (want and want in _roles(request)):
             _require_cap(request, _identity.MEMBERS_READ, "查看其他角色的成员名册")
         _require_identity()
+        for name, value, allowed in (
+            ("bound", bound, _identity.MEMBER_BOUND_CHOICES),
+            ("since", since, _identity.MEMBER_SINCE_CHOICES),
+        ):
+            if value not in allowed:
+                raise HTTPException(status_code=400,
+                                    detail=f"{name} 只能是 " + " / ".join(allowed))
         try:
             # 分页在库里做（LIMIT/OFFSET + COUNT），不是读全量再切：
             # 一个角色几百人时，出网的与读出来的都只有这一页
             result = _identity.members_page(cfg, role.strip(),
-                                            page=page, page_size=page_size)
+                                            page=page, page_size=page_size,
+                                            q=q, bound=bound, since=since)
         except Exception as e:
             raise HTTPException(status_code=503, detail=f"身份库不可用：{e}") from e
         # 未登录（匿名）：成员 PII 在下发前脱敏。前端还会再叠一层模糊，但明文
@@ -2125,7 +2148,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     @app.get("/api/tasks")
     def tasks(request: Request, page: int = 1, page_size: int = 10,
               status: str = "all", source: str = "all", risk: str = "all",
-              user: str = "all", since: str = "all") -> dict[str, Any]:
+              user: str = "all", since: str = "all", q: str = "") -> dict[str, Any]:
         """执行线程一页，新的在前。筛选、统计与切页都在这里做。
 
         列全部而不是只列中断的：中断只在异常逃出执行图时才发生（进程故障、
@@ -2205,7 +2228,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 会在这里被核回 False；被杀掉那条留着现场，核得过。
         result = _audit.paginate_tasks(
             items, page=page, page_size=page_size, status=status,
-            source=source, risk=risk, user=user, since=since,
+            source=source, risk=risk, user=user, since=since, q=q.strip(),
             # 日界按配置声明的时区算：容器时钟是 UTC，不传这个，「今日完成」
             # 会到北京时间早上八点才翻页
             tz=_audit.day_tz(cfg))

@@ -6,6 +6,7 @@ import {
  type Me,
 } from '../api'
 import { writeGuard, type WriteGuard } from '../writeGuard'
+import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
 
 function fmtDate(ts: string): string {
   /* 空值必须先挡掉。**new Date(null) 不是 NaN，是纪元 0** —— 只判 NaN 的话，
@@ -71,6 +72,15 @@ function ageLabel(role: RoleInfo): string {
   return role.max_age_days == null ? '不限' : `${role.max_age_days} DAYS`
 }
 
+/** 成员筛选条上两个下拉的文案。取值定义在后端
+ *  （identity.MEMBER_BOUND_CHOICES / MEMBER_SINCE_CHOICES），非法值 400。 */
+const BOUND_LABEL: Record<string, string> = {
+  all: '全部关联状态', bound: '已绑定网关用户', unbound: '未绑定网关用户', builtin: '配置内置',
+}
+const MEMBER_SINCE_LABEL: Record<string, string> = {
+  all: '全部加入时间', today: '今天', '7d': '近 7 天', '30d': '近 30 天',
+}
+
 export function PermissionsPage({ notify, me }: {
   notify: (message: string) => void
   me: Me | null
@@ -100,6 +110,13 @@ export function PermissionsPage({ notify, me }: {
   const [memberPage, setMemberPage] = useState(1)
   const [memberPageSize, setMemberPageSize] = useState(10)
 
+  /* 名册筛选。**三项都在服务端做**（SQL 的 WHERE 与 COUNT 一起走）——
+     在浏览器里过滤当前这十行的话，一个六百多人的角色里搜不到的人
+     看起来就像不在这个角色里。 */
+  const [memberQuery, setMemberQuery] = useState('')
+  const [memberBound, setMemberBound] = useState('all')
+  const [memberSince, setMemberSince] = useState('all')
+
   useEffect(() => {
     let alive = true
     fetchRoles()
@@ -112,7 +129,8 @@ export function PermissionsPage({ notify, me }: {
     if (!data?.enabled) return
     let alive = true
     setMembersDenied(false)
-    fetchMembers(active, memberPage, memberPageSize)
+    fetchMembers(active, memberPage, memberPageSize,
+                 { q: memberQuery, bound: memberBound, since: memberSince })
       .then(value => { if (alive) { setMembers(value); setMembersDenied(false) } })
       .catch(e => {
         if (!alive) return
@@ -122,7 +140,8 @@ export function PermissionsPage({ notify, me }: {
         setError(String((e as Error).message || e))
       })
     return () => { alive = false }
-  }, [active, data?.enabled, reload, memberPage, memberPageSize])
+  }, [active, data?.enabled, reload, memberPage, memberPageSize,
+      memberQuery, memberBound, memberSince])
 
   const role = data?.roles.find(r => r.code === active)
 
@@ -135,7 +154,21 @@ export function PermissionsPage({ notify, me }: {
   /* 换角色、换每页条数都在各自的入口处一并把页码设回 1（停在第 3 页而新角色
      只有 2 个人，会看到一片空白）。这里只管重新读取那一路：同步组织之后
      名单可能变短，页码留在原处会指到空页上。 */
-  useEffect(() => { setMemberPage(1) }, [reload])
+  useEffect(() => { setMemberPage(1) },
+    [reload, memberQuery, memberBound, memberSince])
+
+  /* 已选条件。切角色时一并清空 —— 上一个角色里搜"关"，换到财务角色
+     还留着那个词，看到的会是一片空白而人以为这个角色没人。 */
+  const memberChips: FilterChip[] = [
+    memberQuery ? { label: '关键词', value: memberQuery, onClear: () => setMemberQuery('') } : null,
+    memberBound !== 'all'
+      ? { label: '关联状态', value: BOUND_LABEL[memberBound], onClear: () => setMemberBound('all') } : null,
+    memberSince !== 'all'
+      ? { label: '加入时间', value: MEMBER_SINCE_LABEL[memberSince], onClear: () => setMemberSince('all') } : null,
+  ].filter(Boolean) as FilterChip[]
+  const resetMemberFilters = () => {
+    setMemberQuery(''); setMemberBound('all'); setMemberSince('all')
+  }
 
   /** 原型上这个按钮没有行为。真实实例里企业目录同步还没接入，
    *  所以它只做当下唯一诚实的动作：重新读取角色与成员。 */
@@ -205,7 +238,9 @@ export function PermissionsPage({ notify, me }: {
               <button
                 className={`role-item${active === item.code ? ' active' : ''}`}
                 key={item.code}
-                onClick={() => { setActive(item.code); setMembers(null); setMemberPage(1) }}
+                onClick={() => {
+                  setActive(item.code); setMembers(null); setMemberPage(1); resetMemberFilters()
+                }}
               >
                 <span><strong>{item.name}</strong><small>{ROLE_SUBTITLE[item.code] ?? item.scope}</small></span>
                 <span className="role-count">{item.members}</span>
@@ -234,6 +269,37 @@ export function PermissionsPage({ notify, me }: {
                 : members ? `${members.total} 人` : '读取中'}
             </span>
           </h4>
+
+          {/* 名册最大的一个角色有六百多人，而这一页原来没有任何检索入口 ——
+              找一个人只能一页页翻。筛选条与任务中心、审计中心同一套结构与
+              类名（components/FilterBar）。 */}
+          {data?.enabled && !membersDenied && (
+            <>
+              <FilterBar>
+                <FilterSearch
+                  value={memberQuery}
+                  onCommit={setMemberQuery}
+                  placeholder="搜索网关用户名 / 姓名 / 备注…"
+                />
+                <select className={memberBound === 'all' ? '' : 'on'} aria-label="按关联状态筛选"
+                        value={memberBound} onChange={event => setMemberBound(event.target.value)}>
+                  {Object.entries(BOUND_LABEL).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+                <select className={memberSince === 'all' ? '' : 'on'} aria-label="按加入时间筛选"
+                        value={memberSince} onChange={event => setMemberSince(event.target.value)}>
+                  {Object.entries(MEMBER_SINCE_LABEL).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+                <button className="ghost" disabled={!memberChips.length}
+                        onClick={resetMemberFilters}>重置</button>
+              </FilterBar>
+              <FilterChips chips={memberChips} unit="人"
+                           matched={memberTotal} total={members?.total_all ?? memberTotal} />
+            </>
+          )}
 
           {data?.enabled && (
             <div className="table-scroll">
@@ -272,7 +338,11 @@ export function PermissionsPage({ notify, me }: {
                     </tr>
                   ))}
                   {members?.items.length === 0 && (
-                    <tr><td colSpan={6} className="audit-empty">这个角色还没有成员</td></tr>
+                    <tr><td colSpan={6} className="audit-empty">
+                      {memberChips.length
+                        ? '当前筛选条件下没有成员。清掉上面的条件再看。'
+                        : '这个角色还没有成员'}
+                    </td></tr>
                   )}
                   {membersDenied && (
                     <tr><td colSpan={6} className="audit-empty">

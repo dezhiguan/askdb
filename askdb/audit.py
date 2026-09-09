@@ -131,10 +131,17 @@ def _summary(rec: dict[str, Any]) -> dict[str, Any]:
     return s
 
 
+#: 任务列表的筛选取值里，``all`` 是"不筛"，空串是**一个合法的档**
+#: （未记录数据源 / 匿名发起）。用空串当"不筛"的哨兵，这两档就永远选不中 ——
+#: /api/audit 的 source 参数踩过同一个坑，那里用 None 区分，这里用 all，
+#: 因为界面上的下拉本来就是 all 打头，一路传到底不必再翻译一次。
+FILTER_ANY = "all"
+
 def list_audits(
     path: Any, page: int = 1, page_size: int = 10,
     q: str = "", kind: str = "", with_text: bool = True,
     only_user: str | None = None, status: str = "", source: str | None = None,
+    user: str | None = None, since: str = FILTER_ANY,
 ) -> dict[str, Any]:
     """流水分页，新记录在前。q 同时匹配 trace_id 与问题文本。
 
@@ -154,9 +161,17 @@ def list_audits(
         与 _thread_status 同一口径（线程看最后一条，这里看这一条）
       · source —— 记录里的数据源 id。None 才是"不筛"，空串是合法取值
         （"未记录数据源"那一档）—— 用空串当哨兵的话，老记录那一档永远选不中
-    返回里额外给一个 sources：**当前可见记录里真出现过的**数据源，
+    user / since 是筛选条上另外两个下拉：
+      · user —— 记录里的发起人。None 才是"不筛"，空串是合法取值（匿名发起）。
+        与 only_user 是两回事：那个是**可见范围**（角色决定，退不出去），
+        这个是手上的筛选（随时能清）。两层叠加，顺序是先范围后筛选。
+        with_text=False 时不接受这个参数（调用方负责挡），理由同 q：
+        发起人与问题原文同属"内容"，遮蔽了还能按它筛就是留了一个预言机。
+      · since —— 发起时间档，取值同 SINCE_CHOICES。
+
+    返回里额外给 sources 与 users：**当前可见记录里真出现过的**数据源与发起人，
     在其余筛选之前算 —— 否则选中某个源之后，下拉里就只剩这一个选项，
-    人就退不回去了。
+    人就退不回去了。users 在 with_text=False 时为空表：那份名单本身就是内容。
     """
     recs = read_records(path)
     recs.reverse()
@@ -169,6 +184,15 @@ def list_audits(
         if sid not in seen:
             seen[sid] = str(r.get("source_name") or r.get("source") or "（未记录数据源）")
     sources = [{"id": sid, "name": name} for sid, name in seen.items()]
+    seen_users: list[str] = []
+    for r in recs:
+        who = str(r.get("user") or "")
+        if who not in seen_users:
+            seen_users.append(who)
+    users = [{"id": who, "name": who or "匿名"} for who in seen_users] if with_text else []
+    # 筛之前有多少条（**可见范围之内**）。页面上"命中 N / M"的 M 说的是这个数，
+    # 也是"筛完没有"与"本来就没有"两句不同提示的判据。
+    total_all = len(recs)
 
     if kind:
         recs = [r for r in recs if r.get("kind", "ask") == kind]
@@ -177,6 +201,12 @@ def list_audits(
     # None = 不筛；空串是**合法取值**，表示"未记录数据源"那一档
     if source is not None:
         recs = [r for r in recs if str(r.get("source") or "") == source]
+    # 发起人同理：None 是不筛，空串是"匿名发起"那一档
+    if user is not None:
+        recs = [r for r in recs if str(r.get("user") or "") == user]
+    if since not in ("", FILTER_ANY):
+        now = _now_in(day_tz(path))
+        recs = [r for r in recs if _within_since(str(r.get("ts", "")), since, now)]
     if q:
         ql = q.strip().lower()
         recs = [
@@ -196,6 +226,8 @@ def list_audits(
         # 页面据此显示遮蔽提示，而不是让人以为这些记录本来就没有问题文本
         "text_visible": with_text,
         "sources": sources,
+        "users": users,
+        "total_all": total_all,
     }
 
 
@@ -484,12 +516,6 @@ def tasks(path: Any, only_user: str | None = None, *,
     return out
 
 
-#: 任务列表的筛选取值里，``all`` 是"不筛"，空串是**一个合法的档**
-#: （未记录数据源 / 匿名发起）。用空串当"不筛"的哨兵，这两档就永远选不中 ——
-#: /api/audit 的 source 参数踩过同一个坑，那里用 None 区分，这里用 all，
-#: 因为界面上的下拉本来就是 all 打头，一路传到底不必再翻译一次。
-FILTER_ANY = "all"
-
 #: 发起时间档，与界面上那四项一一对应。写在这里而不是在 server 上，
 #: 是为了让"合法取值"只有一份定义 —— 两份就会漂。
 SINCE_CHOICES = ("all", "today", "7d", "30d")
@@ -563,7 +589,7 @@ def paginate_tasks(
     items: list[dict[str, Any]], *, page: int = 1, page_size: int = 10,
     status: str = FILTER_ANY, source: str = FILTER_ANY,
     risk: str = FILTER_ANY, user: str = FILTER_ANY, since: str = FILTER_ANY,
-    tz: Any = None,
+    q: str = "", tz: Any = None,
 ) -> dict[str, Any]:
     """把 tasks() 的全量线程筛好、统计好、切好页 —— 一次返回给页面。
 
@@ -577,6 +603,10 @@ def paginate_tasks(
         但如果它跟着筛选收窄，选中一个源之后下拉里就只剩这一个，人就退不
         回去了（/api/audit 的 sources 是同一条口径，见 list_audits）。
       · total 则必须是**筛完之后**的条数，否则页码算出来是错的。
+
+    q 是筛选条上的关键词，同时匹配问题原文、线程 id 与 trace id。**它必须在
+    这里筛**，不能由前端在当前这一页上做 —— 那样搜的是十行，搜不到的东西
+    看起来就像不存在。
 
     这三个数原来都在浏览器里算，代价是每次打开都要把全部线程发过去
     （实测一次一千四百多条）。搬到这里之后出网的只有当前这一页，
@@ -637,6 +667,14 @@ def paginate_tasks(
         matched = [it for it in matched if str(it.get("user") or "") == user]
     if since != FILTER_ANY:
         matched = [it for it in matched if _within_since(str(it.get("ts", "")), since, now)]
+    needle = q.strip().lower()
+    if needle:
+        matched = [
+            it for it in matched
+            if needle in str(it.get("question") or "").lower()
+            or needle in str(it.get("thread_id") or "").lower()
+            or needle in str(it.get("trace_id") or "").lower()
+        ]
 
     page = max(int(page), 1)
     page_size = min(max(int(page_size), 1), 100)

@@ -1,6 +1,6 @@
 import { PageHeader } from '../components/AppShell'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
 import {
   askQuestion,
   fetchReplay,
@@ -18,10 +18,8 @@ import {
   CreateTaskModal,
   EMPTY_TASK_FILTERS,
   ModalShell,
-  TaskFilterModal,
   TaskReasonModal,
   TaskResultModal,
-  hasTaskFilter,
   type CreateTaskPayload,
   type TaskDetailView,
   type TaskFilters,
@@ -149,10 +147,18 @@ const FILTER_CODE: Record<StatusFilter, string> = {
   rejected: 'BLOCK',
 }
 
+/** 风险档与发起时间档的显示文案。取值定义在后端（audit.RISK_LEVELS /
+ *  SINCE_CHOICES），这里只是文案 —— 加档要两边一起加，否则传过去就是 400。 */
+const RISK_LABEL: Record<string, string> = {
+  all: '全部风险', HIGH: 'HIGH', MEDIUM: 'MEDIUM', LOW: 'LOW',
+}
+const SINCE_LABEL: Record<string, string> = {
+  all: '全部时间', today: '今天', '7d': '近 7 天', '30d': '近 30 天',
+}
+
 type ModalState =
   | { kind: 'none' }
   | { kind: 'create' }
-  | { kind: 'filter' }
   | { kind: 'result'; task: Task }
   | { kind: 'reason'; task: Task }
   | { kind: 'clarify'; task: Task }
@@ -171,20 +177,16 @@ export function TasksPage({ onNavigate, notify, me }: {
   const [replay, setReplay] = useState<Replay | null>(null)
   const [replayLoading, setReplayLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
-  const [statusOpen, setStatusOpen] = useState(false)
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_TASK_FILTERS)
+  /* 关键词是**提交后**的值，不是输入框里正在打的字：输入框自己防抖
+     （FilterSearch），每敲一个字就发一次请求的话，翻页与统计都会跟着抖。 */
+  const [keyword, setKeyword] = useState('')
   /* 页码。**换筛选条件的地方一并把它设回 1**，而不是靠一个 useEffect 去追 ——
      追的写法会先按旧页码请求一次、再按第 1 页请求一次，列表跳两下。
      停在第 7 页而筛完只剩 2 条，看到的会是一片空白。 */
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [sources, setSources] = useState<TaskSourceOption[]>([])
-  const statusRef = useRef<HTMLDivElement>(null)
-  const statusMenuRef = useRef<HTMLDivElement>(null)
-  /* 菜单锚点（视口坐标）。菜单**必须**画到 body 上：任务卡为了让行的圆角不冒出边框
-     用了 overflow:hidden，菜单挂在卡片里就会被裁掉 —— 列表被筛空时卡片只有两三行高，
-     七档里只看得见四档。 */
-  const [statusAt, setStatusAt] = useState<{ top: number; right: number } | null>(null)
 
   /* 筛选、切页都走服务端：/api/tasks 收筛选条件与页码，返回这一页 + 统计 +
      下拉可选值。参数一变就重新取，与"点了刷新"是同一条链路 —— 两条链路会漂。 */
@@ -196,41 +198,13 @@ export function TasksPage({ onNavigate, notify, me }: {
       risk: filters.risk,
       user: filters.user,
       since: filters.since,
+      q: keyword,
     })
       .then(value => { setResult(value); setError('') })
       .catch(e => setError(String(e.message || e)))
-  }, [page, pageSize, statusFilter, filters])
+  }, [page, pageSize, statusFilter, filters, keyword])
 
   useEffect(load, [load])
-
-  // 展开前先量按钮位置：菜单画在 body 上，只能自己贴回按钮下方
-  const openStatusMenu = () => {
-    const rect = statusRef.current?.getBoundingClientRect()
-    if (rect) setStatusAt({ top: rect.bottom + 5, right: window.innerWidth - rect.right })
-  }
-
-  /* 下拉必须点外面能关、Esc 能关：只有按钮自身 toggle 的话，点走到别处它会一直悬在
-     卡片上盖住第一行任务。菜单在 body 上，"外面"要同时排除按钮和菜单两棵子树，
-     否则 mousedown 先把菜单卸掉，菜单项的 click 根本轮不到触发。
-     滚动时直接关掉：锚点是视口坐标，跟着滚会飘到按钮以外的地方去。 */
-  useEffect(() => {
-    if (!statusOpen) return
-    const inside = (node: Node) =>
-      Boolean(statusRef.current?.contains(node)) || Boolean(statusMenuRef.current?.contains(node))
-    const onDown = (event: MouseEvent) => { if (!inside(event.target as Node)) setStatusOpen(false) }
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setStatusOpen(false) }
-    const close = () => setStatusOpen(false)
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    window.addEventListener('scroll', close, true)
-    window.addEventListener('resize', close)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-      window.removeEventListener('scroll', close, true)
-      window.removeEventListener('resize', close)
-    }
-  }, [statusOpen])
 
   useEffect(() => {
     fetchSources()
@@ -262,8 +236,39 @@ export function TasksPage({ onNavigate, notify, me }: {
   const pages = Math.max(Math.ceil(total / pageSize), 1)
   const current = Math.min(result?.page ?? page, pages)
 
+  /* 已选条件。每个都能单独摘掉 —— 一次只错一个条件时，不该逼人整条重来。 */
+  const patch = (next: Partial<TaskFilters>) => setFilters(current => ({ ...current, ...next }))
+  const chips: FilterChip[] = [
+    keyword ? { label: '关键词', value: keyword, onClear: () => setKeyword('') } : null,
+    statusFilter !== 'all'
+      ? { label: '状态', value: FILTER_LABEL[statusFilter], onClear: () => setStatusFilter('all') }
+      : null,
+    filters.risk !== 'all'
+      ? { label: '风险', value: filters.risk, onClear: () => patch({ risk: 'all' }) } : null,
+    filters.source !== 'all'
+      ? {
+        label: '数据源',
+        value: sourceOptions.find(item => item.value === filters.source)?.label ?? filters.source,
+        onClear: () => patch({ source: 'all' }),
+      } : null,
+    filters.user !== 'all'
+      ? {
+        label: '发起人',
+        value: userOptions.find(item => item.value === filters.user)?.label ?? filters.user,
+        onClear: () => patch({ user: 'all' }),
+      } : null,
+    filters.since !== 'all'
+      ? { label: '时间', value: SINCE_LABEL[filters.since] ?? filters.since, onClear: () => patch({ since: 'all' }) }
+      : null,
+  ].filter(Boolean) as FilterChip[]
+  const resetFilters = () => {
+    setStatusFilter('all')
+    setFilters(EMPTY_TASK_FILTERS)
+    setKeyword('')
+  }
+
   // 筛选条件一变就回到第一页 —— 停在第 7 页而结果只剩 2 条，会看到一片空白
-  useEffect(() => { setPage(1) }, [statusFilter, filters, pageSize])
+  useEffect(() => { setPage(1) }, [statusFilter, filters, keyword, pageSize])
 
   /* 结果与原因都来自审计回放：没有回放就说没有，不靠状态推断内容 */
   const openDetail = (task: Task, kind: 'result' | 'reason') => {
@@ -368,51 +373,95 @@ export function TasksPage({ onNavigate, notify, me }: {
           <div className="card-head">
             <div>
               <strong>查询任务</strong>
-              <p>每个任务拥有独立状态、执行轨迹和审计记录。共 {totalAll} 条（全部发起人）
+              <p>每个任务拥有独立状态、执行轨迹和审计记录
                   {result.user ? ` · 当前账号 ${result.user}，只有自己发起的线程能续跑` : ' · 未登录，可以浏览但不能续跑'}。</p>
             </div>
-            <div className="card-actions">
-              <div className="status-select" ref={statusRef}>
-                <button
-                  className={`ghost ${statusFilter === 'all' ? '' : 'on'}`}
-                  aria-haspopup="listbox"
-                  aria-expanded={statusOpen}
-                  onClick={() => { openStatusMenu(); setStatusOpen(open => !open) }}
-                >
-                  {FILTER_LABEL[statusFilter]}<i className="caret">⌄</i>
-                </button>
-                {statusOpen && statusAt && createPortal(
-                  <div
-                    className="task-status-menu"
-                    role="listbox"
-                    ref={statusMenuRef}
-                    style={{ top: statusAt.top, right: statusAt.right }}
-                  >
-                    {FILTER_ORDER.map(value => (
-                      <button
-                        key={value}
-                        role="option"
-                        aria-selected={value === statusFilter}
-                        className={value === statusFilter ? 'on' : ''}
-                        onClick={() => { setStatusFilter(value); setPage(1); setStatusOpen(false) }}
-                      >
-                        <span>{FILTER_LABEL[value]}</span><b>{FILTER_CODE[value]}</b>
-                      </button>
-                    ))}
-                  </div>,
-                  document.body,
-                )}
-              </div>
-              <button
-                className={`ghost ${hasTaskFilter(filters) ? 'on' : ''}`}
-                onClick={() => setModal({ kind: 'filter' })}
-              >筛选</button>
-            </div>
           </div>
+
+          {/* 筛选条常驻页面（原来是「全部状态」自绘下拉 + 一个「筛选」弹窗）。
+              弹窗的问题不在多点一下：条件藏在里面，页面上只剩一个高亮的按钮，
+              看列表的人无从知道自己正按什么在看。六个条件都在服务端筛
+              （/api/tasks），选中即生效。 */}
+          <FilterBar>
+            <FilterSearch
+              value={keyword}
+              onCommit={setKeyword}
+              placeholder="搜索问题 / 线程 ID / trace…"
+            />
+            <select
+              className={statusFilter === 'all' ? '' : 'on'}
+              aria-label="按状态筛选"
+              value={statusFilter}
+              onChange={event => setStatusFilter(event.target.value as StatusFilter)}
+            >
+              {FILTER_ORDER.map(value => (
+                <option key={value} value={value}>
+                  {FILTER_LABEL[value]}{value === 'all' ? '' : ` · ${FILTER_CODE[value]}`}
+                </option>
+              ))}
+            </select>
+            <select
+              className={filters.risk === 'all' ? '' : 'on'}
+              aria-label="按风险等级筛选"
+              value={filters.risk}
+              onChange={event => patch({ risk: event.target.value })}
+            >
+              {['all', 'HIGH', 'MEDIUM', 'LOW'].map(value => (
+                <option key={value} value={value}>{RISK_LABEL[value]}</option>
+              ))}
+            </select>
+            <select
+              className={filters.source === 'all' ? '' : 'on'}
+              aria-label="按数据源筛选"
+              value={filters.source}
+              onChange={event => patch({ source: event.target.value })}
+            >
+              <option value="all">全部数据源</option>
+              {sourceOptions.map(item => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+            <select
+              className={filters.user === 'all' ? '' : 'on'}
+              aria-label="按发起人筛选"
+              value={filters.user}
+              onChange={event => patch({ user: event.target.value })}
+            >
+              <option value="all">全部发起人</option>
+              {userOptions.map(item => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+            <select
+              className={filters.since === 'all' ? '' : 'on'}
+              aria-label="按发起时间筛选"
+              value={filters.since}
+              onChange={event => patch({ since: event.target.value })}
+            >
+              {['all', 'today', '7d', '30d'].map(value => (
+                <option key={value} value={value}>{SINCE_LABEL[value]}</option>
+              ))}
+            </select>
+            <button className="ghost" disabled={!chips.length} onClick={resetFilters}>重置</button>
+          </FilterBar>
+          <FilterChips chips={chips} matched={total} total={totalAll} />
 
           {/* 原型里本地新建的任务挂在这里；本实现的新建任务直接进真实任务流，
               容器保留以对齐结构（:empty 时不占位） */}
           <div className="created-task-list" />
+
+          {/* 表头。列宽与 .task-row 共用 --task-cols，两处分开写必然漂。
+              筛空时不渲染 —— 空态卡片上挂一条孤零零的表头没有意义。 */}
+          {visible.length > 0 && (
+            <div className="task-head" role="row">
+              <span />
+              <span>任务 / 线程</span>
+              <span>风险</span>
+              <span>关键信息</span>
+              <span>状态</span>
+              <span className="right">操作</span>
+            </div>
+          )}
 
           {visible.map(task => (
             <div className="task-row" key={task.thread_id} data-task-id={task.thread_id}>
@@ -421,55 +470,13 @@ export function TasksPage({ onNavigate, notify, me }: {
                 <strong title={task.question ?? ''}>{task.question || '（无问题文本）'}</strong>
                 <small>{task.thread_id} · {task.user} · {fmtClock(task.ts)} · 已执行 {task.attempts_on_thread} 次</small>
               </div>
-              {task.status === 'interrupted' ? (
-                <>
-                  <div className="task-meta"><span>现场</span><strong>检查点在</strong></div>
-                  <div className="task-meta"><span>当前节点</span><strong>INTERRUPT</strong></div>
-                </>
-              ) : task.status === 'running' ? (
-                <>
-                  <div className="task-meta"><span>阶段</span><strong>执行中</strong></div>
-                  <div className="task-meta"><span>已发起</span><strong>{fmtClock(task.ts)}</strong></div>
-                </>
-              ) : task.status === 'waiting_review' || task.status === 'review_returned' ? (
-                <>
-                  <div className="task-meta"><span>风险</span><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
-                  {/* 存疑理由是复核人唯一要看的东西，直接摆在行上；
-                      多条时给第一条，其余挂 title。 */}
-                  <div className="task-meta">
-                    <span>存疑</span>
-                    <strong title={(task.review_why ?? []).join('；')}>
-                      {(task.review_why ?? []).length > 1
-                        ? `${task.review_why![0].slice(0, 6)}… +${task.review_why!.length - 1}`
-                        : (task.review_why?.[0] ?? '—').slice(0, 10)}
-                    </strong>
-                  </div>
-                </>
-              ) : task.status === 'waiting_approval' || task.status === 'needs_operator'
-                   || task.status === 'waiting_input' ? (
-                <>
-                  <div className="task-meta"><span>风险</span><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
-                  <div className="task-meta">
-                    <span>原因</span>
-                    <strong title={ruleTitle(task.rejected_by ?? '')}>{task.rejected_by || '—'}</strong>
-                  </div>
-                </>
-              ) : task.status === 'rejected' ? (
-                <>
-                  <div className="task-meta"><span>风险</span><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
-                  {/* 原来这一格写死 GUARD —— 接口给的是**具体规则号**，写死等于把
-                      "撞了哪条护栏"这个唯一有用的信息抹掉了 */}
-                  <div className="task-meta">
-                    <span>原因</span>
-                    <strong title={ruleTitle(task.rejected_by ?? '')}>{task.rejected_by || 'GUARD'}</strong>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="task-meta"><span>风险</span><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
-                  <div className="task-meta"><span>耗时</span><strong>{fmtDuration(task.elapsed_ms)}</strong></div>
-                </>
-              )}
+              {/* 第三列**恒为风险**：后端对每一条线程都算了档（audit._risk，
+                  没有收尾码时兜底 LOW），所以这一列能被表头钉住。原来
+                  running / interrupted 两档在这里放的是"阶段"和"现场：检查点在"
+                  —— 一个表头之下三种含义，那样的表头是在骗人。 */}
+              <div className="task-meta"><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
+              {/* 第四列是唯一随状态变的一列，所以只有它保留行内小标签 */}
+              {keyInfo(task)}
               <div><span className={`status ${STATUS_WAIT[task.status] ? 'wait' : ''}`}
                          title={task.next_actor ?? ''}>{STATUS_LABEL[task.status]}</span></div>
               {task.status === 'done' ? (
@@ -491,7 +498,7 @@ export function TasksPage({ onNavigate, notify, me }: {
               <strong>{totalAll ? '当前筛选条件下没有任务。' : '还没有任何执行记录。'}</strong>
               <span>
                 {totalAll
-                  ? '换个状态，或在筛选里重置数据源、发起人与时间再看。'
+                  ? '换个状态，或清掉上面的筛选条件再看。'
                   : '任务由提问产生 —— 到查询 Agent 问一次，或在这里创建任务，这里就会出现对应的线程。这一页列全部发起人的线程，不只是当前账号的。'}
               </span>
             </div>
@@ -515,18 +522,6 @@ export function TasksPage({ onNavigate, notify, me }: {
       )}
 
       {!result && !error && <section className="card notice-card"><p>读取中…</p></section>}
-
-      {modal.kind === 'filter' && (
-        <ModalShell onClose={() => setModal({ kind: 'none' })}>
-          <TaskFilterModal
-            value={filters}
-            sources={sourceOptions}
-            users={userOptions}
-            onClose={() => setModal({ kind: 'none' })}
-            onApply={next => { setFilters(next); setPage(1); setModal({ kind: 'none' }) }}
-          />
-        </ModalShell>
-      )}
 
       {modal.kind === 'create' && (
         <ModalShell onClose={() => setModal({ kind: 'none' })}>
@@ -576,6 +571,47 @@ export function TasksPage({ onNavigate, notify, me }: {
       )}
     </div>
   )
+}
+
+/** 行上第四列：这条线程此刻唯一值得先看的那件事。
+ *
+ *  它按状态取不同的东西，所以**保留行内小标签**——表头只能说到"关键信息"，
+ *  具体是耗时还是存疑理由得由行自己讲。其余各列的含义都固定，由表头交代。
+ *
+ *  running 原来在这里放"已发起 12:58"，interrupted 放"现场：检查点在" ——
+ *  前者与行首那行小字里的时间是同一个值，后者没有任何信息量（状态已经写着
+ *  可续跑了）。两处都换成真正只有这一档才有的东西：跑到哪、停在哪个节点。 */
+function keyInfo(task: Task) {
+  if (task.status === 'waiting_review' || task.status === 'review_returned') {
+    /* 存疑理由是复核人唯一要看的东西，直接摆在行上；多条时给第一条，其余挂 title */
+    const why = task.review_why ?? []
+    return (
+      <div className="task-meta">
+        <span>存疑</span>
+        <strong title={why.join('；')}>
+          {why.length > 1 ? `${why[0].slice(0, 6)}… +${why.length - 1}` : (why[0] ?? '—').slice(0, 10)}
+        </strong>
+      </div>
+    )
+  }
+  if (task.status === 'rejected' || task.status === 'waiting_approval'
+      || task.status === 'needs_operator' || task.status === 'waiting_input') {
+    /* 这一格曾经对 rejected 写死 GUARD —— 接口给的是**具体规则号**，
+       写死等于把"撞了哪条护栏"这个唯一有用的信息抹掉了 */
+    return (
+      <div className="task-meta">
+        <span>原因</span>
+        <strong title={ruleTitle(task.rejected_by ?? '')}>{task.rejected_by || '—'}</strong>
+      </div>
+    )
+  }
+  if (task.status === 'running') {
+    return <div className="task-meta"><span>阶段</span><strong>执行中</strong></div>
+  }
+  if (task.status === 'interrupted') {
+    return <div className="task-meta"><span>节点</span><strong>INTERRUPT</strong></div>
+  }
+  return <div className="task-meta"><span>耗时</span><strong>{fmtDuration(task.elapsed_ms)}</strong></div>
 }
 
 /** 把 /api/tasks 的一行 + /api/replay 的回放拼成弹窗要的视图对象。 */
