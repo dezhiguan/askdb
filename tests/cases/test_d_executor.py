@@ -69,8 +69,13 @@ def test_d07_explain_row_formats(ex, cfg):
 
 
 def test_d08_explain_without_cardinality(ex, cfg):
-    g = guard.check("SELECT 1 AS x", cfg, org_id=65, dialect=cfg.dialect)
-    p = ex.explain(g.sql)
+    """无基数估计不得误判为超限。
+
+    直接把 SQL 交给执行器，不再先过一遍护栏：2026-09-09 起 R-23 会拒绝
+    不引用任何表的 SQL（模型曾用 `SELECT 1` 冒充答案），而这条用例考的是
+    **执行器**怎么处理一个没有基数的计划，与护栏放不放行无关。
+    """
+    p = ex.explain("SELECT 1 AS x")
     assert p.ok, "无基数估计不得误判为超限"
 
 

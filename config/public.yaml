@@ -103,8 +103,12 @@ planner:
 schema_rag:
   mode: keyword                      # 不接模型，召回只用于页面展示 schema
   top_k: 3
-  max_k: 5
-  token_budget: 1500
+  # max_k / token_budget 由 124 条线上用例的离线召回基准定出来：
+  # 5 张表 / 1500 token 下 recall@k 只有 90.4%，漏掉的都是「表明明在白名单里，
+  # 模型却回答『库里没有这类数据』」——最难被发现的一种失败。放到 8 / 4000 后
+  # 升到 99.1%，每次提问多花约 2000 输入 token（不到一分钱）。
+  max_k: 8
+  token_budget: 4000
   embedding_model: text-embedding-v4
   min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求
                          # 「召回 Top-K（默认 3）表」，所以过线的表不足 top_k 张时，

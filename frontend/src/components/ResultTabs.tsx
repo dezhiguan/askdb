@@ -52,10 +52,17 @@ function AnswerCard({ result, onGoTab }: {
   // 盲选（没有任何表命中问题里的关键词）下的错答，与正常答案在页面上长得
   // 一模一样 —— 这句提示是这一屏上唯一能把两者区分开的东西，必须贴着答案。
   // 脱敏就不在这里说了：星号本身已经在结果里，脱了哪几列进执行链路与审计。
-  const warning = result.recall_blind
+  // 排在盲选之前：收窄比盲选更难被发现。盲选至少还有"表选得不对"这条线索，
+  // 而收窄后的结果表选得完全正确、SQL 也读得通，错的只是范围。
+  const warning = result.scope_narrowed
+    ? (result.scope_note
+       || '原查询因扫描量超过阈值被拦下，这个数来自收窄范围后的查询，不是全量 —— 请核对 SQL 里的过滤条件。')
+    : result.recall_blind
     ? (result.recall_note
        || '这次没有任何表命中问题里的关键词，下面用到的表是兜底选的，结果可能答非所问 —— 请核对 SQL，或在问题里直接写出表名。')
-    : result.mask_degraded
+    : result.truncated
+      ? `结果达到行数上限被截断，下面只是前 ${(result.row_count ?? 0).toLocaleString()} 行，不是完整清单。`
+      : result.mask_degraded
       ? '这条 SQL 的投影来源解析不出，本次按整行从严脱敏 —— 星号是系统加的，不是库里的值。'
       : ''
 

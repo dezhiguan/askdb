@@ -70,6 +70,14 @@ class AskState(TypedDict, total=False):
     error_hint: str
     rejected_by: str | None
     attempt: int
+    #: R-11 把某一版 SQL 拦下过。留着它是为了在重试成功后能说出
+    #: "这个数不是全量算出来的" —— 详见 scope_narrowed。
+    scan_blocked_sql: str
+    scan_blocked_rows: int | None
+    #: 本次结果的范围被收窄过：原查询因扫描量超阈值被拦，模型据回灌的提示
+    #: 自行加了过滤条件才跑通。**这条必须一路出到接口**：链路上每一步都成功，
+    #: rejected_by 是 null，界面与全量结果长得一模一样，而数值可能差两个数量级。
+    scope_narrowed: bool
     # 本次拒绝是否属「问题超出范围」。路由据此决定要不要进反思。
     out_of_scope: bool
     # 执行报错是否可由重试救回（超时可以，连接不可达不行）
@@ -144,6 +152,11 @@ class AskResult:
     rejected_by: str | None = None
     error: str = ""
     hint: str = ""
+    #: 结果范围被收窄过（原查询被 R-11 拦下，重试时模型自行加了过滤条件）。
+    #: 不出接口就等于没修：这类答案在页面上与全量结果毫无区别。
+    scope_narrowed: bool = False
+    #: 收窄前那条被拦下的 SQL 与它的预估扫描量，用于向用户说明差在哪。
+    scope_note: str = ""
 
     tables_hit: list[str] = field(default_factory=list)
     metrics_hit: list[str] = field(default_factory=list)
@@ -318,9 +331,15 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             if state.get("carry"):
                 step_ctx += ("\n\n【可直接引用的中间结果，按字面量写进 SQL】\n"
                              + planner.render_carry(state["carry"]))
+        schema_prompt = state["schema_prompt"]
+        # 上一轮是被扫描阈值拦下的 —— 把本库的预聚合汇总表显式补进来。
+        # 不补的话模型手上只有明细表，"降低扫描量"就只剩"加个过滤条件"这一条路，
+        # 而那条路的终点是一个悄悄收窄了范围的错数（见 _n_dry_run 的 scope_narrowed）。
+        if state.get("rejected_by") == "R-11" or state.get("scan_blocked_sql"):
+            schema_prompt += schema_rag.summary_hint(d.cfg)
         draft, usage = d.llm.generate_sql(
             question=state["question"],
-            schema_prompt=state["schema_prompt"],
+            schema_prompt=schema_prompt,
             dialect=d.cfg.dialect,
             last_sql=state.get("sql_raw", ""),
             error=state.get("error") or "",
@@ -404,6 +423,10 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             # 超阈值不再是终点：server 据此登记一条待审批（P07）
             "needs_approval": True,
             "est_rows": r.est_rows,
+            # 记下被拦的那一版。重试若靠"加个过滤条件"跑通，最终结果就不是
+            # 用户问的那个范围 —— 到 finalize 时要能说出这件事。
+            "scan_blocked_sql": state.get("sql_final", ""),
+            "scan_blocked_rows": r.est_rows,
         }
     if not r.ok:
         # 已获批准。如实记下"这一步本该拦下但按审批放行"，
@@ -412,6 +435,16 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         return {"error": None, "rejected_by": None, "explain_rows": r.est_rows,
                 "approved_over_threshold": True}
     est = f"预估扫描 {r.est_rows:,} 行" if r.est_rows is not None else "计划无基数估计"
+    # 这一版跑通了，但前面有一版是被扫描阈值拦下的 —— 说明模型是靠收窄范围
+    # 换来的通过。链路到这里全绿，若不在这里记一笔，后面就再没有地方能记了。
+    blocked = state.get("scan_blocked_sql", "")
+    if blocked:
+        was = state.get("scan_blocked_rows")
+        d.tracer.add("dry_run", t, f"{est}（原查询预估 {was:,} 行被 R-11 拦下，"
+                                   f"本次是收窄范围后的查询）" if was else est,
+                     status="ok")
+        return {"error": None, "rejected_by": None, "explain_rows": r.est_rows,
+                "scope_narrowed": True}
     d.tracer.add("dry_run", t, est)
     return {"error": None, "rejected_by": None, "explain_rows": r.est_rows}
 
@@ -860,6 +893,22 @@ def precheck_resume(cfg: Config, values: dict[str, Any],
     return None
 
 
+def _scope_note(out: dict[str, Any]) -> str:
+    """把"这个数是收窄了范围算出来的"写成一句人话。
+
+    只有一句话是不够的 —— 得说清**收窄前是什么、差多少**，否则用户既不知道
+    该不该信这个数，也不知道下一步怎么办。
+    """
+    if not out.get("scope_narrowed"):
+        return ""
+    was = out.get("scan_blocked_rows")
+    scale = f"（原查询预估扫描 {was:,} 行）" if isinstance(was, int) else ""
+    return ("原查询因扫描量超过阈值被拦下" + scale +
+            "，当前结果来自模型自行收窄范围后的查询，**不是全量**。"
+            "请核对 SQL 里的过滤条件；需要全量口径可改用预聚合的汇总表，"
+            "或申请高成本查询审批。")
+
+
 def _audit_of(result: AskResult, cfg: Config, kind: str,
               explain_rows: Any = None) -> dict[str, Any]:
     """审计记录统一在这里成形 —— ask / resume / 中断三条路共用一个形状。"""
@@ -881,6 +930,9 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         # 事后复盘一条可疑结果时，第一个要回答的问题就是"模型当时看得见
         # 该看的那张表吗"；脱敏同理，不记就无从证明当时到底脱没脱。
         "recall_blind": result.recall_blind,
+        # 范围被收窄过。与 recall_blind 同一类信息：链路全绿、结果却不可全信，
+        # 事后复盘一个对不上的数字时，这是第一个要看的字段。
+        "scope_narrowed": result.scope_narrowed,
         "masked_columns": result.masked_columns,
         "mask_degraded": result.mask_degraded,
         "sql_raw": result.sql_raw, "sql_final": result.sql_final,
@@ -1009,6 +1061,8 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
         as_of=out.get("as_of", ""), explain_rows=out.get("explain_rows"),
         rejected_by=out.get("rejected_by"), error=out.get("error") or "",
         hint=out.get("error_hint", ""),
+        scope_narrowed=bool(out.get("scope_narrowed", False)),
+        scope_note=_scope_note(out),
         tables_hit=out.get("tables_hit", []), metrics_hit=out.get("metrics_hit", []),
         recall_blind=bool(out.get("recall_blind", False)),
         recall_note=str(out.get("recall_note", "") or ""),

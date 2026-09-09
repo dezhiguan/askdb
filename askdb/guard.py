@@ -7,7 +7,7 @@
   3. 表引用收集必须遍历完整 AST：FROM / JOIN / 子查询 / CTE / IN(SELECT) / EXISTS / UNION。
      **漏掉任一分支即构成绕过路径。**
 
-本模块实现 R-01～R-10、R-19 与 R-20；R-11～R-14 在 executor / graph，R-15～R-17 在 planner。
+本模块实现 R-01～R-10、R-19～R-23；R-11～R-14 在 executor / graph，R-15～R-17 在 planner。
 """
 
 from __future__ import annotations
@@ -57,6 +57,14 @@ class GuardResult:
 
 # 「问题超出范围」类拒绝。这几条不是 SQL 写法问题，改写法救不回来。
 OUT_OF_SCOPE = frozenset({"R-02", "R-03", "R-06", "R-07"})
+
+#: 抽样子句。让 EXPLAIN 的扫描估算失真，且结果是**抽样值**而不是真值 ——
+#: 模型曾用 `COUNT(*) FROM t TABLESAMPLE SYSTEM (1)` 绕过 R-11 的扫描阈值，
+#: 把 1% 的行数当成总行数返回，误差两个数量级且响应上毫无痕迹。
+#: 这条不进 OUT_OF_SCOPE：去掉抽样就是一条正常 SQL，值得让模型重试一次。
+_SAMPLE_NODES: tuple[type, ...] = tuple(
+    n for n in (getattr(exp, "TableSample", None),) if n is not None
+)
 
 
 def _normalize(name: str) -> str:
@@ -132,6 +140,19 @@ def referenced_tables(sql: str, dialect: str = "duckdb") -> set[str]:
             if n and n not in ctes:
                 out.add(n)
     return out
+
+
+def _iter_samples(root: exp.Expression):
+    """AST 里的抽样子句。sqlglot 各版本节点名不同，按可用类型遍历。"""
+    for node_type in _SAMPLE_NODES:
+        yield from root.find_all(node_type)
+
+
+def _sample_label(node: exp.Expression) -> str:
+    try:
+        return node.sql()[:60]
+    except Exception:
+        return type(node).__name__
 
 
 def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardResult:
@@ -225,6 +246,17 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> Guard
             reason=f"引用了不在白名单内的表：{', '.join(sorted(unknown))}",
         )
 
+
+    # ---------- R-21 禁止抽样 ----------
+    # 抽样让 EXPLAIN 的扫描估算失真（R-11 因此被绕开），返回的又是抽样值而非真值。
+    # 两件事叠起来就是：一个被放大了几十上百倍的错数，且链路上处处显示正常。
+    for ts in _iter_samples(root):
+        return GuardResult(
+            ok=False, rejected_by="R-21",
+            reason=f"禁止抽样查询（{_sample_label(ts)}）："
+                   "抽样结果不是真值，不能作为答案返回",
+        )
+
     # ---------- R-06 禁止跨 schema / 跨库引用 ----------
     # 表白名单只按表名匹配，`other_schema.documents` 会照样过 R-03 ——
     # 不拦住限定名，白名单就形同虚设。
@@ -260,6 +292,22 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> Guard
                 ok=False, rejected_by="R-07",
                 reason=f"使用了禁用函数：{name}",
             )
+
+    # ---------- R-23 答案必须来自数据 ----------
+    # 一条不引用任何表的 SELECT，结果与库里的数据毫无关系。这不是理论风险：
+    # 召回没给到 carriers 时，模型生成过 `SELECT 1`，护栏放行、界面显示「1」，
+    # 而真值是 13 —— 一个凭空捏造的数字，页面上看不出任何异常。
+    #
+    # 判据是**有没有表引用**，不是"有没有白名单内的表"：CTE 遮蔽同名真实表时
+    # referenced 会刻意排掉那个名字（见 R-03），拿它判就会误杀合法的 CTE 查询。
+    #
+    # 位置在 R-07 之后：`SELECT pg_read_file('/etc/passwd')` 同样一张表都不引用，
+    # 但它是一次读文件尝试，必须归因到 R-07。归因错了，安全告警就查错方向。
+    if not any(True for _ in root.find_all(exp.Table)):
+        return GuardResult(
+            ok=False, rejected_by="R-23",
+            reason="这条 SQL 没有引用任何表，结果不来自库里的数据",
+        )
 
     # ---------- R-04 字段真实性 ----------
     # P0 覆盖：带表限定的字段，以及作用域内只有一张表时的裸字段。
@@ -397,6 +445,12 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> Guard
             fired.append("R-19")
             rewrites.append(f"注入数据期限窗口（最近 {window} 天）："
                             + "、".join(dict.fromkeys(aged)))
+
+    # ---------- R-22 枚举取值大小写归一（改写而非阻断）----------
+    hit = _normalize_enums(root, cfg, ctes)
+    if hit:
+        fired.append("R-22")
+        rewrites.append("枚举取值按库中声明归一：" + "、".join(hit))
 
     # ---------- R-09 强制 LIMIT 注入 ----------
     cap = cfg.max_rows
@@ -598,6 +652,85 @@ def _check_columns(root: exp.Expression, cfg: Config, ctes: set[str]) -> str | N
                 if cname not in cfg.tables[tbl].columns:
                     return _no_column(cfg, tbl, col.name)
     return None
+
+
+def _enum_scope(select: exp.Select, cfg: Config, ctes: set[str]) -> dict[str, str]:
+    """本作用域内 别名/表名 -> 真实表名。与 R-04 的解析口径逐条对齐。"""
+    scope: dict[str, str] = {}
+    for t, _join in _direct_tables(select):
+        n = (t.name or "").lower()
+        if n in ctes or n not in cfg.tables:
+            continue
+        scope[t.alias_or_name.lower()] = n
+        scope[n] = n
+    return scope
+
+
+def _column_enum(col: exp.Column, scope: dict[str, str], cfg: Config,
+                 ctes: set[str]) -> list[str]:
+    """这个列引用如果指向一个有声明取值的列，返回那份取值，否则空。"""
+    cname = (col.name or "").lower()
+    if not cname:
+        return []
+    qualifier = (col.table or "").lower()
+    if qualifier:
+        if qualifier in ctes:
+            return []
+        tbl = scope.get(qualifier)
+    else:
+        real = set(scope.values())
+        tbl = next(iter(real)) if len(real) == 1 else None
+    if not tbl:
+        return []
+    c = cfg.tables[tbl].columns.get(cname)
+    return list(c.enum) if c and c.enum else []
+
+
+def _normalize_enums(root: exp.Expression, cfg: Config, ctes: set[str]) -> list[str]:
+    """R-22：枚举列的等值比较，按库里声明的取值把字面量的大小写改回来。
+
+    这修的是一类**语法完全正确、结果恒为空**的错，也是最难被发现的一类：
+    实测模型写 `parse_status = 'failed'`（库里是 `'FAILED'`），解析失败率于是
+    报 0%，读的人得到「链路完全健康」的结论，而真值是 4.02%。报错会被看见，
+    这种错不会。
+
+    只在**忽略大小写能对上某个声明取值**时改写，且只改字面量本身：
+      · 对不上任何取值 —— 不动。取值清单可能来自统计抽样，并不保证完备，
+        据此拒绝会误杀合法查询。
+      · 大小写已经对上 —— 不动，也不记规则，避免每条 SQL 都报一次改写。
+    """
+    changed: list[str] = []
+    for select in root.find_all(exp.Select):
+        scope = _enum_scope(select, cfg, ctes)
+        if not scope:
+            continue
+        for node in select.find_all(exp.EQ, exp.NEQ, exp.In):
+            if isinstance(node, exp.In):
+                col = node.this
+                literals = list(node.expressions)
+            else:
+                col, other = node.this, node.expression
+                if not isinstance(col, exp.Column) and isinstance(other, exp.Column):
+                    col, other = other, col
+                literals = [other]
+            if not isinstance(col, exp.Column):
+                continue
+            allowed = _column_enum(col, scope, cfg, ctes)
+            if not allowed:
+                continue
+            folded = {str(v).lower(): str(v) for v in allowed}
+            for lit in literals:
+                if not isinstance(lit, exp.Literal) or not lit.is_string:
+                    continue
+                val = str(lit.this)
+                if val in allowed:
+                    continue
+                want = folded.get(val.lower())
+                if want is None or want == val:
+                    continue
+                lit.set("this", want)
+                changed.append(f"{col.sql()} '{val}' → '{want}'")
+    return changed
 
 
 def _no_column(cfg: Config, table: str, shown: str) -> str:

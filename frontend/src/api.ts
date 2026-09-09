@@ -703,6 +703,12 @@ export interface AskResult {
   rejected_by?: string | null
   error?: string
   hint?: string
+  /** 结果范围被收窄过：原查询因扫描量超阈值被 R-11 拦下，模型自行加了过滤
+   *  条件才跑通。**必须显示** —— 链路每一步都成功、rejected_by 是 null，
+   *  这个数与全量结果在页面上毫无区别，实测差过两个数量级。 */
+  scope_narrowed?: boolean
+  /** 收窄的说明：原查询预估扫描多少行、下一步该怎么办。 */
+  scope_note?: string
 
   tables_hit?: string[]
   metrics_hit?: string[]
