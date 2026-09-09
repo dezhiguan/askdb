@@ -126,6 +126,9 @@ export interface AuditItem {
 
 export interface AuditList {
   total: number
+  /** 筛之前有多少条（可见范围之内）。"命中 N / M"的 M，
+   *  也是"筛完没有"与"本来就没有"两句不同提示的判据 */
+  total_all: number
   page: number
   page_size: number
   items: AuditItem[]
@@ -135,6 +138,9 @@ export interface AuditList {
   /** 可见记录里真出现过的数据源（在其余筛选之前算），供下拉直接用。
    *  空 id 是"未记录数据源"那一档，不是"全部"。 */
   sources?: { id: string; name: string }[]
+  /** 同上，可见记录里真出现过的发起人。空 id 是"匿名发起"那一档。
+   *  text_visible 为 false 时后端给空表 —— 那份名单本身就是内容。 */
+  users?: { id: string; name: string }[]
 }
 
 export interface Tracing {
@@ -244,6 +250,11 @@ export async function fetchAudit(params: {
   status?: string
   /** 数据源 id。'' 是合法取值（未记录数据源），所以"不筛"用 undefined 表示 */
   source?: string
+  /** 发起人。'' 是合法取值（匿名发起），"不筛"同样用 undefined 表示。
+   *  看不到原文的身份传了这个参数后端 403 —— 页面不该给出这个入口 */
+  user?: string
+  /** all / today / 7d / 30d。非法值后端 400 */
+  since?: string
 }): Promise<AuditList> {
   const query = new URLSearchParams({
     page: String(params.page),
@@ -253,6 +264,8 @@ export async function fetchAudit(params: {
   })
   if (params.status) query.set('status', params.status)
   if (params.source !== undefined) query.set('source', params.source)
+  if (params.user !== undefined) query.set('user', params.user)
+  if (params.since && params.since !== 'all') query.set('since', params.since)
   const response = await request(`/api/audit?${query}`)
   if (!response.ok) throw new Error(`/api/audit ${response.status}`)
   return response.json()
@@ -820,15 +833,29 @@ export class Forbidden extends Error {
 export interface MembersPage {
   items: RoleMember[]
   total: number
+  /** 筛之前这个角色有多少人。"命中 N / M 人"的 M ——
+   *  只给筛完的数字，"筛完没有"与"这个角色本来就没人"在页面上分不开 */
+  total_all: number
   page: number
   page_size: number
 }
 
+export interface MemberQuery {
+  /** 关键词：网关用户名 / 姓名 / 备注 */
+  q?: string
+  /** all / bound / unbound / builtin。非法值后端 400 */
+  bound?: string
+  /** all / today / 7d / 30d。非法值后端 400。选了任何一档时间，
+   *  配置内置的成员整体不参与 —— 它们没有加入时间 */
+  since?: string
+}
+
 export async function fetchMembers(
-  roleCode: string, page = 1, pageSize = 10,
+  roleCode: string, page = 1, pageSize = 10, filters: MemberQuery = {},
 ): Promise<MembersPage> {
   const query = new URLSearchParams({
     role: roleCode, page: String(page), page_size: String(pageSize),
+    q: filters.q ?? '', bound: filters.bound ?? 'all', since: filters.since ?? 'all',
   })
   const response = await request(`/api/identity/members?${query}`)
   if (response.status === 401 || response.status === 403) {
@@ -838,6 +865,7 @@ export async function fetchMembers(
   const body = await response.json()
   return {
     items: body.items ?? [], total: body.total ?? 0,
+    total_all: body.total_all ?? body.total ?? 0,
     page: body.page ?? page, page_size: body.page_size ?? pageSize,
   }
 }
@@ -996,6 +1024,9 @@ export interface TaskQuery {
   risk?: string
   user?: string
   since?: string
+  /** 关键词：问题原文 / 线程 id / trace id。**筛选在服务端做** ——
+   *  在浏览器里过滤当前这一页，搜的就只是十行，搜不到的看起来像不存在 */
+  q?: string
 }
 
 /** 任务列表列**全部**线程（2026-09-06 起不再按发起人收窄），
@@ -1034,6 +1065,7 @@ export async function fetchTasks(query: TaskQuery = {}): Promise<TasksResult> {
     risk: query.risk ?? 'all',
     user: query.user ?? 'all',
     since: query.since ?? 'all',
+    q: query.q ?? '',
   })
   const response = await request(`/api/tasks?${params}`)
   if (!response.ok) throw new Error(`/api/tasks ${response.status}`)

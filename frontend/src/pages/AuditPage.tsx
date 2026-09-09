@@ -5,6 +5,7 @@ import {
   type AuditItem, type AuditList, type AuditStats, type Me, type Replay, type ReplayResult,
 } from '../api'
 import { KIND_NAMES, STEP_NAMES } from '../traceSteps'
+import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
 
 
 function fmtTime(ts: string): string {
@@ -22,6 +23,21 @@ const pct = (v: number | null | undefined) => (v == null ? '—' : `${Math.round
 
 /** 后端没有这个字段时统一占位，保持与原型一致的排版，不编造数值。 */
 const DASH = '—'
+
+/** 下拉里"不筛"那一项的取值。**不能用空串**：空串是合法取值（未记录数据源 /
+ *  匿名发起），拿它当哨兵那两档就永远选不中。选中它时对外传 undefined。 */
+const ALL = '\u0000all'
+
+const AUDIT_KIND_LABEL: Record<string, string> = {
+  ask: '提问', sql: '直查 SQL', resume: '续跑',
+}
+const AUDIT_STATUS_LABEL: Record<string, string> = {
+  ok: '通过', rejected: '已拦截', interrupted: '中断',
+}
+/** 与任务中心、成员名册同一套时间档（后端 audit.SINCE_CHOICES） */
+const AUDIT_SINCE_LABEL: Record<string, string> = {
+  all: '全部时间', today: '今天', '7d': '近 7 天', '30d': '近 30 天',
+}
 
 type Drawer =
   | { mode: 'replay'; traceId: string; result: ReplayResult | null }
@@ -43,15 +59,14 @@ export function AuditPage({ me }: { me: Me | null }) {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [kind, setKind] = useState('')
-  const [queryInput, setQueryInput] = useState('')
   const [query, setQuery] = useState('')
+  /* 三个条件的"不筛"用 undefined 表示，不是空串：空串是**合法取值**
+     （未记录数据源 / 匿名发起），拿它当哨兵那两档就永远选不中。 */
+  const [status, setStatus] = useState('')
+  const [source, setSource] = useState<string | undefined>(undefined)
+  const [user, setUser] = useState<string | undefined>(undefined)
+  const [since, setSince] = useState('all')
   const [drawer, setDrawer] = useState<Drawer>(null)
-
-  // 输入即查会把每个字符都打成一次请求，审计文件是全量读的，代价不低
-  useEffect(() => {
-    const timer = window.setTimeout(() => { setQuery(queryInput.trim()); setPage(1) }, 300)
-    return () => window.clearTimeout(timer)
-  }, [queryInput])
 
   useEffect(() => {
     let alive = true
@@ -63,20 +78,48 @@ export function AuditPage({ me }: { me: Me | null }) {
 
   // 加载态由「已加载的那次请求」与「当前想要的那次请求」是否同一把 key 推导，
   // 而不是在 effect 里同步 setLoading —— 后者会多触发一轮渲染
-  const requestKey = `${page}|${pageSize}|${query}|${kind}`
+  const requestKey = `${page}|${pageSize}|${query}|${kind}|${status}|${source}|${user}|${since}`
   const [loaded, setLoaded] = useState<{ key: string; data: AuditList } | null>(null)
 
   useEffect(() => {
     let alive = true
-    fetchAudit({ page, pageSize, q: query, kind })
+    fetchAudit({ page, pageSize, q: query, kind, status, source, user, since })
       .then(value => { if (alive) { setLoaded({ key: requestKey, data: value }); setError('') } })
       .catch(e => { if (alive) setError(String(e.message || e)) })
     return () => { alive = false }
-  }, [requestKey, page, pageSize, query, kind])
+  }, [requestKey, page, pageSize, query, kind, status, source, user, since])
+
+  // 任一条件变化就回到第一页 —— 停在第 6 页而筛完只剩 2 条，看到的是一片空白
+  useEffect(() => { setPage(1) }, [query, kind, status, source, user, since, pageSize])
 
   const list = loaded?.data ?? null
   const loading = loaded?.key !== requestKey
   const pages = list ? Math.max(Math.ceil(list.total / list.page_size), 1) : 1
+
+  /* 已选条件。每个都能单独摘掉 —— 一次只错一个条件时不该逼人整条重来。 */
+  const auditChips: FilterChip[] = [
+    query ? { label: '关键词', value: query, onClear: () => setQuery('') } : null,
+    kind ? { label: '类型', value: AUDIT_KIND_LABEL[kind] ?? kind, onClear: () => setKind('') } : null,
+    status ? { label: '结果', value: AUDIT_STATUS_LABEL[status] ?? status, onClear: () => setStatus('') } : null,
+    source !== undefined
+      ? {
+        label: '数据源',
+        value: (list?.sources ?? []).find(item => item.id === source)?.name ?? source,
+        onClear: () => setSource(undefined),
+      } : null,
+    user !== undefined
+      ? {
+        label: '发起人',
+        value: (list?.users ?? []).find(item => item.id === user)?.name ?? user,
+        onClear: () => setUser(undefined),
+      } : null,
+    since !== 'all'
+      ? { label: '时间', value: AUDIT_SINCE_LABEL[since] ?? since, onClear: () => setSince('all') } : null,
+  ].filter(Boolean) as FilterChip[]
+  const resetFilters = () => {
+    setQuery(''); setKind(''); setStatus('')
+    setSource(undefined); setUser(undefined); setSince('all')
+  }
 
   const openReplay = async (traceId: string) => {
     setDrawer({ mode: 'replay', traceId, result: null })
@@ -140,23 +183,59 @@ export function AuditPage({ me }: { me: Me | null }) {
 
       <StatTiles stats={stats} />
 
-      <div className="audit-filters">
-        <input
-          value={queryInput}
-          onChange={event => setQueryInput(event.target.value)}
-          placeholder="搜索 trace ID 或自然语言问题…"
+      {/* 筛选条与任务中心、成员名册同一套结构与类名（components/FilterBar）。
+          原来这里只有关键词 + 类型两项，而接口早就支持按策略结果、数据源筛
+          —— 执行追踪页用着，审计页没有入口。发起人与时间是这次一并补的。 */}
+      <FilterBar standalone>
+        <FilterSearch
+          value={query}
+          onCommit={setQuery}
+          placeholder={textVisible(list) ? '搜索 trace ID 或自然语言问题…' : '搜索 trace ID…'}
         />
-        <select value={kind} onChange={event => { setKind(event.target.value); setPage(1) }}>
+        <select className={kind ? 'on' : ''} aria-label="按类型筛选"
+                value={kind} onChange={event => setKind(event.target.value)}>
           <option value="">全部类型</option>
           <option value="ask">提问</option>
           <option value="sql">直查 SQL</option>
           <option value="resume">续跑</option>
         </select>
-        <button
-          className="secondary"
-          onClick={() => { setQuery(queryInput.trim()); setPage(1) }}
-        >筛选</button>
-      </div>
+        <select className={status ? 'on' : ''} aria-label="按策略结果筛选"
+                value={status} onChange={event => setStatus(event.target.value)}>
+          <option value="">全部结果</option>
+          <option value="ok">通过</option>
+          <option value="rejected">已拦截</option>
+          <option value="interrupted">中断</option>
+        </select>
+        <select className={source === undefined ? '' : 'on'} aria-label="按数据源筛选"
+                value={source ?? ALL}
+                onChange={event => setSource(event.target.value === ALL ? undefined : event.target.value)}>
+          <option value={ALL}>全部数据源</option>
+          {(list?.sources ?? []).map(item => (
+            <option key={item.id} value={item.id}>{item.name}</option>
+          ))}
+        </select>
+        {/* 看不到原文的身份不给这个入口：后端对它 403，理由是"某某有 12 条命中"
+            本身就把内容说出去了。给一个必然报错的下拉比没有更糟。 */}
+        {textVisible(list) && (
+          <select className={user === undefined ? '' : 'on'} aria-label="按发起人筛选"
+                  value={user ?? ALL}
+                  onChange={event => setUser(event.target.value === ALL ? undefined : event.target.value)}>
+            <option value={ALL}>全部发起人</option>
+            {(list?.users ?? []).map(item => (
+              <option key={item.id} value={item.id}>{item.name}</option>
+            ))}
+          </select>
+        )}
+        <select className={since === 'all' ? '' : 'on'} aria-label="按时间筛选"
+                value={since} onChange={event => setSince(event.target.value)}>
+          {Object.entries(AUDIT_SINCE_LABEL).map(([value, label]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+        <button className="ghost" disabled={!auditChips.length} onClick={resetFilters}>重置</button>
+      </FilterBar>
+      <FilterChips standalone chips={auditChips}
+                   matched={list?.total ?? 0} total={list?.total_all ?? 0} />
 
       <section className="card table-scroll">
         <table className="audit-table">

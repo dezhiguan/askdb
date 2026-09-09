@@ -98,8 +98,8 @@ observability:
   # 数字按旧口径乘 3 折算，保持实际可用量不变。
   daily_quota: 600
 
-tables_file: ./config/ragforge-tables.yaml
-metrics_file: ./config/ragforge-metrics.yaml
+tables_file: ./config/ragforge-dev-tables.yaml
+metrics_file: ./config/ragforge-dev-metrics.yaml
 
 # ---------------------------------------------------------------------------
 # 本机开发：把登录、角色、身份、回放一并打开

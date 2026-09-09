@@ -38,8 +38,8 @@ def _now(offset_days: float = 0) -> str:
 
 def test_missing_file_is_empty(tmp_path: Path):
     out = audit.list_audits(tmp_path / "nope.jsonl")
-    assert out == {"total": 0, "page": 1, "page_size": 10, "items": [],
-                   "text_visible": True, "sources": []}
+    assert out == {"total": 0, "total_all": 0, "page": 1, "page_size": 10,
+                   "items": [], "text_visible": True, "sources": [], "users": []}
     assert audit.stats(tmp_path / "nope.jsonl")["calls"] == 0
 
 

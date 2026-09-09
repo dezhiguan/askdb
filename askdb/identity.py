@@ -592,8 +592,23 @@ def list_members(cfg: Config, role_code: str = "") -> list[dict[str, Any]]:
     return out
 
 
+#: 成员筛选条上「关联状态」那个下拉的四档。all 是不筛；其余三档互斥，
+#: 且**配置内置单独成档**：那些人 auth_user_id 恒为 None，混进"未绑定"里
+#: 会让人以为改一下就能绑上，而它们由配置文件管，页面上根本动不了。
+MEMBER_BOUND_CHOICES = ("all", "bound", "unbound", "builtin")
+
+#: 加入时间档。与任务中心、审计中心同一套取值（audit.SINCE_CHOICES），
+#: 三页的筛选条手感必须一致。
+MEMBER_SINCE_CHOICES = ("all", "today", "7d", "30d")
+
+
+def _since_days(since: str) -> int:
+    return {"today": 0, "7d": 7, "30d": 30}.get(since, -1)
+
+
 def members_page(cfg: Config, role_code: str = "", *,
-                 page: int = 1, page_size: int = 10) -> dict[str, Any]:
+                 page: int = 1, page_size: int = 10,
+                 q: str = "", bound: str = "all", since: str = "all") -> dict[str, Any]:
     """成员名册的一页 —— 与 list_members 同一份名单，但只读出这一页。
 
     名册由两段拼成：配置内置的那些（auth.accounts，进程内、条数固定）排在前，
@@ -604,26 +619,78 @@ def members_page(cfg: Config, role_code: str = "", *,
     去重必须落到 SQL 的 WHERE 里，不能像 list_members 那样读出来再滤：
     读出来再滤的话，count 数的行与最终列出的行不是同一批，页码会算错 ——
     最后一页可能是空的，而总数显示得比实际多。
+
+    q / bound / since 是筛选条上的三个条件，**同样两段都要施加**：
+      · q      —— 匹配网关用户名、姓名、备注（大小写不敏感）
+      · bound  —— MEMBER_BOUND_CHOICES 四档；builtin 那档只剩内置段
+      · since  —— 加入时间。内置条目没有 created_at（页面上显示"—"），
+        所以选了任何一档时间，内置段整体不参与 —— 拿"今天"去套一个
+        没有时间的条目，放行和不放行都是在编一个它没有的事实。
+    一条线上的三个条件都作用在**筛之后**的名单上，total 与页码按它算。
     """
     page = max(int(page), 1)
     page_size = min(max(int(page_size), 1), 100)
+    q = (q or "").strip()
+    bound = bound if bound in MEMBER_BOUND_CHOICES else "all"
+    since = since if since in MEMBER_SINCE_CHOICES else "all"
 
-    builtins = builtin_members(cfg, role_code)
+    all_builtins = builtin_members(cfg, role_code)
+    builtins = all_builtins
+    if bound in ("bound", "unbound") or since != "all":
+        builtins = []                 # 见上：内置既非已绑也非未绑，且没有加入时间
+    if q:
+        needle = q.lower()
+        builtins = [m for m in builtins
+                    if needle in str(m.get("username") or "").lower()
+                    or needle in str(m.get("display_name") or "").lower()
+                    or needle in str(m.get("note") or "").lower()]
+
     where: list[str] = []
     params: list[Any] = []
     if role_code:
         where.append("role_code = %s")
         params.append(role_code)
     # 与内置条目是同一个人的不重复列（list_members 的 seen 集合，搬到 SQL 上）
-    for m in builtins:
+    # **去重按全部内置条目算**，不是按筛完剩下的那些：筛掉一个内置条目
+    # 不等于库里那条重复行该冒出来顶替它，否则同一个人会随筛选条件时隐时现。
+    for m in all_builtins:
         where.append("NOT (role_code = %s AND lower(username) = %s)")
         params.extend([m["role_code"], m["username"].lower()])
+    # 角色 + 去重这两条是**可见范围**，不是手上的筛选：筛之前的总数按它算
+    base_clause = (" WHERE " + " AND ".join(where)) if where else ""
+    base_params = list(params)
+    if q:
+        where.append("(username ILIKE %s OR coalesce(display_name,'') ILIKE %s"
+                     " OR coalesce(note,'') ILIKE %s)")
+        like = f"%{q}%"
+        params.extend([like, like, like])
+    if bound == "bound":
+        where.append("auth_user_id IS NOT NULL")
+    elif bound == "unbound":
+        where.append("auth_user_id IS NULL")
+    elif bound == "builtin":
+        where.append("false")         # 内置段之外没有内置条目
+    days = _since_days(since)
+    if since == "today":
+        where.append("created_at >= date_trunc('day', now())")
+    elif days > 0:
+        where.append("created_at >= now() - make_interval(days => %s)")
+        params.append(days)
     clause = (" WHERE " + " AND ".join(where)) if where else ""
 
     counted = _rows(cfg, "SELECT COUNT(*) FROM askdb_role_members" + clause,
                     tuple(params))
     db_total = int(counted[0][0]) if counted else 0
     total = len(builtins) + db_total
+
+    # 筛之前这个角色有多少人。页面上"命中 N / M 人"的 M 说的是这个数 ——
+    # 只给筛完的数字，"筛完没有"与"这个角色本来就没人"在页面上分不开。
+    if base_clause == clause:
+        total_all = total                     # 没有任何筛选条件，省一次 COUNT
+    else:
+        counted_all = _rows(cfg, "SELECT COUNT(*) FROM askdb_role_members" + base_clause,
+                            tuple(base_params))
+        total_all = len(all_builtins) + (int(counted_all[0][0]) if counted_all else 0)
 
     start = (page - 1) * page_size
     out = builtins[start:start + page_size]
@@ -643,7 +710,8 @@ def members_page(cfg: Config, role_code: str = "", *,
                  "created_at": r[6].isoformat(), "created_by": r[7],
                  # 登录接入前一律未绑定。如实标出来，别让人以为已经关联上网关账号了
                  "bound": r[2] is not None, "builtin": False})
-    return {"items": out, "total": total, "page": page, "page_size": page_size}
+    return {"items": out, "total": total, "total_all": total_all,
+            "page": page, "page_size": page_size}
 
 
 def add_member(cfg: Config, *, role_code: str, username: str,

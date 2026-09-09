@@ -131,8 +131,8 @@ observability:
   # 生产配置（ragforge*.yaml）仍按 100～200 从严。
   daily_quota: 3000
 
-tables_file: ./config/tables-ragforge.yaml
-metrics_file: ./config/metrics-ragforge.yaml
+tables_file: ./config/ragforge-dev-tables.yaml
+metrics_file: ./config/ragforge-dev-metrics.yaml
 
 # 运行时添加只读数据源。开着的时候，服务端会按界面填入的地址主动建连 ——
 # askdb 不设账号体系，所以这等于把出站建连的能力交给任何能打开页面的人。

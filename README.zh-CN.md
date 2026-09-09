@@ -223,8 +223,10 @@ rollout、健康检查全绿，只有界面停在上一版 —— CI 因此自�
 
 | 文件 | 用于 |
 |---|---|
-| `config/askdb.yaml` | 本机默认 —— 自带的 DuckDB 样例库 |
+| `config/askdb.yaml` | 本机开发实例。同样没有 datasource 段 —— 数据源来自运行时注册表 |
+| `config/sample.yaml` | 自带的 DuckDB 样例库，评测与故障注入跑的是这一份 |
 | `config/tables.yaml` · `config/metrics.yaml` | 样例库的**表白名单与业务口径定义** |
+| `config/ragforge-dev-tables.yaml` · `ragforge-dev-metrics.yaml` | 本机 ragforge 库的同样两份，由 `askdb.yaml` 与 `ragforge.yaml` 引用 |
 | `config/public.yaml` | 对外实例。**整段没有 datasource** —— 所有数据源都来自运行时注册表 |
 | `config/ragforge-prod.yaml` + `ragforge-prod-tables.yaml` + `ragforge-prod-metrics.yaml` | ragforge 生产库，生产实测那一轮用的就是它 |
 | `config/ragforge-eval.yaml`、`ragforge-tight.yaml` …… | 冻结的评测变体，留着是为了让已公开的那几轮还能复现 |

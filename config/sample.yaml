@@ -152,8 +152,20 @@ answer_cache:
   key_prefix: askdb:qcache:dev
   redis_url_env: ASKDB_REDIS_URL
 
-tables_file: ./config/tables-ragforge.yaml
-metrics_file: ./config/metrics-ragforge.yaml
+# 白名单必须是**样例库那一份**。
+#
+# 这里原来指向 ragforge-dev-tables/metrics（本机 ragforge 真实库）—— 而这份配置的
+# 数据源是 data/sample.duckdb。两边表名根本对不上：白名单里的 organizations /
+# model_usage_daily / retrieval_logs 在样例库里不存在（样例库是 orgs /
+# model_usage / knowledge_bases / documents），字段也不同（样例库状态列叫
+# status，真实库叫 parse_status）。
+#
+# 后果不是启动报错，是**评测与故障注入跑在一份不存在的 schema 上**：召回给出
+# 三张查不到的表，模型照着写 SQL，执行层才报"表不存在"，成绩单上表现为一批
+# 说不清原因的失败。配置文件之间只差一个词序（tables-ragforge 与
+# ragforge-tables），指错了肉眼看不出来。
+tables_file: ./config/tables.yaml
+metrics_file: ./config/metrics.yaml
 
 # 运行时添加只读数据源。开着的时候，服务端会按界面填入的地址主动建连 ——
 # askdb 不设账号体系，所以这等于把出站建连的能力交给任何能打开页面的人。

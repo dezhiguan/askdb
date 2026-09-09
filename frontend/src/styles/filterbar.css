@@ -1,0 +1,97 @@
+/* 三处列表（任务中心、审计中心、成员名册）共用的筛选条与表头。
+   一份样式而不是各写各的：三页的搜索、清空、"已选什么"读起来必须是同一件事。
+   审计页原来的 .audit-filters 是这套的前身，样式合并到这里，那边只留结构。 */
+
+.filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 9px 13px;
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line);
+}
+/* 卡片外独立成条时（审计页在表卡之上）自己带边框与圆角 */
+.filterbar.standalone {
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.filterbar .filter-search { position: relative; flex: 1 1 220px; min-width: 160px; }
+.filterbar .filter-search input {
+  width: 100%;
+  padding: 7px 8px 7px 20px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--paper);
+  font-size: 8px;
+}
+.filterbar .filter-search::before {
+  content: "⌕";
+  position: absolute; left: 7px; top: 50%; transform: translateY(-50%);
+  color: var(--muted); font-size: 9px; pointer-events: none;
+}
+.filterbar select {
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--paper);
+  font-size: 8px;
+}
+/* 生效中的条件要一眼看得出来 —— 否则筛完只剩两条时，人会以为是没数据 */
+.filterbar select.on {
+  border-color: #a6c3af; color: var(--green); background: var(--green-wash); font-weight: 700;
+}
+
+/* 已选条件。每个都能单独摘掉：一次只错一个条件时，不该逼人整条重来 */
+.filter-chips {
+  display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+  padding: 7px 13px;
+  background: rgba(243, 241, 234, .55);
+  border-bottom: 1px solid var(--line);
+  font-size: 7px;
+}
+.filter-chips.standalone {
+  margin: -10px 0 10px;
+  border: 1px solid var(--line); border-top: 0;
+  border-radius: 0 0 9px 9px;
+}
+.filter-chips > .chips-label { color: var(--muted); }
+.filter-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid #a6c3af; border-radius: 99px;
+  color: var(--green); background: var(--green-wash);
+  font-size: 7px;
+}
+.filter-chip b { font-weight: 700; }
+.filter-chip button {
+  padding: 0; border: 0; color: inherit; background: transparent;
+  font-size: 8px; line-height: 1; opacity: .65;
+}
+.filter-chip button:hover { opacity: 1; }
+/* 命中数：筛完 N 条 / 筛之前 M 条。只给一个数的话，"没结果"与"没数据"分不开 */
+.filter-hits { margin-left: auto; color: var(--muted); font: 7px var(--mono); }
+
+/* ---------------- 任务列表表头 ---------------- */
+
+/* 列宽与 .task-row 同一份定义，两处引用同一个变量 —— 分开写必然漂 */
+.tasks-page {
+  --task-cols: 34px minmax(170px, 1.5fr) .55fr .9fr .8fr auto;
+}
+.tasks-page .task-head {
+  display: grid;
+  grid-template-columns: var(--task-cols);
+  gap: 9px;
+  align-items: center;
+  padding: 8px 13px;
+  color: var(--muted);
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 7px;
+  letter-spacing: .06em;
+}
+.tasks-page .task-head .right { text-align: right; }
