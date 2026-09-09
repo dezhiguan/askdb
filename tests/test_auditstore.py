@@ -47,7 +47,18 @@ def _rec(trace: str, **over):
 # ------------------------------------------------------------------ 开关
 
 def test_enabled_needs_both_the_switch_and_the_dsn(cfg, monkeypatch):
-    """不做"配了 DSN 就自动启用"：介质是部署决定，不是环境凑出来的。"""
+    """不做"配了 DSN 就自动启用"：介质是部署决定，不是环境凑出来的。
+
+    **三个回落变量都要自己清干净**，不能只清 ASKDB_STORE_DSN：config.load()
+    会把项目根的 .env 读进环境，而开发机的 .env 里有 ASKDB_IDENTITY_DSN ——
+    raw_dsn() 回落到它，"没配连接串"那一支就永远走不到。这条用例正因此
+    在有 .env 的目录里红、在干净的 worktree 里绿，与 conftest 顶上那条
+    _no_ambient_store 的注释说的是同一件事。
+    """
+    fallbacks = (pgstore.DSN_ENV, "ASKDB_SOURCES_DSN", "ASKDB_IDENTITY_DSN")
+    for var in fallbacks:
+        monkeypatch.delenv(var, raising=False)
+
     monkeypatch.setenv(pgstore.DSN_ENV, "host=h")
     cfg.raw["observability"] = {**cfg.raw["observability"], "store": "file"}
     assert auditstore.enabled(cfg) is False
@@ -55,7 +66,8 @@ def test_enabled_needs_both_the_switch_and_the_dsn(cfg, monkeypatch):
     cfg.raw["observability"] = {**cfg.raw["observability"], "store": "postgres"}
     assert auditstore.enabled(cfg) is True
 
-    monkeypatch.delenv(pgstore.DSN_ENV, raising=False)
+    for var in fallbacks:
+        monkeypatch.delenv(var, raising=False)
     assert auditstore.enabled(cfg) is False, "选了 postgres 但没连接串，不算启用"
 
 

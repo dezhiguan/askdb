@@ -43,7 +43,13 @@ def _report(score: float, ds: str = "sample.duckdb"):
 
 
 def test_enabled_follows_the_audit_switch(cfg, monkeypatch):
-    """成绩与凭据分家存放没有意义 —— 同一个开关。"""
+    """成绩与凭据分家存放没有意义 —— 同一个开关。
+
+    同 test_auditstore 那条：三个回落变量都要自己清，否则开发机 .env 里的
+    ASKDB_IDENTITY_DSN 会让判断永远为真。
+    """
+    for var in (pgstore.DSN_ENV, "ASKDB_SOURCES_DSN", "ASKDB_IDENTITY_DSN"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv(pgstore.DSN_ENV, "host=h")
     cfg.raw["observability"] = {**cfg.raw["observability"], "store": "postgres"}
     assert evalstore.enabled(cfg) is True
