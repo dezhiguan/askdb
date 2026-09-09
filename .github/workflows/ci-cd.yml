@@ -258,11 +258,23 @@ jobs:
     needs: [deploy]
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
+      # 冒烟要拿**这次部署的配置**当期望值（见下面的 daily_quota 断言），
+      # 所以这一步的检出不是多余的：没有它，期望值就得在这里再抄一份数字，
+      # 而那份抄件正是 2026-09-09 那次红灯的成因。
+      - uses: actions/checkout@v4
+
       - name: Health
         run: |
           BASE="${{ vars.ASKDB_BASE_URL || 'https://askdb.ragforge.net' }}"
           BODY="$(curl --fail --silent --show-error --max-time 10 --retry 6 --retry-delay 5 "${BASE}/api/health")"
-          python3 - <<'PY' "${BODY}"
+          # 镜像跑的就是 config/public.yaml（见 Dockerfile 的 CMD），所以仓库里
+          # 这一行既是期望值，也是"线上到底有没有换上这次的配置"的判据。
+          EXPECTED_QUOTA="$(sed -n 's/^  daily_quota:[[:space:]]*\([0-9][0-9]*\).*/\1/p' config/public.yaml | head -1)"
+          test -n "${EXPECTED_QUOTA}" || {
+            echo "config/public.yaml 里读不出 daily_quota —— 是这一行挪了位置还是改了缩进？" >&2
+            exit 1
+          }
+          python3 - <<'PY' "${BODY}" "${EXPECTED_QUOTA}"
           import json, sys
           d = json.loads(sys.argv[1])
           assert d["datasource"]["ok"], d
@@ -285,9 +297,25 @@ jobs:
           assert d["tenant"].get("enforced") is False, \
               f"租户隔离报成生效了，与运行时数据源的实际行为不符：{d['tenant']}"
           # 接了模型，所以不再断言 disabled；改为钉住**成本护栏**：
-          # 每日配额必须设置且不得放得太宽，否则被脚本刷爆
+          # 每日配额必须设置且不得放得太宽，否则被脚本刷爆。
+          #
+          # 上限原来写死 500。2026-09-08 按日访问 10 万级重配（e09b80d）把
+          # config/public.yaml 调到 12000 —— 那是有意的档位调整，而这条断言
+          # 没跟着走，于是第一次跑到冒烟就红在**设计如此**上（红的是判据，
+          # 线上是好的）。它没在当天就红，只是因为那几次 push 先红在覆盖率上，
+          # 冒烟根本没跑到。
+          #
+          # 所以这里不再抄第二份数字：期望值取自这次部署所用的配置本身，
+          # 顺带钉住"线上确实换上了这次的配置"。绝对上限仍留一条 —— 它守的是
+          # 账单，不是漂移：public.yaml 的档位表里 20000 ≈ ¥2580/月，越过它
+          # 应当是一次有人过目的决定，而不是改一行配置就悄悄生效。
           q = d["guard"].get("daily_quota")
-          assert isinstance(q, int) and 0 < q <= 500, f"对外实例的每日配额异常：{q}"
+          expected = int(sys.argv[2])
+          assert isinstance(q, int) and q == expected, \
+              f"线上每日配额 {q} 与本次部署的 config/public.yaml（{expected}）不一致 —— " \
+              f"要么配置没生效，要么线上被手工改过"
+          assert 0 < q <= 20000, \
+              f"每日配额越过账单上限（≈¥2580/月）：{q} —— 要提这条线，先在这里提"
           PY
 
       - name: Page and its assets are actually served
