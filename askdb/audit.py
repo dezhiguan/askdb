@@ -153,7 +153,11 @@ def matches(rec: dict[str, Any], f: AuditFilter) -> bool:
         return False
     if f.username is not None and str(rec.get("user") or "") != f.username:
         return False
-    if f.kind is not None and rec.get("kind", "ask") != f.kind:
+    # `or "ask"` 而不是 `rec.get("kind", "ask")`：后者把"字段缺失"与"字段是空串"
+    # 分成两档，而列上折算完只剩空串一档（写入是 str(rec.get("kind") or "")），
+    # SQL 再怎么写也分不出来。两边分不出的差别就不该在这里制造 —— 否则
+    # 审计列表（信 SQL）与统计（信 matches）会对同一条记录给出不同的归类。
+    if f.kind is not None and (rec.get("kind") or "ask") != f.kind:
         return False
     if f.source is not None and str(rec.get("source") or "") != f.source:
         return False

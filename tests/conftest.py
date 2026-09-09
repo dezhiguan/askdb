@@ -166,3 +166,42 @@ def sources_store(_no_ambient_store, monkeypatch):
         with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as con:
             con.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
         sources.reset_pool()
+
+
+@pytest.fixture
+def audit_store(_no_ambient_store, monkeypatch):
+    """给每个用例一个独立 schema 的审计三表（askdb_audit / approvals / reviews）。
+
+    与 sources_store 同一条纪律（独立 schema、不 skip 直接 fail），只是换成
+    askdb.pgstore 那一套环境变量 —— 审计存储走 ASKDB_STORE_*，数据源注册表
+    走 ASKDB_SOURCES_*，生产上指同一个库，但测试里必须能分别指。
+    """
+    import uuid
+
+    import psycopg
+
+    from askdb import auditstore, pgstore
+
+    dsn = _test_store_dsn()
+    if not dsn:
+        pytest.fail(
+            f"审计下推用例需要一个可写的 PostgreSQL：设置 {TEST_DSN_ENV}。"
+            f"（有意不 skip：这批用例验的是真 SQL 跑不跑得通 —— 嵌套 DISTINCT ON、"
+            f"ANY()、服务端游标，跳过等于那几句 SQL 一次都没执行过，而报告是绿的）")
+
+    schema = f"askdb_a_{uuid.uuid4().hex[:10]}"
+    monkeypatch.setenv(pgstore.DSN_ENV, dsn)
+    monkeypatch.setenv(pgstore.SCHEMA_ENV, schema)
+    pgstore.reset_pool()
+    with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as con:
+        con.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+    auditstore.reset_ready()
+    auditstore.ensure_schema()
+    try:
+        yield schema
+    finally:
+        pgstore.reset_pool()
+        with psycopg.connect(dsn, autocommit=True, connect_timeout=5) as con:
+            con.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        auditstore.reset_ready()
+        pgstore.reset_pool()

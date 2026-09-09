@@ -180,16 +180,31 @@ def dict_pool():
         return _dict_pool
 
 
+def _is_undefined_table(e: Exception) -> bool:
+    """这个异常是不是"表还没建出来"。
+
+    2026-09-09 修：原来 rows() 里写的是 `except psycopg.errors.UndefinedTable`，
+    而那一句**永远不会命中** —— connect() 是个上下文管理器，with 体里抛出的
+    异常会在它的 yield 处被接住、包成 StoreUnavailable 再抛，等到 rows() 这一层
+    时类型已经变了。于是"表不存在按空处理"这条写着的行为一直没有生效，
+    实际表现是审计接口 503。这里改成认包装之后的原因。
+    """
+    import psycopg
+
+    cause = e.__cause__ if isinstance(e, StoreUnavailable) else e
+    return isinstance(cause, psycopg.errors.UndefinedTable)
+
+
 def rows(sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
     """读一次库。**表还没建出来时按空处理** —— 那等于"还没有任何记录"，
     与查出来 0 行是同一回事；连不上、认证失败仍照实抛。"""
-    import psycopg
-
     try:
         with connect() as con:
             return con.execute(sql, params).fetchall()
-    except psycopg.errors.UndefinedTable:
-        return []
+    except Exception as e:
+        if _is_undefined_table(e):
+            return []
+        raise
 
 
 def iter_rows(sql: str, params: tuple[Any, ...] = (), *,
@@ -209,8 +224,6 @@ def iter_rows(sql: str, params: tuple[Any, ...] = (), *,
     的话，每条 FETCH 各自隐式提交，游标当场就没了。这就是 with con.transaction()
     在这里的作用，不是为了写入的原子性。
     """
-    import psycopg
-
     try:
         with connect() as con:
             with con.transaction():
@@ -218,8 +231,10 @@ def iter_rows(sql: str, params: tuple[Any, ...] = (), *,
                     cur.itersize = batch_size
                     cur.execute(sql, params)
                     yield from cur
-    except psycopg.errors.UndefinedTable:
-        return                                         # 与 rows() 同一条口径
+    except Exception as e:
+        if _is_undefined_table(e):
+            return                                     # 与 rows() 同一条口径
+        raise
 
 
 def execute(sql: str, params: tuple[Any, ...] = ()) -> None:

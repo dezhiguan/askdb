@@ -24,12 +24,22 @@ spec:
   #
   # 这三条都依赖**同一台机器的同一个 hostPath**：单节点 k3s 才成立。
   # 真要跨节点，检查点得换 PG 后端、审计得换集中式收集，别只把这里调大。
-  replicas: 2
+  # 2026-09-09 由 2 提到 4，按日访问量 10 万级（@guandezhi）。
+  #
+  # 容量口径：100,000 PV/天、峰值小时约 42 r/s。入口 nginx 接管了 /assets/
+  # 的缓存之后，压到 Pod 上的主要是接口请求，峰值约 29 r/s。
+  # 每个 Pod 是**单个 uvicorn worker**（cli.serve 没传 workers），一个 Python
+  # 进程吃不满一个核，所以扩容只能靠加副本，把 CPU limit 提到 1 核以上没有意义。
+  # 4 副本下每个约 7 r/s，留足了余量。
+  #
+  # ⚠️ 应用前先确认节点装得下：`kubectl describe node <node> | grep -A6 Allocated`。
+  #    上一版注释记录节点内存已用 75%。这里把 requests 压得很低（4×256Mi=1Gi）
+  #    正是为了好调度，limits 才是真正的上限。
+  replicas: 4
   strategy:
     type: RollingUpdate
-    # 两副本下 maxUnavailable: 1 已经能做到滚动期间始终有一个在服务。
-    # maxSurge 保持 0 不是因为不能共存（WAL 之后可以了），而是没必要 ——
-    # 节点内存实际已用 75%，不额外撑起第三个 Pod。
+    # maxSurge 保持 0：节点内存紧，滚动期间不额外撑起第五个 Pod。
+    # 4 副本下 maxUnavailable: 1 意味着滚动期间始终有 3 个在服务。
     rollingUpdate: { maxUnavailable: 1, maxSurge: 0 }
   selector:
     matchLabels: { app: askdb }
@@ -39,6 +49,10 @@ spec:
     spec:
       imagePullSecrets:
         - name: acr-cred
+      # /api/ask 的上游超时是 60s（入口 nginx）。默认 30s 的优雅停机会在
+      # 滚动更新时把还在等模型返回的请求直接掐断，用户看到的是一次莫名其妙的
+      # 502。给到 75s，比那条 60s 长。
+      terminationGracePeriodSeconds: 75
       volumes:
         # 用 hostPath 而不是 PVC：本集群的 local-path 供应器要起一个 helper pod
         # 去宿主机建目录，而 Server 3 没有公网出口，helper 镜像拉不下来 ——
@@ -140,9 +154,25 @@ spec:
             - secretRef:
                 name: askdb-langsmith
                 optional: true
+          lifecycle:
+            preStop:
+              # 先等一会儿再让进程收 SIGTERM：Pod 进入 Terminating 之后，
+              # kube-proxy 摘掉它的 endpoint 与容器收到信号是**两件并发的事**，
+              # 不等这几秒，摘干净之前进来的请求会打在一个正在关的进程上。
+              exec: { command: ["sh", "-c", "sleep 5"] }
           resources:
-            requests: { cpu: "50m",  memory: "192Mi" }
-            limits:   { cpu: "500m", memory: "512Mi" }
+            # 2026-09-09 上调，配合 4 副本。
+            #
+            # requests 是给调度器看的，压低以便在内存吃紧的节点上排得下；
+            # limits 才是真正的天花板：
+            #   · CPU 500m→1000m：单进程最多用满一个核，给到 1 核即到顶。
+            #     原来的 500m 意味着并发一上来就被 cgroup 限流，表现为
+            #     "没报错但每个请求都变慢"，最难查的那一类。
+            #   · 内存 512Mi→768Mi：langchain + chromadb + duckdb 的常驻本身
+            #     就吃掉一大半，再叠上并发请求各自持有的结果行就很接近上限。
+            #     ⚠️ 这不能解决审计页那条（见文件末尾的说明），只是给日常留余量。
+            requests: { cpu: "200m",  memory: "256Mi" }
+            limits:   { cpu: "1000m", memory: "768Mi" }
           readinessProbe:
             httpGet: { path: /api/health, port: 8000 }
             initialDelaySeconds: 5
@@ -174,3 +204,31 @@ spec:
     - port: 8000
       targetPort: 8000
       nodePort: 31100          # careermate 31080 / ragforge 31090，这里取 31100
+  # externalTrafficPolicy 保持默认的 Cluster（会 SNAT，源地址丢失）。
+  # 不改成 Local 是因为应用侧已经不依赖 TCP 源地址了：入口 nginx 用
+  # proxy_set_header X-Real-IP 把真实来源带进来，限流分桶读的是那个头
+  # （askdb/server.py 的 _client_ip）。改成 Local 反而会让只跑在部分节点上的
+  # Pod 从别的节点进不来。
+
+---
+# ===========================================================================
+# 2026-09-09 日访问量 10 万级：这份清单管不到的那一条
+#
+# 扩副本、提 limit、调限流都做完之后，**剩下的瓶颈不在 k8s 这一层**：
+#
+# observability.store 目前是文件（config/public.yaml 的 audit_log 指向
+# hostPath 上的 JSONL）。askdb/audit.py 的 read_records 是把**整个文件**
+# 读进内存再逐行解析的，而审计页、任务中心、质量看板、统计接口全都走它。
+#
+# 10 万 PV/天大约产生 1.5 万条审计记录、约 15MB/天。跑一个月就是 450MB 的
+# 文件，任何人点开审计页，某个 Pod 就要把它整个读成 Python 对象 —— 实际
+# 占用是文件体积的好几倍，768Mi 的 limit 拦不住，表现为 Pod 被 OOMKill、
+# liveness 探活失败、滚动重启，而入口只看到 502。
+#
+# 也就是说：**在审计存储迁到 PostgreSQL 之前，这个站点不具备承载 10 万
+# 日访问量的条件**，跟限流配多少无关。那件事另有人在做（迁 store: postgres，
+# 目前还在工作区、未进 main），落地之后本文件里的 hostPath 卷也就只剩
+# 迁移用途了。上量之前先确认它已经合并并生效：
+#
+#   curl -s https://askdb.ragforge.net/api/health | jq '.observability'
+# ===========================================================================

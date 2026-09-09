@@ -175,18 +175,19 @@ def test_old_records_without_kind_still_count_as_ask():
     assert _sql_keeps(old_rec, f)
 
 
-def test_explicit_empty_kind_is_not_ask_and_sql_only_oversamples():
-    """kind 显式为空串**不是**问答 —— 而 SQL 分不出它与"字段缺失"，会多带回来。
+def test_empty_kind_counts_as_ask_on_both_sides():
+    """kind 空串与"字段缺失"归同一档，两边一致。
 
-    这正是"超集契约"存在的理由：列是写入时折算出来的，丢掉了"这个键在不在"
-    这一维。多带回来的那条由 read_audit / iter_audit 里的 matches 挡掉，
-    页面上看不到它。这里把这个差异钉住，免得哪天有人看到 SQL 多筛出一条
-    就去改 _where，反而把真正的老记录漏掉。
+    列上折算完只剩空串一档（写入是 str(rec.get("kind") or "")），SQL 再怎么写
+    也分不出"键不在"与"键是空串"。所以 matches 也不去分 —— 分不出的差别不该
+    在判定侧制造出来，否则审计列表（信 SQL）与统计（信 matches）会把同一条
+    记录归成两档，而这种不一致在页面上只表现为"两个数对不上"。
     """
-    rec = _rec(kind="")
     f = AuditFilter(kind="ask")
-    assert not matches(rec, f)          # 判定的出处
-    assert _sql_keeps(rec, f)           # SQL 多带 —— 允许，且必须允许
+    for rec in (_rec(kind=""), _rec(kind=None),
+                {k: v for k, v in _rec().items() if k != "kind"}):
+        assert matches(rec, f)
+        assert _sql_keeps(rec, f)
 
 
 def test_status_three_buckets_partition_the_corpus():
