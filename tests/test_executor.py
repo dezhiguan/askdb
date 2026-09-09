@@ -114,3 +114,67 @@ def test_query_result_carries_data_time(cfg):
     assert r.as_of, "查询结果必须带数据时间"
     from datetime import datetime
     datetime.fromisoformat(r.as_of)          # 必须是可解析的 ISO 文本
+
+
+# ------------------------------------------- pg_stats 取值补全（2026-09-09）
+
+def test_pg_array_literal_is_parsed():
+    """没有 COMMENT 的库靠 pg_stats 拿取值；most_common_vals 是 anyarray，
+    psycopg 取不到具体类型，只能转 text 再拆。"""
+    from askdb.executor import _parse_pg_array
+    assert _parse_pg_array("{COMPLETED,FAILED,PENDING}") == ["COMPLETED", "FAILED", "PENDING"]
+    assert _parse_pg_array('{"a b",c}') == ["a b", "c"]
+    assert _parse_pg_array(None) == [] and _parse_pg_array("abc") == []
+
+
+def test_only_text_columns_get_enum_values():
+    """数值/时间列的高频值是数据不是取值集合，拿去做枚举归一毫无意义。"""
+    from askdb.executor import _is_texty
+    assert _is_texty("character varying") and _is_texty("text")
+    assert not _is_texty("bigint") and not _is_texty("timestamp with time zone")
+
+
+def test_describe_with_no_tables_asks_nothing(cfg):
+    """没有表就不该发查询 —— 空 IN 列表在 PG 上是一次无谓往返。"""
+    from askdb.executor import Executor
+    with Executor(cfg) as ex:
+        assert ex.describe([]) == {}
+
+
+def test_enum_backfill_is_best_effort(monkeypatch):
+    """pg_stats 读不到（无权限、老版本、统计未生成）时必须原样返回。
+
+    取值补全是锦上添花：为它让"加数据源"整个失败，是把可用性赔给了优化项。
+    """
+    from askdb.executor import _PgBackend
+
+    grouped = {"t": [{"name": "c", "type": "text"}]}
+
+    class Boom:
+        def cursor(self):
+            raise RuntimeError("pg_stats 不可读")
+
+    backend = _PgBackend.__new__(_PgBackend)
+    monkeypatch.setattr(backend, "connect", lambda: Boom(), raising=False)
+    assert backend._attach_enums(["t"], grouped) == grouped
+
+
+def test_enum_backfill_keeps_values_already_parsed_from_comments(monkeypatch):
+    """注释里已经解析出取值时，统计不该把它覆盖掉 —— 注释是人写的，更准。"""
+    from askdb.executor import _PgBackend
+
+    grouped = {"t": [{"name": "c", "type": "text", "enum": ["A", "B"]}]}
+
+    class Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k): return None
+        def fetchall(self): return [("t", "c", 2, "{X,Y}")]
+
+    class Conn:
+        def cursor(self): return Cur()
+
+    backend = _PgBackend.__new__(_PgBackend)
+    monkeypatch.setattr(backend, "connect", lambda: Conn(), raising=False)
+    out = backend._attach_enums(["t"], grouped)
+    assert out["t"][0]["enum"] == ["A", "B"]

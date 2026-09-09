@@ -475,3 +475,91 @@ def test_r10_still_injects_when_existing_value_differs(cfg):
     r = guard.check(sql, cfg, org_id=65)
     assert r.ok
     assert "d.org_id = 65" in r.sql and "d.org_id = 999" in r.sql
+
+
+# ------------------------------------------------------- R-21 / R-22 / R-23
+#
+# 三条都来自 2026-09-09 的十二源线上回归：它们拦的不是"跑不起来的 SQL"，
+# 而是**跑得起来、结果却是错的**那一类 —— 页面上与正确答案毫无区别。
+
+def test_r21_rejects_tablesample(cfg):
+    """抽样绕过扫描阈值，把 1% 的行数当成总行数返回（实测差约 100 倍）。"""
+    r = chk("SELECT COUNT(*) AS n FROM documents TABLESAMPLE SYSTEM (1)", cfg)
+    assert not r.ok and r.rejected_by == "R-21"
+
+
+def test_r21_is_retryable_not_out_of_scope(cfg):
+    """去掉抽样就是一条正常 SQL —— 该让模型重试，不该归到"超范围"。"""
+    r = chk("SELECT COUNT(*) AS n FROM documents TABLESAMPLE BERNOULLI (5)", cfg)
+    assert not r.ok and not r.out_of_scope
+
+
+def test_r23_rejects_sql_without_any_table(cfg):
+    """召回不到表时模型生成过 `SELECT 1`，护栏放行、界面显示 1，真值是 13。"""
+    r = chk("SELECT 1", cfg)
+    assert not r.ok and r.rejected_by == "R-23"
+
+
+def test_r23_allows_normal_query(cfg):
+    assert chk("SELECT id FROM documents", cfg).ok
+
+
+def test_r22_normalizes_enum_case(cfg):
+    """`status = 'failed'`（库里是 'FAILED'）语法对、结果恒空，
+    解析失败率因此报 0%，真值 4.02%。归一到库里声明的取值。"""
+    col = cfg.tables["documents"].columns["status"]
+    col.enum = ["COMPLETED", "FAILED", "PENDING"]
+    r = chk("SELECT id FROM documents WHERE status = 'failed'", cfg)
+    assert r.ok and "R-22" in r.rules_fired
+    assert "'FAILED'" in r.sql and "'failed'" not in r.sql
+
+
+def test_r22_leaves_correct_case_alone(cfg):
+    col = cfg.tables["documents"].columns["status"]
+    col.enum = ["COMPLETED", "FAILED"]
+    r = chk("SELECT id FROM documents WHERE status = 'FAILED'", cfg)
+    assert r.ok and "R-22" not in r.rules_fired
+
+
+def test_r22_does_not_touch_unknown_values(cfg):
+    """取值清单可能来自统计抽样、并不保证完备 —— 对不上就不动，更不能拒。"""
+    col = cfg.tables["documents"].columns["status"]
+    col.enum = ["COMPLETED", "FAILED"]
+    r = chk("SELECT id FROM documents WHERE status = 'archived'", cfg)
+    assert r.ok and "R-22" not in r.rules_fired and "'archived'" in r.sql
+
+
+def test_r22_normalizes_inside_in_list(cfg):
+    col = cfg.tables["documents"].columns["status"]
+    col.enum = ["COMPLETED", "FAILED"]
+    r = chk("SELECT id FROM documents WHERE status IN ('failed', 'completed')", cfg)
+    assert r.ok and "R-22" in r.rules_fired
+    assert "'FAILED'" in r.sql and "'COMPLETED'" in r.sql
+
+
+def test_r22_handles_literal_on_the_left(cfg):
+    """`'failed' = status` 与 `status = 'failed'` 是同一件事，不能只认一种写法。"""
+    cfg.tables["documents"].columns["status"].enum = ["COMPLETED", "FAILED"]
+    r = chk("SELECT id FROM documents WHERE 'failed' = status", cfg)
+    assert r.ok and "R-22" in r.rules_fired and "'FAILED'" in r.sql
+
+
+def test_r22_ignores_comparisons_without_a_column(cfg):
+    """两边都不是列（`1 = 1`）时不该崩，也不该改写。"""
+    cfg.tables["documents"].columns["status"].enum = ["COMPLETED", "FAILED"]
+    r = chk("SELECT id FROM documents WHERE 1 = 1", cfg)
+    assert r.ok and "R-22" not in r.rules_fired
+
+
+def test_r22_ignores_non_string_literals(cfg):
+    """枚举列拿数字比较是另一回事（多半会在 R-04 之外报类型错），归一不掺和。"""
+    cfg.tables["documents"].columns["status"].enum = ["COMPLETED", "FAILED"]
+    r = chk("SELECT id FROM documents WHERE status = 1", cfg)
+    assert "R-22" not in r.rules_fired
+
+
+def test_r22_skips_columns_without_declared_values(cfg):
+    """没有声明取值的列一律不动 —— 归一的依据只能是库里真有的元数据。"""
+    assert not cfg.tables["documents"].columns["file_name"].enum
+    r = chk("SELECT id FROM documents WHERE file_name = 'a.pdf'", cfg)
+    assert r.ok and "R-22" not in r.rules_fired and "'a.pdf'" in r.sql

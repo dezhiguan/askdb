@@ -46,7 +46,9 @@ def test_i03_sql_without_api_key(monkeypatch, tmp_path, sample_db):
     cfg_path = d / "askdb.yaml"
     cfg_path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
 
-    r = R.invoke(app, ["sql", "SELECT 1 AS x", "-c", str(cfg_path)])
+    # 查一张真表：R-23（2026-09-09）会拒绝不引用任何表的 SQL。
+    # 这条用例考的是"直查要不要模型密钥"，换成读表的平凡查询，主题不变。
+    r = R.invoke(app, ["sql", "SELECT id FROM documents LIMIT 1", "-c", str(cfg_path)])
     assert r.exit_code == 0, "直查不该依赖模型密钥"
 
 

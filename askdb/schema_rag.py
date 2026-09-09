@@ -240,7 +240,7 @@ def _score(t: Table, question: str) -> tuple[int, bool]:
     elif name_tokens & weak:
         s += 1                                    # 泛词：给个排序上的微弱偏好，仅此而已
 
-    for a in t.aliases:
+    for a in alias_hints(t):
         if a and a in question:
             s += 8
             strong_hit = True
@@ -250,6 +250,13 @@ def _score(t: Table, question: str) -> tuple[int, bool]:
         hits = sum(1 for w in _desc_words(t.desc) if w in question)
         if hits:
             s += 4 * hits
+            strong_hit = True
+        # 整词对不上时退到 2-gram 重合：注释写「异常订单标记」、问题问
+        # 「异常订单」，整词匹配是 0 分，2-gram 重合 3 个。封顶是必须的 ——
+        # 注释越长重合越多，不封顶就变成"注释长的表恒赢"。
+        overlap = len(_bigrams(t.desc) & _bigrams(question))
+        if overlap >= 2:
+            s += min(overlap, _BIGRAM_CAP)
             strong_hit = True
 
     for c in t.columns.values():
@@ -272,6 +279,77 @@ def _score(t: Table, question: str) -> tuple[int, bool]:
                 s += 2
                 strong_hit = True
     return s, strong_hit
+
+
+#: 表注释里 "别名：甲、乙、丙" 这一段。运行时数据源的别名写在库注释里，
+#: 扫描时并不会落进 Table.aliases —— 于是「别名」这份最准的语义在召回时
+#: 完全没被用上（实测 order_exceptions 注释写着「别名：异常单、问题订单」，
+#: 而问「未解决的异常订单」时它一分都拿不到）。
+_ALIAS_RE = re.compile(r"别名[:：]\s*([^。；;\n]+)")
+
+#: 2-gram 重合的封顶加分。压在表名整词命中（+6）之下 —— 注释只是佐证，
+#: 不该盖过"表名就叫这个"这种最强信号；调高会让有注释的表压掉没注释的表。
+_BIGRAM_CAP = 3
+
+
+def alias_hints(t: Table) -> list[str]:
+    """这张表的全部别名：显式声明的，加上注释里 "别名：…" 写的。
+
+    纯函数、不改存储 —— 已经注册好的数据源不必重新扫描就能享受到。
+    """
+    out = list(t.aliases or [])
+    m = _ALIAS_RE.search(t.desc or "")
+    if m:
+        out += [w.strip() for w in re.split(r"[、,，/|]", m.group(1)) if w.strip()]
+    return out
+
+
+#: 预聚合汇总表的判据。命名与注释各认一半 —— 这批库两种写法都有。
+_SUMMARY_NAME = re.compile(r"(_stats_daily|_daily_stats|_stats|_summary|_agg)$")
+# 只认"按 X 汇总"这类明确说法。光一个"汇总"太松：order_items 的注释里写着
+# "汇总到 orders"，它是明细表，误判进来就等于把最该避开的大表当成了汇总表。
+_SUMMARY_DESC = ("按日统计", "按日汇总", "按小时汇总", "按月汇总",
+                 "优先查这张表", "日报", "按天/按月统计优先")
+
+
+def summary_tables(cfg) -> list[Table]:
+    """这个库里的预聚合汇总表。
+
+    存在的理由很具体：明细表动辄百万行，`COUNT(*)` 会被 R-11 的扫描阈值拦下，
+    而链路回灌给模型的提示是"缩小时间范围或加筛选条件"—— 模型照做，于是把
+    一个窄窗口的数当成全量答案返回（实测「一共有多少笔订单」答 5.4 万，真值
+    120 万）。库里其实备好了 order_daily_stats 这类汇总表，一次求和就是真值；
+    问题只在于重试那一轮模型不一定看得见它。把它们显式挑出来喂回去。
+    """
+    out = []
+    for t in cfg.tables.values():
+        if _SUMMARY_NAME.search(t.name) or any(k in (t.desc or "") for k in _SUMMARY_DESC):
+            out.append(t)
+    return out
+
+
+def summary_hint(cfg) -> str:
+    """汇总表清单，渲染成可直接拼进提示词的一段。没有汇总表时返回空串。"""
+    tabs = summary_tables(cfg)
+    if not tabs:
+        return ""
+    return ("\n\n【本库的预聚合汇总表 —— 总量/按期统计类问题优先用这些，"
+            "它们已经按天（或按维度）算好，不必扫明细表】\n"
+            + "\n\n".join(table_doc(t) for t in tabs))
+
+
+def _bigrams(text: str) -> set[str]:
+    """中文按 2-gram 切。
+
+    中文提问与中文注释之间靠"整词包含"匹配太脆：注释写「异常订单标记」，
+    问题问「异常订单」，一个字之差就是 0 分 —— 这正是漏召回的直接原因。
+    2-gram 重合不需要分词器，也不引依赖，在表注释这种短文本上足够稳。
+    """
+    cjk = re.findall(r"[\u4e00-\u9fff]{2,}", text or "")
+    out: set[str] = set()
+    for run in cjk:
+        out.update(run[i:i + 2] for i in range(len(run) - 1))
+    return out
 
 
 def _desc_words(desc: str) -> list[str]:
@@ -311,9 +389,9 @@ def _keyword_pick(question: str, cfg: Config, top_k: int, max_k: int,
 
 def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     mode = cfg.raw["schema_rag"].get("mode", "keyword")
-    budget = int(cfg.raw["schema_rag"].get("token_budget", 1500))
+    budget = int(cfg.raw["schema_rag"].get("token_budget", 4000))
     top_k = int(cfg.raw["schema_rag"].get("top_k", 3))
-    max_k = int(cfg.raw["schema_rag"].get("max_k", 5))
+    max_k = int(cfg.raw["schema_rag"].get("max_k", 8))
     # 盲选兜底的专用预算。常规 budget（默认 1500）限制的是**正常召回**时别注入
     # 太多表挤占上下文；但盲选意味着关键词全落空，此时"让模型看得见全部表名"的
     # 价值远大于省那几千 token —— 全量注入实测仅 ~3000+ token（成本可忽略），却能
@@ -422,6 +500,25 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         # "为什么回落"与"回落之后也没召到"是两条独立的信息，
         # 少了前一条，排查会从"关键词为什么不准"开始，方向就错了。
         note = f"{note}；{said}" if note else said
+
+    # 召回正常但白名单整个塞得进预算 —— 把剩下的表按相关度顺序补在后面。
+    #
+    # §3.2.3「禁止全库注入」防的是几十上百张表挤占上下文；当整份白名单只有
+    # 8 张、渲染出来还不到预算的一半时，"只挑 5 张"省不下什么，却实打实地
+    # 制造了一种失败：该用的那张恰好没进候选，模型于是断言"库里没这类数据"
+    # （实测 order_exceptions、carriers、warehouses 都是这么丢的）。
+    #
+    # **补在后面、不打乱前面的顺序**：排序是相关度信号，模型按顺序读，
+    # 下面的预算裁剪也从尾部裁 —— 用白名单顺序覆盖掉排序，等于把召回的
+    # 结论扔了，最相关的那张反而可能被裁掉。
+    # **只在 keyword 模式做**：vector 模式的 min_score 是一条有意的阈值，
+    # 低于它的表按设计就是干扰项（tests/test_schema_rag.py 里明写着），
+    # 在那儿补全等于把阈值取消掉。关键词打分粗糙得多，漏召回的风险也高得多，
+    # 这条兜底正是给它准备的。
+    if mode == "keyword" and not blind and len(picked) < len(all_tables):
+        rest = [t for t in all_tables if t not in picked]
+        if _est_tokens(_render(picked + rest, metrics)) <= eff_budget:
+            picked = picked + rest
 
     # 命中口径涉及的表必须一并注入，否则口径表达式引用的列不可见
     by_name = {t.name: t for t in picked}

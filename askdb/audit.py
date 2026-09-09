@@ -15,7 +15,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter
+from collections import Counter, OrderedDict, deque
+from collections.abc import Iterator
+from contextlib import closing
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -87,31 +90,119 @@ REPLAY_FIELDS = (
 PHASE_STARTED = "started"
 
 
-def read_records(src: Any, *, include_started: bool = False) -> list[dict[str, Any]]:
-    """读出全部审计记录，保持写入顺序。
+# ===========================================================================
+# 读取筛选：一份口径，两个后端
+#
+# 2026-09-09 加。此前 read_records 是"读全部"，筛选一律在 Python 里对着
+# 全量列表做。搬进 PostgreSQL 之后那个形状没有跟着改，于是索引建了一整套
+# （askdb_audit 上有 ts / trace_id / username 四个索引）却没有一条查询用得上：
+# 审计页要 10 条记录，先把全表读回来。一天 1.5 万条的量级下这是 OOM。
+#
+# 下推就得让筛选条件同时能变成 SQL 和能对着一条 dict 判真假，而**同一个语义
+# 写两遍正是这个仓库反复踩的那类 bug**（列上说 A、原文说 B）。所以这里只描述
+# 条件本身：SQL 由 auditstore._where 生成，dict 判定由下面的 matches 做，
+# 两者由 tests/test_audit_pushdown.py 钉住必须给出同一个答案。
+#
+# 有两处折算不能想当然，写在这里免得下次又对不上：
+#   · kind 老记录没有这个字段，Python 侧按 "ask" 兜底（rec.get("kind", "ask")），
+#     入库时却写成了空串 —— 所以筛 ask 必须同时认空串。
+#   · rejected_by 是收尾码，status 那三档由它折算，判据只此一处（_record_status）。
+# ===========================================================================
 
-    **src 是 Config 就读库，是 Path 就读文件。** 2026-09-09 起生产的凭据落在
-    PostgreSQL（见 auditstore 模块开头）；文件那条路留给本机开发与样例配置。
-    两边返回的是同一种东西 —— 原样那条 dict，所以下面所有的统计、分页、
-    任务聚合一行都不用改。
+@dataclass(frozen=True)
+class AuditFilter:
+    """一次审计读取的筛选条件。**全部字段都能下推到 SQL。**
 
-    **默认滤掉发起记录**（phase=started）：它没有结果、没有成本、没有收尾码，
-    进了统计就是把每次调用数成两次、把成功率稀释一半。只有任务中心需要它
-    （那一页要回答"有没有一条线程正在跑/跑一半没了"），显式传参取。
+    None 一律表示"这一维不筛"。空串是**合法取值**，不是"不筛"——
+    发起人为空是匿名发起、数据源为空是未记录数据源，都是页面上真实存在
+    的一档。用空串当哨兵的话，这两档永远选不中。
     """
-    if not isinstance(src, Path):
-        from . import auditstore
 
-        if auditstore.enabled(src):
-            return auditstore.read_audit(include_started=include_started)
-        src = src.audit_log
+    #: 发起记录（phase=started）算不算。默认不算：它没有结果、没有成本，
+    #: 进了统计就是把每次调用数成两次。只有任务中心显式要。
+    include_started: bool = False
+    #: 只要这个时刻之后的（闭区间）。时间窗是这套下推里最要紧的一维。
+    since: datetime | None = None
+    trace_id: str | None = None
+    #: 发起人。对应记录里的 user 字段、库里的 username 列。
+    username: str | None = None
+    #: ask / sql。老记录没有这个字段，见上面那段折算说明。
+    kind: str | None = None
+    #: 数据源 id。
+    source: str | None = None
+    #: 收尾档 ok / rejected / interrupted，由 rejected_by 折算。
+    status: str | None = None
+    #: 只要这些线程的记录。任务中心用它把范围收到"最近 N 条线程"上 ——
+    #: 见 tasks() 里那段说明。空元组表示"一条线程都不要"，与 None 不同。
+    thread_ids: tuple[str, ...] | None = None
 
-    path = src
+
+def _thread_of(rec: dict[str, Any]) -> str:
+    """这条记录属于哪条线程。**只此一处**，SQL 侧的 COALESCE 与它对应。
+
+    没有 thread_id 的老记录退回 trace_id —— 一次调用自成一条线程，
+    这是任务中心一直以来的口径，不是新加的兜底。
+    """
+    return str(rec.get("thread_id") or rec.get("trace_id") or "")
+
+
+def matches(rec: dict[str, Any], f: AuditFilter) -> bool:
+    """一条记录过不过这套筛选 —— **auditstore._where 的 Python 孪生体**。
+
+    文件后端靠它，库后端在 SQL 里已经筛过、不再走这里。两边必须给出同一个
+    答案，由 tests/test_audit_pushdown.py 守着。改这里就得改那边。
+    """
+    if not (isinstance(rec, dict) and rec.get("trace_id")):
+        return False
+    if not f.include_started and rec.get("phase") == PHASE_STARTED:
+        return False
+    if f.trace_id is not None and str(rec.get("trace_id") or "") != f.trace_id:
+        return False
+    if f.username is not None and str(rec.get("user") or "") != f.username:
+        return False
+    # `or "ask"` 而不是 `rec.get("kind", "ask")`：后者把"字段缺失"与"字段是空串"
+    # 分成两档，而列上折算完只剩空串一档（写入是 str(rec.get("kind") or "")），
+    # SQL 再怎么写也分不出来。两边分不出的差别就不该在这里制造 —— 否则
+    # 审计列表（信 SQL）与统计（信 matches）会对同一条记录给出不同的归类。
+    if f.kind is not None and (rec.get("kind") or "ask") != f.kind:
+        return False
+    if f.source is not None and str(rec.get("source") or "") != f.source:
+        return False
+    if f.status is not None and _record_status(rec) != f.status:
+        return False
+    if f.thread_ids is not None and _thread_of(rec) not in f.thread_ids:
+        return False
+    if f.since is not None:
+        t = _parse_ts(str(rec.get("ts", "")))
+        # 时间解析不出来的记录**不放行**，与 _within_since 同一条取舍：
+        # 选了"最近 7 天"却混进一条时间不明的记录，比少一条更糟。
+        if t is None or t < f.since:
+            return False
+    return True
+
+
+def _resolve(src: Any) -> tuple[Any, Path | None]:
+    """把入口参数拆成 (库配置 | None, 文件路径 | None)。
+
+    src 是 Config 且凭据库启用时走库，否则一律走文件（Config 就取它的
+    audit_log，Path 就是它自己）。这一步单独抽出来，是因为下面三个读取
+    入口都要做同一件事，而"读库还是读文件"只该判一次。
+    """
+    if isinstance(src, Path):
+        return None, src
+    from . import auditstore
+
+    if auditstore.enabled(src):
+        return src, None
+    return None, src.audit_log
+
+
+def _iter_file(path: Path, f: AuditFilter) -> Iterator[dict[str, Any]]:
+    """逐行读文件并就地筛。**流式**：整份文件不进内存，只有过筛的记录进。"""
     if not path.exists():
-        return []
-    out: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8", errors="replace") as f:
-        for line in f:
+        return
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
             line = line.strip()
             if not line:
                 continue
@@ -119,12 +210,63 @@ def read_records(src: Any, *, include_started: bool = False) -> list[dict[str, A
                 rec = json.loads(line)
             except ValueError:
                 continue                      # 撕裂行：跳过，不中断
-            if not (isinstance(rec, dict) and rec.get("trace_id")):
-                continue
-            if not include_started and rec.get("phase") == PHASE_STARTED:
-                continue
-            out.append(rec)
-    return out
+            if matches(rec, f):
+                yield rec
+
+
+def iter_records(src: Any, f: AuditFilter | None = None) -> Iterator[dict[str, Any]]:
+    """按写入顺序流式读出过筛的记录 —— **结果不整份落进内存**。
+
+    需要"全部记录但只做一次遍历"的聚合（任务中心按线程聚合、统计按天分桶）
+    该走这里，而不是 read_records：那个会先把列表建出来，一天 1.5 万条的
+    量级下，建出来的那一刻就已经是事故。
+
+    库后端走服务端游标（pgstore.iter_rows），**生成器活着就占着一条连接**，
+    调用方必须消费完或及时 break —— 池子只有 6 条连接。
+    """
+    f = f or AuditFilter()
+    cfg, path = _resolve(src)
+    if cfg is not None:
+        from . import auditstore
+
+        yield from auditstore.iter_audit(f)
+        return
+    yield from _iter_file(path, f)
+
+
+def read_records(src: Any, *, include_started: bool = False,
+                 f: AuditFilter | None = None,
+                 limit: int | None = None) -> list[dict[str, Any]]:
+    """读出过筛的审计记录，**保持写入顺序**。
+
+    **src 是 Config 就读库，是 Path 就读文件。** 2026-09-09 起生产的凭据落在
+    PostgreSQL（见 auditstore 模块开头）；文件那条路留给本机开发与样例配置。
+    两边返回的是同一种东西 —— 原样那条 dict。
+
+    **默认滤掉发起记录**（phase=started）：它没有结果、没有成本、没有收尾码，
+    进了统计就是把每次调用数成两次、把成功率稀释一半。只有任务中心需要它
+    （那一页要回答"有没有一条线程正在跑/跑一半没了"），显式传参取。
+
+    limit 取的是**最新的 N 条**，返回时仍按写入顺序（旧的在前）。取新不取旧
+    是唯一说得通的取法：这个函数的调用方要么翻最近的流水，要么找某条 trace，
+    没有一处是想看最早那几条。库后端靠 ORDER BY id DESC LIMIT 走索引，
+    文件后端靠一个 maxlen 的 deque —— 两边都不会把全部记录建成列表。
+
+    include_started 是 f 之外的独立入参而不是并进去，纯粹为了不动既有调用点；
+    两个都给时以 f 为准。
+    """
+    if f is None:
+        f = AuditFilter(include_started=include_started)
+    cfg, path = _resolve(src)
+    if cfg is not None:
+        from . import auditstore
+
+        return auditstore.read_audit(f, limit=limit)
+    if limit is None:
+        return list(_iter_file(path, f))
+    # deque(maxlen=N) 是这里的关键：文件仍然逐行读完（没有别的办法定位"最后
+    # N 条"），但同时活着的只有 N 条记录，而不是全部。
+    return list(deque(_iter_file(path, f), maxlen=limit))
 
 
 def _summary(rec: dict[str, Any]) -> dict[str, Any]:
@@ -180,62 +322,146 @@ def list_audits(
     在其余筛选之前算 —— 否则选中某个源之后，下拉里就只剩这一个选项，
     人就退不回去了。users 在 with_text=False 时为空表：那份名单本身就是内容。
     """
-    recs = read_records(path)
-    recs.reverse()
-    if only_user is not None:
-        recs = [r for r in recs if (r.get("user") or "") == only_user]
-
-    seen: dict[str, str] = {}
-    for r in recs:
-        sid = str(r.get("source") or "")
-        if sid not in seen:
-            seen[sid] = str(r.get("source_name") or r.get("source") or "（未记录数据源）")
-    sources = [{"id": sid, "name": name} for sid, name in seen.items()]
-    seen_users: list[str] = []
-    for r in recs:
-        who = str(r.get("user") or "")
-        if who not in seen_users:
-            seen_users.append(who)
-    users = [{"id": who, "name": who or "匿名"} for who in seen_users] if with_text else []
-    # 筛之前有多少条（**可见范围之内**）。页面上"命中 N / M"的 M 说的是这个数，
-    # 也是"筛完没有"与"本来就没有"两句不同提示的判据。
-    total_all = len(recs)
-
-    if kind:
-        recs = [r for r in recs if r.get("kind", "ask") == kind]
-    if status:
-        recs = [r for r in recs if _record_status(r) == status]
-    # None = 不筛；空串是**合法取值**，表示"未记录数据源"那一档
-    if source is not None:
-        recs = [r for r in recs if str(r.get("source") or "") == source]
-    # 发起人同理：None 是不筛，空串是"匿名发起"那一档
-    if user is not None:
-        recs = [r for r in recs if str(r.get("user") or "") == user]
-    if since not in ("", FILTER_ANY):
-        now = _now_in(day_tz(path))
-        recs = [r for r in recs if _within_since(str(r.get("ts", "")), since, now)]
-    if q:
-        ql = q.strip().lower()
-        recs = [
-            r for r in recs
-            if ql in str(r.get("trace_id", "")).lower()
-            # 发起人与问题原文同属"内容"，一起受 with_text 管：只抹显示、
-            # 仍允许按它搜，等于留了一个预言机（见上面那段）
-            or (with_text and ql in str(r.get("question", "")).lower())
-            or (with_text and ql in str(r.get("user", "")).lower())
-        ]
     page = max(int(page), 1)
     page_size = min(max(int(page_size), 1), 100)
-    start = (page - 1) * page_size
+
+    # ---------------------------------------------------------------------
+    # 2026-09-09：下推到 SQL。此前这里是 read_records(path) 取全量、reverse、
+    # 一路列表推导筛下来，最后切出 10 条 —— 为了一页记录读全表。
+    #
+    # 分工按"这一维在不在列上"划，不按"哪个写着方便"：
+    #   · only_user / kind / status / source / user  → 都是抽出来的列，进 SQL
+    #   · since                                      → 折算成 ts >= 某时刻，进 SQL
+    #   · q（关键词）                                → 要匹配问题原文（在 record
+    #     jsonb 里，没有索引），留在 Python，但只作用于**已经被上面几维筛窄的
+    #     那一份**，而且走流式游标、不整份物化
+    #
+    # 分面（sources / users）与 total_all 也各自成查询：它们的基数是几十，
+    # 却曾经要求把几十万条记录读进内存才能算出来。
+    # ---------------------------------------------------------------------
+    base = AuditFilter(username=only_user)
+    narrowed = AuditFilter(
+        username=only_user if user is None else user,
+        kind=kind or None,
+        status=status or None,
+        source=source,
+        since=_since_cutoff(since, day_tz(path)),
+    )
+    # user 与 only_user 撞车时，只有两者相等才可能有记录：可见范围是硬边界，
+    # 手上的筛选退不出它。不相等直接置一个永远筛不中的条件，而不是让筛选覆盖范围。
+    impossible = (only_user is not None and user is not None and user != only_user)
+
+    cfg, _fpath = _resolve(path)
+    if cfg is not None:
+        from . import auditstore
+
+        facets = auditstore.audit_facets(base)
+        sources = facets["sources"]
+        users = ([{"id": w, "name": w or "匿名"} for w in facets["users"]]
+                 if with_text else [])
+        total_all = auditstore.count_audit(base)
+        if impossible:
+            total, items = 0, []
+        elif q:
+            # 关键词只能在 Python 里判，所以这一支流式扫过窄化后的集合，
+            # 同时活着的只有命中的那一页（page_size 条）与两个计数器。
+            total, items = _scan_page(
+                iter_records(path, narrowed), q, with_text, page, page_size)
+        else:
+            total = auditstore.count_audit(narrowed)
+            items = auditstore.page_audit(
+                narrowed, offset=(page - 1) * page_size, limit=page_size)
+    else:
+        # 文件后端（本机开发、样例配置）。走同一套判定，只是数据从文件流出来。
+        sources, users, total_all = _facets_from(path, base, with_text)
+        total, items = ((0, []) if impossible else _scan_page(
+            iter_records(path, narrowed), q, with_text, page, page_size))
+
     return {
-        "total": len(recs), "page": page, "page_size": page_size,
-        "items": [_redact(_summary(r), with_text) for r in recs[start:start + page_size]],
+        "total": total, "page": page, "page_size": page_size,
+        "items": [_redact(_summary(r), with_text) for r in items],
         # 页面据此显示遮蔽提示，而不是让人以为这些记录本来就没有问题文本
         "text_visible": with_text,
         "sources": sources,
         "users": users,
         "total_all": total_all,
     }
+
+
+def _since_cutoff(since: str, tz: Any) -> datetime | None:
+    """把「发起时间档」折算成一个时刻，好下推成 ts >= %s。
+
+    与 _within_since 是同一套档位，但那边判的是"这条记录属不属于这一档"，
+    这边给的是"从哪一刻起算" —— today 一档必须按**声明时区的零点**取，
+    直接减 24 小时会把昨天下午的记录也算成今天。
+    """
+    if since in ("", FILTER_ANY):
+        return None
+    now = _now_in(tz)
+    if since == "today":
+        return datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo)
+    days = {"7d": 7, "30d": 30}.get(since, 0)
+    return now - timedelta(days=days) if days else None
+
+
+def _q_hit(rec: dict[str, Any], ql: str, with_text: bool) -> bool:
+    """关键词命中。发起人与问题原文同属"内容"，一起受 with_text 管：
+    只抹显示、仍允许按它搜，等于留了一个预言机（见 list_audits 的说明）。"""
+    return (ql in str(rec.get("trace_id", "")).lower()
+            or (with_text and ql in str(rec.get("question", "")).lower())
+            or (with_text and ql in str(rec.get("user", "")).lower()))
+
+
+def _scan_page(stream: Iterator[dict[str, Any]], q: str, with_text: bool,
+               page: int, page_size: int) -> tuple[int, list[dict[str, Any]]]:
+    """流式数总数并切出某一页，**新的在前**。
+
+    记录从流里按写入顺序出来（旧的在前），而页面要新的在前 —— 于是"第 1 页"
+    对应的是流的**末尾**。所以这里一遍扫完拿到总数，同时用一个 maxlen 的
+    deque 兜住尾部足够多的记录：第 page 页最远也只需要末尾 page*page_size 条。
+    同时活着的就是这些，与总量无关。
+    """
+    ql = q.strip().lower() if q else ""
+    need = page * page_size
+    tail: deque[dict[str, Any]] = deque(maxlen=need)
+    total = 0
+    for rec in stream:
+        if ql and not _q_hit(rec, ql, with_text):
+            continue
+        total += 1
+        tail.append(rec)
+    newest_first = list(tail)[::-1]
+    start = (page - 1) * page_size
+    return total, newest_first[start:start + page_size]
+
+
+def _facets_from(path: Any, base: AuditFilter,
+                 with_text: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
+    """文件后端的分面与总数：一遍流式扫出来。
+
+    与库后端的 audit_facets 同一口径 —— 数据源名取**最近一条**记录里的写法
+    （源改过名之后下拉里该显示新名字），发起人按最近出现的顺序排。
+    """
+    seen: dict[str, str] = {}
+    seen_users: list[str] = []
+    total_all = 0
+    for r in iter_records(path, base):
+        total_all += 1
+        sid = str(r.get("source") or "")
+        # 流是旧到新，而下拉要"最近用过的在前"：每次出现都先删再追加，
+        # 于是字典/列表的插入顺序就是"最后一次出现"的顺序，最后整个倒过来。
+        # 只覆盖不重排的话，顺序会变成"第一次出现"，与库后端对不上。
+        seen.pop(sid, None)
+        seen[sid] = str(r.get("source_name") or r.get("source") or "（未记录数据源）")
+        who = str(r.get("user") or "")
+        if who in seen_users:
+            seen_users.remove(who)
+        seen_users.append(who)
+    sources = [{"id": sid, "name": name}
+               for sid, name in reversed(list(seen.items()))]
+    users = ([{"id": w, "name": w or "匿名"} for w in reversed(seen_users)]
+             if with_text else [])
+    return sources, users, total_all
 
 
 def _redact(item: dict[str, Any], with_text: bool) -> dict[str, Any]:
@@ -439,9 +665,73 @@ _NEXT_ACTOR = {
 }
 
 
+def _recent_threads(path: Any, f: AuditFilter, max_threads: int, *,
+                    owned_by: str | None = None) -> dict[str, list[dict[str, Any]]]:
+    """最近 max_threads 条线程的记录，按线程分好组，**内存与总量无关**。
+
+    **选线程与取记录是两步，用的筛选条件不同。** owned_by 只参与第一步：
+    挑出"这个人参与过的"线程，然后**整条**取回来。第二步再按人筛的话，
+    同一条线程上别人写的记录会缺失，于是 owner（看首条）、attempts_on_thread、
+    最后一条的收尾状态全都算错 —— 而 owner 决定续跑入口对谁开。
+
+    两个后端同一个结果，路数不同：
+
+      · 库后端先在 SQL 里把线程定下来（recent_thread_ids 按 max(id) 排序取前 N），
+        再只取这些线程的记录。离开数据库的就只有这 N 条线程。
+      · 文件后端只能顺着流走，所以边读边淘汰：每见到一条记录就把它的线程
+        挪到末尾，超过 N 条就丢掉最久没动静的那条。流是按时间顺序的，
+        因此"最久没动静"与库后端的 max(id) 最小是同一件事。
+
+    淘汰的是**整条线程**而不是单条记录，理由同上。
+
+    文件后端不实现 owned_by 的两步选法（它按全局近况淘汰，再由调用方按
+    owner 过滤）：那条路只服务本机开发与样例配置，线程数远不到上限，
+    两种选法给出的是同一批线程。生产走的是库后端。
+    """
+    threads: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+    cfg, _ = _resolve(path)
+    if cfg is not None:
+        from . import auditstore
+
+        select_f = f if owned_by is None else replace(f, username=owned_by)
+        tids = auditstore.recent_thread_ids(select_f, limit=max_threads)
+        if not tids:
+            return {}
+        for rec in iter_records(path, replace(f, thread_ids=tuple(tids))):
+            threads.setdefault(_thread_of(rec), []).append(rec)
+        return dict(threads)
+
+    for rec in iter_records(path, f):
+        tid = _thread_of(rec)
+        if not tid:
+            continue
+        if tid in threads:
+            threads.move_to_end(tid)
+        threads.setdefault(tid, []).append(rec)
+        if len(threads) > max_threads:
+            threads.popitem(last=False)
+    return dict(threads)
+
+
+#: 任务中心一次最多看多少条线程。
+#:
+#: 2026-09-09 加。此前这一页没有任何上限：把全部审计记录读进内存、按
+#: thread_id 聚合、再整体排序。线程只有几千条，记录却是几十万条 ——
+#: 日访问十万级下光这一页就能把 Pod 打死。
+#:
+#: 2000 是按"这一页实际在回答什么"定的：它问的是"最近发生了什么、有没有
+#: 卡住的"，不是"开站以来的全部作业"。真要翻更早的，走审计流水页（那一页
+#: 是真分页，翻多久都行）。
+#:
+#: **这个上限必须被页面说出来**（server 把它放进 window 字段），
+#: 否则就是一次静默收窄 —— 看的人会把"最近 2000 条线程里没有"读成"没有"。
+TASKS_MAX_THREADS = 2000
+
+
 def tasks(path: Any, only_user: str | None = None, *,
           max_rows: int = 0, max_scan_rows: int = 0,
           open_approval_ids: Any = None,
+          max_threads: int = TASKS_MAX_THREADS,
           review_status: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """执行线程，新的在前。``only_user=None`` 给全部，字符串只给这个人发起的。
 
@@ -467,13 +757,10 @@ def tasks(path: Any, only_user: str | None = None, *,
     页面据 owner 把别人的线程标出来并置灰续跑入口 —— 与"未登录可读不可写"
     是同一条轴：看得见不等于动得了。
     """
-    threads: dict[str, list[dict[str, Any]]] = {}
     # 这一页**要**发起记录：一条线程只落了发起、没落收尾，说明它要么正在跑、
     # 要么跑一半进程没了 —— 两种都得看得见，而这正是原来整片丢失的那一档。
-    for rec in read_records(path, include_started=True):
-        tid = rec.get("thread_id") or rec.get("trace_id")
-        if tid:
-            threads.setdefault(str(tid), []).append(rec)
+    f = AuditFilter(include_started=True)
+    threads = _recent_threads(path, f, max_threads, owned_by=only_user)
 
     open_approvals = {str(a) for a in (open_approval_ids or ())}
     out: list[dict[str, Any]] = []
@@ -708,12 +995,14 @@ def resumable(path: Any, user: str) -> list[dict[str, Any]]:
 
 
 def get_audit(path: Any, trace_id: str) -> dict[str, Any] | None:
-    """按 trace_id 取完整记录。同 id 多条时取最后一条（重放/重投递场景）。"""
-    found = None
-    for rec in read_records(path):
-        if rec.get("trace_id") == trace_id:
-            found = rec
-    return found
+    """按 trace_id 取完整记录。同 id 多条时取最后一条（重放/重投递场景）。
+
+    下推到 WHERE trace_id = %s（askdb_audit_trace_idx 正为此而建）。
+    2026-09-09 之前这里是把全部记录读回来再逐条比对 —— 为了找一条记录
+    读几十万条，而索引就在那儿。
+    """
+    got = read_records(path, f=AuditFilter(trace_id=trace_id), limit=1)
+    return got[-1] if got else None
 
 
 def trace_chain(rec: dict[str, Any]) -> dict[str, Any]:
@@ -766,26 +1055,6 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
     别人昨天花了多少、被拦了几次，一眼可见。同一道边界只做一半等于没做。
     """
     cutoff = datetime.now().astimezone() - timedelta(days=days)
-    recent: list[dict[str, Any]] = []
-    for rec in read_records(path):
-        if only_user is not None and (rec.get("user") or "") != only_user:
-            continue
-        t = _parse_ts(str(rec.get("ts", "")))
-        if t is not None and t >= cutoff:
-            recent.append(rec)
-
-    calls = len(recent)
-    blocked = sum(1 for r in recent if r.get("rejected_by"))
-    with_steps = sum(1 for r in recent if r.get("steps"))
-    elapsed = sorted(int(r.get("elapsed_ms") or 0) for r in recent)
-
-    # 模型调用的成败按**节点**算，不是按整次调用算：一次提问里模型可能被调
-    # 三四次（判定 / 生成 / 自检 / 反思），其中一次失败后重试成功，整次调用
-    # 是成功的，但模型确实失败过一次。按调用算会把这些失败全部抹掉。
-    model_steps = [s for r in recent for s in (r.get("steps") or [])
-                   if s.get("step") in MODEL_STEPS]
-    model_calls = len(model_steps)
-    model_failed = sum(1 for s in model_steps if s.get("status") != "ok")
 
     # 日界按**声明的时区**算，不是记录字符串的前十位。
     #
@@ -797,7 +1066,41 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
     by_kind: dict[str, int] = {}
     by_rule: dict[str, int] = {}
     by_model: dict[str, dict[str, Any]] = {}
-    for r in recent:
+
+    # **一遍流式聚合，不建 recent 列表。**（2026-09-09）
+    #
+    # 时间窗与发起人下推到 SQL，剩下的在一次遍历里累加。原来是先把窗口内
+    # 的记录全部收进 recent，再对它做七八轮 sum/列表推导 —— 30 天窗口在
+    # 日访问十万级下就是四十几万条 dict 同时活着，这一页自己就能把 Pod 打死。
+    #
+    # 现在同时活着的只有几个计数器、几个按天/按模型的小字典，以及 elapsed
+    # 这一个 int 列表（分位数要排序，绕不开；但它是 int 不是 dict，
+    # 四十几万条也就十几 MB）。
+    calls = blocked = with_steps = 0
+    cost_total = 0.0
+    tok_in_total = tok_out_total = 0
+    model_calls = model_failed = 0
+    elapsed: list[int] = []
+    for r in iter_records(path, AuditFilter(since=cutoff, username=only_user)):
+        calls += 1
+        if r.get("rejected_by"):
+            blocked += 1
+        if r.get("steps"):
+            with_steps += 1
+        elapsed.append(int(r.get("elapsed_ms") or 0))
+        cost_total += float(r.get("cost_cny") or 0)
+        tok_in_total += int(r.get("tok_in") or 0)
+        tok_out_total += int(r.get("tok_out") or 0)
+
+        # 模型调用的成败按**节点**算，不是按整次调用算：一次提问里模型可能被调
+        # 三四次（判定 / 生成 / 自检 / 反思），其中一次失败后重试成功，整次调用
+        # 是成功的，但模型确实失败过一次。按调用算会把这些失败全部抹掉。
+        for st in (r.get("steps") or []):
+            if st.get("step") in MODEL_STEPS:
+                model_calls += 1
+                if st.get("status") != "ok":
+                    model_failed += 1
+
         d0 = _day_of(str(r.get("ts", "")), tz)
         day = d0.isoformat() if d0 else str(r.get("ts", ""))[:10]
         d = daily.setdefault(day, {"date": day, "calls": 0, "cost_cny": 0.0})
@@ -818,14 +1121,15 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
             e["calls"] += 1
             e["cost_cny"] = round(e["cost_cny"] + float(r.get("cost_cny") or 0), 6)
 
+    elapsed.sort()
     return {
         "days": days,
         "calls": calls,
         "blocked": blocked,
         "block_rate": round(blocked / calls, 4) if calls else 0.0,
-        "cost_cny": round(sum(float(r.get("cost_cny") or 0) for r in recent), 6),
-        "tok_in": sum(int(r.get("tok_in") or 0) for r in recent),
-        "tok_out": sum(int(r.get("tok_out") or 0) for r in recent),
+        "cost_cny": round(cost_total, 6),
+        "tok_in": tok_in_total,
+        "tok_out": tok_out_total,
         "trace_complete": round(with_steps / calls, 4) if calls else None,
         # 窗口内一次模型节点都没有时为 None —— 0/0 不是 0%，也不是 100%
         "model_calls": model_calls,
@@ -889,15 +1193,19 @@ def quality(path: Any, days: int = 1) -> dict[str, Any]:
     # 两个窗口相减得出，绝对阈值（P95 > 10s）说不出它。两个窗口必须等长，
     # 否则拿 24 小时比 7 天，涨跌全是窗口长度造成的。
     prev_cutoff = cutoff - timedelta(days=days)
-    all_records = read_records(path)
+    # **只读两个窗口，不读全部历史。**（2026-09-09）
+    #
+    # 原来是 read_records(path) 拿全量再切窗口 —— 这一页默认 days=1，
+    # 为了一天的数据把开站以来的每一条都读进内存。下推 since=prev_cutoff
+    # 之后，进来的就只有这两个等长窗口本身。
     recent, previous = [], []
-    for r in all_records:
+    for r in iter_records(path, AuditFilter(since=prev_cutoff)):
         t = _parse_ts(str(r.get("ts", "")))
         if t is None:
             continue
         if t >= cutoff:
             recent.append(r)
-        elif t >= prev_cutoff:
+        else:
             previous.append(r)
 
     runs = len(recent)
@@ -955,7 +1263,7 @@ def quality(path: Any, days: int = 1) -> dict[str, Any]:
             1 for r in recent if str(r.get("rejected_by") or "").upper().startswith("R-")),
         # 本实例开始有审计记录的时间。用来回答"这套服务跑了多久" ——
         # 它不是部署时间（没有任何地方记部署），措辞上必须写成"有记录以来"。
-        "first_ts": _first_ts(all_records),
+        "first_ts": _first_ts(path),
         # 上一个等长窗口的同口径值，供页面算环比。**样本量一并给出** ——
         # 上个窗口只有两三次调用时，P95 的涨跌没有意义，页面据此决定报不报。
         "prev": {
@@ -1136,9 +1444,26 @@ def _nodes_of(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return nodes
 
 
-def _first_ts(records: list[dict[str, Any]]) -> str | None:
-    """最早一条审计记录的时间戳。文件按写入顺序追加，取第一条可解析的即可。"""
-    for r in records:
-        if _parse_ts(str(r.get("ts", ""))) is not None:
-            return str(r.get("ts"))
+def _first_ts(src: Any) -> str | None:
+    """有记录以来最早那条的时间戳。
+
+    2026-09-09 由"接收全量列表"改为"自己按写入顺序流式取头几条"：调用方
+    （quality）原来为了这一个字段把全部历史读进内存，而这里要的只是**第一条
+    能解析出时间的记录**。库后端走服务端游标，取到就 break，实际只发生一次
+    FETCH；文件后端读到第一条就停。
+    """
+    stream = iter_records(src)
+    with closing(stream):
+        return _first_parseable_ts(stream)
+
+
+def _first_parseable_ts(stream: Iterator[dict[str, Any]]) -> str | None:
+    for i, r in enumerate(stream):
+        ts = str(r.get("ts", ""))
+        if _parse_ts(ts) is not None:
+            return ts
+        if i >= 200:
+            # 开头连着两百条都没有可解析的时间，那不是"还没找到"，是这份
+            # 流水的开头坏了 —— 继续扫下去只会把整份读完，而它正是这次要消灭的形状。
+            break
     return None

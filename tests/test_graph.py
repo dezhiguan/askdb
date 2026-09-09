@@ -26,7 +26,8 @@ class FakeLlm:
 
     def generate_sql(self, question, schema_prompt, dialect="duckdb",
                      last_sql="", error="", step=""):
-        self.calls.append({"error": error, "last_sql": last_sql, "step": step})
+        self.calls.append({"error": error, "last_sql": last_sql, "step": step,
+                           "schema_prompt": schema_prompt})
         if self.raises:
             raise self.raises
         sql = self.sqls.pop(0) if self.sqls else ""
@@ -533,3 +534,58 @@ def test_r17_cap_reads_state_not_tracer(cfg, ex):
     out = _n_assess(state, {"configurable": {"deps": deps}})
     assert out["enough"] is True
     assert "累计成本上限" in out.get("converged_early", "")
+
+
+# ------------------------------ R-11 收窄留痕（2026-09-09 十二源回归的头号缺陷）
+
+NARROW_SQL = ("SELECT COUNT(*) AS 数量 FROM documents "
+              "WHERE created_at >= DATE '2024-01-01'")
+
+
+def test_scope_narrowed_is_recorded_when_retry_beats_the_threshold(cfg, ex):
+    """扫描量超限 → 回灌"缩小时间范围" → 模型加了条件跑通。
+
+    链路每一步都成功，rejected_by 是 null，页面上与全量结果毫无区别 ——
+    实测「一共有多少笔订单」因此答 54,192，真值 120 万。留痕是唯一的补救。
+    """
+    # 阈值卡在两版的预估扫描量之间：第一版 527 行被拦，加了时间窗的第二版
+    # 210 行放行。（数字是注入租户谓词之后的估算，不是裸 SQL 的。）
+    cfg.raw["guard"]["max_scan_rows"] = 300
+    r = run(cfg, ex, OK_SQL, NARROW_SQL)
+    assert r.ok, f"第二版应当放行：{r.rejected_by} {r.error}"
+    assert r.scope_narrowed is True
+    assert "不是全量" in r.scope_note
+
+
+def test_scope_is_not_flagged_on_a_clean_first_try(cfg, ex):
+    """没被拦过就不该报警 —— 误报会让这条提示很快被无视。"""
+    r = run(cfg, ex, OK_SQL)
+    assert r.ok and r.scope_narrowed is False and r.scope_note == ""
+
+
+def test_narrowing_is_written_into_the_audit_record(cfg, ex):
+    """事后复盘一个对不上的数字时，这是第一个要看的字段。"""
+    import json as _json
+    cfg.raw["guard"]["max_scan_rows"] = 300
+    r = run(cfg, ex, OK_SQL, NARROW_SQL)
+    assert r.ok and r.scope_narrowed
+    recs = [_json.loads(ln) for ln in cfg.audit_log.read_text().splitlines() if ln.strip()]
+    final = [x for x in recs if x.get("trace_id") == r.trace_id and "sql_final" in x]
+    assert final and final[-1]["scope_narrowed"] is True
+
+
+def test_retry_after_threshold_gets_the_summary_tables(cfg, ex):
+    """重试那一轮必须看得见预聚合汇总表。
+
+    看不见，"降低扫描量"就只剩"加个过滤条件"一条路 —— 而那条路的终点
+    是一个悄悄收窄了范围的错数。
+    """
+    from askdb.config import Table
+    cfg.tables["doc_daily_stats"] = Table(
+        name="doc_daily_stats", aliases=[], desc="文档按日汇总", columns={})
+    cfg.raw["guard"]["max_scan_rows"] = 1
+    llm = FakeLlm(OK_SQL, OK_SQL, OK_SQL, OK_SQL)
+    graph.ask("一共有多少文档", cfg, executor=ex, llm=llm)
+    first, *retries = llm.calls
+    assert retries, "应当发生过重试"
+    assert any("预聚合汇总表" in c.get("schema_prompt", "") for c in retries)

@@ -11,6 +11,7 @@ import dataclasses
 import os
 import secrets
 import time
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -1103,13 +1104,43 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         退回地址而不是并到同一个匿名桶里 —— 并桶等于让任意一个匿名调用方
         替所有匿名调用方把额度花光，那正是分桶要消掉的问题。
+
+        **地址取 X-Real-IP，不取 request.client.host。**（2026-09-09 修）
+
+        生产上这个进程前面隔着 Server 2 的 nginx，nginx 又通过 Server 3 的
+        NodePort 转进来。于是 request.client.host 拿到的是 nginx（或 kube-proxy）
+        的地址 —— 对**所有访客都是同一个值**。也就是说这里每一个"按 IP 分桶"
+        的限流器，在线上实际都退化成了一个全局桶：一个人把额度用完，
+        所有人一起吃 429，正是上面那段注释说要消掉的问题，只是发生在
+        它看不见的地方。日活上到十万级之后，这一条从"偶尔误伤"变成天天发生。
+
+        取 X-Real-IP 而不是 X-Forwarded-For：前者由入口 nginx 用
+        proxy_set_header 无条件**覆写**成真实来源地址，客户端伪造不进来；
+        后者是追加语义，客户端塞进去的内容会留在链首。
+
+        绕开 nginx 直连 NodePort 的人可以自己编一个 X-Real-IP，但那条路本来
+        就绕过了入口限流，多这一层不改变结论。要堵它得让 NodePort 只接受
+        入口机的地址，那是网络层的事，不在这里。
         """
         if request is None:
             return "-"
         user = _current_user(request)
         if user:
             return f"u:{user}"
-        return f"ip:{request.client.host if request.client else '-'}"
+        return f"ip:{_client_ip(request)}"
+
+    def _client_ip(request: Request | None) -> str:
+        """访客的真实来源地址。取值理由见 _rl_key 的文档串。"""
+        if request is None:
+            return "-"
+        real = (request.headers.get("x-real-ip") or "").strip()
+        if real:
+            return real
+        return request.client.host if request.client else "-"
+
+    def _login_rl_key(request: Request | None) -> str:
+        """登录限流的分桶键 —— 只按来源地址，不看会话。理由见 auth_login。"""
+        return f"ip:{_client_ip(request)}"
 
     def _rl_check(limiter: _RateLimit, request: Request | None) -> None:
         key = _rl_key(request)
@@ -2240,6 +2271,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # user 是**当前账号**，不是过滤条件：页面拿它与每条的 owner 比，
         # 判断哪些是自己的、续跑入口对谁开。匿名时为空串。
         result["user"] = username
+        # 这一页只看最近 TASKS_MAX_THREADS 条线程（见 audit.tasks 那段说明）。
+        # **把上限说出来**：不说的话，"最近这些线程里没有"会被读成"没有"，
+        # 而那正是这套界面反复要消灭的那种静默收窄。
+        result["window"] = {
+            "max_threads": _audit.TASKS_MAX_THREADS,
+            "truncated": len(items) >= _audit.TASKS_MAX_THREADS,
+        }
         return result
 
     @app.post("/api/resume")
@@ -2256,15 +2294,24 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 归属校验：有主的任务只能由发起人续跑。
         # 匿名发起的任务保持原语义（凭 thread_id 续跑）—— 那是登录之前的行为，
         # 不因为加了账号就把老任务锁死。
-        from .audit import read_records
+        from .audit import AuditFilter, iter_records
 
         owner = ""
         origin_source = ""
         # **带上发起记录**（include_started）：进程被杀那种线程只剩这一条，
         # 而归属与数据源正是从它取。滤掉它就等于"任务中心说能续跑、这里说
         # 你当初跑在 builtin 上" —— 实测过一次，就是这条 400。
-        for rec in read_records(cfg, include_started=True):
-            if (rec.get("thread_id") or rec.get("trace_id")) == req.thread_id:
+        #
+        # 2026-09-09：按 thread_id 下推。原来是把**全部审计记录**读回来再逐条
+        # 比对，为了一条线程读几十万条；现在筛选进 SQL，取到第一条就 break，
+        # 库后端因此只发生一次 FETCH。
+        # closing 是必需的，不是讲究：只取第一条就 break，而生成器一旦提前
+        # 离开，库后端那条服务端游标就还占着池子里的一条连接（池子只有 6 条）。
+        # 靠垃圾回收顺手关掉能work，但那是在赌 CPython 的引用计数时机。
+        stream = iter_records(cfg, AuditFilter(include_started=True,
+                                               thread_ids=(req.thread_id,)))
+        with closing(stream):
+            for rec in stream:
                 owner = rec.get("user") or ""
                 # 续跑必须回到**当初那个数据源**。审计里存了它（_audit_of 的
                 # source 字段），所以不需要调用方再传一次 —— 传参既多一处
@@ -2294,6 +2341,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return JSONResponse(r.to_dict())
 
     # 登录失败限流。口令是离线可爆破的，接口侧必须先把速率压下去。
+    #
+    # 2026-09-09 修：原来调的是不带 key 的 _LOGIN_RL.allow()，也就是**全站
+    # 共用一个 10 次/分钟的桶**。后果有两条，都不是"限得紧一点"那么轻：
+    #   · 任何人每分钟发 10 个请求，就能让所有人登不上去 —— 一次零成本的拒绝服务；
+    #   · 日活十万级下，正常登录量本身就会把这个桶顶满。
+    # 改成按 _login_rl_key 分桶（只看真实来源地址，理由见 auth_login），
+    # 每 IP 10 次/分钟对爆破依然足够紧，而一个人再怎么试也锁不住别人。
     _LOGIN_RL = _RateLimit(limit=10, window_s=60)
 
     def _current_user(request: Request) -> str | None:
@@ -2457,10 +2511,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         }
 
     @app.post("/api/auth/login")
-    def auth_login(req: LoginRequest, response: Response) -> dict[str, Any]:
+    def auth_login(req: LoginRequest, response: Response,
+                   request: Request) -> dict[str, Any]:
         if not _auth.enabled(cfg):
             raise HTTPException(status_code=404, detail="本实例未启用登录")
-        if not _LOGIN_RL.allow():
+        # 分桶键这里**只按来源地址**：用 _rl_key 会先看当前会话的登录名，
+        # 而登录接口的调用方按定义还没有会话，等于所有匿名请求并回一个桶，
+        # 又变回全局限流。爆破也正是从未登录状态发起的。
+        if not _LOGIN_RL.allow(_login_rl_key(request)):
             raise HTTPException(status_code=429, detail="尝试过于频繁，稍后再试")
         try:
             acc = _auth.authenticate(cfg, req.username, req.password)

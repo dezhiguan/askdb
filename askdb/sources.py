@@ -469,7 +469,11 @@ def whitelist_from_scan(columns: dict[str, list[dict[str, Any]]],
             "aliases": [],
             # 运行时添加的数据源按单租户处理，见 derive_config 的说明
             "tenant_exempt": True,
-            "columns": {c["name"]: {"type": c["type"], "desc": c.get("desc", "")}
+            # 取值（枚举）跟着一起存：模型猜错取值的大小写，得到的是一条
+            # 语法正确、结果恒空的 SQL —— 页面上看不出任何异常。取值来自
+            # 列注释或 pg_stats，两者都拿不到时是空列表，行为与从前一致。
+            "columns": {c["name"]: {"type": c["type"], "desc": c.get("desc", ""),
+                                    **({"enum": c["enum"]} if c.get("enum") else {})}
                         for c in cols},
         })
     return out
@@ -519,7 +523,11 @@ def derive_config(base: Config, src: Source) -> Config:
             aliases=t.get("aliases", []) or [],
             columns={
                 cname: Column(name=cname, type=spec.get("type", ""),
-                              desc=spec.get("desc", ""))
+                              desc=spec.get("desc", ""),
+                              # 扫描时存下来的取值优先；没有就从注释里现解析，
+                              # 这样**已经注册好的源不必重新扫描**也能享受到。
+                              enum=list(spec.get("enum") or [])
+                                   or enum_from_desc(spec.get("desc", "")))
                 for cname, spec in (t.get("columns") or {}).items()
             },
             tenant_exempt=True,
@@ -528,6 +536,34 @@ def derive_config(base: Config, src: Source) -> Config:
     return Config(root=base.root, raw=raw, tables=tables, metrics=[],
                   path=f"{base.path}#{src.id}", role=base.role,
                   source_id=src.id, source_name=src.name)
+
+
+#: 列注释里枚举取值的写法：`状态：ON_SALE 在售 / OFF_SHELF 已下架`、
+#: `审核结果：APPROVED 通过 / REJECTED 驳回 / PENDING 待审`。
+#: 取值一律是全大写标识符，中文说明跟在后面 —— 这批库的注释统一是这个格式。
+_ENUM_TOKEN = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\b")
+#: 这些全大写词是类型名/单位/表名缩写，不是取值，混进来会污染归一。
+_ENUM_STOP = frozenset({
+    "ID", "SKU", "SPU", "GMV", "SQL", "URL", "API", "JSON", "HTML", "CSV",
+    "PDF", "UUID", "MD5", "IP", "SLA", "ROI", "NULL", "TRUE", "FALSE",
+    "EAN", "UPC", "CNY", "USD", "KB", "MB", "AI", "JD", "RAG", "QA",
+})
+
+
+def enum_from_desc(desc: str) -> list[str]:
+    """从列注释里把枚举取值抠出来。
+
+    存在的理由：运行时数据源的 Column.enum 一直是空的，模型于是只能猜取值 ——
+    猜错大小写（`'failed'` 而库里是 `'FAILED'`）语法完全正确、结果恒为空，
+    解析失败率因此报 0%，而真值是 4.02%。报错会被看见，这种错不会。
+    注释里其实写着取值，只是从来没人把它解析出来。
+
+    宁可少认不可错认：只收全大写标识符，且要求至少两个 —— 单独一个大写词
+    多半是缩写（"SKU ID"）而不是枚举。
+    """
+    vals = [v for v in _ENUM_TOKEN.findall(str(desc or "")) if v not in _ENUM_STOP]
+    seen = list(dict.fromkeys(vals))
+    return seen if len(seen) >= 2 else []
 
 
 def to_public(src: Source, *, table_count: int | None = None) -> dict[str, Any]:

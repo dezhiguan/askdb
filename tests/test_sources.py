@@ -305,3 +305,76 @@ def test_scan_needs_login_because_it_dials_out(open_cfg, monkeypatch):
     # 列表仍然匿名可读 —— 收紧的只是"让服务端去连一次"这个动作
     assert c.get("/api/sources").status_code == 200
 
+
+
+# ------------------------------------------------- 枚举取值（2026-09-09 回归）
+
+def test_enum_is_parsed_out_of_the_column_comment():
+    """模型猜错取值大小写，得到的是一条语法正确、结果恒空的 SQL ——
+    解析失败率因此报 0%，真值 4.02%。注释里其实写着取值，只是没人解析。"""
+    from askdb.sources import enum_from_desc
+    assert enum_from_desc("商品状态：ON_SALE 在售 / OFF_SHELF 已下架 / DRAFT 草稿未发布") == [
+        "ON_SALE", "OFF_SHELF", "DRAFT"]
+
+
+def test_enum_parser_ignores_abbreviations_and_units():
+    """宁可少认不可错认：单个大写词多半是缩写而不是取值。"""
+    from askdb.sources import enum_from_desc
+    for desc in ("SKU ID，关联 skus.sku_id", "商品 ID（SPU）", "当日 GMV（元）",
+                 "条码值（EAN-13）", "是否自有品牌。true=平台自营品牌"):
+        assert enum_from_desc(desc) == [], desc
+
+
+# --------------------------------------------- pg_stats 取值补全（真实 PG）
+
+@pytest.fixture
+def pg_table_with_categorical_column(sources_store):
+    """在 public 下建一张带低基数文本列的表，ANALYZE 之后再交给用例。
+
+    必须真的连 PG：这条路径读的是 pg_stats（ANALYZE 留下的统计视图），
+    用假对象测等于什么都没测 —— 而它正是**没有 COMMENT 的库**唯一的取值来源。
+    """
+    import uuid
+
+    import psycopg
+
+    from tests.conftest import _test_store_dsn
+
+    dsn = _test_store_dsn()
+    name = f"askdb_enum_probe_{uuid.uuid4().hex[:8]}"
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        conn.execute(f"CREATE TABLE public.{name} "
+                     "(id bigint, parse_status text, note text)")
+        # 取值分布刻意不均匀 —— most_common_vals 才会把三个取值都记下来
+        conn.execute(
+            f"INSERT INTO public.{name} "
+            "SELECT g, (ARRAY['COMPLETED','FAILED','PENDING'])[1 + mod(g, 3)], "
+            "'note-' || g FROM generate_series(1, 600) g")
+        conn.execute(f"ANALYZE public.{name}")
+    try:
+        yield name, dsn
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            conn.execute(f"DROP TABLE IF EXISTS public.{name}")
+
+
+def test_enum_values_come_from_pg_stats_when_there_are_no_comments(
+        cfg, pg_table_with_categorical_column):
+    """整库零 COMMENT 时，取值只能从统计里来。
+
+    这正是 ragforge 生产库的处境：模型猜 `parse_status = 'failed'`（库里是
+    'FAILED'），解析失败率因此报 0%，真值 4.02%，页面上看不出任何异常。
+    """
+    from askdb.executor import Executor
+
+    name, dsn = pg_table_with_categorical_column
+    cfg.raw["datasource"] = {"type": "postgresql", "dsn": dsn, "read_only": True}
+    cfg.raw["tenant"] = {**cfg.raw["tenant"], "enabled": False}
+    with Executor(cfg) as ex:
+        cols = {c["name"]: c for c in ex.describe([name])[name]}
+    assert set(cols["parse_status"].get("enum") or []) == {
+        "COMPLETED", "FAILED", "PENDING"}
+    # 高基数列不是枚举：600 个互不相同的值补进提示词毫无意义，只会挤占预算
+    assert not cols["note"].get("enum")
+    # 数值列同理不补
+    assert not cols["id"].get("enum")
