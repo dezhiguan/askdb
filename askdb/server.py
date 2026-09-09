@@ -91,6 +91,39 @@ _WRITE_EXEMPT_PATHS = frozenset({
 })
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+#: 被写门拦下时，用来把话说到**这一次点的那个动作**上。
+#:
+#: 值得多这一张表的理由：写门挡下的并不都是"改配置"。运行一轮离线回归既不改
+#: 配置也不改数据，它只是要占模型额度；对着那个按钮回一句"这是一个会改动配置
+#: 的操作"，读的人拿到的是一句错话，而他手上只有这一句话可看
+#: （2026-09-09 就是这么问过来的）。
+#:
+#: 中间件跑在路由匹配之前，拿不到路由模板，只有具体路径，所以这里按
+#: 「方法 + 路径形状」自己认一遍，`*` 匹配任意一段。认不出来时退回通用说法 ——
+#: 新增写接口忘了登记，后果只是话说得笼统一点，不会漏掉拦截本身。
+_WRITE_ACTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("POST", ("api", "eval", "run"), "运行回归评测"),
+    ("POST", ("api", "sources", "test"), "测试数据源连接"),
+    ("POST", ("api", "sources"), "接入数据源"),
+    ("PUT", ("api", "sources", "*", "tables"), "调整数据源的可查表"),
+    ("DELETE", ("api", "sources", "*"), "移除数据源"),
+    ("POST", ("api", "identity", "members"), "新增成员"),
+    ("DELETE", ("api", "identity", "members", "*"), "移除成员"),
+    ("POST", ("api", "approvals", "*", "decide"), "审批这条申请"),
+    ("POST", ("api", "reviews", "*", "decide"), "提交复核判定"),
+)
+
+
+def _write_action_name(method: str, path: str) -> str:
+    """这次被拦下的写操作叫什么。认不出来返回空串。"""
+    segs = tuple(seg for seg in path.split("/") if seg)
+    for want_method, pattern, name in _WRITE_ACTIONS:
+        if want_method != method or len(pattern) != len(segs):
+            continue
+        if all(p == "*" or p == seg for p, seg in zip(pattern, segs)):
+            return name
+    return ""
+
 #: 读操作里不要求登录的路径。**白名单是穷举的**，新接口默认要登录 ——
 #: 与写门同一个理由：漏掉的方向必须落在安全的那边。
 #:
@@ -532,20 +565,25 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 # 说清三件事：拦了什么、当前是什么状态、下一步做什么。
                 # 「无权限」「操作失败」这类话对着排查的人毫无用处。
                 #
+                # 「拦了什么」按动作名说（_WRITE_ACTIONS），不说成"改动配置" ——
+                # 被拦下的动作里有一半不改配置，说错了比说笼统更糟。
+                action = _write_action_name(request.method, request.url.path)
+                subject = f"「{action}」" if action else "这个会改动本实例数据或配置的操作"
+                #
                 # 两种状态要分开说。没配会话密钥时登录整体关闭，此时叫人"先登录"
                 # 是让他去撞一扇根本打不开的门 —— 那种提示比不提示更浪费时间。
                 # 这种实例仍有出路：管理员令牌不依赖会话密钥，运维照样进得来。
                 if not _auth.session_available():
                     return JSONResponse(status_code=401, content={
                         "code": "login_unavailable",
-                        "detail": "本实例未配置会话密钥（ASKDB_SESSION_SECRET），登录整体关闭，"
-                                  "因此没有人能执行改动配置的操作。配置该环境变量后重启，"
-                                  "或由运维携带管理员令牌调用。",
+                        "detail": f"{subject}需要登录后才能执行，而本实例未配置会话密钥"
+                                  "（ASKDB_SESSION_SECRET），登录整体关闭，因此没有人能执行它。"
+                                  "配置该环境变量后重启，或由运维携带管理员令牌调用。",
                     })
                 return JSONResponse(status_code=401, content={
                     "code": "login_required",
-                    "detail": "这是一个会改动配置的操作，需要登录后才能执行。"
-                              "你当前未登录，只能只读查询。请先登录再试。",
+                    "detail": f"{subject}需要登录后才能执行。"
+                              "你当前未登录，只能浏览与只读查询。请先登录再试。",
                 })
         return await call_next(request)
 

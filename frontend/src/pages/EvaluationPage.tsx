@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 
 import {
-  fetchEvalRun, fetchLiveQuality, fetchOfflineQuality, startEvalRun,
-  type EvalRunState, type LiveQuality, type OfflineQuality,
+  fetchEvalRun, fetchLiveQuality, fetchOfflineQuality, LoginRequired, startEvalRun,
+  type EvalRunState, type LiveQuality, type Me, type OfflineQuality,
 } from '../api'
 import { PageHeader } from '../components/AppShell'
 import type { View } from '../types'
 import { STEP_NAMES } from '../traceSteps'
+import { writeGuard } from '../writeGuard'
 
 /** Agent 质量中心。
  *
@@ -126,7 +127,18 @@ function Dimension({ label, pct, value }: { label: string; pct: number; value: s
   )
 }
 
-export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => void }) {
+export function EvaluationPage({ onNavigate, me, onOpenLogin }: {
+  onNavigate?: (view: View) => void
+  me: Me | null
+  /** 摆出登录页。会话在页面开着的时候失效时，外壳自己会摆一次；
+   *  那一次被关掉之后，这一页得留一条回去的路，否则只剩一句"请先登录"
+   *  而页面上没有任何地方可点。 */
+  onOpenLogin?: () => void
+}) {
+  /* 「运行回归评测」是写操作（POST /api/eval/run），未登录必被写门拦下。
+     按钮照旧可点、点完再报错，等于摆一个必然失败的入口 —— 与站内其余七个
+     写入口同一个处置：置灰 + 说明为什么。置灰不是边界，边界在服务端。 */
+  const guard = writeGuard(me, '运行回归评测')
   const [scope, setScope] = useState<Scope>('runtime')
   const [category, setCategory] = useState<Category>('overview')
   const [days, setDays] = useState(1)
@@ -151,6 +163,9 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
      running 期间每 2 秒轮询，跑完再把结果文件重新读一遍。 */
   const [run, setRun] = useState<EvalRunState | null>(null)
   const [runError, setRunError] = useState('')
+  /** 「这件事要登录」与「这件事出错了」分开存。前者不是故障，画成红色
+   *  故障条会让人去查一个不存在的事故 —— 与 api.ts 里 LoginRequired 同一个理由。 */
+  const [runBlocked, setRunBlocked] = useState('')
   useEffect(() => {
     let alive = true
     let timer = 0
@@ -176,6 +191,7 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
 
   const triggerRun = () => {
     setRunError('')
+    setRunBlocked('')
     startEvalRun()
       .then(v => {
         setRun(v)
@@ -189,7 +205,12 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
         }).catch(() => {})
         window.setTimeout(poll, 2000)
       })
-      .catch(e => setRunError(String(e.message || e)))
+      .catch(e => {
+        // 会话在页面开着的时候失效（票过期、实例把 auth.required 打开了）：
+        // 外壳已经把登录页摆出来了，这里再画一条红条纯属噪音
+        if (e instanceof LoginRequired) setRunBlocked(String(e.message || e))
+        else setRunError(String(e.message || e))
+      })
   }
 
   // 线上指标随时间窗重取；离线回归是跑出来的文件，不随窗口变
@@ -265,11 +286,15 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
             )}
             {scope !== 'dataset' && (
               <button className="primary" type="button"
-                      disabled={scope === 'offline' ? running : busy}
+                      disabled={scope === 'offline' ? (running || !guard.can) : busy}
                       onClick={scope === 'offline' ? triggerRun : () => setReload(n => n + 1)}
-                      title={scope === 'offline' && run?.datasource
-                        ? `固定跑在「${run.datasource}」上 —— 换库成绩就不可比`
-                        : undefined}>
+                      title={scope !== 'offline'
+                        ? undefined
+                        : !guard.can
+                          ? guard.props.title
+                          : run?.datasource
+                            ? `固定跑在「${run.datasource}」上 —— 换库成绩就不可比`
+                            : undefined}>
                 {scope === 'offline'
                   ? (running
                       ? `正在跑 ${run?.done ?? 0} / ${run?.total ?? 0} 题…`
@@ -320,6 +345,12 @@ export function EvaluationPage({ onNavigate }: { onNavigate?: (view: View) => vo
       )}
 
       {error && <div className="audit-error">读取质量数据失败：{error}</div>}
+      {runBlocked && (
+        <div className="eval-login-required">
+          <span>{runBlocked}</span>
+          {onOpenLogin && <button className="secondary" type="button" onClick={onOpenLogin}>去登录</button>}
+        </div>
+      )}
       {runError && <div className="audit-error">回归没能开跑：{runError}</div>}
       {run?.status === 'failed' && (
         <div className="audit-error">上一轮回归中断：{run.error || '未知原因'}</div>
