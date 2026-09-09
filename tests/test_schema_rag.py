@@ -385,3 +385,37 @@ def test_summary_hint_is_empty_when_the_source_has_none(cfg):
     from askdb.config import Table
     cfg.tables = {"orders": Table(name="orders", aliases=[], desc="订单主表", columns={})}
     assert schema_rag.summary_hint(cfg) == ""
+
+
+# ------------------------------------------------- 召回后端的降级必须体检得出来
+
+def test_backend_status_reports_declared_mode(cfg):
+    from askdb import schema_rag
+
+    cfg.raw["schema_rag"]["mode"] = "keyword"
+    st = schema_rag.backend_status(cfg)
+    assert st["mode"] == "keyword" and st["effective"] == "keyword"
+    assert not st["degraded"]
+
+
+def test_backend_status_flags_missing_vector_backend(cfg, monkeypatch):
+    """声明 vector、装不上 chromadb —— 生产上就这么静默回落了很久。
+
+    健康检查必须说得出这件事：它决定了模型到底看得见哪几张表。
+    """
+    import builtins
+
+    from askdb import schema_rag
+
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    real = builtins.__import__
+
+    def no_chroma(name, *a, **k):
+        if name == "chromadb":
+            raise ImportError("No module named 'chromadb'")
+        return real(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_chroma)
+    st = schema_rag.backend_status(cfg)
+    assert st["degraded"] and st["effective"] == "keyword"
+    assert "chromadb" in st["reason"]

@@ -72,16 +72,32 @@ SYSTEM = """你是一个只读数据查询助手，把用户的问题翻译成�
 13. **两跳问题只返回最终那个值。** 问"X 最多的那个 A，他的 B 是多少"，要的是 B，
    用子查询定位 A、外层只选 B（可再带一列 A 的名称便于核对），不要把 A 的
    整行档案返回 —— 那没有回答问题。
+14. **相对时间一律用当前时间函数表达。** 用户消息里会给出【当前日期】。问到
+   今天/昨天/本周/本月/最近 N 天时，写 `CURRENT_DATE - INTERVAL '1 day'`
+   这样的表达式，不要凭印象写死一个日期字面量，更**不要拿 `MAX(时间列)`
+   当"今天"** —— 库里最新有数据的那一天不是今天，这么写会把前天的数
+   贴上"昨日"的标签返回。用户问的那一天若确实没有数据，就让查询自然返回
+   空结果，并**不要**用 COALESCE(…, 0) 把"没有数据"抹成"数值是 0"：
+   前者是"查不到"，后者是"确实一单没有"，两句话的业务含义完全不同。
+
+15. **缺的是"维度"时，和缺表一样要如实说。** 问"哪个活动的 ROI 最高"，而统计表
+   只有日粒度、没有活动外键 —— 这时返回"某一天 ROI 最高的那一行"不是答案，
+   是把一个别的问题的答案递过去。判断的落点很简单：**结果里有没有那个被问到的
+   实体**。没有就返回空 SQL 并说明缺哪个维度。
+16. **问实体就按实体聚合。** 一张表若是"一个实体每期一行"（月度评分、日快照），
+   问"最差的 5 家供应商"要的是**供应商**，必须 GROUP BY 实体再排序；直接
+   `ORDER BY 分数 LIMIT 5` 取到的是"最差的 5 条月度记录"，实测 5 条分散在
+   三个不同年月、还混进一条两年前的。只取某一期时，要把期次一并选进结果列。
 
 如果问题无法用给定的表回答，就在 reasoning 里说明缺什么，sql 字段返回空字符串。"""
 
 USER = """{schema}
-
+{now}
 【用户问题】
 {question}{step}"""
 
 RETRY = """{schema}
-
+{now}
 【用户问题】
 {question}
 
@@ -256,6 +272,7 @@ class LlmClient:
         last_sql: str = "",
         error: str = "",
         step: str = "",
+        today: str = "",
     ) -> tuple[SqlDraft, LlmUsage]:
         # 必须显式指定 function_calling：
         #   默认可能落到 JSON mode（response_format=json_object），而百炼要求
@@ -266,11 +283,16 @@ class LlmClient:
             SqlDraft, method="function_calling", include_raw=True
         )
         system = SYSTEM.format(dialect=dialect)
+        # 模型不知道今天是几号 —— 不给它，"昨天""最近一个月"就只能靠猜。
+        # 实测猜出来的是 `MAX(stat_date)`（返回前天的数）和 `'2025-07-01'`
+        # （真实数据到 2026-09）。给了之后 R-24 才有一条**正确的出路**可指。
+        now = f"\n【当前日期】{today}（相对时间以此为准）\n" if today else ""
         if error:
             human = RETRY.format(schema=schema_prompt, question=question,
-                                 last_sql=last_sql, error=error)
+                                 last_sql=last_sql, error=error, now=now)
         else:
-            human = USER.format(schema=schema_prompt, question=question, step=step)
+            human = USER.format(schema=schema_prompt, question=question,
+                                step=step, now=now)
 
         try:
             out = model.invoke([("system", system), ("human", human)])
@@ -280,7 +302,8 @@ class LlmClient:
                 raise
             # 主模型不可用时兜底一次。失败原因串在一起抛出，便于定位到底是谁挂了。
             try:
-                draft, usage = fb.generate_sql(question, schema_prompt, dialect, last_sql, error)
+                draft, usage = fb.generate_sql(question, schema_prompt, dialect,
+                                               last_sql, error, step, today)
             except Exception as fb_err:
                 raise RuntimeError(
                     f"主模型 {self.model_name} 调用失败：{primary_err}；"

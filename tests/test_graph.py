@@ -25,9 +25,9 @@ class FakeLlm:
         self.calls: list[dict] = []
 
     def generate_sql(self, question, schema_prompt, dialect="duckdb",
-                     last_sql="", error="", step=""):
+                     last_sql="", error="", step="", today=""):
         self.calls.append({"error": error, "last_sql": last_sql, "step": step,
-                           "schema_prompt": schema_prompt})
+                           "schema_prompt": schema_prompt, "today": today})
         if self.raises:
             raise self.raises
         sql = self.sqls.pop(0) if self.sqls else ""
@@ -589,3 +589,43 @@ def test_retry_after_threshold_gets_the_summary_tables(cfg, ex):
     first, *retries = llm.calls
     assert retries, "应当发生过重试"
     assert any("预聚合汇总表" in c.get("schema_prompt", "") for c in retries)
+
+
+# ------------------------------------------------- 报错与 SQL 必须是同一版
+
+def test_rejected_sql_is_the_one_that_failed(cfg, ex):
+    """护栏拒绝时，结果里带的 SQL 必须是**被拒的那条**。
+
+    2026-09-09 回归 P-02：接口返回了"第 3 轮的 SQL + 第 2 轮的报错"——
+    报错说 products 没有 order_count，而附着的 SQL 里那一列明明带着别名，
+    用户按提示改，怎么改都对不上。根因是拒绝分支不写 sql_final，
+    它还停在**上一轮**通过护栏的那条上。这里直接喂一个"上一轮留下过
+    sql_final"的状态给护栏节点，看它拒绝时把哪一条写回去。
+    """
+    from askdb.trace import Tracer
+
+    deps = graph.Deps(cfg=cfg, llm=FakeLlm(), executor=ex, tracer=Tracer())
+    out = graph._n_guard(
+        {"question": "测试问题", "org_id": 65,
+         "sql_raw": "SELECT no_such_column FROM documents",
+         "sql_final": "SELECT file_name FROM documents LIMIT 200"},   # 上一轮的残留
+        {"configurable": {"deps": deps}})
+    assert out["rejected_by"] == "R-04"
+    assert "no_such_column" in out["sql_final"]
+    assert "file_name" not in out["sql_final"]
+
+
+def test_empty_result_says_so(cfg, ex):
+    """0 行不能只是"成功返回 0 行"——要说清"可能是条件没落在有数据的区间"。"""
+    r = run(cfg, ex, "SELECT file_name AS 文件名 FROM documents "
+                     "WHERE status = 'NO_SUCH_STATUS'")
+    assert r.ok and r.row_count == 0
+    assert "结果为空" in r.empty_note
+
+
+def test_model_is_told_todays_date(cfg, ex):
+    """不告诉模型今天几号，"昨天""最近一个月"就只能靠猜（实测猜出过去年的日期）。"""
+    llm = FakeLlm(OK_SQL)
+    graph.ask("昨天有多少文档", cfg, executor=ex, llm=llm)
+    sent = [c for c in llm.calls if "today" in c]
+    assert sent and len(sent[0]["today"]) == 10       # YYYY-MM-DD

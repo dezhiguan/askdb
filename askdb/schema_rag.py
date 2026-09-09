@@ -557,3 +557,34 @@ def _render(tables: list[Table], metrics: list[Metric]) -> str:
         parts.append("\n【业务口径 —— 涉及以下概念时必须使用给定定义】")
         parts += [metric_doc(m) for m in metrics]
     return "\n\n".join(parts)
+
+
+def backend_status(cfg: Config) -> dict[str, Any]:
+    """声明的召回模式，与**真正会生效**的那个。
+
+    2026-09-09 发现生产上这两者已经不一致了很久：config 写着 mode: vector，
+    镜像里没装 chromadb，于是每一次提问都静默回落到关键词召回 —— 唯一的痕迹
+    是判定链路里一行小字，没人会去逐条翻。后果不是"稍差一点"：同一个源、
+    同一批表，命中哪几张变成由提问措辞决定，模型据此断言"本库没有运单表"。
+
+    放进 /api/health 是因为**降级必须体检得出来**。这里只做静态探测
+    （能不能 import、有没有密钥），不建索引、不发嵌入请求 ——
+    健康检查不该为了确认一件事而花钱。
+    """
+    mode = cfg.raw.get("schema_rag", {}).get("mode", "keyword")
+    out: dict[str, Any] = {"mode": mode, "effective": mode, "degraded": False,
+                           "reason": ""}
+    if mode != "vector":
+        return out
+    try:
+        import chromadb                                    # noqa: F401
+    except Exception as e:
+        out.update(effective="keyword", degraded=True,
+                   reason=f"未安装向量索引依赖，已回落关键词召回：{e}。"
+                          f"装 askdb[vectors]，或把 schema_rag.mode 改成 keyword")
+        return out
+    if not cfg.api_key():
+        out.update(effective="keyword", degraded=True,
+                   reason=f"未配置 {cfg.llm.get('api_key_env', '')}，"
+                          f"生成不了向量，已回落关键词召回")
+    return out

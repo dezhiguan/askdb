@@ -26,6 +26,7 @@ from . import reviews as _reviews
 from . import auth as _auth
 from . import evalrun as _evalrun
 from . import guard
+from . import schema_rag
 from . import identity as _identity
 from . import pgstore as _pgstore
 from . import sources as _sources
@@ -750,6 +751,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 应答缓存现状：命中/未命中是本副本的局部计数，仅供观测；enabled
             # 反映是否真的接上了 Redis（配了却连不上会退化为 False）。
             "answer_cache": build_answer_cache(cfg).stats(),
+            # 召回后端：声明的模式与真正生效的那个。两者不一致时 degraded
+            # 为 true —— 生产上这一对已经悄悄错开过很久，而它决定了模型
+            # 到底看得见哪几张表（详见 schema_rag.backend_status）。
+            "schema_rag": schema_rag.backend_status(cfg),
             "observability": {
                 "tracing": _obs_status(),
                 "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),

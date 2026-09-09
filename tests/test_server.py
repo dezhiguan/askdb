@@ -628,3 +628,15 @@ def test_eval_cases_mark_unrun_as_null_not_pass(client):
     for c in cases:
         if c["passed"] is not None:
             assert c["in_blind"], f"{c['id']} 有结果却不在盲测集里"
+
+
+def test_health_reports_recall_backend(client, cfg):
+    """健康检查要说得出"声明的召回模式"和"真正生效的那个"是不是同一个。
+
+    生产上这两者错开过很久（config 写 vector、镜像没装 chromadb），
+    唯一的痕迹是判定链路里一行小字 —— 而它决定了模型看得见哪几张表。
+    """
+    cfg.raw["schema_rag"]["mode"] = "keyword"
+    st = client.get("/api/health").json()["schema_rag"]
+    assert st == {"mode": "keyword", "effective": "keyword",
+                  "degraded": False, "reason": ""}
