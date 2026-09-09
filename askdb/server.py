@@ -2582,6 +2582,23 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         命中不调模型、不扣配额、不执行 SQL。审计仍写一条（一调用一条留痕），
         但明确标 cached、成本 0，与真正跑过模型的记录区分开。
+
+        **节点链只留 cache 这一条**，首跑那串节点不再复制过来（2026-09-09）。
+        原来是整份 deepcopy 之后在头上插一行"命中缓存"，于是这次调用在执行
+        追踪页上长着 Schema 召回 / SQL 生成 2.6s / 只读执行 …… 一整条它根本
+        没跑的链路，页面无从区分，读起来就是"说没调模型，却又调了"。
+
+        而且那串复制来的节点带着首跑的耗时与 token，被当成本次发生的事在算：
+        audit 的「模型调用成功率」按 MODEL_STEPS 节点计数，每命中一次就虚增
+        一次从未发生的 generate_sql；_nodes_of 把它的 ms 与 token 累进节点视图，
+        与记录级 tok=0 / cost=0 自相矛盾；observe 见到 step 上有 token 就发一条
+        generation，把幻影模型调用一路推给观测后端。执行追踪的语义是"这次调用
+        发生了什么"，摆进别次的 span，护栏审计的可信度就没了。
+
+        首跑链路并没有丢：cached_from 指着原 trace_id，追踪页从这一行跳过去。
+        原 id 取不到（旧格式缓存里没有）时留空串，那一行只是不可点，
+        不影响其余。原记录可能已过保留期或不在调用者可见范围内 —— 那时跳过去
+        是既有的"这条链路当前不可见"，与任何一条查不到的 trace 同一个说法。
         """
         import copy
         import uuid as _uuid
@@ -2590,13 +2607,18 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         out = copy.deepcopy(cached)
         tid = _uuid.uuid4().hex[:12]
-        steps = list(out.get("steps") or [])
-        steps.insert(0, {"step": "cache", "ms": 0, "status": "hit",
-                         "note": "命中应答缓存，未调用模型"})
-        out.update({"trace_id": tid, "cached": True, "steps": steps,
+        origin = str(cached.get("trace_id") or "")
+        steps = [{"step": "cache", "ms": 0, "status": "hit",
+                  "note": "命中应答缓存，未调用模型"}]
+        # 计量与"怎么跑出来的"全部按本次调用重置；结果本身（rows / sql_final /
+        # tables_hit / masked_columns）照旧沿用缓存，那才是要还给调用方的东西。
+        out.update({"trace_id": tid, "cached": True, "cached_from": origin,
+                    "steps": steps, "step_count": 1, "attempts": 0,
+                    "multi_step": False, "converged_early": "",
                     "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0})
         _wa(scoped, {
             "trace_id": tid, "ts": _ni(), "kind": "ask", "cached": True,
+            "cached_from": origin,
             "model": "cache", "org_id": org, "role": scoped.role,
             "user": scoped.user, "question": question,
             "source": scoped.source_id or "builtin",

@@ -31,6 +31,9 @@ SUMMARY_FIELDS = (
     "trace_id", "ts", "kind", "thread_id", "org_id", "role", "user", "question", "rejected_by",
     "attempts", "rows_returned", "elapsed_ms", "cost_cny",
     "step_count", "multi_step", "source", "source_name",
+    # 命中应答缓存的那条记录，耗时/成本/token 全是 0 —— 不标一句"命中缓存"，
+    # 流水上它和一次真跑长得一样，只是快得离谱。
+    "cached",
 )
 
 # /api/trace 的字段白名单：执行追踪页要的是**节点链与计量**。
@@ -38,10 +41,14 @@ SUMMARY_FIELDS = (
 # tables_hit，SQL 文本、问题原文与命中表仍然只经 /api/replay 出去（要登录、
 # 要开关、还要按调用者当下的可见表收窄）。步骤 note 里会出现表名，所以
 # /api/trace 同样做那道可见表收窄，只是不返回 tables_hit 本身。
+# cached / cached_from 一起放出去：只有一条 cache 节点的链路，不说明白就是
+# 一条"什么也没发生"的调用。cached_from 是首跑那条的 trace_id —— 它本身仍受
+# 同一道可见性判定，跳过去看不看得到，与任何一条 trace 同一个规则。
 TRACE_FIELDS = (
     "trace_id", "ts", "kind", "thread_id", "role", "model",
     "tok_in", "tok_out", "step_count", "multi_step", "attempts",
     "elapsed_ms", "cost_cny", "rejected_by", "source", "source_name",
+    "cached", "cached_from",
 )
 
 # 步骤对象自身也走白名单 —— 记录里的 steps 由各节点自由追加，
@@ -63,7 +70,7 @@ REPLAY_FIELDS = (
     "rules_fired", "rejected_by", "attempts", "explain_rows",
     "step_count", "multi_step", "converged_early", "rows_returned",
     "elapsed_ms", "tok_in", "tok_out", "cost_cny", "steps",
-    "source", "source_name",
+    "source", "source_name", "cached", "cached_from",
 )
 
 
@@ -800,8 +807,12 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
         if r.get("rejected_by"):
             by_rule[str(r["rejected_by"])] = by_rule.get(str(r["rejected_by"]), 0) + 1
         # 直查不经模型（model=None）不计入模型维度；老记录无 model 字段，
-        # 按调用类型如实归为"未记录"而不是猜一个模型名
-        m = r.get("model") or ("（未记录）" if r.get("kind", "ask") == "ask" else None)
+        # 按调用类型如实归为"未记录"而不是猜一个模型名。
+        # 缓存命中同样不进这一维：它的 model 字段写的是 "cache"，那不是一个
+        # 模型，跟着记一笔会在「按模型」里凭空多出一行，并把前端拿 by_model
+        # 求和当分母的「平均 Token」按未发生的调用摊薄。
+        m = None if r.get("cached") else (
+            r.get("model") or ("（未记录）" if r.get("kind", "ask") == "ask" else None))
         if m:
             e = by_model.setdefault(m, {"calls": 0, "cost_cny": 0.0})
             e["calls"] += 1

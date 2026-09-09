@@ -6,6 +6,8 @@
  */
 
 export const STEP_NAMES: Record<string, string> = {
+  // 唯一不由 tracer.add 产生的节点：命中应答缓存时，服务端手写这一条当整条链路
+  cache: '应答缓存',
   quota: '配额检查',
   schema_recall: 'Schema 召回',
   plan: '单步/多步判定',
@@ -22,6 +24,7 @@ export const STEP_NAMES: Record<string, string> = {
 /** 节点归类。这是对**图节点身份**的静态分类，不是运行时探测出来的 span kind ——
  *  某一步实际花没花 token，看它自己的 token 列，不要从这一列反推。 */
 export const STEP_TYPE: Record<string, string> = {
+  cache: 'SYS',
   quota: 'GUARD',
   guard: 'GUARD',
   schema_recall: 'TOOL',
@@ -34,5 +37,13 @@ export const STEP_TYPE: Record<string, string> = {
   finalize: 'SYS',
   interrupted: 'SYS',
 }
+
+/** 这一步是不是失败了。
+ *
+ *  **不能拿 `status === 'ok'` 反推失败**：命中应答缓存那一步的 status 是 hit，
+ *  它是一次正常收尾。按等于 ok 判，链路上唯一那个节点会渲染成红框、状态列
+ *  标红 —— 一次零耗时的成功命中，在页面上长得像一次挂掉的调用。
+ *  以后再加别的非 ok 成功态，也只改这一处。 */
+export const stepFailed = (status: string): boolean => status !== 'ok' && status !== 'hit'
 
 export const KIND_NAMES: Record<string, string> = { ask: '提问', sql: '直查', resume: '续跑' }

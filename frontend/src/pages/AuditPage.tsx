@@ -4,7 +4,7 @@ import {
   fetchAudit, fetchAuditStats, fetchReplay, tracingLink, tracingReachable,
   type AuditItem, type AuditList, type AuditStats, type Me, type Replay, type ReplayResult,
 } from '../api'
-import { KIND_NAMES, STEP_NAMES } from '../traceSteps'
+import { KIND_NAMES, STEP_NAMES, stepFailed } from '../traceSteps'
 import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
 
 
@@ -497,10 +497,10 @@ function ReplayView({ traceId, result }: { traceId: string; result: ReplayResult
       {d.steps && d.steps.length > 0
         ? <div className="timeline">
             {d.steps.map((step, i) => (
-              <div className={`timeline-row${step.status === 'ok' ? '' : ' bad'}`} key={`${step.step}-${i}`}>
+              <div className={`timeline-row${stepFailed(step.status) ? ' bad' : ''}`} key={`${step.step}-${i}`}>
                 <strong>
                   {step.ms} ms · {STEP_NAMES[step.step] ?? step.step}
-                  {step.status === 'ok' ? '' : ' · 未通过'}
+                  {stepFailed(step.status) ? ' · 未通过' : ''}
                 </strong>
                 <small>
                   {step.note || '无补充说明'}

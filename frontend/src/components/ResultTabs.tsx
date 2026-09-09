@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react'
 import { resumeTask, type AskResult } from '../api'
-import { STEP_NAMES } from '../traceSteps'
+import { STEP_NAMES, stepFailed } from '../traceSteps'
 import { RULES } from '../rules'
 import type { ResultTab } from '../types'
 
@@ -312,7 +312,7 @@ function ChainPane({ result, onOpenTrace }: { result: AskResult; onOpenTrace: ()
         {steps.map((step, i) => (
           <Fragment key={`${step.step}-${i}`}>
             {i > 0 && <i className="mini-trace-arrow">→</i>}
-            <div className={`mini-trace-node ${step.status !== 'ok' ? 'bad' : ''}`}>
+            <div className={`mini-trace-node ${stepFailed(step.status) ? 'bad' : ''}`}>
               <strong>{STEP_NAMES[step.step] ?? step.step}</strong>
               <small>{step.ms}ms</small>
             </div>
