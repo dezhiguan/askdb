@@ -30,8 +30,17 @@ COPY askdb ./askdb
 COPY config ./config
 COPY data/__init__.py data/seed.py ./data/
 # 评测结果随镜像一起走 —— 少了它评测页是空的。
-# 只带结果 JSON（逐题通过与否、失败原因、trace_id、耗时成本）与题库 jsonl，
-# 不带出题脚本与回放器：对外实例不跑评测，只展示已有结论。
+# 带结果 JSON（逐题通过与否、失败原因、trace_id、耗时成本）、题库 jsonl，
+# 以及**回放器本身**（golden + replay）——「运行回归评测」那个按钮要真跑，
+# 靠的就是这两个模块。
+#
+# 2026-09-09 由"不带回放器"改为带。原来那条取舍的结果是：页面上摆着一个
+# 在这套镜像上点一次失败一次的按钮（ImportError → 501）。要么按钮不该在，
+# 要么套件就得在，不能两边都留着。
+#
+# 只带这两个模块，不带出题脚本（golden_*.py）、消融、混沌与 run_live：
+# 那些是开发机上的工具，进镜像只会扩大攻击面与体积。golden.py 与 replay.py
+# 除 askdb 自己外只依赖标准库，不引入任何新的 pip 依赖。
 #
 # 题库这一行是 2026-09-07 补的。此前只带 results，而 /api/eval 要按结果文件
 # 里记的 provenance.golden 去读题库才能给出"评测集全集多少题、覆盖哪几类、
@@ -39,6 +48,7 @@ COPY data/__init__.py data/seed.py ./data/
 # 卡片显示 "—"，看着像没跑过评测，实际是跑了但题目丢在构建上下文外面。
 COPY evals/results ./evals/results
 COPY evals/*.jsonl ./evals/
+COPY evals/__init__.py evals/golden.py evals/replay.py ./evals/
 
 # 样例库在**构建期**生成并固化进镜像：
 #   · 固定随机种子 → 每次构建产出完全一致的数据，可复现

@@ -5,8 +5,10 @@
 
 1. **一次只准跑一轮。** 回归会真的调模型、真的查库；两轮并发跑，成本翻倍，
    而且两轮会往同一个结果文件里写，后写的把先写的盖掉，成绩变成两轮的混合物。
-   所以状态是**进程级单例**加一把锁，第二个请求直接 409，不排队 —— 排队等于
-   把"我点了没反应"变成"我点了十分钟后突然又跑一轮"。
+   同一个副本上靠进程级单例加一把锁；**多副本上判据在库里**
+   （evalrunstore：抢占、心跳、超时接管），因为线上是 4 个副本，
+   进程内的锁在那里挡不住任何东西。第二个请求直接 409，不排队 ——
+   排队等于把"我点了没反应"变成"我点了十分钟后突然又跑一轮"。
 2. **进度要能看见。** 一轮盲测几分钟，没有进度的按钮和卡死没有区别。
    replay.run 的 on_progress 每判完一题回调一次，这里只存计数。
 3. **跑在哪个库上必须固定且写清楚。** 成绩离开了数据源就没有意义 ——
@@ -59,21 +61,48 @@ _state = RunState()
 _thread: threading.Thread | None = None
 
 
-def state() -> dict[str, Any]:
+def _shared(cfg: Config | None) -> bool:
+    """这一实例的运行状态放不放库。
+
+    判据跟成绩、审计同一个开关（observability.store: postgres）——
+    多副本部署本来就必须配它，而单进程的本地实例配不配都对。
+    """
+    if cfg is None:
+        return False
+    from . import evalstore
+
+    return evalstore.enabled(cfg)
+
+
+def _run_name(cfg: Config) -> str:
+    """这一实例的成绩叫什么。与 evalstore.save 用的是同一个名字（结果文件的
+    主干），否则"跑到哪了"和"跑出了什么"会记在两个 key 下。"""
+    return _target(cfg)[2].stem
+
+
+def state(cfg: Config | None = None) -> dict[str, Any]:
+    """这一轮跑到哪了。多副本实例上取库里那一行 —— 见 evalrunstore 的说明：
+    轮询打到哪个副本都得给同一个答案，否则页面会在"正在跑"和"没在跑"之间闪。"""
+    if _shared(cfg):
+        from . import evalrunstore
+
+        got = evalrunstore.state(_run_name(cfg))
+        return got if got is not None else RunState().as_dict()
     with _lock:
         return _state.as_dict()
 
 
-def is_running() -> bool:
-    with _lock:
-        return _state.status == "running"
+def is_running(cfg: Config | None = None) -> bool:
+    return state(cfg).get("status") == "running"
 
 
 class EvalUnavailable(RuntimeError):
-    """评测套件不在本次部署里。
+    """这一部署跑不了回归：套件不在、题库不在，或者配置没说跑在哪。
 
-    镜像只 COPY askdb/，evals/ 与题库都不在其中 —— 那种部署上这个按钮
-    点不动是**事实**，必须如实说，不能让它转半天再报一个 ImportError。
+    对外实例的镜像自 2026-09-09 起带上了 golden + replay（Dockerfile），
+    所以线上这条路是通的；仍然保留这个异常与 availability()，因为"部署里
+    有没有它"取决于镜像怎么打 —— 缺了要如实说，不能让按钮转半天再报一个
+    ImportError。
     """
 
 
@@ -139,6 +168,29 @@ def availability(cfg: Config) -> str:
     return ""
 
 
+def _runner_id() -> str:
+    """谁在跑这一轮。多副本上排查时要能一眼看出是哪个 Pod —— k8s 把 Pod 名
+    给了 HOSTNAME，本地退回进程号。它只用来给人看，不参与任何判定。"""
+    import os
+
+    return f"{os.environ.get('HOSTNAME') or 'local'}/{os.getpid()}"
+
+
+def _publish(cfg: Config, name: str, status: str, *, error: str = "",
+             accuracy: float | None = None, passed: int = 0) -> None:
+    """把终态写回共享状态。写不进去只记日志：成绩本身已经落库了，
+    这里再抛只会让线程带着一个没人接的异常退出。心跳超时会兜住这一行。"""
+    if not _shared(cfg):
+        return
+    from . import evalrunstore
+
+    try:
+        evalrunstore.finish(name, status=status, finished_at=now_iso(),
+                            error=error, accuracy=accuracy, passed=passed)
+    except Exception:
+        traceback.print_exc()
+
+
 def start(cfg: Config, cfg_of_source, golden_rel: str = "") -> dict[str, Any]:
     """起一轮回归。已经在跑就抛 RuntimeError，由调用方翻成 409。
 
@@ -149,20 +201,52 @@ def start(cfg: Config, cfg_of_source, golden_rel: str = "") -> dict[str, Any]:
 
     source, golden, out, run_replay, cases = _preflight(cfg)
     target_cfg = cfg_of_source(source)
+    group = "盲测集（最终成绩）"
+    started = now_iso()
+    shared = _shared(cfg)
+    name = _run_name(cfg)
 
+    # 进程内那把锁先过一道：同一个副本上连点两下，不必去库里绕一圈。
+    # 它**不是**唯一判据 —— 多副本时判据在库里，见下面的 claim。
     with _lock:
         if _state.status == "running":
             raise RuntimeError("已经有一轮回归在跑")
         _state.__init__()          # 每轮从干净状态开始，别留上一轮的残值
         _state.status = "running"
-        _state.started_at = now_iso()
+        _state.started_at = started
         _state.total = len(cases)
-        _state.group = "盲测集（最终成绩）"
+        _state.group = group
         _state.datasource = source
+
+    if shared:
+        from . import evalrunstore
+
+        try:
+            claimed = evalrunstore.claim(
+                name, started_at=started, total=len(cases), group=group,
+                datasource=source, runner=_runner_id())
+        except Exception:
+            # 抢不抢得到都不知道，就不能开跑：宁可这一次点不动，
+            # 也不要四个副本各跑一轮、把同一个 name 写成四份成绩的混合物
+            with _lock:
+                _state.__init__()
+            raise
+        if not claimed:
+            with _lock:
+                _state.__init__()
+            raise RuntimeError("已经有一轮回归在跑")
 
     def _progress(done: int, total: int) -> None:
         with _lock:
             _state.done, _state.total = done, total
+        if shared:
+            from . import evalrunstore
+
+            # 进度写不进去不该把这一轮拖垮：成绩还在跑，页面顶多进度条不动
+            try:
+                evalrunstore.beat(name, done, total)
+            except Exception:
+                traceback.print_exc()
 
     def _work() -> None:
         try:
@@ -188,11 +272,13 @@ def start(cfg: Config, cfg_of_source, golden_rel: str = "") -> dict[str, Any]:
                         out.read_text(encoding="utf-8"), encoding="utf-8")
                 out.write_text(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2),
                                encoding="utf-8")
+            passed = sum(1 for o in rep.outcomes if o.passed)
             with _lock:
                 _state.status = "done"
                 _state.finished_at = now_iso()
                 _state.accuracy = rep.accuracy
-                _state.passed = sum(1 for o in rep.outcomes if o.passed)
+                _state.passed = passed
+            _publish(cfg, name, "done", accuracy=rep.accuracy, passed=passed)
         except Exception as e:
             # 跑挂了要留下能查的东西：状态里给人话，日志里给栈。
             traceback.print_exc()
@@ -200,7 +286,8 @@ def start(cfg: Config, cfg_of_source, golden_rel: str = "") -> dict[str, Any]:
                 _state.status = "failed"
                 _state.finished_at = now_iso()
                 _state.error = f"{type(e).__name__}: {e}"[:300]
+            _publish(cfg, name, "failed", error=f"{type(e).__name__}: {e}")
 
     _thread = threading.Thread(target=_work, name="askdb-eval-run", daemon=True)
     _thread.start()
-    return state()
+    return state(cfg)

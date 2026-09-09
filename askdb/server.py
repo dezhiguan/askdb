@@ -956,6 +956,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             return _evalrun.start(cfg, _pinned)
         except _evalrun.EvalUnavailable as e:
             raise HTTPException(status_code=501, detail=str(e)) from e
+        except _pgstore.StoreUnavailable as e:
+            # 多副本上"只准跑一轮"这件事由库来裁决（evalrunstore）。库连不上
+            # 就裁决不了，此时**宁可不跑**：四个副本各跑一轮的账单和一份
+            # 交替写成的成绩，比按钮点不动难收拾得多。
+            raise HTTPException(
+                status_code=503,
+                detail="回归暂时开不了：协调"
+                       "「一次只准跑一轮」的凭据库连不上，稍后再试。") from e
         except RuntimeError as e:
             raise HTTPException(status_code=409, detail=str(e)) from e
 
@@ -968,9 +976,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         知道的事实，不说出来就只能靠点一下去问。
         """
         _require_cap(request, _identity.QUALITY_READ, "查看回归进度")
-        out = _evalrun.state()
+        out = _evalrun.state(cfg)
         # 正在跑就不必再查一遍（套件显然在），省掉轮询期间每 2 秒一次的题库读盘
-        reason = "" if _evalrun.is_running() else _evalrun.availability(cfg)
+        reason = ("" if out.get("status") == "running"
+                  else _evalrun.availability(cfg))
         out["available"] = not reason
         out["unavailable_reason"] = reason
         return out
