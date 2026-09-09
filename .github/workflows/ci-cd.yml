@@ -24,9 +24,14 @@ jobs:
     # 数据源注册表自 2026-09-06 起只有 PG 一种存储，用例不 skip 只会 fail ——
     # 没有这个服务，tests/test_sources.py 整批红，而它测的是"服务端会不会
     # 按用户填的地址向外建连"这类东西，正是最不能不跑的一批。
+    #
+    # 2026-09-09 换成 pgvector 的镜像：schema 向量索引也落这个库
+    # （askdb_schema_vectors，需要 vector 扩展）。用官方 postgres 镜像的话
+    # tests/test_vectors.py 整批红在"扩展没装"上 —— 而那正是这组用例要保护的
+    # 那件事：装没装必须看得见，不能被兜成一句 note。
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: askdb
           POSTGRES_PASSWORD: askdb

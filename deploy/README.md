@@ -432,6 +432,30 @@ nginx 侧回滚：还原 rag-forge 仓库的 `nginx.conf` 并重推。
 
 ## 运维要点
 
+- **Schema 向量召回要 pgvector**（2026-09-09 起）。`schema_rag.mode: vector`
+  的实例，索引落在元数据库的 `askdb_schema_vectors` 表，需要该库能装 vector
+  扩展：
+
+  ```sql
+  -- 在 askdb_meta 上执行一次；服务自己也会尝试 CREATE EXTENSION IF NOT EXISTS，
+  -- 但普通账号通常没有装扩展的权限，所以由管理员先装好更省事
+  CREATE EXTENSION IF NOT EXISTS vector;
+  ```
+
+  装不上不会让服务起不来 —— 召回会回落关键词模式，但**不再是静默的**：
+  `/api/health` 的 `schema_recall` 一格会显示 `degraded: true` 与原因，
+  进程日志里也有一条 WARNING。发版后请顺手确认这一格：
+
+  ```bash
+  curl -s https://askdb.ragforge.net/api/health | python3 -m json.tool | grep -A6 schema_recall
+  ```
+
+  这条是被一次真实事故加的：2026-09-07 把对外实例切到 `mode: vector`，但当时
+  索引走 Chroma，而 chromadb 在可选 extra 里没被装进镜像，于是每一次请求都在
+  回落关键词，持续两天无人发现 —— 唯一的线索是单次结果里的 `recall_note`。
+  换成 PG 之后没有"装没装"这个变量了（psycopg 是主依赖），剩下的变量就是
+  这条扩展。
+
 - **审计、审批、复核、检查点、回归成绩、每日配额全部存在 PostgreSQL**
   （2026-09-09 起，`observability.store: postgres`）。表在数据源注册表同一个库里
   （`askdb_audit` / `askdb_approvals` / `askdb_reviews` / `checkpoints*` /
