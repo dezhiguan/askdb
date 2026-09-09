@@ -236,8 +236,10 @@ can be edited without touching thresholds:
 
 | File | Used for |
 |---|---|
-| `config/askdb.yaml` | Local default — the bundled DuckDB sample database |
+| `config/askdb.yaml` | Local development instance. No datasource block either — sources come from the runtime registry |
+| `config/sample.yaml` | The bundled DuckDB sample database, used by the evaluation and fault-injection runs |
 | `config/tables.yaml` · `config/metrics.yaml` | **Table allowlist and metric definitions** for the sample database |
+| `config/ragforge-dev-tables.yaml` · `ragforge-dev-metrics.yaml` | The same two files for the local ragforge database, used by `askdb.yaml` and `ragforge.yaml` |
 | `config/public.yaml` | The public instance. Carries **no datasource block at all** — every source comes from the runtime registry |
 | `config/ragforge-prod.yaml` + `ragforge-prod-tables.yaml` + `ragforge-prod-metrics.yaml` | The ragforge production read replica, used for the production evaluation |
 | `config/ragforge-eval.yaml`, `ragforge-tight.yaml`, … | Frozen evaluation variants, kept so a published run stays reproducible |
