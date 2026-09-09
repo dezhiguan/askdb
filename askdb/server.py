@@ -1154,9 +1154,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "created_at": "",
             "table_count": len(cfg.tables),
             "builtin": True,
-            # 删得动才给按钮：删除会改配置文件，同样受 allow_runtime_add 约束；
-            # 且必须先有别的源接手，否则删完这台实例查不了任何东西。
-            "deletable": _sources.enabled(cfg) and bool(_sources.list_sources(cfg)),
+            # 恒为 false：内置源是配置文件里的东西，页面上删不了（见
+            # DELETE /api/sources/builtin 那段）。字段留着是因为前端据此禁用
+            # 按钮并给出原因 —— 直接把按钮藏掉会让人反复找。
+            "deletable": False,
         }
 
     @app.get("/api/sources")
@@ -1338,18 +1339,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         _require_cap(request, _identity.SOURCES_WRITE, "删除数据源")
         _sources_gate(request)
         if sid == "builtin":
-            # 删的是配置文件里的那一段，不是 var/sources 下的记录 ——
-            # 走同一个开关：能在页面上加源的实例，才谈得上在页面上删源。
-            if not cfg.has_default_source:
-                raise HTTPException(status_code=404, detail="本实例没有默认数据源")
-            if not _sources.list_sources(cfg):
-                raise HTTPException(
-                    status_code=400,
-                    detail="删除默认数据源前，至少要先添加一个可用的数据源 —— "
-                           "一个源都不剩的实例查不了任何东西。",
-                )
-            _sources.drop_default_source(cfg)
-            return JSONResponse({"ok": True})
+            # 2026-09-09 撤掉。原来这里会**重写配置文件**把 datasource: 段删掉，
+            # 而容器里那份配置是镜像内容：写成功了，Pod 一重启就回滚 ——
+            # 界面显示"已删除"，下次发版它又回来了，是一次彻头彻尾的假持久化。
+            # 内置源是配置不是运行时状态，改它就该改配置文件并发版。
+            raise HTTPException(
+                status_code=400,
+                detail="内置数据源来自配置文件，不能在页面上删除 —— "
+                       "容器里的配置随镜像发布，改了下次发版就会回滚。"
+                       "要撤掉它，删配置里的 datasource: 段并重新发布。",
+            )
         try:
             ok = _sources.delete_source(cfg, sid)
         except _sources.SourceError as e:
@@ -1427,11 +1426,32 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         matched = [c for c in avail if _same_source(_src_of(c), here)]
         blind_p, abl_p, fix_p = (matched or avail)[0]
 
+        # 运行时跑出来的那一轮**优先取库里的**。
+        #
+        # 镜像里 evals/results/*.json 是**已公布的基线**（仓库内容，评审过、
+        # 随镜像发布），它们该留在文件里；而页面上「运行回归」按出来的成绩是
+        # 运行时状态 —— 换库之前它写在容器里，两个副本各写各的、发一次版全没了。
+        # 所以这里只把"配置 evaluation.out 指定的那一份"改成从库里取，
+        # 其余候选文件的读法一行不动。
+        from . import evalstore
+
+        _store_on = evalstore.enabled(cfg)
+        _run_name = Path(declared).stem if declared else ""
+
+        def _report(p, *, back: int = 0):
+            if _store_on and _run_name and p is not None and Path(p).stem == _run_name:
+                got = evalstore.latest(_run_name, back=back)
+                if got is not None:
+                    return got
+                if back:
+                    return None            # 库里只有一轮时不要回落到镜像里的 .prev
+            return _read(p)
+
         out: dict[str, Any] = {"available": True}
 
         # 成绩的出处，以及它是否就是当前连着的这个数据源。
         # 「这组数字算不算数」全看这两项，必须带到前端去。
-        prov = _first_provenance(_read(blind_p)) or _first_provenance(_read(abl_p)) or {}
+        prov = _first_provenance(_report(blind_p)) or _first_provenance(_read(abl_p)) or {}
         here = (f"{cfg.db_type}:"
                 + (cfg.db_path.name if cfg.db_type == "duckdb"
                    else _dsn_brief_id(cfg)))
@@ -1463,7 +1483,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             return round(sum((o.get("tok_in") or 0) + (o.get("tok_out") or 0)
                              for o in outs) / len(outs))
 
-        if (b := _read(blind_p)):
+        if (b := _report(blind_p)):
             out["blind"] = {k: b.get(k) for k in
                             ("n", "accuracy", "false_reject", "block_rate",
                              "multi_misuse", "p95_ms", "cost_cny", "failure_kinds",
@@ -1480,7 +1500,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 上一轮成绩（运行回归时留下的存档），用来出 token / 成本 / 耗时的环比。
             # **出处不一致就不给**：换了库、换了题库或换了模型，两轮之间差的
             # 不是这一版 Agent 的开销，箭头指哪儿全看运气。
-            prev = _read(blind_p.with_name(blind_p.stem + ".prev.json"))
+            prev = (_report(blind_p, back=1) if _store_on
+                    else _read(blind_p.with_name(blind_p.stem + ".prev.json")))
             pv_now = b.get("provenance") or {}
             pv_old = (prev or {}).get("provenance") or {}
             same_run = bool(pv_old) and (
@@ -1516,7 +1537,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 失败样本明细。此前页面只给了"链路失败 4 · 结果不一致 3"这样的汇总数，
         # 却在旁边写着"每条失败都带 trace_id，可从检查点原样复现"——
         # 既不列 trace_id 也没有入口，等于告诉你有这个能力却不给用它的路径。
-        bd = _read(blind_p) or {}
+        bd = _report(blind_p) or {}
         qmap: dict[str, str] = {}
         gpath = (bd.get("provenance") or {}).get("golden") or ""
         if gpath:
@@ -1610,7 +1631,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 out["cases"] = cases
 
         # 发布门禁评分（权重与目标值的性质见 _gate_score 的注释）
-        if b := _read(blind_p):
+        if b := _report(blind_p):
             out["score"] = _gate_score(b)
 
         # 「最近回归记录」的行 —— 同一数据源下跑过的每一轮盲测各一行。
@@ -1641,10 +1662,36 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "pass": sc["pass"],
                 "current": p.name == blind_p.name,
             })
+        # 库里跑过的每一轮也要进这张表。**时间取入库时刻**，比文件 mtime 准 ——
+        # 后者复制一次就漂一次（换库之前的 .prev.json 正是这么来的）。
+        # 镜像里那份同名文件是发布基线，库里有记录时它不再代表"最近一轮"，
+        # 所以按文件名去重，库里的优先。
+        if _store_on and _run_name:
+            db_runs = evalstore.runs(_run_name)
+            runs = [r for r in runs if Path(r["file"]).stem != _run_name]
+            for i, row in enumerate(db_runs):
+                d = row["report"]
+                if not isinstance(d, dict) or not isinstance(d.get("outcomes"), list):
+                    continue
+                if not _same_source((d.get("provenance") or {}).get("datasource", ""),
+                                    prov.get("datasource", "") or here):
+                    continue
+                sc = _gate_score(d)
+                runs.append({
+                    "file": f"{row['name']}.json",
+                    "n": d.get("n") or len(d["outcomes"]),
+                    "ran_at": row["ran_at"],
+                    "overall": sc["overall"],
+                    "pass": sc["pass"],
+                    "current": i == 0,
+                })
         runs.sort(key=lambda r: r["ran_at"], reverse=True)
         out["runs"] = runs
-        # 本轮跑完的时间。同样只能说文件 mtime —— 评测报告里没有开跑/收工时间戳
-        if blind_p.exists():
+        # 本轮跑完的时间。库里有就用入库时刻；只有文件时仍然只能说 mtime ——
+        # 评测报告本身没有开跑/收工时间戳
+        if _store_on and _run_name and (rows := evalstore.runs(_run_name)):
+            out["ran_at"] = rows[0]["ran_at"]
+        elif blind_p.exists():
             out["ran_at"] = datetime.fromtimestamp(
                 blind_p.stat().st_mtime).astimezone().isoformat(timespec="seconds")
 
@@ -2158,7 +2205,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 会在这里被核回 False；被杀掉那条留着现场，核得过。
         result = _audit.paginate_tasks(
             items, page=page, page_size=page_size, status=status,
-            source=source, risk=risk, user=user, since=since)
+            source=source, risk=risk, user=user, since=since,
+            # 日界按配置声明的时区算：容器时钟是 UTC，不传这个，「今日完成」
+            # 会到北京时间早上八点才翻页
+            tz=_audit.day_tz(cfg))
         for it in result["items"]:
             if it.get("resumable"):
                 state = is_resumable(str(it.get("thread_id") or ""), cfg)

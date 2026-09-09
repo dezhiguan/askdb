@@ -409,10 +409,30 @@ nginx 侧回滚：还原 rag-forge 仓库的 `nginx.conf` 并重推。
 
 ## 运维要点
 
-- **审计日志**在容器内 `/app/var/audit-public.jsonl`，已挂 hostPath
-  `/opt/askdb/var`，**重建不丢**。位置很关键：每日配额靠数当天的审计条数实现，
-  日志一丢配额就归零，等于形同虚设。（早期版本写在 `/app/data`、随容器重建丢失，
-  那是挂卷之前的状态。）
+- **审计、审批、复核、检查点、回归成绩、每日配额全部存在 PostgreSQL**
+  （2026-09-09 起，`observability.store: postgres`）。表在数据源注册表同一个库里
+  （`askdb_audit` / `askdb_approvals` / `askdb_reviews` / `checkpoints*` /
+  `askdb_eval_runs` / `askdb_quota`），连接串复用 `ASKDB_SOURCES_DSN`，
+  不需要另配凭据。
+
+  为什么不再用文件：原来这些都落在 hostPath `/opt/askdb/var` 上，靠"两个副本
+  在同一台机器上"成立，而**没有任何调度约束在守这个前提** —— 加一个节点、
+  副本被调度过去，审计、任务中心、配额一起分裂且不报错。此外文件只增不减、
+  没有轮转，而每次打开审计页都要把整份文件读进内存逐行解析。
+
+  hostPath 卷**先留着**：连接串缺失时会自动退回文件（服务不会因此起不来），
+  且迁移要从那些 JSONL 里读历史。确认库里数据完整、观察一两周之后再拆卷。
+
+  **切换当天必须跑一次导入**（先发版，再导；发版后没有任何进程再写文件，
+  一次就够）：
+
+  ```bash
+  kubectl -n askdb exec deploy/askdb -- \
+      python -m askdb.cli migrate-store -c config/public.yaml
+  ```
+
+  这条命令可反复跑，按记录原文的自然键判重。跑之前想先看看要迁多少，
+  加 `--dry-run`。
 - **限流**分三层：nginx 5r/s 突发 10（`/api/ask` 除外，见上）；应用侧对
   出站建连 10 次/分、登录失败 10 次/分（`server.py` 的 `_SOURCE_RL` /
   `_LOGIN_RL`，**进程内计数**，两副本实际是两倍）；以及每日模型调用配额 500
