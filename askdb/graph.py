@@ -224,7 +224,7 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         note += f"；因 token 预算裁掉 {'、'.join(r.truncated)}"
     if r.note:
         note += f"；{r.note}"
-    d.tracer.add("schema_recall", t, note)
+    d.tracer.add("schema_recall", t, note, tables=r.table_names)
     return {
         "schema_prompt": r.prompt,
         "tables_hit": r.table_names,

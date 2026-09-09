@@ -300,7 +300,13 @@ class VectorIndex:
         except pgstore.StoreUnavailable as e:
             raise EmbeddingUnavailable(f"向量库不可用：{str(e).splitlines()[0]}") from e
         except Exception as e:                         # 网络、端点报错等
-            raise EmbeddingUnavailable(f"向量召回不可用：{str(e).splitlines()[0]}") from e
+            # 只带**原因**，不带"向量召回不可用"这个抬头：抬头由调用方
+            # （schema_rag 的回落分支）加，两边都加就成了页面上那句
+            # "向量召回不可用，已回落关键词：向量召回不可用：…"，
+            # 同一句话说两遍，真正的原因被挤到最后面。
+            # 上面那条 StoreUnavailable 与下面的"向量检索失败"保留各自的抬头 ——
+            # 它们说的是**另一件事**（库连不上 / 查询本身失败），不是重复。
+            raise EmbeddingUnavailable(str(e).splitlines()[0]) from e
 
         lit = _vec_literal(vec)
         try:

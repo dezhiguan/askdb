@@ -200,6 +200,10 @@ export interface ReplayStep {
   tok_in?: number
   tok_out?: number
   note?: string
+  /** 该步涉及的表。目前只有 schema_recall 有 —— note 里的"命中 N 张表"只是个
+   *  数字，召回偏了与召回对了在那个数字上一模一样，要判断得看是**哪几张**。
+   *  其余步骤不带这个字段（后端省掉空列表）。 */
+  tables?: string[]
 }
 
 export interface ReplaySnapshot {

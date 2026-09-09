@@ -398,6 +398,37 @@ function shortHash(hash: string | null | undefined): string {
   return hash.length <= 12 ? hash : `${hash.slice(0, 4)}…${hash.slice(-4)}`
 }
 
+/** 输出摘要里的「命中 N 张表」。
+ *
+ *  N 是个数字，而看的人要判断的是**哪 N 张** —— 召回偏了与召回对了在那个数字
+ *  上完全一样（实测：向量召回回落关键词后，任何问题都恒定命中同样的 8 张，
+ *  摘要一眼看去毫无差别）。所以把 N 本身做成开关，点开列出这次真正给模型的表。
+ *
+ *  正则匹配不上就不硬拆文案，退回在摘要末尾挂一颗按钮：措辞将来改了，
+ *  这颗按钮不该跟着一起失灵。 */
+function SpanNote({ step, open, onToggle }: {
+  step: ReplayStep
+  open: boolean
+  onToggle: () => void
+}) {
+  const note = step.note ?? ''
+  const tables = step.tables ?? []
+  const tok = step.tok_out ? ` · ${step.tok_out.toLocaleString()} tok` : ''
+  if (tables.length === 0) return <>{note || NA}{tok}</>
+
+  const caret = <i aria-hidden="true">{open ? '▴' : '▾'}</i>
+  const hit = /^(命中 )(\d+)( 张表)/.exec(note)
+  const btn = (
+    <button type="button" className="span-count" aria-expanded={open}
+            title={open ? '收起命中的表' : '展开命中的表'} onClick={onToggle}>
+      {hit ? hit[2] : tables.length}{caret}
+    </button>
+  )
+  return hit
+    ? <>{hit[1]}{btn}{hit[3]}{note.slice(hit[0].length)}{tok}</>
+    : <>{note || NA} {btn}{tok}</>
+}
+
 /** 链路条与 Span 明细。版式照原型，不另起说明段落 ——
  *  唯一的例外是空表里那一行状态，它替代的是原来那片无从解释的空白。 */
 function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
@@ -407,6 +438,15 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
   cachedFrom?: string | null
   onFocusTrace?: (traceId: string) => void
 }) {
+  /* 展开的是哪几步。用 Set 而不是单个下标：多步问答里 schema_recall 会出现
+     多次，展开第二次不该把第一次收起来。 */
+  const [openRows, setOpenRows] = useState<ReadonlySet<number>>(() => new Set())
+  const toggleRow = (i: number) => setOpenRows(prev => {
+    const next = new Set(prev)
+    if (!next.delete(i)) next.add(i)
+    return next
+  })
+
   /* 一行都没有时，那一行说的是**为什么**没有。
    *
    * 四种空态原来渲染成同一张只有表头的空表，于是"接口把这条挡掉了"和
@@ -451,29 +491,40 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                 <tr className="span-empty"><td colSpan={6}>{empty}</td></tr>
               )}
               {steps.map((step, i) => (
-                <tr key={`${step.step}-${i}`}>
-                  <td><span className={`span-type ${(STEP_TYPE[step.step] ?? 'sys').toLowerCase()}`}>{STEP_TYPE[step.step] ?? 'SYS'}</span></td>
-                  <td>{STEP_NAMES[step.step] ?? step.step}</td>
-                  {/* 原型这两列是「输入/输出摘要」。askdb 只记一条 note（该步的结果说明），
-                      放在输出侧；输入侧只有 prompt token 数是真的，没有就留占位。 */}
-                  {/* 缓存命中这一行的"输入"就是首跑那条记录 —— 整条链路只有这一个
-                      节点，模型、工具、数据库一个都没跑，看的人要能一键走到真跑的那条。
-                      cached_from 为空（旧格式缓存没记 trace_id）时退回占位符，不给死链。 */}
-                  <td>
-                    {step.step === 'cache' && cachedFrom
-                      ? <button
-                          className="span-origin"
-                          title={`答案出自 ${cachedFrom} 那次执行，点击查看它的完整链路`}
-                          onClick={() => onFocusTrace?.(cachedFrom)}
-                        >首跑 {cachedFrom.slice(0, 6)} ↗</button>
-                      : step.tok_in ? `prompt ${step.tok_in.toLocaleString()} tok` : NA}
-                  </td>
-                  <td className="span-note" title={step.note ?? ''}>
-                    {step.note || NA}{step.tok_out ? ` · ${step.tok_out.toLocaleString()} tok` : ''}
-                  </td>
-                  <td>{step.ms}ms</td>
-                  <td className={stepFailed(step.status) ? 'bad' : 'good'}>{step.status.toUpperCase()}</td>
-                </tr>
+                <Fragment key={`${step.step}-${i}`}>
+                  <tr>
+                    <td><span className={`span-type ${(STEP_TYPE[step.step] ?? 'sys').toLowerCase()}`}>{STEP_TYPE[step.step] ?? 'SYS'}</span></td>
+                    <td>{STEP_NAMES[step.step] ?? step.step}</td>
+                    {/* 原型这两列是「输入/输出摘要」。askdb 只记一条 note（该步的结果说明），
+                        放在输出侧；输入侧只有 prompt token 数是真的，没有就留占位。 */}
+                    {/* 缓存命中这一行的"输入"就是首跑那条记录 —— 整条链路只有这一个
+                        节点，模型、工具、数据库一个都没跑，看的人要能一键走到真跑的那条。
+                        cached_from 为空（旧格式缓存没记 trace_id）时退回占位符，不给死链。 */}
+                    <td>
+                      {step.step === 'cache' && cachedFrom
+                        ? <button
+                            className="span-origin"
+                            title={`答案出自 ${cachedFrom} 那次执行，点击查看它的完整链路`}
+                            onClick={() => onFocusTrace?.(cachedFrom)}
+                          >首跑 {cachedFrom.slice(0, 6)} ↗</button>
+                        : step.tok_in ? `prompt ${step.tok_in.toLocaleString()} tok` : NA}
+                    </td>
+                    <td className="span-note" title={step.note ?? ''}>
+                      <SpanNote step={step} open={openRows.has(i)} onToggle={() => toggleRow(i)} />
+                    </td>
+                    <td>{step.ms}ms</td>
+                    <td className={stepFailed(step.status) ? 'bad' : 'good'}>{step.status.toUpperCase()}</td>
+                  </tr>
+                  {openRows.has(i) && (step.tables ?? []).length > 0 && (
+                    <tr className="span-detail">
+                      <td colSpan={6}>
+                        <ol className="span-tables">
+                          {(step.tables ?? []).map(t => <li key={t}><code>{t}</code></li>)}
+                        </ol>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>

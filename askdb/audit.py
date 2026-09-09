@@ -40,13 +40,17 @@ SUMMARY_FIELDS = (
 )
 
 # /api/trace 的字段白名单：执行追踪页要的是**节点链与计量**。
-# 与 REPLAY_FIELDS 的分界是刻意的 —— 这里不给 sql_raw / sql_final / question /
-# tables_hit，SQL 文本、问题原文与命中表仍然只经 /api/replay 出去（要登录、
-# 要开关、还要按调用者当下的可见表收窄）。步骤 note 里会出现表名，所以
-# /api/trace 同样做那道可见表收窄，只是不返回 tables_hit 本身。
+# 与 REPLAY_FIELDS 的分界是刻意的 —— 这里不给 sql_raw / sql_final / question，
+# SQL 文本与问题原文仍然只经 /api/replay 出去（要登录、要开关）。
 # cached / cached_from 一起放出去：只有一条 cache 节点的链路，不说明白就是
 # 一条"什么也没发生"的调用。cached_from 是首跑那条的 trace_id —— 它本身仍受
 # 同一道可见性判定，跳过去看不看得到，与任何一条 trace 同一个规则。
+#
+# 命中表是个例外，且是**有意的**：schema_recall 那步的 tables（见 STEP_FIELDS）
+# 就是 tables_hit 的同一份内容。它出接口不构成新的泄露 —— /api/trace 在返回前
+# 已按调用者当下的可见表收窄，凡有一张命中表不在可见范围内，整条记录按 404 挡
+# 掉（见 server.trace_chain_api）。能读到这条链路的人，本来就看得见这些表。
+# 顶层 tables_hit 仍然不给：一处出口足够，两处会让上面那道收窄有两个地方要记。
 TRACE_FIELDS = (
     "trace_id", "ts", "kind", "thread_id", "role", "model",
     "tok_in", "tok_out", "step_count", "multi_step", "attempts",
@@ -56,7 +60,7 @@ TRACE_FIELDS = (
 
 # 步骤对象自身也走白名单 —— 记录里的 steps 由各节点自由追加，
 # 哪天有人往里塞了 sql 或行样本，这里不会顺手带出去。
-STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note")
+STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables")
 
 # 真正过模型的图节点。与前端 traceSteps.ts 的 STEP_TYPE == 'MODEL' 是同一份口径，
 # 两边都写一次是因为一个算数、一个只做展示；漂了会让「模型调用成功率」这格
@@ -1017,8 +1021,12 @@ def trace_chain(rec: dict[str, Any]) -> dict[str, Any]:
     """
     out: dict[str, Any] = {k: rec.get(k) for k in TRACE_FIELDS}
     out["kind"] = rec.get("kind", "ask")
+    # 空列表一并省掉：tables 只有 schema_recall 那一步填，其余步骤留个 []
+    # 会把每条响应撑大一圈，而前端对"没有"和"空"的处理本来就是同一条。
+    # 判据仍以 None 为主 —— 换成真值判断会把 ms=0 这类合法零值一起丢掉。
     out["steps"] = [
-        {k: s.get(k) for k in STEP_FIELDS if s.get(k) is not None}
+        {k: s.get(k) for k in STEP_FIELDS
+         if s.get(k) is not None and s.get(k) != []}
         for s in (rec.get("steps") or [])
     ]
     sql = str(rec.get("sql_final") or rec.get("sql_raw") or "")

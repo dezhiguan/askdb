@@ -25,6 +25,11 @@ class StepTrace:
     cost_cny: float = 0.0       # 该步的金额，按**当次实际应答的模型**的单价算
     note: str = ""
     status: str = "ok"          # ok | blocked | failed | skipped
+    #: 该步涉及的表名。目前只有 schema_recall 填：note 里的"命中 N 张表"是个
+    #: 数字，而看的人真正要判断的是**哪 N 张** —— 召回偏了与召回对了，在那个
+    #: 数字上完全一样。放结构化字段而不是拼进 note，是因为界面要能逐张列出，
+    #: 也因为 note 会被 token 预算之外的其他信息挤长。
+    tables: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -38,12 +43,14 @@ class Tracer:
     def add(
         self, step: str, since: float, note: str = "", status: str = "ok",
         tok_in: int = 0, tok_out: int = 0, cached_in: int = 0, cost_cny: float = 0.0,
+        tables: list[str] | None = None,
     ) -> StepTrace:
         st = StepTrace(
             step=step,
             ms=int((time.perf_counter() - since) * 1000),
             tok_in=tok_in, tok_out=tok_out, cached_in=cached_in,
             cost_cny=cost_cny, note=note, status=status,
+            tables=list(tables or []),
         )
         self.steps.append(st)
         return st
@@ -75,7 +82,15 @@ class Tracer:
         return round(sum(s.cost_cny for s in self.steps), 6)
 
     def as_list(self) -> list[dict[str, Any]]:
-        return [asdict(s) for s in self.steps]
+        # tables 只有 schema_recall 填，其余步骤是空列表。审计是**逐条追加**的
+        # 存储，每条多带五六个 "tables": [] 会一路乘进文件与库里，故落盘前去掉。
+        out = []
+        for s in self.steps:
+            d = asdict(s)
+            if not d.get("tables"):
+                d.pop("tables", None)
+            out.append(d)
+        return out
 
 
 def peak_multiplier(llm_cfg: dict[str, Any], at: datetime | None = None) -> float:
