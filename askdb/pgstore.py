@@ -187,8 +187,15 @@ def rows(sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
     try:
         with connect() as con:
             return con.execute(sql, params).fetchall()
-    except psycopg.errors.UndefinedTable:
-        return []
+    except StoreUnavailable as e:
+        # connect() 把**所有**异常都裹成了 StoreUnavailable，所以这里不能直接
+        # 捕 UndefinedTable —— 那样写了也永远不会命中（本模块此前就是这样，
+        # 那句 except 是死代码，"表还没建出来按空处理"这条承诺一直没生效）。
+        # 按 __cause__ 还原真实原因：只有"表不存在"折成空结果，
+        # 连不上 / 认证失败照实抛，两者绝不能混。
+        if isinstance(e.__cause__, psycopg.errors.UndefinedTable):
+            return []
+        raise
 
 
 def execute(sql: str, params: tuple[Any, ...] = ()) -> None:
