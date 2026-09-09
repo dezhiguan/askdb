@@ -1319,6 +1319,11 @@ export interface EvalRunState {
   error: string
   accuracy: number | null
   passed: number
+  /** 这次部署能不能跑回归。对外实例的镜像只带评测结果与题库、不带回放器 ——
+   *  那种部署上按钮点一次失败一次，所以能不能跑要在点之前就说。
+   *  老后端没有这两个字段，取不到时当"能跑"（点了由 501 如实报） */
+  available?: boolean
+  unavailable_reason?: string
 }
 
 export async function fetchEvalRun(): Promise<EvalRunState> {

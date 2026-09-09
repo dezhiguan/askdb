@@ -188,6 +188,10 @@ export function EvaluationPage({ onNavigate, me, onOpenLogin }: {
   }, [])
 
   const running = run?.status === 'running'
+  /* 这次部署跑不了回归时的理由（空串 = 跑得了）。后端在 GET /api/eval/run 上
+     回它 —— 对外实例的镜像不带回放器，那上面这个按钮点一次失败一次。
+     字段缺失（老后端）当作跑得了：宁可点下去由 501 如实报，也不要凭猜置灰。 */
+  const unavailable = run && run.available === false ? (run.unavailable_reason || '本次部署不能跑回归评测') : ''
 
   const triggerRun = () => {
     setRunError('')
@@ -286,15 +290,17 @@ export function EvaluationPage({ onNavigate, me, onOpenLogin }: {
             )}
             {scope !== 'dataset' && (
               <button className="primary" type="button"
-                      disabled={scope === 'offline' ? (running || !guard.can) : busy}
+                      disabled={scope === 'offline' ? (running || !guard.can || unavailable !== '') : busy}
                       onClick={scope === 'offline' ? triggerRun : () => setReload(n => n + 1)}
                       title={scope !== 'offline'
                         ? undefined
                         : !guard.can
                           ? guard.props.title
-                          : run?.datasource
-                            ? `固定跑在「${run.datasource}」上 —— 换库成绩就不可比`
-                            : undefined}>
+                          : unavailable
+                            ? unavailable
+                            : run?.datasource
+                              ? `固定跑在「${run.datasource}」上 —— 换库成绩就不可比`
+                              : undefined}>
                 {scope === 'offline'
                   ? (running
                       ? `正在跑 ${run?.done ?? 0} / ${run?.total ?? 0} 题…`

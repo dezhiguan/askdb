@@ -95,6 +95,50 @@ def _target(cfg: Config) -> tuple[str, Path, Path]:
     return source, cfg.root / golden, cfg.root / out
 
 
+def _preflight(cfg: Config):
+    """跑一轮回归要的东西齐不齐。缺什么抛 EvalUnavailable，说人话。
+
+    单独拆出来，是为了让 availability() 与 start() 用**同一批判据** ——
+    各查各的必然漂：页面说能跑、点下去说不能跑，比两边都说不能跑更难查。
+    这里不解析数据源（那要 server 那一层的取源函数），它留在 start()。
+    """
+    source, golden, out = _target(cfg)
+    try:
+        from evals.golden import load as load_cases
+        from evals.replay import run as run_replay
+    except ImportError as e:      # 镜像里没有 evals/
+        # 不把 ImportError 原文抬到界面上：「No module named 'evals.golden'」
+        # 对着这个按钮的人没有任何用处，他要知道的是"这台实例跑不了、去哪跑"。
+        # 技术细节仍在异常链与日志里，查的人拿得到。
+        raise EvalUnavailable(
+            "本次部署不含评测套件：镜像只带评测结果与题库，不带回放器，"
+            "所以这台实例上跑不了回归。要跑一轮请在带完整仓库的环境用命令行："
+            "python -m evals.replay --blind") from e
+
+    if not golden.exists():
+        raise EvalUnavailable(f"题库不存在：{golden}")
+
+    cases = [c for c in load_cases(golden) if c.blind]
+    if not cases:
+        raise EvalUnavailable(f"题库 {golden.name} 里没有标了 blind 的题，盲测无从跑起")
+    return source, golden, out, run_replay, cases
+
+
+def availability(cfg: Config) -> str:
+    """本次部署能不能跑回归。空串 = 能，否则是**说给人听**的那句理由。
+
+    存在的理由：对外实例的镜像只带评测**结果**与题库，不带回放器
+    （Dockerfile 里是一次有意的取舍：那个实例只展示已有结论）。没有这个
+    接口，"本次部署不含评测套件"只能靠点一下才知道 —— 于是页面上摆着一个
+    在这类部署上永远失败的按钮，与未登录时那个按钮是同一类毛病。
+    """
+    try:
+        _preflight(cfg)
+    except EvalUnavailable as e:
+        return str(e)
+    return ""
+
+
 def start(cfg: Config, cfg_of_source, golden_rel: str = "") -> dict[str, Any]:
     """起一轮回归。已经在跑就抛 RuntimeError，由调用方翻成 409。
 
@@ -103,20 +147,8 @@ def start(cfg: Config, cfg_of_source, golden_rel: str = "") -> dict[str, Any]:
     """
     global _thread
 
-    source, golden, out = _target(cfg)
-    try:
-        from evals.golden import load as load_cases
-        from evals.replay import run as run_replay
-    except ImportError as e:      # 镜像里没有 evals/
-        raise EvalUnavailable(f"本次部署不含评测套件（{e}）") from e
-
-    if not golden.exists():
-        raise EvalUnavailable(f"题库不存在：{golden}")
-
+    source, golden, out, run_replay, cases = _preflight(cfg)
     target_cfg = cfg_of_source(source)
-    cases = [c for c in load_cases(golden) if c.blind]
-    if not cases:
-        raise EvalUnavailable(f"题库 {golden.name} 里没有标了 blind 的题，盲测无从跑起")
 
     with _lock:
         if _state.status == "running":

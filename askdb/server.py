@@ -961,9 +961,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
     @app.get("/api/eval/run")
     def eval_run_state(request: Request) -> dict[str, Any]:
-        """这一轮跑到哪了。没跑过就是 idle —— 页面据此决定按钮显示什么。"""
+        """这一轮跑到哪了。没跑过就是 idle —— 页面据此决定按钮显示什么。
+
+        连带回「这次部署到底能不能跑」：对外实例的镜像只带评测结果与题库，
+        不带回放器，那上面这个按钮点一次失败一次。能不能跑是**点之前**就
+        知道的事实，不说出来就只能靠点一下去问。
+        """
         _require_cap(request, _identity.QUALITY_READ, "查看回归进度")
-        return _evalrun.state()
+        out = _evalrun.state()
+        # 正在跑就不必再查一遍（套件显然在），省掉轮询期间每 2 秒一次的题库读盘
+        reason = "" if _evalrun.is_running() else _evalrun.availability(cfg)
+        out["available"] = not reason
+        out["unavailable_reason"] = reason
+        return out
 
     @app.get("/api/metrics/check")
     def metrics_check(request: Request, source: str = "") -> dict[str, Any]:
