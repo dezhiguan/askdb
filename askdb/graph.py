@@ -486,6 +486,21 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     return {"error": None, "rejected_by": None, "explain_rows": r.est_rows}
 
 
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float, Decimal)) and not isinstance(v, bool)
+
+
+def _all_zero_columns(res: Any) -> list[str]:
+    """整列都是 0 的数值列名。全是 NULL 的列不算 —— 那是"没有值"，另一回事。"""
+    out: list[str] = []
+    for i, name in enumerate(res.columns):
+        col = [row[i] for row in res.rows if i < len(row)]
+        nums = [v for v in col if _is_number(v)]
+        if len(nums) == len(col) and nums and all(v == 0 for v in nums):
+            out.append(str(name))
+    return out
+
+
 def _empty_note(res: Any, sql: str) -> str:
     """把"查不到"与"确实是 0"分开说。
 
@@ -500,11 +515,20 @@ def _empty_note(res: Any, sql: str) -> str:
     """
     if res.row_count == 0:
         return "结果为空。请确认过滤条件（尤其是时间范围与枚举取值）落在有数据的区间里"
-    if res.row_count != 1 or not res.rows:
+    if not res.rows:
+        return ""
+    if res.row_count > 1:
+        # 多行结果里**整整一列全是 0**。合法的情况有（"异常件数"确实处处为零），
+        # 但算错口径的情况更多：实测问「SLA 达成率是哪些客服拖的」，200 行客服
+        # 的达标率**全是 0%**，与用户自己给出的 32% 直接冲突，而系统毫无察觉
+        # （根因是 CASE 里 AND/OR 没加括号）。一句提醒的代价远小于漏报。
+        dead = _all_zero_columns(res)
+        if dead:
+            return (f"「{'、」「'.join(dead[:2])}」这一列在全部 {res.row_count} 行里都是 0。"
+                    "若与你的预期不符，多半是计算口径写错了，请核对 SQL")
         return ""
     cells = list(res.rows[0])
-    nums = [v for v in cells if isinstance(v, (int, float, Decimal))
-            and not isinstance(v, bool)]
+    nums = [v for v in cells if _is_number(v)]
     if not nums or len(nums) != len([v for v in cells if v is not None]):
         return ""                     # 还有非数值列（月份、名称），不是"空结果被抹平"的形状
     if any(v != 0 for v in nums):

@@ -629,3 +629,20 @@ def test_model_is_told_todays_date(cfg, ex):
     graph.ask("昨天有多少文档", cfg, executor=ex, llm=llm)
     sent = [c for c in llm.calls if "today" in c]
     assert sent and len(sent[0]["today"]) == 10       # YYYY-MM-DD
+
+
+def test_a_column_that_is_zero_in_every_row_gets_flagged(cfg, ex):
+    """整列全零多半是口径算错了。
+
+    2026-09-09 回归 W-13：问「SLA 达成率是哪些客服拖的」，200 行客服的达标率
+    全是 0%，与用户自己给出的 32% 直接冲突，系统却毫无察觉。
+    """
+    r = run(cfg, ex, "SELECT file_name AS 文件名, 0 AS 达标数 FROM documents LIMIT 5")
+    assert r.ok and r.row_count > 1
+    assert "达标数" in r.empty_note and "都是 0" in r.empty_note
+
+
+def test_normal_results_carry_no_empty_note(cfg, ex):
+    """正常结果不该平白多一句提醒 —— 提醒一旦泛滥就没人看了。"""
+    r = run(cfg, ex, OK_SQL)
+    assert r.ok and r.row_count > 0 and not r.empty_note
