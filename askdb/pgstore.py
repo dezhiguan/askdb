@@ -181,13 +181,10 @@ def dict_pool():
 
 
 def _is_undefined_table(e: Exception) -> bool:
-    """这个异常是不是"表还没建出来"。
+    """这个异常是不是"表还没建出来" —— 判定只此一处。
 
-    2026-09-09 修：原来 rows() 里写的是 `except psycopg.errors.UndefinedTable`，
-    而那一句**永远不会命中** —— connect() 是个上下文管理器，with 体里抛出的
-    异常会在它的 yield 处被接住、包成 StoreUnavailable 再抛，等到 rows() 这一层
-    时类型已经变了。于是"表不存在按空处理"这条写着的行为一直没有生效，
-    实际表现是审计接口 503。这里改成认包装之后的原因。
+    rows() 与 iter_rows() 对这件事的取舍必须逐字相同：一个把缺表折成空结果、
+    另一个报成"库连不上"，同一份数据换个读法就会给出两种诊断。
     """
     import psycopg
 
@@ -201,7 +198,12 @@ def rows(sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
     try:
         with connect() as con:
             return con.execute(sql, params).fetchall()
-    except Exception as e:
+    except StoreUnavailable as e:
+        # connect() 把**所有**异常都裹成了 StoreUnavailable，所以这里不能直接
+        # 捕 UndefinedTable —— 那样写了也永远不会命中（本模块此前就是这样，
+        # 那句 except 是死代码，"表还没建出来按空处理"这条承诺一直没生效）。
+        # 按 __cause__ 还原真实原因：只有"表不存在"折成空结果，
+        # 连不上 / 认证失败照实抛，两者绝不能混。
         if _is_undefined_table(e):
             return []
         raise
@@ -218,7 +220,8 @@ def iter_rows(sql: str, params: tuple[Any, ...] = (), *,
 
     **调用方必须把它消费完，或者及时关掉。** 生成器活着的时候占着一条池子
     里的连接（池子只有 6 条），挂在那里不动会把连接耗光。for 循环正常跑完、
-    break、以及生成器被回收，三种情况 psycopg 都会收尾，不必手工关。
+    显式 close()、以及生成器被回收，三种情况 psycopg 都会收尾；但提前 break
+    之后靠回收收尾是在赌引用计数时机，调用点该用 contextlib.closing 兜住。
 
     命名游标要在事务里 DECLARE，而池子开的是 autocommit —— 不显式开事务块
     的话，每条 FETCH 各自隐式提交，游标当场就没了。这就是 with con.transaction()
@@ -231,7 +234,7 @@ def iter_rows(sql: str, params: tuple[Any, ...] = (), *,
                     cur.itersize = batch_size
                     cur.execute(sql, params)
                     yield from cur
-    except Exception as e:
+    except StoreUnavailable as e:
         if _is_undefined_table(e):
             return                                     # 与 rows() 同一条口径
         raise

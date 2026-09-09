@@ -340,3 +340,48 @@ def test_table_comment_beats_the_builtin_dictionary(cfg):
     cfg.raw["schema_rag"]["max_k"] = 1
     r = schema_rag.recall("岗位投递有多少条", cfg)
     assert r.table_names[0] == "t_zzz"
+
+
+# ------------------------------------------------- 2026-09-09 十二源回归修复
+#
+# 这一组测的都是同一种失败：表明明在白名单里，模型却回答"库里没有这类数据"。
+# 它比拒答危险 —— 用户会相信"确实没有"。
+
+def test_alias_written_in_the_comment_is_usable(cfg):
+    """运行时数据源的别名写在库注释里（"别名：异常单、问题订单"），
+    扫描时并不会落进 Table.aliases。不解析出来，这份最准的语义就白存了。"""
+    from askdb.config import Table
+    t = Table(name="order_exceptions", aliases=[],
+              desc="异常订单标记。需要人工介入。别名：异常单、问题订单", columns={})
+    assert schema_rag.alias_hints(t) == ["异常单", "问题订单"]
+
+
+def test_alias_hints_keeps_declared_aliases(cfg):
+    from askdb.config import Table
+    t = Table(name="t", aliases=["显式"], desc="说明。别名：甲、乙", columns={})
+    assert schema_rag.alias_hints(t) == ["显式", "甲", "乙"]
+
+
+def test_bigram_overlap_reaches_a_table_whose_comment_only_partly_matches(cfg):
+    """注释写「异常订单标记」，提问问「异常订单」—— 整词匹配是 0 分。
+    2-gram 重合 3 个，这正是线上把 order_exceptions 漏掉的那一步。"""
+    assert len(schema_rag._bigrams("异常订单标记") & schema_rag._bigrams("未解决的异常订单")) >= 3
+
+
+def test_summary_tables_are_found_by_name_and_comment(cfg):
+    from askdb.config import Table
+    cfg.tables = {
+        "orders": Table(name="orders", aliases=[], desc="订单主表。一行一笔订单", columns={}),
+        "order_daily_stats": Table(name="order_daily_stats", aliases=[], desc="订单按日汇总", columns={}),
+        # 注释里带"汇总到 orders"的明细表**不能**被认成汇总表，
+        # 误判进来等于把最该避开的大表当成了捷径
+        "order_items": Table(name="order_items", aliases=[], desc="订单明细。行金额汇总到 orders", columns={}),
+    }
+    names = [t.name for t in schema_rag.summary_tables(cfg)]
+    assert names == ["order_daily_stats"]
+
+
+def test_summary_hint_is_empty_when_the_source_has_none(cfg):
+    from askdb.config import Table
+    cfg.tables = {"orders": Table(name="orders", aliases=[], desc="订单主表", columns={})}
+    assert schema_rag.summary_hint(cfg) == ""

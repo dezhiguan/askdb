@@ -175,6 +175,11 @@ def audit_store(_no_ambient_store, monkeypatch):
     与 sources_store 同一条纪律（独立 schema、不 skip 直接 fail），只是换成
     askdb.pgstore 那一套环境变量 —— 审计存储走 ASKDB_STORE_*，数据源注册表
     走 ASKDB_SOURCES_*，生产上指同一个库，但测试里必须能分别指。
+
+    ⚠️ tests/test_auditstore.py 里另有一个本地 `store` 夹具做同一件事（两处
+    是同期并行加的）。两份都对，但**取舍分叉了就会两边行为不同**，
+    下次动其中一个时把另一个一起收掉，别只改一边。
+    这一份多做一步 ensure_schema()，所以拿到手就能直接查空表。
     """
     import uuid
 

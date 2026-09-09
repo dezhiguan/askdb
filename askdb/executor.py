@@ -414,7 +414,80 @@ class _PgBackend(_Backend):
                 WHERE c.table_schema = 'public' AND c.table_name = ANY(%s)
                 ORDER BY c.table_name, c.ordinal_position
             """, (names,))
-            return _group_columns(cur.fetchall())
+            grouped = _group_columns(cur.fetchall())
+        return self._attach_enums(names, grouped)
+
+    def _attach_enums(self, names: list[str], grouped: dict[str, list[dict[str, Any]]],
+                      ) -> dict[str, list[dict[str, Any]]]:
+        """给低基数文本列补上真实取值，取自 pg_stats。
+
+        为什么非要有这一步：注释里写了取值的库（如这批电商库）靠解析注释就够，
+        但**没有注释的库**（如 ragforge 生产库，整库零 COMMENT）模型只能猜取值，
+        猜错大小写就是一条语法正确、结果恒为空的 SQL —— 解析失败率因此报 0%，
+        真值 4.02%，页面上看不出任何异常。
+
+        pg_stats 是 ANALYZE 留下的统计视图，**读它不扫表**，代价可以忽略；
+        视图本身按表权限过滤，只读账号看得到的正是它能查的那些表。
+        整段是尽力而为：任何异常都退回"没有取值"，绝不因此让加数据源失败。
+        """
+        try:
+            with self.connect().cursor() as cur:
+                cur.execute("""
+                    SELECT tablename, attname, n_distinct, most_common_vals::text
+                    FROM pg_stats
+                    WHERE schemaname = 'public' AND tablename = ANY(%s)
+                      AND most_common_vals IS NOT NULL
+                      AND n_distinct > 0 AND n_distinct <= %s
+                """, (names, _ENUM_MAX_DISTINCT))
+                stats = {(r[0], r[1]): _parse_pg_array(r[3]) for r in cur.fetchall()}
+        except Exception:
+            return grouped
+        for table, cols in grouped.items():
+            for col in cols:
+                if col.get("enum"):
+                    continue
+                vals = stats.get((table, col["name"]))
+                # 只给文本列补：数值/时间列的高频值是数据不是取值集合，
+                # 拿去做"枚举归一"毫无意义，还会把提示词撑大。
+                if vals and _is_texty(col.get("type", "")):
+                    col["enum"] = vals[:_ENUM_MAX_DISTINCT]
+        return grouped
+
+
+#: 认定为"枚举列"的取值上限。再多就不是取值集合，而是数据本身。
+_ENUM_MAX_DISTINCT = 32
+
+
+def _is_texty(dtype: str) -> bool:
+    d = str(dtype or "").lower()
+    return any(k in d for k in ("char", "text", "enum"))
+
+
+def _parse_pg_array(literal: str | None) -> list[str]:
+    """把 `{A,B,"C D"}` 这种数组字面量拆成元素。
+
+    most_common_vals 是 anyarray，psycopg 取不到具体类型，只能转 text 再拆。
+    带引号的元素按引号取，其余按逗号切 —— 取值里出现逗号的场景本就不该被
+    当成枚举，拆错了也只是少认一个取值，不会认错。
+    """
+    t = str(literal or "").strip()
+    if not (t.startswith("{") and t.endswith("}")):
+        return []
+    body = t[1:-1]
+    out, buf, in_q = [], [], False
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == '"':
+            in_q = not in_q
+        elif ch == "," and not in_q:
+            out.append("".join(buf)); buf = []
+        else:
+            buf.append(ch)
+        i += 1
+    if buf:
+        out.append("".join(buf))
+    return [v.strip() for v in out if v.strip()]
 
 
 def _group_columns(rows: Any) -> dict[str, list[dict[str, Any]]]:

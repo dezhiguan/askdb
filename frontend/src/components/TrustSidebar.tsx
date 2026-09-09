@@ -212,11 +212,13 @@ function admissionChecks(ready: Health | null, hasSource: boolean,
   ]
 }
 
-/** 出结果之后的可信度检查。五项**全部来自链路自己记下的事实**，
+/** 出结果之后的可信度检查。六项**全部来自链路自己记下的事实**，
  *  不问模型、不做二次判断 —— 让模型给自己的答案打分，打出来的是作文分。 */
 function resultChecks(r: AskResult): Check[] {
   const rows = r.row_count ?? 0
   return [
+    { label: '结果范围未被收窄', ok: !r.scope_narrowed,
+      why: r.scope_note || '原查询被扫描阈值拦下，这个数来自收窄范围后的查询，不是全量' },
     { label: '结果完整未截断', ok: !r.truncated,
       why: `结果被 R-13 截断，只看到前 ${rows} 行` },
     { label: '一次生成成功', ok: (r.attempts ?? 1) <= 1,

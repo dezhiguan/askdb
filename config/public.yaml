@@ -129,6 +129,12 @@ schema_rag:
   # 并把 recall_blind 置为 true。
   top_k: 8
   max_k: 12
+  # token_budget 4000 这一项两条线独立得到同一个结论：
+  # 124 条线上用例的离线召回基准显示，5 张表 / 1500 token 下 recall@k 只有
+  # 90.4%，漏掉的全是「表在白名单里、模型却回答『库里没有这类数据』」。
+  # 放宽到 8 张 / 4000 token 后升到 99.1%。上面改走 vector 之后，那份基准
+  # 度量的是**关键词回落路径**（vectors.EmbeddingUnavailable 时才走），
+  # 向量路径下的召回率尚未实测 —— 要测得有 embedding 密钥，跑不了离线。
   token_budget: 4000
   embedding_model: text-embedding-v4
   min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求
