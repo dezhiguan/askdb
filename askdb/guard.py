@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import sqlglot
@@ -38,6 +39,12 @@ class GuardResult:
     rules_fired: list[str] = field(default_factory=list)   # 触发的改写
     rewrites: list[str] = field(default_factory=list)      # 人类可读的改写说明
     tables: set[str] = field(default_factory=set)          # 这条 SQL 引用到的表（含被拒的）
+    #: 放行了、但读结果的人必须知道的话。
+    #:
+    #: 与 rewrites 分开：rewrites 说的是"SQL 被系统改成了什么"，notes 说的是
+    #: "这条 SQL 本身有个不该忽略的地方"。混在一起会让"我们动了手"和
+    #: "你得自己核对"变成同一句话，而这两件事的责任方不同。
+    notes: list[str] = field(default_factory=list)
 
     @property
     def out_of_scope(self) -> bool:
@@ -155,9 +162,14 @@ def _sample_label(node: exp.Expression) -> str:
         return type(node).__name__
 
 
-def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardResult:
-    """校验并改写。返回的 sql 才是允许执行的那条。"""
-    r = _check(sql, cfg, org_id, dialect)
+def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb",
+          question: str = "") -> GuardResult:
+    """校验并改写。返回的 sql 才是允许执行的那条。
+
+    question 只被 R-24 用到：判断"用户问的是相对时间吗"必须看原问题，
+    SQL 本身看不出来。直查模式没有问题文本，传空即跳过该规则。
+    """
+    r = _check(sql, cfg, org_id, dialect, question)
     # R-20 是"解析成本超预算"的拒绝：绝不能再走 referenced_tables 解析一次 ——
     # 那正是它要避开的那次昂贵解析（否则超长 SQL 在这里又被完整 parse 一遍）。
     if not r.tables and r.rejected_by != "R-20":
@@ -165,9 +177,11 @@ def check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardR
     return r
 
 
-def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> GuardResult:
+def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb",
+           question: str = "") -> GuardResult:
     fired: list[str] = []
     rewrites: list[str] = []
+    notes: list[str] = []
 
     # ---------- R-20 解析预算（在 sqlglot.parse 之前，纯字符扫描）----------
     # 护栏的 AST 解析成本随 SQL 体量**超线性**增长：实测一条 19KB 的合法
@@ -315,6 +329,14 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> Guard
     err = _check_columns(root, cfg, ctes)
     if err:
         return GuardResult(ok=False, rejected_by="R-04", reason=err)
+
+    # ---------- R-24 相对时间锚点 ----------
+    anchor = _time_anchor(root, cfg, question)
+    if anchor.rejected:
+        return GuardResult(ok=False, rejected_by="R-24", reason=anchor.reason)
+    if anchor.note:
+        fired.append("R-24")
+        notes.append(anchor.note)
 
     # ---------- R-05 展开 SELECT *（改写而非阻断）----------
     if not cfg.allow_select_star:
@@ -477,6 +499,7 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb") -> Guard
         sql=root.sql(dialect=dialect, pretty=True),
         rules_fired=fired,
         rewrites=rewrites,
+        notes=notes,
     )
 
 
@@ -731,6 +754,133 @@ def _normalize_enums(root: exp.Expression, cfg: Config, ctes: set[str]) -> list[
                 lit.set("this", want)
                 changed.append(f"{col.sql()} '{val}' → '{want}'")
     return changed
+
+
+# ---------------------------------------------------------------------------
+# R-24 相对时间锚点
+#
+# 2026-09-09 的十二源回归里，"昨天的 GMV 是多少"两次问出两个不同的错答案：
+#   · 一次把「昨天」解释成 `MAX(stat_date)`，返回**前天**的数，列名还叫"昨日GMV"
+#   · 一次是模型凭空写下 `shipped_at >= '2025-07-01'` 并称之为"最近一个月"
+#     （真实数据到 2026-09，差了一年零两个月）
+# 两条的共同点是**模型不知道今天是几号**：提示词从不告诉它当前日期，于是它
+# 要么拿库里最新那天顶替，要么编一个看起来合理的字面量。llm.SYSTEM 现在会
+# 把当前日期喂进去；这条规则是它的确定性兜底 —— 提示词是软的，护栏是硬的。
+#
+# 分两档，因为两类错的确定性不同：
+#   · MAX(时间列) 冒充"今天/昨天" —— **确定错**，拦下重试。库里最新有数据的
+#     那天不是昨天，这个等式在任何数据集上都不成立。
+#   · 全是写死的日期字面量 —— **可能对**（"今年8月"解析成 2026-08 就是对的），
+#     所以只记一句提醒，不拦。拦下去会误杀一大批合法查询。
+
+#: 会把答案锚到"此刻"的时间词。刻意不收「最近一次」「最近的」这类 ——
+#: 那是"排序取头一条"的意思，与当前日期无关，收进来就是误报。
+_REL_TIME = re.compile(
+    r"今天|今日|当天|昨天|昨日|前天|明天|本周|这周|上周|本月|这个月|上个月|上月"
+    r"|本季度|今年|去年|前年|年初至今|至今|迄今"
+    r"|(?:最近|近|过去|过往)\s*(?:\d+|一|两|三|四|五|六|七|八|九|十|半)\s*"
+    r"(?:天|日|周|礼拜|个?月|季度|年)"
+)
+
+#: 问题里提到的**具体**时间。有它就说明区间是用户自己划的，写死日期理所当然。
+_ABS_TIME = re.compile(
+    r"\d{4}\s*年|\d{1,2}\s*月|\d{1,2}\s*[号日]|\d{4}-\d{1,2}"
+    r"|[Qq][1-4]|季度|上半年|下半年|全年")
+
+#: 取当前时间的函数。写全是因为漏一个就等于放过一整类正确写法，
+#: 而 R-24 的软提醒一旦误报，读的人下次就不看了。
+_NOW_FUNCS = (exp.CurrentDate, exp.CurrentTimestamp, exp.CurrentTime)
+_NOW_NAMES = frozenset({"now", "today", "current_date", "current_timestamp",
+                        "localtimestamp", "localtime", "getdate", "sysdate",
+                        "statement_timestamp", "transaction_timestamp",
+                        "clock_timestamp"})
+
+
+@dataclass
+class _Anchor:
+    rejected: bool = False
+    reason: str = ""
+    note: str = ""
+
+
+def _uses_now(root: exp.Expression) -> bool:
+    if any(True for _ in root.find_all(*_NOW_FUNCS)):
+        return True
+    for fn in root.find_all(exp.Anonymous, exp.Func):
+        name = (getattr(fn, "name", "") or fn.sql_name() if hasattr(fn, "sql_name")
+                else getattr(fn, "name", ""))
+        if str(name).lower() in _NOW_NAMES:
+            return True
+    return False
+
+
+def _is_time_column(cfg: Config, name: str) -> bool:
+    """库里有没有一列叫这个名字、且它是时间列。
+
+    不解析列归属：R-24 只需要知道"这个 MAX 是不是套在时间列上"，
+    而同名列在不同表里是不是时间列，这个库里没有反例。
+    """
+    n = (name or "").lower()
+    for t in cfg.tables.values():
+        c = t.columns.get(n)
+        if c is None:
+            continue
+        if c.time or any(k in (c.type or "").lower() for k in ("date", "time")):
+            return True
+    return False
+
+
+def _date_literals(root: exp.Expression) -> list[str]:
+    return [e.name for e in root.find_all(exp.Literal)
+            if e.is_string and re.fullmatch(r"\d{4}-\d{2}(-\d{2})?.*", e.name or "")]
+
+
+def _time_anchor(root: exp.Expression, cfg: Config, question: str) -> _Anchor:
+    if not question:
+        return _Anchor()                     # 直查模式：没有问题文本可比对
+    rel = _REL_TIME.search(question)
+    if not rel:
+        # 问题里**一个时间都没提**，SQL 却把结果限定在某个区间 —— 那个区间
+        # 是模型自己加的。R-11 拦下后回灌"缩小范围"，模型照做加一个时间窗，
+        # 第二轮通过，最终 rejected_by 是 null：页面与全量结果毫无区别。
+        # scope_narrowed 只在"被 R-11 拦过"这条路径上留痕，而模型第一轮就
+        # 自作主张的那种它接不住 —— 这里补上。
+        if _ABS_TIME.search(question):
+            return _Anchor()                 # 用户自己就问了某年某月，写死日期天经地义
+        lits = _date_literals(root)
+        if lits:
+            return _Anchor(note=(
+                f"你没有指定时间范围，这条查询却把结果限定在了 "
+                f"{'、'.join(sorted(set(lits))[:3])} 一带。"
+                "请确认这是不是你要的口径 —— 全量与某个区间的数字可能差很多。"))
+        return _Anchor()
+    if _uses_now(root):
+        return _Anchor()                     # 用了当前时间函数，锚点是对的
+
+    # 档一：拿"库里最新那天"冒充当前时间。只认落在子查询里的 MAX ——
+    # 裸的 `SELECT MAX(stat_date)` 是在问"数据到哪天"，那是合法问题。
+    for sub in root.find_all(exp.Subquery):
+        for m in sub.find_all(exp.Max):
+            col = m.find(exp.Column)
+            if col is not None and _is_time_column(cfg, col.name):
+                return _Anchor(
+                    rejected=True,
+                    reason=(f"问题问的是相对时间（{_REL_TIME.search(question).group()}），"
+                            f"SQL 却用 MAX({col.name}) 当作时间锚点。"
+                            "库里最新有数据的那一天不等于今天/昨天 —— 这样算出来的数"
+                            "会被当成用户问的那一天。请改用当前时间函数"
+                            "（如 CURRENT_DATE - INTERVAL '1 day'）表达相对时间；"
+                            "若那一天确实没有数据，如实返回空结果，不要顺延到别的日子。"),
+                )
+
+    # 档二：全是写死的日期。可能对也可能错，只提醒。
+    lits = _date_literals(root)
+    if lits:
+        return _Anchor(note=(
+            f"问题里的时间是相对的（{_REL_TIME.search(question).group()}），"
+            f"SQL 里却是写死的日期（{'、'.join(sorted(set(lits))[:3])}）。"
+            "请核对这个区间是不是你要的那一段。"))
+    return _Anchor()
 
 
 def _no_column(cfg: Config, table: str, shown: str) -> str:

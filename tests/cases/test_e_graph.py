@@ -16,7 +16,7 @@ class FakeLlm:
         self.multi_step = multi_step
 
     def generate_sql(self, question, schema_prompt, dialect="duckdb",
-                     last_sql="", error="", step=""):
+                     last_sql="", error="", step="", today=""):
         self.calls.append({"error": error, "last_sql": last_sql})
         if self.raises:
             raise self.raises

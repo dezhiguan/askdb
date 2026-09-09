@@ -16,6 +16,7 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -29,7 +30,7 @@ from .config import Config
 from .executor import DataSourceError, Executor
 from .llm import LlmClient, LlmNotConfigured
 from .quota import QuotaExceeded, build_quota
-from .audit import PHASE_STARTED
+from .audit import PHASE_STARTED, day_tz
 from .trace import Tracer, now_iso, write_audit
 
 
@@ -56,6 +57,12 @@ class AskState(TypedDict, total=False):
     reasoning: str
     rules_fired: list[str]
     rewrites: list[str]
+    #: 护栏放行了、但读结果的人必须知道的话（R-24 的写死日期提醒等）。
+    #: 与 rewrites 分开的理由见 guard.GuardResult.notes。
+    guard_notes: list[str]
+    #: 结果为空 / 单行聚合全为零，且查询带时间过滤。"这一天没有数据"与
+    #: "这一天确实是 0"在数值上完全一样，不说出来读的人分不开。
+    empty_note: str
 
     columns: list[str]
     rows: list[list[Any]]
@@ -157,6 +164,11 @@ class AskResult:
     scope_narrowed: bool = False
     #: 收窄前那条被拦下的 SQL 与它的预估扫描量，用于向用户说明差在哪。
     scope_note: str = ""
+    #: 护栏放行但需提醒的事项（R-24：相对时间问题配了写死的日期）。
+    guard_notes: list[str] = field(default_factory=list)
+    #: 空结果 / 全零结果的说明。空结果与"真的是 0"在页面上长得一模一样，
+    #: 不写这一句，"昨天没有数据"就会被读成"昨天一单都没有"。
+    empty_note: str = ""
 
     tables_hit: list[str] = field(default_factory=list)
     metrics_hit: list[str] = field(default_factory=list)
@@ -313,6 +325,18 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
 # 改为按模型 reasoning 的意图分型给友好文案，且**任何身份都不出现内部文件路径**。
 _WRITE_MARKERS = ("写操作", "只读", "update", "delete", "insert", "改名", "修改", "删除",
                   "插入", "新建", "更新", "truncate", "drop", "alter", "授权", "权限", "写入")
+def _today(cfg: Config) -> str:
+    """今天是几号 —— 按部署方声明的日界时区算，与审计、配额同一口径。
+
+    喂给模型之前先在这里定死：进程时区是 UTC 而业务在东八区，
+    北京时间凌晨到早八点之间"今天"会差一天，而这类错误在答案上
+    表现为"数字对不上"，没人会想到是时区。
+    """
+    tz = day_tz(cfg)
+    return (datetime.now(tz) if tz is not None
+            else datetime.now().astimezone()).strftime("%Y-%m-%d")
+
+
 def _no_sql_hint(reasoning: str) -> str:
     low = (reasoning or "").lower()
     if any(m in low for m in _WRITE_MARKERS):
@@ -344,6 +368,7 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             last_sql=state.get("sql_raw", ""),
             error=state.get("error") or "",
             step=step_ctx,
+            today=_today(d.cfg),
         )
     except LlmNotConfigured as e:
         d.tracer.add("generate_sql", t, "未配置模型密钥", status="failed")
@@ -387,19 +412,31 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
 def _n_guard(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     d = _deps(config)
     t = d.tracer.start()
-    r = guard.check(state["sql_raw"], d.cfg, org_id=state["org_id"], dialect=d.cfg.dialect)
+    r = guard.check(state["sql_raw"], d.cfg, org_id=state["org_id"],
+                    dialect=d.cfg.dialect, question=state["question"])
     if not r.ok:
         d.tracer.add("guard", t, f"{r.rejected_by} {r.reason}", status="blocked")
         return {"error": r.reason, "rejected_by": r.rejected_by,
+                # 被拒的那一版就是本轮生成的这条 —— 必须写进 sql_final。
+                # 不写的话它还停留在**上一轮**通过护栏的那条 SQL 上，接口于是
+                # 返回"第 3 轮的 SQL + 第 2 轮的报错"：报错说 products 没有
+                # order_count，而附着的 SQL 里那一列明明带着 ps. 别名，
+                # 照提示改也改不出来（2026-09-09 回归 P-02 实测）。
+                "sql_final": state.get("sql_raw", ""),
                 # 超范围的拒绝不进反思。路由只读状态，判定在这里定死。
                 "out_of_scope": r.out_of_scope,
                 "error_hint": ("该对象不在开放范围内。可在接入页查看已开放的表，"
                                "或联系管理员调整白名单。") if r.out_of_scope else ""}
 
     note = "；".join(r.rewrites) or "无需改写"
+    if r.notes:
+        # 放行了，但有话要说。挂在 guard 这一步的备注上 —— 判定链路本来就在
+        # 页面上展示，比新开一处告警更省事，也不会漏在只看接口的调用方那里。
+        note += "｜提醒：" + "；".join(r.notes)
     d.tracer.add("guard", t, note)
     return {
         "sql_final": r.sql, "rules_fired": r.rules_fired, "rewrites": r.rewrites,
+        "guard_notes": r.notes,
         "error": None, "rejected_by": None, "out_of_scope": False,
     }
 
@@ -449,6 +486,60 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     return {"error": None, "rejected_by": None, "explain_rows": r.est_rows}
 
 
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float, Decimal)) and not isinstance(v, bool)
+
+
+def _all_zero_columns(res: Any) -> list[str]:
+    """整列都是 0 的数值列名。全是 NULL 的列不算 —— 那是"没有值"，另一回事。"""
+    out: list[str] = []
+    for i, name in enumerate(res.columns):
+        col = [row[i] for row in res.rows if i < len(row)]
+        nums = [v for v in col if _is_number(v)]
+        if len(nums) == len(col) and nums and all(v == 0 for v in nums):
+            out.append(str(name))
+    return out
+
+
+def _empty_note(res: Any, sql: str) -> str:
+    """把"查不到"与"确实是 0"分开说。
+
+    2026-09-09 回归里这一条连着摔了两次：问「昨天的 GMV」，SQL 写成
+    `COALESCE(SUM(gmv), 0)` 配一个没有数据的日期，页面显示 0 ——
+    读的人得到的结论是"昨天一单没成"，真相是"昨天的数据还没入库"。
+    另一次是枚举值猜错（`status='SIGNED'`，库里是 'DELIVERED'），
+    0 行照样以"查询成功"的样子返回。
+
+    两种形态都要认：**0 行**，以及**单行且数值列全是 0/NULL** ——
+    后者正是 COALESCE 抹平后的样子，光看 row_count 判断不出来。
+    """
+    if res.row_count == 0:
+        return "结果为空。请确认过滤条件（尤其是时间范围与枚举取值）落在有数据的区间里"
+    if not res.rows:
+        return ""
+    if res.row_count > 1:
+        # 多行结果里**整整一列全是 0**。合法的情况有（"异常件数"确实处处为零），
+        # 但算错口径的情况更多：实测问「SLA 达成率是哪些客服拖的」，200 行客服
+        # 的达标率**全是 0%**，与用户自己给出的 32% 直接冲突，而系统毫无察觉
+        # （根因是 CASE 里 AND/OR 没加括号）。一句提醒的代价远小于漏报。
+        dead = _all_zero_columns(res)
+        if dead:
+            return (f"「{'、」「'.join(dead[:2])}」这一列在全部 {res.row_count} 行里都是 0。"
+                    "若与你的预期不符，多半是计算口径写错了，请核对 SQL")
+        return ""
+    cells = list(res.rows[0])
+    nums = [v for v in cells if _is_number(v)]
+    if not nums or len(nums) != len([v for v in cells if v is not None]):
+        return ""                     # 还有非数值列（月份、名称），不是"空结果被抹平"的形状
+    if any(v != 0 for v in nums):
+        return ""
+    # 没有任何过滤条件的全零是**真的全零**（空表），那不需要这句提醒。
+    if " where " not in f" {sql.lower()} ":
+        return ""
+    return ("结果是单行全零。若查询限定了某个时间区间或枚举取值，"
+            "请先确认该区间真有数据 ——「查不到」和「值就是 0」在这里长得一样")
+
+
 def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     d = _deps(config)
     t = d.tracer.start()
@@ -474,12 +565,15 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         note += f"；已脱敏 {len(res.masked_columns)} 列（{'、'.join(res.masked_columns[:5])}）"
     if res.mask_degraded:
         note += "；SQL 解析不出投影来源，本次按整行从严脱敏"
+    empty = _empty_note(res, state.get("sql_final", ""))
+    if empty:
+        note += f"；{empty}"
     d.tracer.add("execute", t, note)
     return {
         "columns": [str(c) for c in res.columns],
         "rows": [[jsonable(v) for v in row] for row in res.rows],
         "row_count": res.row_count, "truncated": res.truncated,
-        "as_of": res.as_of,
+        "as_of": res.as_of, "empty_note": empty,
         "mask_degraded": res.mask_degraded,
         "masked_columns": list(res.masked_columns),
         "error": None, "rejected_by": None,
@@ -1063,6 +1157,8 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
         hint=out.get("error_hint", ""),
         scope_narrowed=bool(out.get("scope_narrowed", False)),
         scope_note=_scope_note(out),
+        guard_notes=list(out.get("guard_notes") or []),
+        empty_note=str(out.get("empty_note", "") or ""),
         tables_hit=out.get("tables_hit", []), metrics_hit=out.get("metrics_hit", []),
         recall_blind=bool(out.get("recall_blind", False)),
         recall_note=str(out.get("recall_note", "") or ""),

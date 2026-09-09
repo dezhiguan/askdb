@@ -563,3 +563,80 @@ def test_r22_skips_columns_without_declared_values(cfg):
     assert not cfg.tables["documents"].columns["file_name"].enum
     r = chk("SELECT id FROM documents WHERE file_name = 'a.pdf'", cfg)
     assert r.ok and "R-22" not in r.rules_fired and "'a.pdf'" in r.sql
+
+
+# --------------------------------------------------------------------- R-24
+#
+# 2026-09-09 十二源回归里"昨天的 GMV 是多少"两次问出两个不同的错答案：
+# 一次拿 MAX(时间列) 当昨天（返回前天的数），一次凭空写死 '2025-07-01'
+# 并称之为"最近一个月"。这组用例钉的是：**确定错的拦下、可能对的只提醒**。
+
+def test_r24_rejects_max_as_today(cfg):
+    r = guard.check(
+        "SELECT COUNT(id) FROM documents WHERE created_at = "
+        "(SELECT MAX(created_at) FROM documents)",
+        cfg, org_id=ORG, question="昨天新增了多少文档？")
+    assert not r.ok and r.rejected_by == "R-24"
+    assert "MAX(created_at)" in r.reason
+
+
+def test_r24_accepts_current_date(cfg):
+    """用当前时间函数表达相对时间 —— 这正是规则想要的写法。"""
+    r = guard.check(
+        "SELECT COUNT(id) FROM documents "
+        "WHERE created_at >= CURRENT_DATE - INTERVAL '1 day'",
+        cfg, org_id=ORG, question="昨天新增了多少文档？")
+    assert r.ok and not r.notes
+
+
+def test_r24_notes_hardcoded_dates_but_allows(cfg):
+    """写死日期可能对（"今年8月"就该解析成字面量），所以只提醒不拦。"""
+    r = guard.check(
+        "SELECT COUNT(id) FROM documents WHERE created_at >= '2025-07-01' "
+        "AND created_at < '2025-08-01'",
+        cfg, org_id=ORG, question="最近一个月新增了多少文档？")
+    assert r.ok and "R-24" in r.rules_fired
+    assert r.notes and "2025-07-01" in r.notes[0]
+
+
+def test_r24_ignores_absolute_time_questions(cfg):
+    """问题问的是具体月份，写死日期天经地义 —— 提醒也不该出现。"""
+    r = guard.check(
+        "SELECT COUNT(id) FROM documents WHERE created_at >= '2026-08-01'",
+        cfg, org_id=ORG, question="2026年8月新增了多少文档？")
+    assert r.ok and "R-24" not in r.rules_fired and not r.notes
+
+
+def test_r24_ignores_latest_one_phrasing(cfg):
+    """「最近一次」是"排序取头一条"，与当前日期无关，收进来就是误报。"""
+    r = guard.check("SELECT MAX(created_at) FROM documents",
+                    cfg, org_id=ORG, question="最近一次上传是什么时候？")
+    assert r.ok and "R-24" not in r.rules_fired
+
+
+def test_r24_skips_direct_sql_without_question(cfg):
+    """直查模式没有问题文本，整条规则跳过（不能凭空猜用户想问哪一天）。"""
+    r = guard.check(
+        "SELECT COUNT(id) FROM documents WHERE created_at = "
+        "(SELECT MAX(created_at) FROM documents)", cfg, org_id=ORG)
+    assert r.ok
+
+
+def test_r24_notes_a_time_window_the_user_never_asked_for(cfg):
+    """问题里一个时间都没提，SQL 却限定了区间 —— 那个区间是模型自己加的。
+
+    R-11 拦下后回灌"缩小范围"，模型照做加一个时间窗、第二轮通过，最终
+    rejected_by 是 null，页面与全量结果毫无区别（2026-09-09 回归 L-02）。
+    """
+    r = guard.check(
+        "SELECT COUNT(id) FROM documents WHERE created_at >= '2025-07-01'",
+        cfg, org_id=ORG, question="一共有多少文档？")
+    assert r.ok and "R-24" in r.rules_fired
+    assert "没有指定时间范围" in r.notes[0]
+
+
+def test_r24_silent_on_queries_without_any_date(cfg):
+    """不带时间条件的查询与这条规则无关，别平白多一句提醒。"""
+    r = guard.check("SELECT COUNT(id) FROM documents", cfg, org_id=ORG,
+                    question="一共有多少文档？")
+    assert r.ok and "R-24" not in r.rules_fired and not r.notes

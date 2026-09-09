@@ -102,6 +102,11 @@ question
 | R-16 | Total step cap (multi-step) | control | ✅ |
 | R-17 | Cumulative cost cap | control | ✅ |
 | R-19 | **Forced data-age window injection** (per-role visible time range) | rewrite | ✅ |
+| R-20 | Parse budget (SQL length / paren depth), rejected before parsing | static | ✅ |
+| R-21 | No sampling (TABLESAMPLE) — an estimate is not the answer | static | ✅ |
+| R-22 | Enum literal case normalised to what the database declares | rewrite | ✅ |
+| R-23 | The answer must come from data (no table reference in the AST → reject) | static | ✅ |
+| R-24 | Relative-time anchor: `MAX(time column)` used as "today" is rejected; hard-coded dates only warn | static | ✅ |
 
 ¹ Covers table-qualified columns, and bare columns when exactly one table is in scope.
 Full resolution for bare columns under multi-table JOINs is pending.
@@ -111,7 +116,7 @@ R-19 because R-18 was already taken by a fan-out-amplification rule — but no s
 rule appears in the code or in the design spec. The number is reserved and unused;
 the gap in the sequence is intentional, not a missing implementation.
 
-Where each rule lives: R-01…R-10 and R-19 in `guard.py`, R-11…R-13 in
+Where each rule lives: R-01…R-10 and R-19…R-24 in `guard.py`, R-11…R-13 in
 `executor.py`, R-14 in the `graph.py` router, R-15…R-17 in `planner.py`.
 `guard.ENFORCED_ELSEWHERE` names the ones enforced outside the guard module, so
 nobody reads that file and concludes the guardrails are only what is in it.
