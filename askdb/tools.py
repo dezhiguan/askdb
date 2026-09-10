@@ -149,7 +149,9 @@ def execute_sql(sql: str, cfg: Config, org_id: int,
     except Exception:
         exp = None
     max_scan = int(cfg.raw.get("guard", {}).get("max_scan_rows", 200000))
-    if explain_rows is not None and explain_rows > max_scan:
+    # scan_waiver：审批通过后重投的查询带着放行标记，跳过 R-11（与管道 _n_dry_run 同口径）。
+    if (explain_rows is not None and explain_rows > max_scan
+            and not getattr(cfg, "scan_waiver", False)):
         return ToolResult(
             ok=False, tool="execute_sql", rejected_by="R-11",
             error=f"预估扫描 {explain_rows} 行，超过上限 {max_scan}，需人工审批放行",
