@@ -3,7 +3,7 @@
   .app-shell { grid-template-columns: 76px minmax(0,1fr); }
   .topbar { grid-template-columns: 76px minmax(0,1fr) auto; }
   .topbar > .brand { justify-content: center; padding: 0; }
-  .topbar > .brand > div:last-child, .nav-label, .nav-copy, .nav-badge, .phase-card { display: none; }
+  .topbar > .brand > div:last-child, .nav-label, .nav-copy { display: none; }
   .sidebar { padding-inline: 8px; }
   .nav-item { justify-content: center; padding: 7px; }
   .quick-new { justify-content: center; }
@@ -76,8 +76,6 @@
 /* 矮视口。阈值取自设计原型：多数笔记本窗口高度都在 900px 以下，
    而查询页是竖向最吃紧的一页 —— 头部每多占一行，结果区就少一行。 */
 @media (max-height: 900px) {
-  .phase-card { display: none; }
-
   .query-page { padding: 10px 16px 8px; }
   .query-page .page-head { margin-bottom: 7px; }
   .query-page .page-head h1 { font-size: 18px; }

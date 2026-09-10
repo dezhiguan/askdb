@@ -23,6 +23,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .trace import step_failed
+
 # 下面这些入口（list_audits / tasks / stats / quality / get_audit / resumable）
 # 的第一个参数既可以是审计文件的 Path，也可以是 Config —— 由 read_records 决定
 # 读库还是读文件（2026-09-09 起生产读 PostgreSQL）。它们自己不碰存储，只是把
@@ -56,15 +58,29 @@ TRACE_FIELDS = (
     "tok_in", "tok_out", "step_count", "multi_step", "attempts",
     "elapsed_ms", "cost_cny", "rejected_by", "source", "source_name",
     "cached", "cached_from",
-    # 结果可信度那枚角标要判的四条痕迹。全是布尔标志，不带任何内容 ——
-    # 它们出接口不构成新的泄露，而少了它们追踪页就只能空着那枚角标
-    # （工作台侧栏判的是同四条，两处必须同源，否则同一次查询两个分）。
+    # 结果可信度那枚角标要判的痕迹。原来是四条机械护栏标志，2026-09-10 之后
+    # 加了三条语义信号（猜测措辞、缓存计数列、纯指代追问）—— 那次跑测里
+    # 1030 条有 11/12 拿满分，包括模型自己写着"作为占位，口径需人工确认"的
+    # 那一条，原因就是语义风险一项都不进分母。
+    # 它们出接口不构成新的泄露：hedge_terms 是命中的措辞词、derived_columns
+    # 是列名，都不带数据内容。少了它们追踪页那枚角标就与工作台右栏对不上
+    # （两处必须同源，否则同一次查询两个分）。
     "recall_blind", "scope_narrowed", "mask_degraded", "truncated",
+    "hedge_terms", "derived_columns", "anaphoric", "caliber",
 )
 
 # 步骤对象自身也走白名单 —— 记录里的 steps 由各节点自由追加，
 # 哪天有人往里塞了 sql 或行样本，这里不会顺手带出去。
-STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables")
+# 失败与回退那五个字段一并放行：全是模型名、序号、状态码与我们自己写死的
+# 处置短语，**不含任何来自数据或用户的内容**，出接口不构成新的泄露。
+# 少了它们，页面上那条 failed span 只剩一句"这里断过"—— 说不清是该退避重试
+# 还是该换模型，也说不清链路后来是怎么活下来的。
+#
+# **error_message 有意不在其中**：厂商的 4xx 消息可能把请求片段回显出来，
+# 而提示词里带着表结构与用户的问题。它留在审计记录与 /api/replay 上，
+# 与 sql_raw / question 同一道边界。
+STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables",
+               "attempt", "attempts_total", "model", "error_code", "disposition")
 
 # 真正过模型的图节点。与前端 traceSteps.ts 的 STEP_TYPE == 'MODEL' 是同一份口径，
 # 两边都写一次是因为一个算数、一个只做展示；漂了会让「模型调用成功率」这格
@@ -1110,7 +1126,11 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
         for st in (r.get("steps") or []):
             if st.get("step") in MODEL_STEPS:
                 model_calls += 1
-                if st.get("status") != "ok":
+                # 按三档口径判，不是"等于 ok"。切备选成功那条 span 的状态是
+                # fallback —— 按等于 ok 判，模型一旦被备选救回来，成功率反而
+                # 往下掉；而它真正的失败（那次超时）现在自己就是一条 span，
+                # 不需要再从成功的这条身上找补。
+                if step_failed(str(st.get("status") or "")):
                     model_failed += 1
 
         d0 = _day_of(str(r.get("ts", "")), tz)
@@ -1126,12 +1146,56 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
         # 缓存命中同样不进这一维：它的 model 字段写的是 "cache"，那不是一个
         # 模型，跟着记一笔会在「按模型」里凭空多出一行，并把前端拿 by_model
         # 求和当分母的「平均 Token」按未发生的调用摊薄。
-        m = None if r.get("cached") else (
-            r.get("model") or ("（未记录）" if r.get("kind", "ask") == "ask" else None))
-        if m:
-            e = by_model.setdefault(m, {"calls": 0, "cost_cny": 0.0})
-            e["calls"] += 1
-            e["cost_cny"] = round(e["cost_cny"] + float(r.get("cost_cny") or 0), 6)
+        # **按 step 归因，不是按记录**。一条链路可能同时烧了三个模型：
+        # 生成用主模型、召回用嵌入模型、主模型失败时还切过备选。记录级
+        # 只有一个 model 字段，按它分摊的话，嵌入与备选那两笔永远挂在
+        # 主模型头上 —— 成本页上「按模型」那张表因此是错的。
+        #
+        # 老记录的 step 上没有 model（这个字段是 2026-09-10 才落的），
+        # 退回记录级那一个，与改造前一致；两种记录混在同一个窗口里也不会
+        # 重复计 —— 每条记录只走其中一条路。
+        if not r.get("cached"):
+            steps = r.get("steps") or []
+            # step 上有 model 或有金额，才走按步归因。老记录两样都没有
+            # （model 是 2026-09-10 才落到 step 上的），退回记录级那一条路。
+            by_step = any(st.get("model") or st.get("cost_cny") for st in steps)
+            if by_step:
+                for st in steps:
+                    m = st.get("model")
+                    c = float(st.get("cost_cny") or 0)
+                    # **这一步算不算一次模型调用，看的是节点本身，不是它有没有
+                    # 记下模型名。** step 级 cost_cny 早就在落盘，step 级 model
+                    # 是 2026-09-10 才加的：中间这段时间的记录，每一条的
+                    # generate_sql 都是"有金额、无模型名"。原来只在 `if m` 时
+                    # 加次数，于是这些记录的钱补挂上去了、次数一次都没加 ——
+                    # 生产上因此长出「qwen3.8-flash 6 次 ¥1.64」这种自相矛盾的
+                    # 行：¥1.64 实际来自一千二百多次调用，单次成本被算成
+                    # ¥0.27（真实值 ¥0.0013），差两个数量级。
+                    #
+                    # 用 MODEL_STEPS 判而不是"有金额就算"：失败的那次调用金额
+                    # 是 0，但它确实调过；反过来，将来某个非模型节点若带上金额
+                    # 又没记模型名，只补钱不计次，不会虚增。这也让这张表的次数
+                    # 与「模型调用成功率」的分母 model_calls 同源。
+                    is_call = bool(m) or st.get("step") in MODEL_STEPS
+                    if not is_call and not c:
+                        continue
+                    # **带金额却没记模型的步骤，钱不能凭空消失**：挂回记录级
+                    # 那个模型名。成本表必须满足「各行之和 = 总额」，
+                    # 否则它就是一张对不上账的表，而对不上账的成本表
+                    # 比没有更坏 —— 看的人不会知道少的是哪一笔。
+                    key = str(m) if m else str(r.get("model") or "（未记录）")
+                    e = by_model.setdefault(key, {"calls": 0, "cost_cny": 0.0})
+                    if is_call:
+                        e["calls"] += 1
+                    e["cost_cny"] = round(e["cost_cny"] + c, 6)
+            else:
+                m = r.get("model") or (
+                    "（未记录）" if r.get("kind", "ask") == "ask" else None)
+                if m:
+                    e = by_model.setdefault(m, {"calls": 0, "cost_cny": 0.0})
+                    e["calls"] += 1
+                    e["cost_cny"] = round(
+                        e["cost_cny"] + float(r.get("cost_cny") or 0), 6)
 
     elapsed.sort()
     return {
@@ -1445,7 +1509,7 @@ def _nodes_of(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             e = nodes.setdefault(
                 name, {"calls": 0, "ok": 0, "ms": [], "tok": 0, "fail_notes": Counter()})
             e["calls"] += 1
-            if st.get("status") == "ok":
+            if not step_failed(str(st.get("status") or "")):
                 e["ok"] += 1
             else:
                 # 失败原因取这一步自己的 note —— 设计稿那张表最右列问的是

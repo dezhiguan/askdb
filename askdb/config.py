@@ -78,6 +78,18 @@ class Column:
     #: 数据期限所依据的时间列。语义与 tenant 完全对称：
     #: 那个标"按谁隔离"，这个标"按哪一列算新旧"。
     time: bool = False
+    #: 缓存/派生计数列 —— 值由别处维护，与真实计数会漂移。
+    #:
+    #: 典型是 knowledge_bases.doc_count 这类给列表页排序用的计数器。
+    #: 2026-09-10 生产实测：同一天同一分钟，「文档数最多的 5 个知识库」走
+    #: COUNT(documents) 得 7,901，「哪个知识库文档量最大」走 doc_count 得 7,539，
+    #: 差 362 篇，两次都是 100 分可信度、都没提口径差异。
+    #:
+    #: 标了不等于禁用 —— 列表页排序本来就该用它。标的作用是让链路认得出
+    #: "这个数来自缓存计数器"，从而在口径声明里写明、在可信度上扣一分。
+    #: 靠列 desc 里写"⚠️ 可能漂移"是不够的：那句话只有模型看得见，
+    #: 而恰恰是模型没当回事。
+    cached_counter: bool = False
 
     def __post_init__(self) -> None:
         # 内置模式命中即敏感，**配置只能往上加、不能往下摘**（`sensitive: false`
@@ -90,6 +102,82 @@ class Column:
         # 分开写就迟早漏掉一条 —— 而漏掉的那条正是这次出事的那条。
         if not self.sensitive and looks_sensitive(self.name):
             self.sensitive = True
+
+
+#: 缓存计数列的**结构判据**。
+#:
+#: 形状是固定的：A 表上挂一个 `<x>_count`，数的是 B 表里属于自己的行数，而 B 表
+#: 通过 `<a>_id` 指回 A。`knowledge_bases.doc_count` ↔ `documents.kb_id` 就是它。
+#: 这类列由别处维护、天然会与真实计数漂移（2026-09-10 实测 doc_count 比
+#: COUNT(documents) 少 362 条）。
+#:
+#: 为什么不按列描述判：**生产库一条列注释都没有**。手写白名单里可以逐列标
+#: `cached_counter: true`，但运行时数据源的白名单是结构扫描自动生成的 ——
+#: 那条路径上没有人来标，而线上恰恰全是运行时源。这与 looks_sensitive 面对的
+#: 是同一个问题，所以给同一种答案：从结构本身推，别指望有人记得标。
+#:
+#: 误判的方向是安全的：把一个普通计数列标成缓存列，代价是口径里多一句说明、
+#: 可信度扣一分；漏判的代价是一个会漂移的数被当成精确值。偏严的那一侧。
+_COUNT_SUFFIX = ("_count", "_cnt", "_total", "_num")
+
+#: 列名词根 → 可能的表名词根。英文复数与项目里的惯用缩写都认。
+def _stem_variants(stem: str) -> set[str]:
+    s = stem.lower()
+    out = {s, s + "s", s + "es"}
+    if s.endswith("y"):
+        out.add(s[:-1] + "ies")
+    # 项目里的惯用缩写：doc→document、kb→knowledge_base、org→organization
+    out |= {"document", "documents"} if s == "doc" else set()
+    out |= {"knowledge_base", "knowledge_bases"} if s == "kb" else set()
+    out |= {"organization", "organizations"} if s == "org" else set()
+    return out
+
+
+def _fk_stems(table_name: str) -> set[str]:
+    """B 表指回 A 表时，那根外键列可能叫什么词根。"""
+    n = table_name.lower().rstrip("s")
+    out = {n}
+    if n.endswith("e"):          # knowledge_base → knowledge_bas + e
+        out.add(n[:-1])
+    if n == "document":
+        out |= {"doc"}
+    if n == "knowledge_base":
+        out |= {"kb"}
+    if n == "organization":
+        out |= {"org"}
+    return out
+
+
+def mark_cached_counters(tables: dict[str, "Table"]) -> None:
+    """就地把符合上述形状的列标成 cached_counter。
+
+    **三条构造路径都要调它**（手写白名单、运行时源扫描、测试固件）——
+    Column.__post_init__ 里那段注释已经写过一次这个教训：分开写就迟早漏掉一条，
+    而漏掉的那条正是出事的那条。这次漏的是运行时源，也就是线上唯一在用的那条。
+    """
+    names = {n.lower() for n in tables}
+    for tname, t in tables.items():
+        back = _fk_stems(tname)
+        for col in t.columns.values():
+            if col.cached_counter:
+                continue                      # 配置显式标过，不再推
+            low = col.name.lower()
+            stem = next((low[: -len(sfx)] for sfx in _COUNT_SUFFIX
+                         if low.endswith(sfx) and len(low) > len(sfx)), "")
+            if not stem:
+                continue
+            # 存在一张"被数的表"，且它有一根指回本表的外键。
+            # 表名既认同名（chunk → chunks），也认带前缀的（chunk → document_chunks）：
+            # 真实 schema 里子表常常带着父表名做前缀，只认同名会漏掉一多半。
+            variants = _stem_variants(stem)
+            want_fk = {f"{b}_id" for b in back}
+            for tn2 in names:
+                if not (tn2 in variants or any(tn2.endswith("_" + v) for v in variants)):
+                    continue
+                target = tables[next(k for k in tables if k.lower() == tn2)]
+                if any(c.name.lower() in want_fk for c in target.columns.values()):
+                    col.cached_counter = True
+                    break
 
 
 @dataclass
@@ -258,6 +346,18 @@ class Config:
                 "mysql": "mysql"}[self.db_type]
 
     @property
+    def strict_account_check(self) -> bool:
+        """接入自检里的**账号姿态**项要不要阻断接入。
+
+        默认 false：拿一个高权账号（root / superuser）接库这件事要能做成，
+        由界面把没过的项一直摆着。设为 true 恢复成"一项不过就不许接入"。
+
+        无论开关取什么值，**实证那一项（写操作实探）永远阻断** ——
+        它真发一条写语句、由引擎拒掉，是这条链路上唯一不靠声明的证据。
+        """
+        return bool(self.raw.get("datasources", {}).get("strict_account_check", False))
+
+    @property
     def tenant_enabled(self) -> bool:
         """是否做租户隔离。
 
@@ -306,6 +406,20 @@ class Config:
     @property
     def max_rows(self) -> int:
         return int(self.raw["guard"]["max_rows"])
+
+    @property
+    def metadata_timeout_ms(self) -> int:
+        """元数据扫描（接入向导列表、取字段）的时间预算。
+
+        与 guard.statement_timeout_ms 是两件事：那一条是 R-12，管**用户查询**
+        能跑多久；这一条管的是"问清这个库有哪些表"能等多久，代价跟库的规模
+        走。共用一个值的后果见 executor 里 metadata_window 的说明。
+
+        不配就是 20 秒 —— 老配置文件照旧能起，不必为了升级去改每一份。
+        20 而不是 30：入口 nginx 对这条路径的 proxy_read_timeout 是 30 秒，
+        配得比它大只会把一次可解释的超时换成一个 504。
+        """
+        return int(self.raw["guard"].get("metadata_timeout_ms", 20_000))
 
     @property
     def max_retry(self) -> int:
@@ -393,6 +507,7 @@ def parse_tables(spec: list[dict[str, Any]]) -> dict[str, Table]:
                 tenant=bool(col.get("tenant", False)),
                 sensitive=bool(col.get("sensitive", False)),
                 time=bool(col.get("time", False)),
+                cached_counter=bool(col.get("cached_counter", False)),
             )
             for name, col in t["columns"].items()
         }
@@ -403,6 +518,7 @@ def parse_tables(spec: list[dict[str, Any]]) -> dict[str, Table]:
             tenant_exempt=bool(t.get("tenant_exempt", False)),
             time_exempt=bool(t.get("time_exempt", False)),
         )
+    mark_cached_counters(tables)
     return tables
 
 

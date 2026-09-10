@@ -33,8 +33,8 @@ tables:
       status:          { type: VARCHAR,   desc: 知识库状态 }
       visibility:      { type: VARCHAR,   desc: 可见性 }
       kb_type:         { type: VARCHAR,   desc: 知识库类型 }
-      doc_count:       { type: INTEGER,   desc: "文档数缓存计数器。⚠️ 可能与实际漂移，统计文档数请以 documents 表实际计数为准" }
-      chunk_count:     { type: INTEGER,   desc: 切片数缓存计数器，同样可能漂移 }
+      doc_count:       { type: INTEGER,   cached_counter: true, desc: "文档数缓存计数器。⚠️ 可能与实际漂移，统计文档数请以 documents 表实际计数为准" }
+      chunk_count:     { type: INTEGER,   cached_counter: true, desc: 切片数缓存计数器，同样可能漂移 }
       embedding_model: { type: VARCHAR,   desc: 该库使用的向量模型 }
       answer_model:    { type: VARCHAR,   desc: 该库使用的应答模型 }
       chunk_size:      { type: INTEGER,   desc: 切分长度 }

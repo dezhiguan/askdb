@@ -8,6 +8,7 @@ import { AddSourceModal, ScanTablesModal } from '../components/AddSourceModal'
 import { useDialog } from '../components/ConfirmDialog'
 import type { HealthState } from '../useHealth'
 import { useCountdown } from '../useCountdown'
+import { envLabel } from '../envs'
 
 /** 数据源类型的短标。图标位 34px，放不下全名。 */
 const TYPE_MARK: Record<string, string> = { duckdb: 'DK', postgresql: 'PG', mysql: 'MY' }
@@ -15,9 +16,31 @@ const TYPE_MARK: Record<string, string> = { duckdb: 'DK', postgresql: 'PG', mysq
 /** 副标题里的引擎名。卡片副标题是「引擎 · host:port」，引擎位要给人看的写法。 */
 const TYPE_NAME: Record<string, string> = { duckdb: 'DuckDB', postgresql: 'PostgreSQL', mysql: 'MySQL' }
 
+/** 卡片是否命中当前的筛选。搜索同时看名称与地址：人记住的可能是
+ *  「宠物医疗」，也可能是那个 IP，两种都该找得到。 */
+function matchSource(card: SourceCard, type: string, query: string): boolean {
+  if (type && card.type !== type) return false
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  return `${card.name} ${card.host ?? ''} ${card.type}`.toLowerCase().includes(q)
+}
+
 /** 一张运行时数据源卡的连接检查结果。状态灯、延迟、库内表数、最后检查
  *  四处都靠它 —— 本次会话刚测过就用本地这份，否则退回后端落盘的上一次。 */
 type CardProbe = { ok: boolean; latency: number | null; visible: number | null; at: Date }
+
+/** 这次检查到底是「连不上」还是「连得上但有告警」。
+ *
+ *  两者都记成 last_ok=false，卡片上却不能都写「不可用」—— 一个高权账号接进来的
+ *  源照样查得动，标成不可用会把人支去查一条根本不存在的连接故障。
+ *
+ *  判据是延迟有没有值：那个数只有在**真的连上并跑完检查**时才写得进去
+ *  （建连失败时 record_probe 不带 latency）。有意不为此新增表字段 ——
+ *  askdb_sources 没有迁移机制，加列会在旧表上把读路径打崩。
+ *  哪几项在告警，点「测试连接」看，那里逐项列。 */
+function reachable(p: CardProbe): boolean {
+  return p.ok || p.latency != null
+}
 
 /** 后端落盘的上一次检查。从没检查过返回 null —— 这时候该显示「未检查」，
  *  不是假设它是好的。 */
@@ -188,9 +211,19 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
      内置卡算作列表里的第一张，跟着一起翻页：它和运行时源在这一页上是同一种
      东西（同一个网格、同样的操作），钉在每一页顶上会让"每页 10 条"变成 11 张。 */
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState(10)
-  const allCards = sources?.items ?? []
+  // 每页 12：卡片是三列网格，12 正好铺满四行；10 会在最后一行留两个空位
+  const [pageSize, setPageSize] = useState(12)
+  const [typeFilter, setTypeFilter] = useState('')
+  const [query, setQuery] = useState('')
+  const everyCard = sources?.items ?? []
+  // 筛选**在分页之前** —— 反过来就成了"在当前这一页里找"，
+  // 而人要找的是整个列表里的那一个
+  const allCards = everyCard.filter(card => matchSource(card, typeFilter, query))
   const total = allCards.length
+  // 库里实际出现过的类型才进下拉：把三种类型全列出来，会出现选了之后
+  // 一张卡都没有的空筛选，而那看起来像是列表坏了
+  const typesInUse = [...new Set(everyCard.map(card => card.type))]
+  const filtering = !!typeFilter || !!query.trim()
   const pages = Math.max(Math.ceil(total / pageSize), 1)
   // 删到页数变少时不要卡在一个空页上（停在第 3 页而只剩 2 页 = 一片空白）
   const current = Math.min(page, pages)
@@ -205,7 +238,7 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
       {/* 通用 PageHeader 没有 eyebrow 位，这里按原型直接写出 .page-head */}
       <PageHeader
         title="数据源管理"
-        description="只连接测试库和生产只读镜像，凭证由服务端托管，不下发浏览器也不进入提示词。"
+        description="连接开发、测试、预生产与生产只读库，凭证由服务端托管，不下发浏览器也不进入提示词。"
         action={
           <button
             className="primary"
@@ -223,6 +256,38 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
           {error}
           {cooldown > 0 && <>（还需等待 {cooldown} 秒）</>}
         </div>
+      )}
+
+      {/* 筛选与搜索。**纯前端切** —— /api/sources 本来就一次把所有源给全
+          （它不连库，只读注册表），源的量级在几十，为它加一套服务端过滤
+          只会多一条要对齐的口径。与分页同一个理由，见上面那段。 */}
+      {everyCard.length > 0 && (
+        <div className="source-filters">
+          <input
+            className="source-search"
+            value={query}
+            placeholder="搜索名称或地址"
+            onChange={event => { setQuery(event.target.value); setPage(1) }}
+          />
+          <select value={typeFilter}
+                  onChange={event => { setTypeFilter(event.target.value); setPage(1) }}>
+            <option value="">全部类型</option>
+            {typesInUse.map(type => (
+              <option key={type} value={type}>{TYPE_NAME[type] ?? type}</option>
+            ))}
+          </select>
+          {filtering && (
+            <button className="ghost" onClick={() => { setQuery(''); setTypeFilter(''); setPage(1) }}>
+              清除筛选
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 筛完一个都不剩时要说清楚是筛没的，不是列表空了 —— 后者会让人
+          以为数据源丢了，那是完全不同的一件事 */}
+      {filtering && total === 0 && (
+        <p className="drawer-note">没有匹配的数据源（共 {everyCard.length} 个）。</p>
       )}
 
       {/* 配置里的默认数据源最多一个，所以内置卡最多一张；它可以被删掉，
@@ -300,7 +365,9 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
           // 没检查过就如实说没检查过，不拿绿灯替它担保。
           // 连不上排在「待配置」前面：一个既没勾表又连不上的源，先要解决的
           // 是连不上；显示成「待配置」会把人支去勾表，而那一步根本进行不下去
-          const statusClass = probe && !probe.ok ? 'bad' : pending ? 'off' : probe ? '' : 'idle'
+          const warned = probe != null && !probe.ok && reachable(probe)
+          const statusClass = probe && !probe.ok && !warned ? 'bad'
+            : warned ? 'warn' : pending ? 'off' : probe ? '' : 'idle'
           // 白名单里有表在库里已经不见了：库改了结构而白名单没跟上，
           // 这时候查询会撞在自检的「授权表集合」上，得在卡片上先看得见
           const drift = probe?.visible != null && probe.visible < card.table_count
@@ -309,14 +376,15 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
               <div className="source-top">
                 <i className="db-icon">{TYPE_MARK[card.type] ?? card.type.slice(0, 2).toUpperCase()}</i>
                 <span className={`card-status ${statusClass}`}>
-                  {probe && !probe.ok ? '● 不可用'
+                  {probe && !probe.ok && !warned ? '● 不可用'
+                    : warned ? <span title="连得上，但接入自检里有没通过的项；点「测试连接」看是哪几项">● 有告警</span>
                     : pending ? '● 待配置'
                     : probe ? <><i className="online" /> 正常</>
                     : '● 未检查'}
                 </span>
               </div>
               <h3>{card.name}</h3>
-              <p>{TYPE_NAME[card.type] ?? card.type} · {card.host || '—'} · {ENV_LABEL[card.env] ?? card.env}</p>
+              <p>{TYPE_NAME[card.type] ?? card.type} · {card.host || '—'} · {envLabel(card.env)}</p>
               <div className="mini-metrics">
                 <div className="mini-metric" title="建连耗时（握手 + 认证），来自最近一次连接检查">
                   <span>延迟</span>
@@ -377,11 +445,14 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
 
       {total > 0 && (
         <div className="audit-pager">
-          <span>共 {total} 个数据源 · 第 {current} / {pages} 页</span>
+          <span>
+            {filtering ? `筛出 ${total} 个 · 共 ${everyCard.length} 个数据源` : `共 ${total} 个数据源`}
+            {' · '}第 {current} / {pages} 页
+          </span>
           <span>
             <select value={pageSize}
                     onChange={event => { setPageSize(Number(event.target.value)); setPage(1) }}>
-              {[10, 20, 50].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
+              {[12, 24, 48].map(size => <option key={size} value={size}>每页 {size} 条</option>)}
             </select>
             <button className="ghost" disabled={current <= 1}
                     onClick={() => setPage(current - 1)}>‹ 上一页</button>
@@ -417,7 +488,6 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
   )
 }
 
-const ENV_LABEL: Record<string, string> = { test: '测试环境', prod_ro: '生产只读', builtin: '内置' }
 
 /** 相对时间。`now` 由调用方传入，好让心跳 state 能推着它自己往前走 ——
  *  读 Date.now() 的话渲染完就冻住，「刚刚」会一直是「刚刚」。 */

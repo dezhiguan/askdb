@@ -174,6 +174,9 @@ class VectorIndex:
         self.cfg = cfg
         self.collection = f"schema_{_fingerprint(cfg)}"
         self.space = _space(cfg)
+        #: 本实例发生过的 embedding 输入 token 数。get_index 每次新建实例
+        #: （见下面那个函数），所以不存在跨请求串账。
+        self.last_embed_tokens = 0
 
     # ---------- 嵌入 ----------
 
@@ -208,6 +211,38 @@ class VectorIndex:
         with _embed_lock:
             _embedders[ck] = emb
         return emb
+
+    def _embed(self, texts: list[str], *, query: bool = False
+               ) -> tuple[list[list[float]], int]:
+        """向量 + **厂商回传的真实输入 token 数**。
+
+        不走 langchain 的 embed_documents/embed_query —— 它们只把向量交出来，
+        usage 在响应里但被丢掉了。拿不到真实用量就只能本地估 token，而估出来
+        的数字摆到成本页上就是编的，和写死一个价没有区别。
+
+        底层客户端取不到时（langchain 换了实现）退回它自己的方法，**用量记 0
+        而不是估一个** —— 成本页上宁可空着，也不要一个来路不明的数。
+        """
+        emb = self._embedder()
+        client = getattr(emb, "client", None)
+        # 与 langchain 自己发出去的请求参数逐字一致：model、encoding_format、
+        # dimensions 都在里面。自己拼一份的话，哪天它加了参数这里就发的是
+        # 另一个请求，而两条路的向量必须落在同一个空间里。
+        params = getattr(emb, "_invocation_params", None)
+        if client is None or not params:
+            # 退回 langchain 自己的方法时**要分清查询和文档**：对
+            # OpenAI 兼容端点两者是同一个调用，但别的实现会给查询加前缀，
+            # 一律走 embed_documents 就把这个区别抹掉了。
+            if query and len(texts) == 1:
+                return [emb.embed_query(texts[0])], 0
+            return emb.embed_documents(list(texts)), 0
+        resp = client.create(input=list(texts), **params)
+        rows = getattr(resp, "data", None)
+        if rows is None and isinstance(resp, dict):
+            rows = resp.get("data") or []
+        vecs = [r.embedding if hasattr(r, "embedding") else r["embedding"]
+                for r in (rows or [])]
+        return vecs, _usage_tokens(resp)
 
     # ---------- 索引 ----------
 
@@ -249,7 +284,11 @@ class VectorIndex:
             return
 
         self._ensure_schema()
-        vecs = self._embedder().embed_documents(docs)
+        vecs, tok = self._embed(docs)
+        # 建索引也是真花钱的一次调用（模块开头那段：rollout 之后索引全丢、
+        # 再付一遍）。它由**触发建索引的那次查询**付账 —— 那次查询确实
+        # 承担了这笔开销，摊到别处反而对不上。
+        self.last_embed_tokens += tok
         with pgstore.connect() as con:
             with con.transaction():
                 for k, v in zip(keys, vecs):
@@ -286,6 +325,16 @@ class VectorIndex:
 
     # ---------- 查询 ----------
 
+    def search_with_usage(self, question: str, k: int) -> tuple[list[Hit], int]:
+        """search()，外加这次真正烧掉的 embedding 输入 token 数。
+
+        含**本次触发的索引重建**：调用方要的是"这次召回花了多少钱"，
+        而重建那笔就发生在这次调用里。
+        """
+        self.last_embed_tokens = 0
+        hits = self.search(question, k)
+        return hits, self.last_embed_tokens
+
     def search(self, question: str, k: int) -> list[Hit]:
         """按余弦相似度取 Top-K。
 
@@ -294,7 +343,9 @@ class VectorIndex:
         """
         try:
             self._ensure_built()
-            vec = self._embedder().embed_query(question)
+            vecs, tok = self._embed([question], query=True)
+            self.last_embed_tokens += tok
+            vec = vecs[0]
         except EmbeddingUnavailable:
             raise
         except pgstore.StoreUnavailable as e:
@@ -324,6 +375,26 @@ class VectorIndex:
             raise EmbeddingUnavailable(
                 f"向量检索失败：{str(e).splitlines()[0]}") from e
         return [Hit(key=str(r[0]), score=float(r[1])) for r in rows]
+
+
+def _usage_tokens(resp: object) -> int:
+    """从 embedding 响应里取输入 token 数。取不到就是 0 —— 不估。
+
+    百炼的兼容端点回的是 OpenAI 那套形状（usage.prompt_tokens），
+    但两种回法都兜一下：SDK 对象与裸 dict。
+    """
+    usage = getattr(resp, "usage", None)
+    if usage is None and isinstance(resp, dict):
+        usage = resp.get("usage")
+    if usage is None:
+        return 0
+    for name in ("prompt_tokens", "total_tokens", "input_tokens"):
+        v = getattr(usage, name, None)
+        if v is None and isinstance(usage, dict):
+            v = usage.get(name)
+        if v:
+            return int(v)
+    return 0
 
 
 def get_index(cfg: Config) -> VectorIndex:

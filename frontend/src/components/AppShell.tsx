@@ -124,17 +124,10 @@ export function AppShell({ activeView, health, source, onNavigate, onQuickNew, m
               >
                 <span className="nav-icon">{item.icon}</span>
                 <span className="nav-copy"><strong>{item.title}</strong><small>{item.subtitle}</small></span>
-                {item.badge && <span className="nav-badge">{item.badge}</span>}
               </button>
             ))}
           </div>
         ))}
-        <div className="phase-card">
-          <span>CURRENT RELEASE</span>
-          <strong>Phase 1 · 内网试点</strong>
-          <div className="progress"><i /></div>
-          <p>测试库与生产只读镜像已接入，治理能力正在配置。</p>
-        </div>
       </aside>
       <main className="main-content">{notice}{children}</main>
     </div>

@@ -9,7 +9,7 @@ import type { ModalName, View } from '../types'
 import { writeGuard } from '../writeGuard'
 import { resultChecks, scoreOf, scoreTitle } from '../trust'
 import { rolesLabel } from '../roles'
-import { KIND_NAMES, STEP_NAMES, STEP_TYPE, stepFailed } from '../traceSteps'
+import { KIND_NAMES, STATUS_HINT, STEP_NAMES, STEP_TYPE, stepFailed, stepSoft } from '../traceSteps'
 
 
 function fmtTime(ts: string): string {
@@ -32,8 +32,67 @@ const NA = '—'
 const PAGE_SIZE = 12
 
 /** 工具/数据库类节点数 —— 原型「工具调用」那一格的真实口径。 */
-const toolCalls = (steps: ReplayStep[]) =>
-  steps.filter(s => STEP_TYPE[s.step] === 'TOOL' || STEP_TYPE[s.step] === 'DB').length
+const isToolStep = (s: ReplayStep) => STEP_TYPE[s.step] === 'TOOL' || STEP_TYPE[s.step] === 'DB'
+const toolCalls = (steps: ReplayStep[]) => steps.filter(isToolStep).length
+
+/** 这条链路是不是按主路径跑完的，以及不是的话代价在哪。
+ *
+ *  顶部横幅与六格 KPI 都读它。**每个数字背后都有一条具体的 span**，
+ *  取不到就是 0 条、不显示，不从别处推。
+ *
+ *  在这之前，页面只渲染链路的**终态**：被重试救回来的失败没有 span，
+ *  切了备选也只显示最终那个模型名 —— 一条降级完成的链路和一条干净链路
+ *  长得一模一样，而这两种链路给出的答案，可信程度差得远。 */
+interface ChainHealth {
+  failed: ReplayStep[]
+  soft: ReplayStep[]
+  clean: boolean
+  /** 失败的尝试各自烧掉的时间与 token —— 返工的账，不该混在总数里看不见 */
+  wastedMs: number
+  wastedTok: number
+  /** 真正出活的模型；replaced 是被它顶掉的那个（没换过就是空串） */
+  answering: string
+  replaced: string
+  toolFailed: number
+  /** 工具/数据库步骤里能力降级的与零行的，**分开数** —— 一次如实返回零行
+   *  不是"降级"，混成一个词会让人以为系统出了故障。 */
+  toolDegraded: number
+  toolEmpty: number
+}
+
+function chainHealth(steps: ReplayStep[]): ChainHealth {
+  const failed = steps.filter(s => stepFailed(s.status))
+  const soft = steps.filter(s => stepSoft(s.status))
+  /* 出活的那个模型：优先取 generate_sql —— 答案是那条 SQL 查出来的。
+     **不能笼统取"最后一条模型 span"**：多步链路里判定与自检也各是一次调用，
+     而备选只在失败时顶上一次，下一次会回到主模型。按最后一条取的话，
+     "生成切了备选、自检又回到主模型"这种链路会把回退整个抹平，
+     下面那个 replaced 跟着变空，⇄ 那行小字就不出现了。 */
+  /* 只看真正过模型的节点 —— Schema 召回现在也带 model（嵌入模型），
+     不排除的话，生成失败的链路会把「模型」那一格显示成 text-embedding-v4，
+     而嵌入模型一句 SQL 都没生成过。 */
+  const answered = steps.filter(s => s.model && !stepFailed(s.status)
+                                     && STEP_TYPE[s.step] === 'MODEL')
+  const gen = [...answered].reverse().find(s => s.step === 'generate_sql')
+  const winner = gen ?? answered[answered.length - 1]
+  const answering = winner?.model ?? ''
+  /* 被顶掉的主模型只在**同一步**里找：别的步骤上的失败与这一步换没换模型无关。 */
+  const replaced = failed.find(s => s.model && s.model !== answering
+                                    && (!winner || s.step === winner.step))?.model ?? ''
+  return {
+    failed,
+    soft,
+    clean: failed.length === 0 && soft.length === 0,
+    wastedMs: failed.reduce((a, s) => a + (s.ms || 0), 0),
+    wastedTok: failed.reduce((a, s) => a + (s.tok_in ?? 0) + (s.tok_out ?? 0), 0),
+    answering,
+    replaced,
+    toolFailed: steps.filter(s => isToolStep(s) && stepFailed(s.status)).length,
+    toolDegraded: steps.filter(s => isToolStep(s)
+      && (s.status === 'degraded' || s.status === 'fallback')).length,
+    toolEmpty: steps.filter(s => isToolStep(s) && s.status === 'empty').length,
+  }
+}
 
 export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
   /** 要定位的 trace_id。工作台右栏「Agent 执行链路」带着刚跑完那条的 id
@@ -301,7 +360,12 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
 function StatTiles({ stats, today }: { stats: AuditStats | null; today: AuditStats | null }) {
   if (!stats) return <div className="stats"><div className="stat"><span>读取中…</span></div></div>
 
-  const modelCalls = Object.values(stats.by_model).reduce((sum, m) => sum + m.calls, 0)
+  /* 分母用后端的 model_calls（按 MODEL_STEPS 数的模型节点），**不再拿
+     by_model 求和**。by_model 自 2026-09-10 起按 step 归因成本，里面还多了
+     嵌入模型那一维 —— 拿它当分母的话，这一格会随成本归因口径变化而漂，
+     而两者说的本来就不是一件事：一个是"钱花在哪个模型上"，
+     一个是"平均每次模型调用多少 token"。 */
+  const modelCalls = stats.model_calls ?? 0
   const avgTokens = modelCalls > 0 ? Math.round((stats.tok_in + stats.tok_out) / modelCalls) : null
   const pct = (v: number | null | undefined) => v == null ? NA : `${Math.round(v * 100)}%`
 
@@ -355,6 +419,10 @@ function TraceDetail({ item, chain, result, onFocusTrace }: {
   /* 命中缓存要写在这一行里：下面六格的总耗时 0.00s、Token —— 都是真的，
      但只有知道"这次没跑模型"才读得懂，否则看起来像一次没记全的调用。 */
   const cached = Boolean(chain?.cached ?? item.cached)
+  const health = chainHealth(steps)
+  /* 实际出活的模型优先于链路级那个字段：切了备选时两者不是同一个。
+     链路级字段留作兜底 —— 直查与老记录没有 span 级 model。 */
+  const model = health.answering || chain?.model || ''
 
   return (
     <>
@@ -364,21 +432,58 @@ function TraceDetail({ item, chain, result, onFocusTrace }: {
           <p>
             {item.trace_id} · {outcome} ·{' '}
             {cached ? 'CACHED' : item.multi_step ? 'MULTI-STEP' : 'ONE-SHOT'}
+            {health.failed.length > 0 && ` · RETRY ×${health.failed.length}`}
           </p>
         </div>
-        {/* 原型这枚角标是写死的「可信度 96」。这里判真值，且与工作台右栏那枚环
-            走同一份口径（trust.ts）—— 同一次查询在两页给出两个分，看的人第一件
-            要做的事就变成了复核这两个数字谁对。判不了的时候留 NA，不编数。 */}
-        <TrustBadge item={item} chain={chain} />
+        <div className="trace-badges">
+          {/* 原型这枚角标是写死的「可信度 96」。这里判真值，且与工作台右栏那枚环
+              走同一份口径（trust.ts）—— 同一次查询在两页给出两个分，看的人第一件
+              要做的事就变成了复核这两个数字谁对。判不了的时候留 NA，不编数。 */}
+          <TrustBadge item={item} chain={chain} />
+          {/* 分数**判不到**回退与降级：trust.ts 那六项来自审计记录的字段
+              （截断 / 重试次数 / 脱敏 / 盲选 / 行数），主模型切备选、向量召回
+              回落只留在 span 上，一项都不占。所以这里另挂一枚，说的是一件能
+              从 span 直接读出来的事实，不去动那个分 —— 把降级折成扣几分，
+              等于给通过率模型塞一个没有出处的权重。 */}
+          {!health.clean && (
+            <span className="status bad" title={degradeTitle(health)}>链路降级</span>
+          )}
+        </div>
       </div>
 
+      <ChainBanner health={health} steps={steps} />
+
       {/* 字段与顺序严格照原型的六格，一格不多。数据来自 /api/trace（节点链）
-          与流水本身 —— 不经回放，所以未登录、回放关闭时这六格照样是满的。 */}
+          与流水本身 —— 不经回放，所以未登录、回放关闭时这六格照样是满的。
+          每格底下那行小字只在**真有代价**时出现：没返工就不占位。 */}
       <div className="trace-facts">
-        <div className="trace-fact"><span>总耗时</span><strong>{secs(item.elapsed_ms)}</strong></div>
-        <div className="trace-fact"><span>模型</span><strong title={chain?.model ?? ''}>{chain?.model || NA}</strong></div>
-        <div className="trace-fact"><span>Token</span><strong>{tokens(chain)}</strong></div>
-        <div className="trace-fact"><span>工具调用</span><strong>{steps.length ? toolCalls(steps) : NA}</strong></div>
+        <div className="trace-fact">
+          <span>总耗时</span><strong>{secs(item.elapsed_ms)}</strong>
+          {health.wastedMs > 0 && <small className="bad">其中重试废弃 {secs(health.wastedMs)}</small>}
+        </div>
+        <div className="trace-fact">
+          <span>模型</span>
+          <strong className={health.replaced ? 'swap' : ''} title={model}>{model || NA}</strong>
+          {health.replaced && (
+            <small className="warn" title={`配置的主模型 ${health.replaced} 调用失败，本次由 ${model} 出活`}>
+              ⇄ 回退自 <s>{health.replaced}</s>
+            </small>
+          )}
+        </div>
+        <div className="trace-fact">
+          <span>Token</span><strong>{tokens(chain)}</strong>
+          {health.wastedTok > 0 && <small className="bad">含废弃 {health.wastedTok.toLocaleString()}</small>}
+        </div>
+        <div className="trace-fact">
+          <span>工具调用</span><strong>{steps.length ? toolCalls(steps) : NA}</strong>
+          {(health.toolFailed > 0 || health.toolDegraded > 0 || health.toolEmpty > 0) && (
+            <small className={health.toolFailed > 0 ? 'bad' : 'warn'}>
+              {[health.toolFailed > 0 && `${health.toolFailed} 失败`,
+                health.toolDegraded > 0 && `${health.toolDegraded} 降级`,
+                health.toolEmpty > 0 && `${health.toolEmpty} 空结果`].filter(Boolean).join(' · ')}
+            </small>
+          )}
+        </div>
         <div className="trace-fact"><span>SQL Hash</span><strong title={chain?.sql_hash ?? ''}>{shortHash(chain?.sql_hash)}</strong></div>
         <div className="trace-fact"><span>数据源</span><strong title={item.source_name ?? ''}>{item.source_name || NA}</strong></div>
       </div>
@@ -386,6 +491,59 @@ function TraceDetail({ item, chain, result, onFocusTrace }: {
       <TraceNodes steps={steps} result={result}
                   cachedFrom={chain?.cached_from} onFocusTrace={onFocusTrace} />
     </>
+  )
+}
+
+/** 「链路降级」角标的悬停说明 —— 只报角标不说因为什么，与写死一个标签没区别。 */
+function degradeTitle(health: ChainHealth): string {
+  const lines: string[] = []
+  if (health.failed.length) lines.push(`失败 ${health.failed.length} 次，已由重试或备用路径接住`)
+  if (health.replaced) lines.push(`模型由 ${health.replaced} 回退到 ${health.answering}`)
+  if (health.soft.some(s => s.status === 'degraded')) lines.push('有步骤以低于主路径的能力完成')
+  if (health.soft.some(s => s.status === 'empty')) lines.push('执行成功但返回零行')
+  return ['这条链路没按主路径跑完：', ...lines.map(l => `· ${l}`)].join('\n')
+}
+
+/** 非纯净链路的顶部横幅 —— **干净链路不渲染**，日常不加噪音。
+ *
+ *  每一条都由一条具体的 span 生成，措辞只复述 span 上记着的东西：
+ *  哪一步失败了、报的什么码、之后做了什么。不做归因、不给建议。 */
+function ChainBanner({ health, steps }: { health: ChainHealth; steps: ReplayStep[] }) {
+  if (health.clean) return null
+  const name = (s: ReplayStep) => STEP_NAMES[s.step] ?? s.step
+  const lines: React.ReactNode[] = health.failed.map((s, i) => (
+    <li key={`f${i}`}>
+      <b>{name(s)}</b>：{s.model ? `${s.model} ` : ''}{s.note || '调用失败'}
+      {s.error_code ? `（${s.error_code}）` : ''}
+      {s.disposition ? `，${s.disposition}` : ''}
+      {s.error_message ? `　${s.error_message}` : ''}
+    </li>
+  ))
+  if (health.replaced) {
+    lines.push(
+      <li key="swap">
+        <b>最终产出</b>：由备选模型 {health.answering} 完成，非配置的主模型 {health.replaced}
+        {health.wastedTok > 0 ? `；计费含废弃 ${health.wastedTok.toLocaleString()} tok` : ''}
+      </li>,
+    )
+  }
+  const empty = steps.find(s => s.status === 'empty')
+  if (empty) {
+    lines.push(
+      <li key="empty">
+        <b>{name(empty)}</b>：返回 0 行
+        {health.failed.length > 0 || health.soft.length > 1
+          ? '；本次链路上游存在失败或降级，不能判定为"确实没有数据"'
+          : ''}
+      </li>,
+    )
+  }
+  if (lines.length === 0) return null
+  return (
+    <div className="chain-banner">
+      <strong>本次链路未按主路径完成</strong>
+      <ul>{lines}</ul>
+    </div>
   )
 }
 
@@ -471,7 +629,19 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
         <div className="trace-flow">
           {steps.map((step, i) => (
             <Fragment key={`${step.step}-${i}`}>
-              <div className={`trace-node ${(STEP_TYPE[step.step] ?? '').toLowerCase()} ${stepFailed(step.status) ? 'warn' : ''}`}>
+              <div className={[
+                'trace-node',
+                (STEP_TYPE[step.step] ?? '').toLowerCase(),
+                stepFailed(step.status) ? 'warn' : '',
+                stepSoft(step.status) ? 'soft' : '',
+              ].filter(Boolean).join(' ')}>
+                {/* 尝试了几次就标几次。这颗角标是"这一步返过工"在链路条上
+                    唯一的痕迹 —— 不标的话，一条被救回来的链路整条都是绿的。 */}
+                {(step.attempts_total ?? 0) > 1 && (
+                  <i className="retry-badge" title={`这一步共尝试 ${step.attempts_total} 次`}>
+                    ×{step.attempts_total}
+                  </i>
+                )}
                 <strong>{STEP_NAMES[step.step] ?? step.step}</strong>
                 <small>{step.ms}ms</small>
               </div>
@@ -483,7 +653,7 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
 
       <div className="span-table">
         <div className="span-table-title">
-          <strong>Span 明细</strong><span>按开始时间排序</span>
+          <strong>Span 明细</strong><span>按开始时间排序 · 失败与回退默认展开</span>
         </div>
         <div className="table-scroll">
           <table>
@@ -498,7 +668,18 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                 <Fragment key={`${step.step}-${i}`}>
                   <tr>
                     <td><span className={`span-type ${(STEP_TYPE[step.step] ?? 'sys').toLowerCase()}`}>{STEP_TYPE[step.step] ?? 'SYS'}</span></td>
-                    <td>{STEP_NAMES[step.step] ?? step.step}</td>
+                    <td>
+                      {STEP_NAMES[step.step] ?? step.step}
+                      {/* 第几次尝试、谁出的活 —— 同一个节点名会连着出现两三行，
+                          不写清楚就分不出哪行是失败的那次。 */}
+                      {((step.attempts_total ?? 0) > 1 || step.model) && (
+                        <em className="span-attempt">
+                          {(step.attempts_total ?? 0) > 1 && `尝试 ${step.attempt}/${step.attempts_total}`}
+                          {(step.attempts_total ?? 0) > 1 && step.model && ' · '}
+                          {step.model}
+                        </em>
+                      )}
+                    </td>
                     {/* 原型这两列是「输入/输出摘要」。askdb 只记一条 note（该步的结果说明），
                         放在输出侧；输入侧只有 prompt token 数是真的，没有就留占位。 */}
                     {/* 缓存命中这一行的"输入"就是首跑那条记录 —— 整条链路只有这一个
@@ -511,14 +692,45 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                             title={`答案出自 ${cachedFrom} 那次执行，点击查看它的完整链路`}
                             onClick={() => onFocusTrace?.(cachedFrom)}
                           >首跑 {cachedFrom.slice(0, 6)} ↗</button>
-                        : step.tok_in ? `prompt ${step.tok_in.toLocaleString()} tok` : NA}
+                        : step.tok_in
+                          /* Schema 召回那一步的 tok_in 是**嵌入的输入**，
+                             不是提示词 —— 自 2026-09-10 起它有真实用量了。
+                             照旧写成 "prompt" 会让人以为召回也在发提示词。 */
+                          ? `${STEP_TYPE[step.step] === 'MODEL' ? 'prompt' : 'embed'} `
+                            + `${step.tok_in.toLocaleString()} tok`
+                          : NA}
                     </td>
                     <td className="span-note" title={step.note ?? ''}>
                       <SpanNote step={step} open={openRows.has(i)} onToggle={() => toggleRow(i)} />
                     </td>
                     <td>{step.ms}ms</td>
-                    <td className={stepFailed(step.status) ? 'bad' : 'good'}>{step.status.toUpperCase()}</td>
+                    <td className={stepFailed(step.status) ? 'bad' : stepSoft(step.status) ? 'warn' : 'good'}
+                        title={STATUS_HINT[step.status] ?? ''}>
+                      {step.status.toUpperCase()}
+                    </td>
                   </tr>
+                  {/* 失败的那次要能就地说清楚：报了什么码、原始消息是什么、
+                      之后做了什么。默认展开 —— 这是这一行存在的全部理由，
+                      再折一层就等于没记。 */}
+                  {stepFailed(step.status) && (step.error_code || step.disposition) && (
+                    <tr className="span-detail span-error">
+                      <td colSpan={6}>
+                        <dl>
+                          {step.error_code && (
+                            <div><dt>错误码</dt><dd><code>{step.error_code}</code></dd></div>
+                          )}
+                          {/* 原文只在回放那条路上有 —— /api/trace 不给（见 api.ts
+                              ReplayStep.error_message）。没有就不留空行，
+                              也不拿 note 顶上：note 是我们自己写的一句话，
+                              把它标成"原始消息"是在骗人。 */}
+                          {step.error_message && (
+                            <div><dt>原始消息</dt><dd>{step.error_message}</dd></div>
+                          )}
+                          {step.disposition && <div><dt>处置</dt><dd>{step.disposition}</dd></div>}
+                        </dl>
+                      </td>
+                    </tr>
+                  )}
                   {openRows.has(i) && (step.tables ?? []).length > 0 && (
                     <tr className="span-detail">
                       <td colSpan={6}>
@@ -559,14 +771,20 @@ function TrustBadge({ item, chain }: { item: AuditItem; chain: TraceChain | null
            `这次被 ${item.rejected_by ?? '护栏'} 拦下，SQL 没有在数据库上执行，`
            + '没有产出结果，无从判可信度')
   }
-  if (item.cached ?? chain?.cached) {
-    return na('可信度 · 见首跑',
-              '答案来自应答缓存，可信度看首跑那条链路（下方「命中缓存」一行可跳转）')
-  }
   if (!chain) return na(`可信度 ${NA}`, '节点链还没取到')
-  const traced = [chain.truncated, chain.scope_narrowed,
-                  chain.mask_degraded, chain.recall_blind].some(v => v != null)
-  if (!traced) return na('可信度 · 判据不全', '这条记录早于可信度痕迹落库，不给分')
+  // 命中缓存照样打分：痕迹沿用首跑（见 server._serve_cached_ask），而工作台
+  // 拿着同一份结果也是这么打的。只有旧格式那些没沿用痕迹的缓存记录判不了。
+  const cached = Boolean(item.cached ?? chain.cached)
+  const traced = cached
+    ? chain.recall_blind != null && chain.truncated != null
+    : [chain.truncated, chain.scope_narrowed,
+       chain.mask_degraded, chain.recall_blind].some(v => v != null)
+  if (!traced) {
+    return cached
+      ? na('可信度 · 见首跑',
+           '这条缓存记录没有沿用首跑的可信度痕迹（旧格式），分看首跑那条链路')
+      : na('可信度 · 判据不全', '这条记录早于可信度痕迹落库，不给分')
+  }
 
   const mode = item.kind === 'sql' ? 'sql' : 'ask'
   const checks = resultChecks({
@@ -574,12 +792,15 @@ function TrustBadge({ item, chain }: { item: AuditItem; chain: TraceChain | null
     truncated: chain.truncated, attempts: chain.attempts ?? item.attempts,
     maskDegraded: chain.mask_degraded, recallBlind: chain.recall_blind,
     scopeNarrowed: chain.scope_narrowed,
+    hedgeTerms: chain.hedge_terms, derivedColumns: chain.derived_columns,
+    anaphoric: chain.anaphoric,
   })
   const score = scoreOf(checks)
   const head = mode === 'sql' ? '本次执行可信度' : '本次结果可信度'
   return (
     <span className={`status ${score === 100 ? '' : 'wait'}`}
-          title={scoreTitle(head, checks, mode)}>
+          title={scoreTitle(head, checks, mode)
+                 + (cached ? '\n（答案来自应答缓存，痕迹沿用首跑那一次）' : '')}>
       可信度 {score ?? NA}
     </span>
   )

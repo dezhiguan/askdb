@@ -554,24 +554,45 @@ function ReplayView({ traceId, result }: { traceId: string; result: ReplayResult
 
 function CostBreakdown({ stats }: { stats: AuditStats | null }) {
   const days = useMemo(() => stats?.daily.slice(-14) ?? [], [stats])
+  const [hover, setHover] = useState<number | null>(null)
   if (!stats) return <p className="drawer-note">读取中…</p>
 
   const max = Math.max(...days.map(d => d.cost_cny), 0.000001)
+  // 悬停的是哪一根。原来只挂了 title —— 浏览器那个 tooltip 要停住一秒多才出，
+  // 而这张图**全部的意思**就在那几个数字上：柱子只表达相对高低，成本 ¥0.28
+  // 和 ¥0.0003 在这里可以画得一样高（按当日最大值归一），不给数就读不出量级。
+  const hot = hover == null ? null : days[hover]
   return (
     <>
       <p className="replay-question">
         ¥{stats.cost_cny} · {stats.calls} 次调用 · {(stats.tok_in + stats.tok_out).toLocaleString()} tok
       </p>
-      <div className="cost-bars">
-        {days.map(day => (
-          <i key={day.date}
-             style={{ height: `${Math.max(3, Math.round(day.cost_cny / max * 100))}%` }}
-             title={`${day.date} · ¥${day.cost_cny} · ${day.calls} 次`} />
+      <div className="cost-bars" onMouseLeave={() => setHover(null)}>
+        {days.map((day, i) => (
+          // button 而不是 i：键盘 Tab 也要能逐日看数，读屏才念得出来。
+          // title 保留 —— 触屏上长按仍走它，那是这里唯一的兜底。
+          <button key={day.date} type="button" className={hover === i ? 'on' : ''}
+                  onMouseEnter={() => setHover(i)}
+                  onFocus={() => setHover(i)} onBlur={() => setHover(null)}
+                  aria-label={`${day.date} 成本 ¥${day.cost_cny}，${day.calls} 次调用`}
+                  title={`${day.date} · ¥${day.cost_cny} · ${day.calls} 次`}>
+            <span style={{ height: `${Math.max(3, Math.round(day.cost_cny / max * 100))}%` }} />
+          </button>
         ))}
+        {hot && (
+          // 贴着那一根出，落在图内：抽屉本身会滚，绝对定位到 body 上会飘走。
+          // 靠右几根时改成向左展开，否则会被图的右边界切掉。
+          <div className={`cost-tip ${hover != null && hover > days.length - 4 ? 'left' : ''}`}
+               style={{ left: `${((hover ?? 0) + 0.5) / days.length * 100}%` }}>
+            <b>{hot.date}</b>
+            <span>¥{hot.cost_cny}</span>
+            <span>{hot.calls.toLocaleString()} 次调用</span>
+          </div>
+        )}
       </div>
       <div className="cost-axis">
         <span>{days[0]?.date ?? ''}</span>
-        <span>按日成本 · 悬停看明细</span>
+        <span>按日成本 · 高低按当日最大值归一</span>
         <span>{days[days.length - 1]?.date ?? ''}</span>
       </div>
 
@@ -579,7 +600,11 @@ function CostBreakdown({ stats }: { stats: AuditStats | null }) {
       <table className="drawer-table">
         <thead><tr><th>模型</th><th className="num">次数</th><th className="num">成本</th></tr></thead>
         <tbody>
-          {Object.entries(stats.by_model).map(([model, value]) => (
+          {/* 按成本降序：嵌入模型的次数可能与生成模型同量级，但金额差两个数量级，
+              按插入序排会让"钱到底花在哪"要靠一行行读 */}
+          {Object.entries(stats.by_model)
+            .sort((a, b) => b[1].cost_cny - a[1].cost_cny)
+            .map(([model, value]) => (
             <tr key={model}><td className="mono">{model}</td><td className="num">{value.calls}</td><td className="num">¥{value.cost_cny}</td></tr>
           ))}
           {Object.keys(stats.by_model).length === 0 && (

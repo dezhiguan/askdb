@@ -295,13 +295,16 @@ def test_write_probe_quotes_the_table_name(mysql_cfg, monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_describe_takes_comments_and_native_enums(mysql_cfg, monkeypatch):
+    # 列与表注释分两条查：information_schema 上把 COLUMNS 与 TABLES 连起来，
+    # 在 5.7 上会退化成逐行开表定义（实测 96 张表 8 秒还没回来）
     rows = [
-        ("t", "status", "enum", "订单状态", "订单表; InnoDB free: 1024 kB",
-         "enum('ON_SALE','OFF_SHELF')"),
-        ("t", "name", "varchar", "", "订单表; InnoDB free: 1024 kB", "varchar(64)"),
+        ("t", "status", "enum", "订单状态", "enum('ON_SALE','OFF_SHELF')"),
+        ("t", "name", "varchar", "", "varchar(64)"),
     ]
     install_fake_pymysql(monkeypatch, [
-        (r"FROM information_schema.COLUMNS", (["a", "b", "c", "d", "e", "f"], rows))
+        (r"FROM information_schema.COLUMNS", (["a", "b", "c", "d", "e"], rows)),
+        (r"TABLE_COMMENT.*FROM information_schema\.TABLES",
+         (["n", "d"], [("t", "订单表; InnoDB free: 1024 kB")])),
     ] + BASE_SCRIPT)
     with Executor(mysql_cfg) as ex:
         cols = ex.describe(["t"])["t"]
@@ -460,9 +463,10 @@ def test_connect_hint_does_not_invent_a_tunnel(mysql_cfg, monkeypatch):
 
 def test_introspect_lists_base_tables_with_estimates(mysql_cfg, monkeypatch):
     install_fake_pymysql(monkeypatch, [
-        (r"FROM information_schema.TABLES t", (["n", "r", "c", "t"],
-                                               [("orders", 802611, 10, 1),
-                                                ("dict_city", None, 4, 0)]))
+        (r"TABLE_ROWS.*FROM information_schema.TABLES",
+         (["n", "r"], [("dict_city", None), ("orders", 802611)])),
+        (r"FROM information_schema.COLUMNS",
+         (["n", "c", "t"], [("orders", 10, 1), ("dict_city", 4, 0)])),
     ] + BASE_SCRIPT)
     with Executor(mysql_cfg) as ex:
         got = ex.introspect()
@@ -512,3 +516,67 @@ def test_error_without_a_numeric_code_is_judged_by_its_message():
     assert ex_mod._is_mysql_timeout(
         RuntimeError("(3024) maximum statement execution time exceeded"))
     assert not ex_mod._is_mysql_timeout(RuntimeError("Unknown column 'a'"))
+
+
+def test_root_account_is_admitted_with_warnings(mysql_cfg, monkeypatch):
+    """拿 root 接 MySQL：能接入，但那三项一直红着。
+
+    引擎那一层没有放松 —— 只读事务照旧 SET，写操作实探照旧真发一条 DELETE。
+    降级的只是"这个账号本来就不该写"这类**姿态**判断。
+    """
+    mysql_cfg.tables = {}
+    install_fake_pymysql(monkeypatch, [
+        (r"^SELECT TABLE_NAME FROM information_schema", (["t"], [("orders",)])),
+        (r"^DELETE FROM", FakeError(1792, "Cannot execute statement in a READ ONLY transaction")),
+        (r"^SHOW GRANTS", (["g"], [("GRANT ALL PRIVILEGES ON *.* TO `root`@`%`",)])),
+        (r"@@session\.max_user_connections", (["v"], [(0,)])),
+    ] + BASE_SCRIPT)
+    with Executor(mysql_cfg) as ex:
+        checks = ex.self_check()
+
+    assert ex_mod.blocking_failures(checks) == []
+    assert set(ex_mod.advisory_failures(checks)) == {
+        "账号为只读", "连接数上限已设置", "非超级账号且无写权限"}
+    # 引擎层没松：写照旧被拒
+    assert [c["ok"] for c in checks if c["name"] == "写操作实探"] == [True]
+
+
+# --------------------------------------------------------------------------
+# 元数据窗口（接入向导扫表）
+# --------------------------------------------------------------------------
+
+def test_metadata_window_widens_the_timeout_and_puts_it_back(mysql_cfg, monkeypatch):
+    """扫表用元数据预算，扫完立刻还原成 R-12 的查询超时。
+
+    不还原就等于给这条连接上后面**每一条用户查询**都松了绑 —— 而 R-12
+    是按查询定的，不是按连接定的。
+    """
+    mysql_cfg.raw["guard"]["metadata_timeout_ms"] = 30000
+    conns = install_fake_pymysql(monkeypatch, [
+        (r"TABLE_ROWS.*FROM information_schema.TABLES", (["n", "r"], [("t", 1)])),
+        (r"FROM information_schema.COLUMNS", (["n", "c", "t"], [("t", 3, 0)])),
+    ] + BASE_SCRIPT)
+    with Executor(mysql_cfg) as ex:
+        ex.introspect()
+    sent = [s for s, _ in conns[0].executed]
+    widened = sent.index("SET SESSION max_execution_time = 30000")
+    restored = sent.index("SET SESSION max_execution_time = 8000", widened)
+    scan = next(i for i, s in enumerate(sent) if "information_schema.TABLES" in s)
+    assert widened < scan < restored
+
+
+def test_metadata_timeout_is_reported_as_a_timeout_not_a_500(mysql_cfg, monkeypatch):
+    """扫描超时必须说成超时。原样冒上去的驱动异常在界面上只剩
+    「扫描失败 500」—— 既看不出是超时，也不知道该调什么。"""
+    install_fake_pymysql(monkeypatch, [
+        (r"FROM information_schema.TABLES",
+         FakeError(3024, "Query execution was interrupted, "
+                         "maximum statement execution time exceeded")),
+    ] + BASE_SCRIPT)
+    ex = Executor(mysql_cfg)
+    with pytest.raises(DataSourceError) as e:
+        ex.introspect()
+    assert "元数据" in str(e.value) and e.value.retryable
+    assert "metadata_timeout_ms" in e.value.hint
+    # 2013 之后连接已废，必须丢掉
+    assert ex.backend.con is None

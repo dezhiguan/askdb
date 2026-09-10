@@ -129,6 +129,11 @@ def _direct_tables(select: exp.Select) -> list[tuple[exp.Table, exp.Join | None]
     return out
 
 
+#: 顶着 SELECT 名字的写操作。只认 MySQL 这两种写法 —— PostgreSQL 的
+#: `COPY … TO PROGRAM` 不是 SELECT，AST 那一层（R-02）本来就拦得住。
+_WRITES_FILE = re.compile(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", re.I)
+
+
 def referenced_tables(sql: str, dialect: str = "duckdb") -> set[str]:
     """这条 SQL 引用到的真实表（不含 CTE 别名）。
 
@@ -223,6 +228,20 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb",
                        "深层嵌套仅解析就可能占满 CPU，已在解析前拒绝。",
             )
 
+    # ---------- R-02 写文件的 SELECT ----------
+    # 放在解析**之前**：`SELECT … INTO OUTFILE '/var/lib/mysql-files/x'` 是一条
+    # 写操作，但它顶着 SELECT 的名字 —— 语句类型白名单按 AST 判，判不出它。
+    # 当前 sqlglot 恰好解析不了这个语法，于是它被 R-01 挡着；**那是运气,不是护栏**：
+    # 解析器哪天支持了它，这条路就自己开了，而且会归因成"语法没问题"。
+    # 会话级只读事务也拦不住它（写的是服务器文件系统，不是表），
+    # 账号有 FILE 权限时就是一次落地写 —— 允许高权账号接入之后，这条必须自己拦。
+    if _WRITES_FILE.search(sql):
+        return GuardResult(
+            ok=False, rejected_by="R-02",
+            reason="禁止 INTO OUTFILE / INTO DUMPFILE：它顶着 SELECT 的名字，"
+                   "写的却是数据库服务器上的文件",
+        )
+
     # ---------- R-01 单语句限制 ----------
     try:
         stmts = sqlglot.parse(sql, dialect=dialect)
@@ -242,6 +261,17 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb",
         return GuardResult(
             ok=False, rejected_by="R-02",
             reason=f"只允许 SELECT / WITH…SELECT，实际是 {type(root).__name__.upper()}",
+        )
+
+    # 加锁读同样归 R-02：它不改数据，但会在**对方生产库**上加锁挡住写入。
+    # FOR UPDATE 在只读事务里会被引擎拒（实测 1792），LOCK IN SHARE MODE
+    # **不会** —— 共享锁在只读事务里合法，一条扫大表的加锁读能把对方的写堵到
+    # 语句超时为止。只读分析永远不需要加锁，所以这里一律拒，不区分锁型。
+    for lock in root.find_all(exp.Lock):
+        return GuardResult(
+            ok=False, rejected_by="R-02",
+            reason="禁止加锁读（FOR UPDATE / LOCK IN SHARE MODE / FOR SHARE）："
+                   "只读查询不需要加锁，而锁会挡住这个库上的写入",
         )
 
     ctes = _cte_names(root)
@@ -1074,3 +1104,133 @@ def sensitive_output_columns(sql: str, cfg: Config,
     if flags is None:
         return None
     return {i for i, (_, s) in enumerate(flags) if s}
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-10 生产跑测补的分析函数。都只读 AST、不改写，供 graph 判定用。
+# ---------------------------------------------------------------------------
+
+def _predicates(sql: str, dialect: str) -> set[str]:
+    """SQL 里所有**带字面量的比较谓词**，规范化成文本用于做差集。
+
+    只收带字面量的：`a.id = b.kb_id` 这种连接条件不是过滤，收进来会让
+    "加了哪些过滤条件"这件事被 JOIN 噪声淹掉。
+    """
+    try:
+        stmts = [s for s in sqlglot.parse(sql, dialect=dialect) if s is not None]
+    except Exception:
+        return set()
+    out: set[str] = set()
+    kinds = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE,
+             exp.Like, exp.ILike, exp.In, exp.Between)
+    for root in stmts:
+        for node in root.find_all(*kinds):
+            if not list(node.find_all(exp.Literal)):
+                continue
+            try:
+                out.add(re.sub(r"\s+", " ", node.sql(dialect=dialect)).strip().lower())
+            except Exception:
+                continue
+    return out
+
+
+def _literals_of(pred: str) -> list[str]:
+    """谓词里出现的字面量值（去引号）。用来判断这个过滤条件是不是用户提的。"""
+    return [m.strip("'\"") for m in re.findall(r"'[^']*'|\"[^\"]*\"|\b\d[\d.]*\b", pred)]
+
+
+def added_filters(blocked_sql: str, new_sql: str, dialect: str = "duckdb") -> list[str]:
+    """重试版比被拦版**多出来的**过滤条件。
+
+    R-11 把一条查询拦下之后，模型有两条路可走：换成预聚合汇总表（换 FROM、
+    不加过滤 —— 这条路是我们希望它走的），或者随手加一个过滤条件把扫描量压下去。
+    走第二条路时，跑出来的数不是用户问的那个范围，而链路上每一步都是绿的。
+    """
+    return sorted(_predicates(new_sql, dialect) - _predicates(blocked_sql, dialect))
+
+
+#: 问句里表示"我给了时间范围"的说法。用户自己划了时间窗时，模型沿**同一个
+#: 维度**把范围收得更紧，仍然是在回答他问的那件事 —— 那种收窄可以放行（留痕即可）。
+#: 凭空补一个用户没提过的时间窗则不行，两者的区别全在这张表上。
+_TIME_WORDS = (
+    "今天", "昨天", "前天", "今日", "昨日", "本周", "上周", "本月", "上月", "上个月",
+    "本季", "季度", "今年", "去年", "最近", "近期", "近一", "近三", "近七", "近30",
+    "以来", "至今", "期间", "年", "月", "日", "号", "周", "天",
+)
+
+
+def _predicate_column(pred: str) -> str:
+    """谓词左侧那一列的列名（去掉表别名前缀）。取不到返回空串。"""
+    m = re.match(r"\s*(?:\w+\.)?(\w+)", pred or "")
+    return (m.group(1) if m else "").lower()
+
+
+def _time_columns(cfg: Config) -> set[str]:
+    return {c.name.lower()
+            for t in cfg.tables.values() for c in t.columns.values() if c.time}
+
+
+def arbitrary_narrowing(blocked_sql: str, new_sql: str, question: str,
+                        cfg: Config | None = None,
+                        dialect: str = "duckdb") -> list[str]:
+    """这些新加的过滤条件，用户**根本没提过**。
+
+    判据很朴素：谓词里的字面量在问句里找不到，就说明这个范围是模型自己挑的。
+    2026-09-10 实测最典型的一条 —— 问「一共有多少个分块」，扫描超阈值后模型重试成
+
+        SELECT COUNT(c.id) FROM document_chunks AS c WHERE c.kb_id = 1
+
+    `1` 是随手挑的一个知识库，而那个库恰好没有分块。屏幕上于是出现一个大大的
+    「0」，旁边配着一句"此结果只是单个知识库的分块数"的说明。说明是对的，
+    但没人会拿「0」当"我没答上来"读。**告知不能替代拒答**：覆盖不了用户问的
+    那个范围时，正确动作是不给数。
+
+    凭空补的时间窗同样算随手挑的：用户问全量、模型自己塞一个"最近 30 天"，
+    答的就不是他问的那件事。但**用户自己划了时间范围**时（"2026 年 8 月的问答量"），
+    模型沿同一个时间维度把范围收紧仍然是在回答他问的那件事 —— 那种放行，留痕即可。
+    这条区分靠 cfg 里标了 `time: true` 的列 + 问句里的时间说法来判；
+    不传 cfg 时退回只看字面量，偏严。
+    """
+    q = (question or "").lower()
+    tcols = _time_columns(cfg) if cfg is not None else set()
+    q_has_time = any(w in q for w in _TIME_WORDS)
+    out: list[str] = []
+    for pred in added_filters(blocked_sql, new_sql, dialect):
+        lits = _literals_of(pred)
+        if not lits:
+            continue
+        # 只要有一个字面量是用户提过的，就认为这个过滤条件源自问题本身
+        if any(l and l.lower() in q for l in lits):
+            continue
+        # 用户给了时间范围，模型沿时间列收窄 —— 忠实于问题，放行
+        if q_has_time and _predicate_column(pred) in tcols:
+            continue
+        out.append(pred)
+    return out
+
+
+def derived_columns_used(sql: str, cfg: Config, dialect: str = "duckdb") -> list[str]:
+    """这条 SQL 用到的**缓存/派生计数列**。
+
+    这类列（knowledge_bases.doc_count 之类）是给列表页做排序用的计数器，
+    会与真实计数漂移。2026-09-10 实测同一天里 doc_count 比 COUNT(documents)
+    少 362 篇，两种问法都答得理直气壮、都是 100 分。
+
+    它不该被一律禁用（列表页排序就该用它），但用到了必须让读的人知道 ——
+    这里只做识别，扣分与提示交给上层。
+    """
+    flagged = {c.name.lower()
+               for t in cfg.tables.values() for c in t.columns.values()
+               if getattr(c, "cached_counter", False)}
+    if not flagged:
+        return []
+    try:
+        stmts = [s for s in sqlglot.parse(sql, dialect=dialect) if s is not None]
+    except Exception:
+        return []
+    hit: set[str] = set()
+    for root in stmts:
+        for col in root.find_all(exp.Column):
+            if (col.name or "").lower() in flagged:
+                hit.add(col.name.lower())
+    return sorted(hit)

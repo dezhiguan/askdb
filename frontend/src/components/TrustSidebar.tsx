@@ -4,6 +4,7 @@ import type { HealthState } from '../useHealth'
 import type { Check } from '../trust'
 import { resultChecks, scoreOf, scoreTitle } from '../trust'
 import { roleLabel } from '../roles'
+import { envShort } from '../envs'
 import { useSqlDigest } from './ResultTabs'
 
 /** 右栏三块：能不能执行、按什么策略执行、执行完拿什么复核。
@@ -69,6 +70,8 @@ export function TrustSidebar({ health, source, result, mode, me, onResultTab, on
         attempts: result.attempts, maskDegraded: result.mask_degraded,
         recallBlind: result.recall_blind, recallNote: result.recall_note,
         scopeNarrowed: result.scope_narrowed, scopeNote: result.scope_note,
+        hedgeTerms: result.hedge_terms, derivedColumns: result.derived_columns,
+        anaphoric: result.anaphoric,
       })
     : admissionChecks(ready, !!source, whitelist)
   const score = scoreOf(scored)
@@ -207,6 +210,19 @@ function admissionChecks(ready: Health | null, hasSource: boolean,
         : '还没选数据源，到「数据源」页选一个再提问' },
     { label: '模型可用', ok: ready.llm.ok,
       why: '未配模型密钥，只能直查 SQL' },
+    /* 备选模型：**没配就整项不列**，与下面白名单那项同一个原则 ——
+       有意不配备选是一种合法部署，缺席不等于不通过，不该白扣一分。
+       配了才判，判的是"密钥下发了没有"。
+       在这之前这件事在任何地方都看不出来：_fallback_client() 只看配置有没有
+       fallback 这一项、不检查密钥，密钥要到真正兜底那一刻才报错 —— 漏建
+       Secret 的部署一切看起来正常，直到主模型真抖那天兜底当场失效。 */
+    ...(ready.llm.fallback?.configured ? [{
+      label: '备选模型密钥已下发',
+      ok: ready.llm.fallback.key_present,
+      why: `配了备选模型 ${ready.llm.fallback.model}，但 ${ready.llm.fallback.env} `
+        + '没有下发到运行环境 —— 主模型限流或故障时兜底会当场失效，'
+        + '而那正是最需要它的时刻',
+    }] : []),
     { label: '返回行上限已设 · R-13', ok: g.max_rows > 0,
       why: '没有返回行上限，一次查询可能拉回整表' },
     { label: '扫描行上限已设 · R-11', ok: g.max_scan_rows > 0,
@@ -232,9 +248,10 @@ function identityLabel(me?: Me | null): string {
   return `${me.display_name || me.username} · ${role}`
 }
 
-/** 「数据库角色」一格。askdb 的连接一律只读，运行时源声明了环境就报环境。 */
+/** 「数据库角色」一格。askdb 的连接一律只读，运行时源声明了环境就报环境。
+ *  档位名走 envs.ts 那一份 —— 这里原来自己写死 PROD-RO / TEST-RO 两条，
+ *  加一档就会漏掉一处，而漏掉的表现是右栏显示 READ-ONLY、卡片显示预生产。 */
 function dbRoleLabel(env?: string): string {
-  if (env === 'prod_ro') return 'PROD-RO'
-  if (env === 'test') return 'TEST-RO'
-  return 'READ-ONLY'
+  const short = envShort(env)
+  return short ? `${short}-RO` : 'READ-ONLY'
 }

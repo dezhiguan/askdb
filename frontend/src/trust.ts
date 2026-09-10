@@ -39,10 +39,23 @@ export type ResultFacts = {
   recallNote?: string | null
   scopeNarrowed?: boolean | null
   scopeNote?: string | null
+  /** 推理里出现的猜测措辞（"无法确定""按最常见""作为占位"…）。
+   *  由后端 clarify.find_hedges 判出来，**不是**前端再猜一次。 */
+  hedgeTerms?: string[] | null
+  /** 用到的缓存/派生计数列（knowledge_bases.doc_count 之类）。 */
+  derivedColumns?: string[] | null
+  /** 问句是纯指代追问。正常链路里它在 clarify 节点就被拦下了，
+   *  这一项是纵深防御：直查、老记录、以及将来放宽判定时兜住。 */
+  anaphoric?: boolean | null
 }
 
-/** 直查模式下不适用、因而不进分母的三项。 */
-const AGENT_ONLY = new Set(['结果范围未被收窄', '一次生成成功', '召回不是盲选'])
+/** 直查模式下不适用、因而不进分母的几项。
+ *  直查没有模型环节：不召回、不重试、不收窄、也不存在"模型的推理措辞"。
+ *  问句主体那一项同理 —— 直查提交的是 SQL，没有问句。 */
+const AGENT_ONLY = new Set([
+  '结果范围未被收窄', '一次生成成功', '召回不是盲选',
+  '推理不含猜测措辞', '问句主体明确',
+])
 
 /** 出结果之后的可信度检查。**全部来自链路自己记下的事实**，
  *  不问模型、不做二次判断 —— 让模型给自己的答案打分，打出来的是作文分。 */
@@ -61,6 +74,19 @@ export function resultChecks(f: ResultFacts): Check[] {
       why: f.recallNote || '这次召回是盲选，给模型的表不是按相关度选的' },
     { label: '有结果行', ok: rows > 0,
       why: '查询成功但一行都没返回，先确认过滤条件是不是过窄' },
+    // ---- 以下三项是 2026-09-10 那次 1030 次跑测之后加的 ----
+    // 那次跑测里 11/12 条拿了满分，唯一扣分的是行数截断。拿满分的里面包括
+    // 一条模型自己写着"无法确定…作为占位，口径需人工确认"的结果 —— 也就是说
+    // 这枚分数在最该怀疑的时候恰好最高。原因是六项检查全是机械护栏，
+    // 语义风险一项都不进分母。扣分通道本来就是通的，缺的是信号源。
+    { label: '推理不含猜测措辞', ok: !(f.hedgeTerms?.length),
+      why: `模型在推理里写了「${(f.hedgeTerms ?? []).slice(0, 2).join('」「')}」`
+           + ' —— 它自己也不确定这个口径对不对，这个数需要你先确认口径再用' },
+    { label: '数值不来自缓存计数列', ok: !(f.derivedColumns?.length),
+      why: `取自缓存计数列 ${(f.derivedColumns ?? []).join('、')}`
+           + '，这类计数器由别处维护、会与实时统计漂移（实测差过 362 条）' },
+    { label: '问句主体明确', ok: !f.anaphoric,
+      why: '这是一句接着上文说的问话，而每次查询都是独立的 —— 主体是猜出来的' },
   ]
   return f.mode === 'sql' ? all.filter(c => !AGENT_ONLY.has(c.label)) : all
 }

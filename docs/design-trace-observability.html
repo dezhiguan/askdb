@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdb 审计复放 · 失败与回退可视化设计 V1.2</title>
+<style>
+  :root{
+    --bg:#efece6; --card:#fff; --line:#e6e1d8; --line2:#f0ece4;
+    --ink:#2a2a28; --ink2:#6b6862; --ink3:#9a968e;
+    --ok:#3f7d52; --warn:#a76a1f; --warn-bg:#fbf0df;
+    --bad:#a83a34; --bad-bg:#fbeceb;
+    --info:#3a5f8f; --info-bg:#eaf0f8;
+    --mono:ui-monospace,SFMono-Regular,Menlo,"SF Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.65 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;
+       padding:36px 24px 72px}
+  .wrap{max-width:1080px;margin:0 auto}
+
+  .doctitle{font-size:26px;font-weight:700;letter-spacing:.2px;margin:0 0 4px}
+  .docsub{color:var(--ink3);font-size:13px;margin-bottom:22px}
+
+  .meta{background:var(--card);border:1px solid var(--line);border-radius:14px;
+        padding:18px 24px;margin-bottom:26px;
+        display:grid;grid-template-columns:repeat(3,1fr);gap:12px 28px}
+  .meta div{display:flex;gap:10px;align-items:baseline}
+  .meta dt{color:var(--ink3);font-size:12px;margin:0;white-space:nowrap}
+  .meta dd{margin:0;font-family:var(--mono);font-size:12.5px;color:var(--ink)}
+
+  h2.sh{font-size:17px;font-weight:700;margin:34px 0 12px;letter-spacing:.2px}
+  h2.sh .num{font-family:var(--mono);color:var(--ink3);font-weight:600;margin-right:8px;font-size:15px}
+  p.lead{margin:0 0 16px;color:var(--ink2);max-width:78ch}
+  p.lead code,li code,td code{font-family:var(--mono);font-size:12.5px;background:#e8e4dc;border-radius:4px;padding:1px 5px}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+        box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 26px}
+
+  /* ── mock: header ── */
+  .hd{padding:22px 26px 18px;position:relative}
+  .hd h3{margin:0;font-size:23px;font-weight:600;letter-spacing:.2px}
+  .hd .sub{margin-top:6px;font-family:var(--mono);font-size:12.5px;color:var(--ink3)}
+  .hd .sub .st{color:var(--warn);font-weight:600}
+  .conf{position:absolute;top:22px;right:26px;display:flex;align-items:center;gap:8px;
+        background:var(--bad-bg);color:var(--bad);border:1px solid #f0d6d3;
+        border-radius:999px;padding:5px 13px;font-size:12.5px;font-weight:600}
+  .conf{background:#f6f4ef;color:var(--ink2);border-color:var(--line)}
+  .conf .deg{background:var(--bad-bg);color:var(--bad);border:1px solid #f0d6d3;
+             border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:600}
+
+  .banner{margin:0 26px 20px;border:1px solid #f0dcc4;background:#fdf6ea;border-radius:11px;padding:13px 16px}
+  .banner .bt{font-size:12px;font-weight:700;color:var(--warn);letter-spacing:.6px;margin-bottom:9px}
+  .banner ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
+  .banner li{display:flex;gap:10px;align-items:flex-start;font-size:13px;color:#5b4a30}
+  .banner li .dot{flex:none;width:6px;height:6px;border-radius:50%;background:var(--warn);margin-top:8px}
+  .banner li b{font-family:var(--mono);font-weight:600;color:#4a3a22}
+
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);border-top:1px solid var(--line);
+        border-bottom:1px solid var(--line);background:#fcfbf9}
+  .kpi{padding:14px 16px;border-right:1px solid var(--line2);min-height:78px}
+  .kpi:last-child{border-right:none}
+  .kpi .k{font-size:11.5px;color:var(--ink3);margin-bottom:5px}
+  .kpi .v{font-family:var(--mono);font-size:16px;font-weight:600;letter-spacing:-.2px}
+  .kpi .n{font-family:var(--mono);font-size:11px;margin-top:4px;color:var(--ink3);line-height:1.4}
+  .kpi .n.bad{color:var(--bad)} .kpi .n.warn{color:var(--warn)}
+  .kpi .v.swap{color:var(--warn);border-bottom:2px solid #e8c48a;display:inline-block;padding-bottom:1px}
+  .strike{text-decoration:line-through;opacity:.75}
+
+  .stages{padding:20px 26px 22px;display:flex;align-items:stretch;overflow-x:auto}
+  .stage{flex:none;min-width:132px;border-radius:11px;padding:11px 13px 10px;border:1px solid;position:relative}
+  .stage .sn{font-size:13px;font-weight:600;margin-bottom:4px}
+  .stage .sd{font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
+  .stage .sf{font-family:var(--mono);font-size:10.5px;margin-top:5px;font-weight:600;letter-spacing:.3px}
+  .stage.s-ok{background:#f6f4ef;border-color:#e9e4da}
+  .stage.s-ok .sf{color:var(--ok)}
+  .stage.s-bad{background:var(--bad-bg);border-color:#eecfcc} .stage.s-bad .sf{color:var(--bad)}
+  .stage.s-warn{background:var(--warn-bg);border-color:#eed9b4} .stage.s-warn .sf{color:var(--warn)}
+  .stage.s-empty{background:var(--info-bg);border-color:#d5e0ef} .stage.s-empty .sf{color:var(--info)}
+  .arrow{flex:none;align-self:center;padding:0 9px;color:#c9c4ba;font-size:13px}
+  .retrybadge{position:absolute;top:-8px;right:9px;background:var(--bad);color:#fff;
+              font-family:var(--mono);font-size:10px;font-weight:700;border-radius:999px;padding:2px 7px}
+
+  .sec{border-top:1px solid var(--line);padding:20px 26px 8px;display:flex;align-items:baseline;justify-content:space-between}
+  .sec h4{margin:0;font-size:15px;font-weight:700}
+  .sec .rt{font-size:12px;color:var(--ink3)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;font-weight:500;color:var(--ink3);font-size:11.5px;
+     padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+  .card th:first-child,.card td:first-child{padding-left:26px}
+  .card th:last-child,.card td:last-child{padding-right:26px}
+  td{padding:12px;border-bottom:1px solid var(--line2);vertical-align:top}
+  tr.r-bad>td{background:#fdf4f3} tr.r-warn>td{background:#fdf9f1} tr.r-info>td{background:#f7fafd}
+  .tag{display:inline-block;font-family:var(--mono);font-size:10.5px;font-weight:700;
+       letter-spacing:.4px;border-radius:5px;padding:3px 7px}
+  .t-tool{background:#fbeddc;color:#96601f} .t-model{background:#e6eefb;color:#31558a}
+  .t-guard{background:#e5f2e8;color:#2f6b41} .t-db{background:#fbe7de;color:#9a5230}
+  .t-sys{background:#eeece7;color:#6b6862}
+  .sp{font-family:var(--mono);font-size:12.5px}
+  .sp .att{color:var(--ink3);font-size:11px;margin-left:6px}
+  .io{font-family:var(--mono);font-size:12px;color:var(--ink2);line-height:1.5}
+  .dur{font-family:var(--mono);font-size:12.5px;white-space:nowrap;text-align:right}
+  .stt{font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:.4px;white-space:nowrap}
+  .s-OK{color:var(--ok)} .s-FAILED{color:var(--bad)} .s-FALLBACK{color:var(--warn)}
+  .s-DEGRADED{color:var(--warn)} .s-EMPTY{color:var(--info)}
+
+  details.err{margin-top:9px}
+  details.err summary{cursor:pointer;font-family:var(--mono);font-size:11.5px;
+                      color:var(--bad);font-weight:600;list-style:none;display:inline-flex;gap:5px}
+  details.err summary::-webkit-details-marker{display:none}
+  details.err summary::before{content:"▸";transition:transform .15s}
+  details[open].err summary::before{transform:rotate(90deg)}
+  .errbox{margin-top:9px;background:#fff;border:1px solid #f0dcd9;border-left:3px solid #e5b3ae;
+          border-radius:0 8px 8px 0;padding:11px 14px}
+  .errrow{display:grid;grid-template-columns:78px 1fr;gap:4px 14px;font-size:12px;
+          font-family:var(--mono);padding:3px 0;color:var(--ink2)}
+  .errrow b{color:var(--ink3);font-weight:500}
+  .errrow code{color:var(--bad);background:#fbeceb;border-radius:4px;padding:1px 5px}
+
+  .legend{border-top:1px solid var(--line);padding:16px 26px 20px;background:#fcfbf9;
+          display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center}
+  .legend .li{display:flex;gap:7px;align-items:center;font-size:12px;color:var(--ink2)}
+  .legend .li .stt{font-size:10.5px}
+
+  ol.numbered{margin:0;padding-left:0;list-style:none;counter-reset:n}
+  ol.numbered li{counter-increment:n;padding:12px 0 12px 34px;border-top:1px solid var(--line2);
+                 position:relative;font-size:13.5px;color:var(--ink2)}
+  ol.numbered li:first-child{border-top:none}
+  ol.numbered li::before{content:counter(n);position:absolute;left:0;top:12px;width:22px;height:22px;
+        border-radius:6px;background:#f2efe8;color:var(--ink2);font-family:var(--mono);
+        font-size:11px;font-weight:700;display:grid;place-items:center}
+  ol.numbered li b{color:var(--ink);font-weight:600}
+
+  .risk{border:1px solid #eecfcc;background:var(--bad-bg);border-radius:11px;padding:14px 18px;margin-bottom:14px}
+  .risk .rl{font-size:11.5px;font-weight:700;color:var(--bad);letter-spacing:.5px;margin-bottom:6px}
+  .risk p{margin:0;font-size:13.5px;color:#6d3c38}
+
+  .phase{border-top:1px solid var(--line2);padding:16px 0}
+  .phase:first-of-type{border-top:none;padding-top:4px}
+  .phase h3{margin:0 0 6px;font-size:14.5px;font-weight:700;display:flex;align-items:baseline;gap:10px}
+  .phase h3 .p{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.4px;
+               background:#f2efe8;color:var(--ink2);border-radius:5px;padding:3px 8px}
+  .phase h3 .d{font-family:var(--mono);font-size:12px;color:var(--ink3);font-weight:500;margin-left:auto}
+  .phase ul{margin:6px 0 0;padding-left:18px;color:var(--ink2);font-size:13.5px}
+  .phase ul li{margin:4px 0}
+
+  table.doc{background:var(--card)}
+  table.doc th{padding:11px 14px;background:#fcfbf9}
+  table.doc td{padding:12px 14px;font-size:13px;color:var(--ink2)}
+  table.doc td.mono{font-family:var(--mono);font-size:12.5px;color:var(--ink);white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1 class="doctitle">审计复放 · 失败与回退可视化</h1>
+  <div class="docsub">Trace 详情页改造设计</div>
+
+  <dl class="meta">
+    <div><dt>拟制日期</dt><dd>2026-09-10</dd></div>
+    <div><dt>版本</dt><dd>V1.2</dd></div>
+    <div><dt>最近修订</dt><dd>2026-09-10</dd></div>
+    <div><dt>拟制</dt><dd>官德志（架构）</dd></div>
+    <div><dt>适用范围</dt><dd>审计复放 · Trace 详情页</dd></div>
+    <div><dt>状态</dt><dd>已落地</dd></div>
+  </dl>
+
+  <h2 class="sh"><span class="num">1</span>问题</h2>
+  <p class="lead">
+    现版本 Trace 详情页把链路的<b>终态</b>渲染出来，而不是链路的<b>经过</b>。三个后果：
+    Span 状态列只有一个取值 <code>OK</code>，被重试救回来的失败在页面上完全消失；
+    模型格只显示最终生效的模型，主模型超时切备用模型没有任何痕迹；
+    工具调用格只有次数没有成败，返工掉的耗时与 token 被并进总数。
+    结果是一条降级完成的链路，看起来和一条干净链路一模一样 —— 而这类链路给出的答案恰恰最不该被直接采信。
+  </p>
+
+  <h2 class="sh"><span class="num">2</span>目标效果</h2>
+  <p class="lead">以一条真实形态的降级链路为例（向量召回失败回退关键词 + 主模型超时切备用模型 + 零行结果）：</p>
+
+  <div class="card">
+    <div class="hd">
+      <h3>修复后验证1450知识库一共有多少个</h3>
+      <div class="sub">caee4828f2e2 · <span class="st">PARTIAL — 含 1 次工具失败 / 1 次模型回退</span> · RETRY ×1</div>
+      <div class="conf">可信度 67 <span class="deg">链路降级</span></div>
+    </div>
+
+    <div class="banner">
+      <div class="bt">本次链路未按主路径完成</div>
+      <ul>
+        <li><span class="dot"></span><span><b>Schema 召回</b>：向量召回连接超时（<b>08006</b>），已回退关键词兜底 —— 表召回由语义降为词面，命中 12/26 张表可能不完整。</span></li>
+        <li><span class="dot"></span><span><b>SQL 生成</b>：主模型 <b>qwen3.8-flash</b> 上游超时（<b>504</b>，8.00s），自动切换备用模型 <b>qwen-plus</b> 重试成功 —— 计费含废弃 3,960 tok。</span></li>
+        <li><span class="dot"></span><span><b>只读执行</b>：返回 <b>0 行</b>，空结果与上游降级同时出现，不能判定为「确实没有数据」。</span></li>
+      </ul>
+    </div>
+
+    <div class="kpis">
+      <div class="kpi"><div class="k">总耗时</div><div class="v">11.42s</div><div class="n bad">其中重试废弃 8.00s</div></div>
+      <div class="kpi"><div class="k">模型</div><div class="v swap">qwen-plus</div><div class="n warn">⇄ 回退自 <span class="strike">qwen3.8-flash</span></div></div>
+      <div class="kpi"><div class="k">Token</div><div class="v">6,820</div><div class="n bad">含废弃 3,960</div></div>
+      <div class="kpi"><div class="k">工具调用</div><div class="v">4</div><div class="n bad">1 失败 · 1 降级</div></div>
+      <div class="kpi"><div class="k">SQL Hash</div><div class="v">2168…16fe</div><div class="n">静态校验通过</div></div>
+      <div class="kpi"><div class="k">数据源</div><div class="v" style="font-size:13px">ragforge 生产库</div><div class="n">只读账号</div></div>
+    </div>
+
+    <div class="stages">
+      <div class="stage s-warn"><div class="sn">Schema 召回</div><div class="sd">412ms</div><div class="sf">降级 · 关键词兜底</div></div>
+      <div class="arrow">→</div>
+      <div class="stage s-bad"><span class="retrybadge">×2</span><div class="sn">SQL 生成</div><div class="sd"><span class="strike">8000ms</span> + 2969ms</div><div class="sf">失败后换模型</div></div>
+      <div class="arrow">→</div>
+      <div class="stage s-ok"><div class="sn">静态校验</div><div class="sd">6ms</div><div class="sf">通过</div></div>
+      <div class="arrow">→</div>
+      <div class="stage s-ok"><div class="sn">EXPLAIN 干跑</div><div class="sd">24ms</div><div class="sf">通过</div></div>
+      <div class="arrow">→</div>
+      <div class="stage s-empty"><div class="sn">只读执行</div><div class="sd">7ms</div><div class="sf">空结果</div></div>
+      <div class="arrow">→</div>
+      <div class="stage s-ok"><div class="sn">结果自检</div><div class="sd">0ms</div><div class="sf">通过</div></div>
+    </div>
+
+    <div class="sec"><h4>Span 明细</h4><div class="rt">按开始时间排序 · 失败与回退默认展开</div></div>
+
+    <table>
+      <thead>
+        <tr><th style="width:76px">类型</th><th style="width:210px">Span</th><th style="width:130px">输入摘要</th>
+            <th>输出摘要</th><th style="width:96px;text-align:right">耗时</th><th style="width:86px">状态</th></tr>
+      </thead>
+      <tbody>
+        <tr class="r-bad">
+          <td><span class="tag t-tool">TOOL</span></td>
+          <td class="sp">Schema 召回<span class="att">向量 · 尝试 1/1</span></td>
+          <td class="io">—</td>
+          <td class="io">未返回结果，pgvector 连接超时
+            <details class="err" open><summary>失败详情与处置</summary>
+              <div class="errbox">
+                <div class="errrow"><b>错误码</b><span><code>SQLSTATE 08006</code></span></div>
+                <div class="errrow"><b>原始消息</b><span>connection to askdb_schema_vectors timed out after 200ms</span></div>
+                <div class="errrow"><b>处置</b><span>回退关键词召回（fail-open，不中断链路）</span></div>
+                <div class="errrow"><b>影响</b><span>表召回由语义降为词面，白名单外表不可达</span></div>
+              </div>
+            </details>
+          </td>
+          <td class="dur">218ms</td><td><span class="stt s-FAILED">FAILED</span></td>
+        </tr>
+        <tr class="r-warn">
+          <td><span class="tag t-tool">TOOL</span></td>
+          <td class="sp">Schema 召回<span class="att">关键词兜底</span></td>
+          <td class="io">—</td>
+          <td class="io">命中 12 张表（白名单共 26 张）</td>
+          <td class="dur">194ms</td><td><span class="stt s-DEGRADED">DEGRADED</span></td>
+        </tr>
+        <tr class="r-bad">
+          <td><span class="tag t-model">MODEL</span></td>
+          <td class="sp">SQL 生成<span class="att">尝试 1/2 · qwen3.8-flash</span></td>
+          <td class="io">prompt 3,960 tok</td>
+          <td class="io">未产出，上游网关超时
+            <details class="err" open><summary>失败详情与处置</summary>
+              <div class="errbox">
+                <div class="errrow"><b>错误码</b><span><code>HTTP 504</code></span></div>
+                <div class="errrow"><b>原始消息</b><span>upstream timeout after 8000ms (dashscope)</span></div>
+                <div class="errrow"><b>处置</b><span>切换备用模型 qwen-plus 重试（同 prompt，不重排 Schema）</span></div>
+                <div class="errrow"><b>成本</b><span>3,960 tok 已计费但废弃</span></div>
+              </div>
+            </details>
+          </td>
+          <td class="dur"><span class="strike">8000ms</span></td><td><span class="stt s-FAILED">FAILED</span></td>
+        </tr>
+        <tr class="r-warn">
+          <td><span class="tag t-model">MODEL</span></td>
+          <td class="sp">SQL 生成<span class="att">尝试 2/2 · qwen-plus</span></td>
+          <td class="io">prompt 3,960 tok</td>
+          <td class="io">生成 1 条 SELECT · 133 tok　<span style="color:var(--warn)">（由备用模型产出）</span></td>
+          <td class="dur">2969ms</td><td><span class="stt s-FALLBACK">FALLBACK</span></td>
+        </tr>
+        <tr>
+          <td><span class="tag t-guard">GUARD</span></td><td class="sp">静态校验</td><td class="io">—</td>
+          <td class="io">注入 LIMIT 200</td><td class="dur">6ms</td><td><span class="stt s-OK">OK</span></td>
+        </tr>
+        <tr>
+          <td><span class="tag t-db">DB</span></td><td class="sp">EXPLAIN 干跑</td><td class="io">—</td>
+          <td class="io">预估扫描 15 行</td><td class="dur">24ms</td><td><span class="stt s-OK">OK</span></td>
+        </tr>
+        <tr class="r-info">
+          <td><span class="tag t-db">DB</span></td><td class="sp">只读执行</td><td class="io">—</td>
+          <td class="io">返回 <b>0 行</b>；上游存在降级，空结果不可直接判定为无数据</td>
+          <td class="dur">7ms</td><td><span class="stt s-EMPTY">EMPTY</span></td>
+        </tr>
+        <tr>
+          <td><span class="tag t-model">MODEL</span></td><td class="sp">结果自检<span class="att">qwen-plus</span></td>
+          <td class="io">—</td><td class="io">单步链路，直接收敛</td><td class="dur">0ms</td><td><span class="stt s-OK">OK</span></td>
+        </tr>
+        <tr>
+          <td><span class="tag t-sys">SYS</span></td><td class="sp">结果与溯源</td><td class="io">—</td>
+          <td class="io">已附最终 SQL、失败链路与回退记录</td><td class="dur">0ms</td><td><span class="stt s-OK">OK</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="legend">
+      <div class="li"><span class="stt s-OK">OK</span><span>按主路径完成</span></div>
+      <div class="li"><span class="stt s-FAILED">FAILED</span><span>该 Span 未产出，必须带错误码与处置</span></div>
+      <div class="li"><span class="stt s-FALLBACK">FALLBACK</span><span>由备用模型 / 备用路径产出</span></div>
+      <div class="li"><span class="stt s-DEGRADED">DEGRADED</span><span>产出了，但能力低于主路径</span></div>
+      <div class="li"><span class="stt s-EMPTY">EMPTY</span><span>执行成功但零行</span></div>
+    </div>
+  </div>
+
+  <h2 class="sh"><span class="num">3</span>相对现版本的改动点</h2>
+  <div class="panel">
+    <ol class="numbered">
+      <li><b>状态枚举从一元扩到五元。</b>现版本 Span 状态列只有 <code>OK</code>，被重试救回的失败在页面上完全消失。新增 <code>FAILED / FALLBACK / DEGRADED / EMPTY</code>，失败的尝试作为独立 Span 保留，不被成功的那次覆盖；Span 名后挂 <code>尝试 n/N · &lt;模型&gt;</code>。</li>
+      <li><b>模型格显示回退链而非终态。</b>主体显示实际产出模型，下方标注 <code>⇄ 回退自 &lt;主模型&gt;</code>，主模型名加删除线，格子带橙色下划线作为可扫视信号。</li>
+      <li><b>工具调用格拆出成败。</b>次数之下补 <code>n 失败 · m 降级</code>；耗时与 Token 同步区分「有效」与「重试废弃」，避免用总数掩盖返工成本。</li>
+      <li><b>顶部异常横幅只在非纯净链路出现。</b>三条事实句给出：哪个环节失败、回退到什么、代价是什么。纯净链路不渲染该区块，日常不增加噪音。</li>
+      <li><b>空结果与上游降级联判。</b>只读执行返回 0 行时一律标 <code>EMPTY</code>；若链路上还存在 <code>FAILED/DEGRADED</code>，在输出摘要与顶部横幅中明确「不可判定为无数据」。<b>可信度徽标不动</b>，另挂一枚「链路降级」角标 —— 理由见下节。</li>
+    </ol>
+  </div>
+
+  <h2 class="sh"><span class="num">4</span>与可信度分的边界</h2>
+  <p class="lead">
+    本设计成稿时，追踪页那枚角标还是写死的「可信度 —」。落地当天该版位已被另一条线做成<b>真打分</b>
+    （<code>frontend/src/trust.ts</code>，通过率模型：分数 = 通过项 / 适用项，每项都是链路记下的事实，
+    明确拒绝加权扣分）。本设计因此改为<b>不动那个分</b>，在它旁边另挂一枚「链路降级」角标。两条理由：
+  </p>
+  <div class="panel" style="margin-bottom:14px">
+    <ol class="numbered">
+      <li><b>把降级折成扣几分，等于给通过率模型塞一个没有出处的权重。</b>「回退扣 10 分」的 10 从哪来说不清，
+        而该模型正是为了避开这种数字才写成通过率的。</li>
+      <li><b>降级角标说的是事实，不是判断。</b>「主模型超时切了备选」能从 span 上逐字读出来，
+        它不需要先被折算成一个分数才成立。</li>
+    </ol>
+  </div>
+  <div class="risk">
+    <div class="rl">遗留缺口 · 需另行定夺</div>
+    <p><b>可信度分目前判不到回退与降级。</b><code>trust.ts</code> 那六项取自审计记录的字段
+    （截断 / 重试次数 / 脱敏降级 / 召回盲选 / 结果行数），主模型切备选、向量召回回落<b>只留在 span 上，一项都不占</b>。
+    于是会出现「可信度 100 + 链路降级」并排的组合 —— 两枚角标各自都没说错，但读的人有权问这个 100 是怎么来的。
+    要闭合的话，自然的做法是给 <code>resultChecks</code> 增加「模型未回退」「Schema 召回未降级」两项，
+    由 span 派生后与既有六项同权计入分母。本设计<b>不擅自改动</b>该模块 —— 它由另一条线在迭代，口径变更应由其定夺。</p>
+  </div>
+
+  <h2 class="sh"><span class="num">5</span>前置依赖与风险</h2>
+  <div class="risk">
+    <div class="rl">阻塞项 · 已查实（V1.1 回填）</div>
+    <p>本设计假设后端<b>真的保留了失败尝试的 Span</b>。查实结果比预估更深：回退与重试<b>整个发生在 <code>LlmClient</code> 内部</b>，Tracer 在外面只拿得到最后返回的那个结果 —— 主模型超时、切备选、切成功，三件事在审计里一件都不剩，不是被覆盖，是从来没写过。<br>
+    连带查出一处更硬的缺陷：审计记录里的 <code>model</code> 直接取 <code>cfg.llm["model"]</code>，即配置声明的主模型。切备选跑完，库里照样记着主模型 —— 页面看不出回退只是表象，<b>存下来的那条记录本身就是错的</b>，按模型分摊的成本也跟着记到了没出活的那个头上。</p>
+  </div>
+  <p class="lead">
+    Span 记录实际落的字段：<code>attempt</code> / <code>attempts_total</code>（第几次尝试 / 共几次）、
+    <code>status</code>（三档口径，见下）、<code>error_code</code>（厂商状态码，取不到才退回异常类名）、
+    <code>disposition</code>（切备选 / 就地重试 / 回落备用路径），以及<b>按次记的</b> <code>model</code>。
+    原始错误消息复用既有的 <code>note</code> 字段，<b>不在后端截断</b> —— 截了就再也拿不回来，截断交给前端。
+    <br>
+    <b>废弃 token 不另设字段</b>：失败的那条 span 自己带着这次真实烧掉的 <code>tok_in/tok_out</code>，
+    成功那条只记它自己的。前端把失败 span 的 token 加起来就是废弃量 —— 多一个冗余字段，
+    就多一处会和 span 对不上的地方。
+    <br>
+    落盘时零值字段一律省掉（沿用 <code>tables</code> 既有做法）：绝大多数步骤只跑一次、没失败，
+    每条审计凭空多五个键，乘上几十万条不是小事。
+  </p>
+
+  <h2 class="sh"><span class="num">6</span>分阶段落地</h2>
+  <div class="panel">
+    <div class="phase">
+      <h3><span class="p">阶段一</span>写入侧留痕<span class="d">2026-09-11 ~ 2026-09-16</span></h3>
+      <ul>
+        <li>核实重试路径是否覆盖同一 Span；若覆盖则改为追加。</li>
+        <li>补齐 <code>attempt / disposition / tokens_wasted</code> 字段与五元 <code>status</code>。</li>
+        <li>模型名下沉到每次尝试，链路级模型字段改为「最终产出模型」。</li>
+        <li>验收：人工制造一次上游 504，库中能查到两条 SQL 生成 Span。</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <h3><span class="p">阶段二</span>详情页呈现<span class="d">2026-09-17 ~ 2026-09-23</span></h3>
+      <ul>
+        <li>Span 表状态列五元着色 + 失败行默认展开错误详情。</li>
+        <li>KPI 区模型回退链、工具成败拆分、耗时与 token 的有效／废弃拆分。</li>
+        <li>阶段条失败态与 <code>×n</code> 重试角标。</li>
+        <li>顶部异常横幅（纯净链路不渲染）。</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <h3><span class="p">阶段三</span>空结果联判与可信度口径<span class="d">2026-09-24 ~ 2026-09-30</span></h3>
+      <ul>
+        <li>零行结果与上游降级联判，落 <code>EMPTY</code> 状态。</li>
+        <li>非纯净链路挂「链路降级」角标，悬停说明降在哪几处（不改动可信度分，理由见第 4 节）。</li>
+        <li>回归：覆盖工具失败、模型回退、零行、纯净四类链路各一条。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2 class="sh"><span class="num">7</span>修订记录</h2>
+  <table class="doc" style="border:1px solid var(--line);border-radius:12px;overflow:hidden">
+    <thead><tr><th style="width:90px">版本</th><th style="width:120px">日期</th><th>修订内容</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">V1.2</td><td class="mono">2026-09-10</td>
+          <td>落地当天追踪页可信度版位已被另一条线做成真打分（<code>trust.ts</code> 通过率模型）。本设计据此改为不动那个分、另挂「链路降级」角标，并新增第 4 节交代边界与遗留缺口：<b>该分数目前判不到回退与降级</b>，会出现「可信度 100 + 链路降级」并排。</td></tr>
+      <tr><td class="mono">V1.1</td><td class="mono">2026-09-10</td>
+          <td>按落地结果回填两处。其一：可信度徽标不改判为「低 · 降级链路」，改为另挂「链路降级」角标 —— 不打分的版位不该借降级之名填一个分数进去。其二：阻塞项已查实且比预估更深 —— 回退整个发生在 <code>LlmClient</code> 内部，Tracer 从来看不到失败的尝试；且审计记录里的 <code>model</code> 写的是配置声明的主模型，切备选跑完仍记主模型，<b>库里存的本来就是错的</b>，按模型分摊的成本一并记错。</td></tr>
+      <tr><td class="mono">V1.0</td><td class="mono">2026-09-10</td>
+          <td>首版。定义 Span 五元状态枚举、模型回退链呈现、工具成败拆分、异常横幅与空结果联判，给出三阶段落地路径与写入侧字段要求。</td></tr>
+    </tbody>
+  </table>
+
+</div>
+</body>
+</html>

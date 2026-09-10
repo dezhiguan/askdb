@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -15,7 +17,8 @@ from .config import Config
 from .quota import QuotaExceeded, build_quota
 from .trace import call_cost_cny
 
-__all__ = ["LlmClient", "LlmNotConfigured", "LlmUsage", "SqlDraft", "QuotaExceeded"]
+__all__ = ["LlmAttempt", "LlmClient", "LlmNotConfigured", "LlmUsage", "SqlDraft",
+           "QuotaExceeded"]
 
 
 class LlmNotConfigured(RuntimeError):
@@ -26,7 +29,18 @@ class SqlDraft(BaseModel):
     """模型的结构化产出。字段说明会进入 function schema，模型看得到。"""
 
     sql: str = Field(description="一条 SELECT 语句。不要写 markdown 代码块，不要加解释文字。")
-    reasoning: str = Field(default="", description="一句话说明用了哪些表、命中了哪个业务口径。")
+    reasoning: str = Field(
+        default="",
+        description=("一句话说明这条 SQL 做了什么：用了哪些表、按什么条件过滤。"
+                     "只描述这条 SQL 本身，不要描述系统、护栏或平台会做什么，"
+                     "也不要提到任何'上一轮/上一次'——每次查询都是独立的。"),
+    )
+    caliber: str = Field(
+        default="",
+        description=("本次统计的口径，一句话。写明数的是哪张表的什么、"
+                     "用了哪个业务口径定义、数值是实时统计还是取自缓存计数列。"
+                     "例如：'文档数 = documents 表中 parse_status=COMPLETED 的行数（实时统计）'。"),
+    )
 
 
 SYSTEM = """你是一个只读数据查询助手，把用户的问题翻译成一条 SQL。
@@ -35,7 +49,11 @@ SYSTEM = """你是一个只读数据查询助手，把用户的问题翻译成�
 1. 只能生成一条 SELECT 语句。禁止 INSERT/UPDATE/DELETE/DDL，禁止多条语句。
 2. 只能使用下面列出的表和字段。**不存在的字段一律不要编**，宁可少查一列。
 3. 禁止 SELECT *，显式列出需要的列。
-4. 标注为租户隔离列的字段（如 org_id），**不要自己写进 WHERE**，系统会强制注入。
+4. 标注为租户隔离列的字段（如 org_id），**不要自己写进 WHERE**。
+   同时**不要在 reasoning 里提这件事**（"未写租户过滤，由系统注入""租户隔离列
+   由系统注入"之类）。护栏实际做了哪些改写会单独展示给用户，由你转述一遍
+   只会产生假陈述：单租户库上根本没有注入这一步，而那句话照样写着。
+   reasoning 只描述**这条 SQL 自己做了什么**。
 5. 涉及【业务口径】里的概念时，必须使用给定的定义表达式，不得自行构造。
 6. 结果列请使用中文别名，便于阅读。
 7. 问"每个 X 有多少 Y"这类问题时，用 X LEFT JOIN Y —— 一个 Y 都没有的 X
@@ -93,6 +111,26 @@ SYSTEM = """你是一个只读数据查询助手，把用户的问题翻译成�
    问"最差的 5 家供应商"要的是**供应商**，必须 GROUP BY 实体再排序；直接
    `ORDER BY 分数 LIMIT 5` 取到的是"最差的 5 条月度记录"，实测 5 条分散在
    三个不同年月、还混进一条两年前的。只取某一期时，要把期次一并选进结果列。
+
+17. **没有"上一轮"。** 每次查询都是完全独立的，你看不到任何历史问答，
+   系统也不会把上次的结果带进来。因此**禁止**写"沿用上一轮口径""承接上一轮"
+   "与上次保持一致"这类话 —— 它们描述的事情没有发生过，而读的人会因为这句话
+   跳过核对。问题若省略了主体（"第二名呢""那反过来排呢""把创建时间也带上"），
+   你**没有**足够信息回答：返回空 SQL，在 reasoning 里说明需要用户补充什么。
+   **不要**挑一个"最常见的"主体来猜，更不要把猜出来的结果标成"占位"后照样返回 ——
+   页面上占位数据和答案长得一模一样。
+
+18. **不确定就不要给结果。** 如果你在 reasoning 里要写"无法确定""按最常见的"
+   "假设用户指的是""口径需人工确认"，那就说明这题的口径没定下来 —— 正确动作是
+   返回空 SQL 并把要澄清的点列出来，而不是带着这句话给一个数。一个标着
+   "仅供参考"的数字，在页面上和一个确定的答案没有区别。
+
+19. **按名称匹配必须自己做规范化。** 用户输入的名称常常少一个空格、大小写不同
+   （库里是"岗位 JD 库"，用户打的是"岗位JD库"）。要么写成去空格 + 转小写之后的
+   等值比较（如 `REPLACE(LOWER(k.name), ' ', '') = '岗位jd库'`），要么用包含匹配，
+   **不要**直接 `k.name = '用户原样输入'` —— 那会返回零行，而零行在页面上会被
+   读成"这个库是空的"，比报错更难被发现。reasoning 里说"用了规范化匹配"而 SQL
+   里其实是精确等值，属于假陈述，同样禁止。
 
 如果问题无法用给定的表回答，就在 reasoning 里说明缺什么，sql 字段返回空字符串。"""
 
@@ -163,6 +201,48 @@ class LlmUsage:
         self.cost_cny = round(self.cost_cny + other.cost_cny, 6)
 
 
+def _err_code(exc: BaseException) -> str:
+    """把异常折成一个能放进表格一列的短码。
+
+    优先用厂商自己给的状态码 —— 「HTTP 429」和「HTTP 504」是两回事，前者
+    该退避重试、后者该换模型，折成同一个异常类名就分不出来了。取不到再退回
+    从消息里抠三位数字（openai 客户端把它写成 "Error code: 429 - {...}"），
+    都没有才用类名。**不编码**：宁可给个类名，也不猜一个看起来很像的数字。
+    """
+    for attr in ("status_code", "http_status", "code"):
+        v = getattr(exc, attr, None)
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, int):
+            return f"HTTP {v}"
+        if isinstance(v, str) and v.strip():
+            return v.strip()[:32]
+    m = re.search(r"[Ee]rror code:\s*(\d{3})", str(exc))
+    if m:
+        return f"HTTP {m.group(1)}"
+    return type(exc).__name__
+
+
+@dataclass
+class LlmAttempt:
+    """**一次真实的厂商调用**。
+
+    这是本次改造的地基：回退与重试原本整个发生在 LlmClient 内部，
+    Tracer 在外面只看得到最后返回的那个结果 —— 主模型超时、切备选、
+    切成功，三件事在审计里一件都不剩。把每次尝试都记下来，
+    上层才有东西可落 span。
+    """
+
+    model: str
+    status: str = "ok"              # ok | failed
+    ms: int = 0
+    error_code: str = ""
+    error_message: str = ""
+    disposition: str = ""           # 失败后做了什么
+    is_fallback: bool = False       # 这次尝试是不是备选模型出的
+    usage: LlmUsage = field(default_factory=LlmUsage)
+
+
 class LlmClient:
     """主模型 + 可选备选模型。
 
@@ -170,12 +250,16 @@ class LlmClient:
     不在"生成的 SQL 不对"时切换 —— 那是反思重试该干的事，两者不要混。
     """
 
-    def __init__(self, cfg: Config, llm_cfg: dict | None = None, is_fallback: bool = False):
+    def __init__(self, cfg: Config, llm_cfg: dict | None = None, is_fallback: bool = False,
+                 journal: list[LlmAttempt] | None = None):
         self.cfg = cfg
         self.llm_cfg = llm_cfg if llm_cfg is not None else cfg.llm
         self.is_fallback = is_fallback
         self._model = None
         self._fallback: LlmClient | None = None
+        # 主客户端与备选客户端**共用同一本流水**：备选是主模型失败后的下一次
+        # 尝试，两者属于同一步，分开记就拼不回"先谁后谁"。
+        self._journal: list[LlmAttempt] = [] if journal is None else journal
         # 配额扣在这里，而不是请求入口：一次提问会触发多次模型调用
         # （多步规划每步生成 + 每步评估 + 反思重试），按请求计数会大幅低估花费。
         self.quota = build_quota(cfg)
@@ -200,8 +284,39 @@ class LlmClient:
             spec = {"model": spec}
         merged = {**{k: v for k, v in self.llm_cfg.items() if k != "fallback"}, **spec}
         if self._fallback is None:
-            self._fallback = LlmClient(self.cfg, llm_cfg=merged, is_fallback=True)
+            self._fallback = LlmClient(self.cfg, llm_cfg=merged, is_fallback=True,
+                                       journal=self._journal)
         return self._fallback
+
+    # ---- 调用流水 ----
+
+    def take_attempts(self) -> list[LlmAttempt]:
+        """取走并清空本步的尝试流水。
+
+        **每个调用点都必须取一次**，包括抛异常的分支：不取的话，这一步失败的
+        尝试会顺延到下一个节点被取走，落成挂在别人名下的 span。
+        """
+        out = list(self._journal)
+        self._journal.clear()
+        return out
+
+    def _note_ok(self, t0: float, usage: LlmUsage) -> None:
+        self._journal.append(LlmAttempt(
+            model=self.model_name, status="ok", is_fallback=self.is_fallback,
+            ms=int((time.perf_counter() - t0) * 1000), usage=usage,
+        ))
+
+    def _note_fail(self, t0: float, exc: BaseException, disposition: str,
+                   usage: LlmUsage | None = None) -> None:
+        self._journal.append(LlmAttempt(
+            model=self.model_name, status="failed", is_fallback=self.is_fallback,
+            ms=int((time.perf_counter() - t0) * 1000),
+            error_code=_err_code(exc),
+            # 原始消息原样留着，截断交给前端 —— 在这里截就再也拿不回来了
+            error_message=str(exc),
+            disposition=disposition,
+            usage=usage or LlmUsage(),
+        ))
 
     @property
     def model_name(self) -> str:
@@ -262,10 +377,13 @@ class LlmClient:
         model = self._build().with_structured_output(
             schema, method="function_calling", include_raw=True
         )
+        t0 = time.perf_counter()
         try:
             out = model.invoke([("system", system), ("human", human)])
         except Exception as primary_err:
             fb = self._fallback_client()
+            self._note_fail(t0, primary_err,
+                            f"切备选模型 {fb.model_name} 重试" if fb else "无备选模型，链路终止")
             if fb is None:
                 raise
             try:
@@ -275,10 +393,15 @@ class LlmClient:
                     f"主模型 {self.model_name} 调用失败：{primary_err}；"
                     f"备选 {fb.model_name} 也失败：{fb_err}"
                 ) from primary_err
+        usage = _usage_of(out, self.llm_cfg)
         parsed = out["parsed"] if isinstance(out, dict) else out
         if parsed is None:
+            err = RuntimeError("模型未按结构化格式返回")
+            # 没产出也照记 token：这次调用真的花了钱，抛异常不是不计费的理由
+            self._note_fail(t0, err, "无重试，链路终止", usage=usage)
             raise RuntimeError("模型未按结构化格式返回，请重试或更换模型。")
-        return parsed, _usage_of(out, self.llm_cfg)
+        self._note_ok(t0, usage)
+        return parsed, usage
 
     def generate_sql(
         self,
@@ -312,10 +435,13 @@ class LlmClient:
             human = USER.format(schema=schema_prompt, question=question,
                                 step=step, now=now)
 
+        t0 = time.perf_counter()
         try:
             out = model.invoke([("system", system), ("human", human)])
         except Exception as primary_err:
             fb = self._fallback_client()
+            self._note_fail(t0, primary_err,
+                            f"切备选模型 {fb.model_name} 重试" if fb else "无备选模型，链路终止")
             if fb is None:
                 raise
             # 主模型不可用时兜底一次。失败原因串在一起抛出，便于定位到底是谁挂了。
@@ -338,12 +464,27 @@ class LlmClient:
             # 本可自愈的抖动变成了一次失败。就地重试一次，仍失败才抛。
             # 重试是**又一次真实的厂商调用**，用量照记、配额照扣 ——
             # 与切备选模型同理，不扣就等于失败重试不要钱。
+            self._note_fail(t0, RuntimeError("模型未按结构化格式返回"),
+                            "同模型就地重试一次", usage=usage)
             self._reserve()
-            retry_out = model.invoke([("system", system), ("human", human)])
+            t1 = time.perf_counter()
+            try:
+                retry_out = model.invoke([("system", system), ("human", human)])
+            except Exception as retry_err:
+                self._note_fail(t1, retry_err, "就地重试也失败，链路终止")
+                raise
             draft = retry_out["parsed"] if isinstance(retry_out, dict) else retry_out
-            usage.add(_usage_of(retry_out, self.llm_cfg))
+            retry_usage = _usage_of(retry_out, self.llm_cfg)
+            usage.add(retry_usage)
             if draft is None:
+                self._note_fail(t1, RuntimeError("模型连续两次未按结构化格式返回"),
+                                "已重试一次仍失败，链路终止", usage=retry_usage)
                 raise RuntimeError("模型连续两次未按结构化格式返回，请稍后重试或更换模型。")
+            # 救回来了。**这一条只记重试那次的用量** —— 被废弃的那次已经由
+            # 上面那条 failed 各自记着，成功这条再记一遍就是把返工的账算两遍。
+            self._note_ok(t1, retry_usage)
+            return draft, usage
+        self._note_ok(t0, usage)
         return draft, usage
 
 

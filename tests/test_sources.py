@@ -146,6 +146,56 @@ def test_new_source_opens_no_table(client, sample_db):
     assert len(r.json()["tables"]) > 0
 
 
+def test_privileged_account_is_admitted_but_never_shown_as_clean(
+        client, open_cfg, sample_db, monkeypatch):
+    """拿高权账号（root / superuser）接库要能做成 —— 2026-09-10 的产品决定。
+
+    但"允许接入"与"检查通过"是两件事，这条用例钉的正是它们不许合流：
+    自检行仍是 ✕、接口另出 warnings、落盘的 last_ok 仍是 false（卡片据此
+    显示「有告警」而不是「正常」）。少任何一样，放宽就变成了静默放行。
+    """
+    from askdb import executor as _ex
+
+    monkeypatch.setattr(_ex._DuckBackend, "env_checks", lambda self: [
+        ("账号为只读", False, "账号仍有写权限（ALL PRIVILEGES）"),
+        ("语句超时已设置", True, "看门狗 8000 ms"),
+        ("连接数上限已设置", False, "max_user_connections = 0"),
+    ])
+    r = client.post("/api/sources", json=_body(dsn=str(sample_db)))
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["ok"] is True                                  # 能接入
+    assert {w["name"] for w in body["warnings"]} == {"账号为只读", "连接数上限已设置"}
+    assert "ALL PRIVILEGES" in body["warnings"][0]["detail"]   # 原因原话带出去
+    assert [c["ok"] for c in body["checks"] if c["name"] == "账号为只读"] == [False]
+
+    stored = sources.get_source(open_cfg, body["source"]["id"])
+    assert stored is not None and stored.last_ok is False      # 卡片上不是绿的
+    assert stored.last_latency_ms is not None                  # 但连得上 → 「有告警」
+
+
+def test_write_probe_failure_still_refuses_the_source(client, sample_db, monkeypatch):
+    """实证那一项不在降级之列：写没被引擎拒，这个库就不许接进来。"""
+    from askdb import executor as _ex
+
+    monkeypatch.setattr(_ex._DuckBackend, "fetch", lambda self, sql, cap: ([], [], ""))
+    r = client.post("/api/sources", json=_body(dsn=str(sample_db)))
+    assert r.status_code == 400 and "写操作实探" in r.json()["detail"]
+
+
+def test_strict_switch_refuses_privileged_accounts(client, open_cfg, sample_db, monkeypatch):
+    from askdb import executor as _ex
+
+    open_cfg.raw["datasources"]["strict_account_check"] = True
+    monkeypatch.setattr(_ex._DuckBackend, "env_checks", lambda self: [
+        ("账号为只读", False, "账号仍有写权限"),
+        ("语句超时已设置", True, ""),
+        ("连接数上限已设置", True, ""),
+    ])
+    r = client.post("/api/sources", json=_body(dsn=str(sample_db)))
+    assert r.status_code == 400 and "账号为只读" in r.json()["detail"]
+
+
 def test_whitelist_carries_column_types(client, open_cfg, sample_db):
     """白名单必须带字段名与类型 —— R-04（字段真实性）与 R-05（展开 SELECT *）
     靠它判定，缺了会退化成放行。"""
@@ -258,6 +308,27 @@ def test_mysql_is_offered_and_accepted(cfg):
                         dsn="host=db.internal port=3306 dbname=pet user=askdb_ro")
     assert src.type == "mysql"
     assert sources.derive_config(cfg, src).dialect == "mysql"
+
+
+def test_env_ladder_is_four_rungs_in_release_order(cfg):
+    """开发 → 测试 → 预生产 → 生产。**顺序即语义**：界面上那个下拉直接按
+    这个顺序渲染，把生产排在中间会让点错的概率高一档。"""
+    assert sources.ENVS == ("dev", "test", "staging", "prod_ro")
+    for env in sources.ENVS:
+        assert sources.build(name="x", type_="duckdb", dsn="d.duckdb", env=env).env == env
+
+
+def test_production_rung_keeps_its_stored_value(cfg):
+    """生产那一档存的仍是 `prod_ro` 而不是 `prod` —— 注册表里已有的生产源
+    存的就是这个值，改字面量等于让存量源变成界面不认识的档位。
+    显示名可以改（那只是一层标签），存储值不能。"""
+    assert "prod_ro" in sources.ENVS and "prod" not in sources.ENVS
+    assert sources.ENV_LABEL["prod_ro"] == "PROD"
+
+
+def test_unknown_env_falls_back_to_a_safe_rung(cfg):
+    """拼错 env 的后果必须是"看得更少"，不能是"看得更多"。"""
+    assert sources.build(name="x", type_="duckdb", dsn="d.duckdb", env="生产").env == "test"
 
 
 def test_mysql_dsn_password_is_refused_like_postgres(cfg):

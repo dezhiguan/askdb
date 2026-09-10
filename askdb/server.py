@@ -33,7 +33,8 @@ from . import pgstore as _pgstore
 from . import schema_rag as _schema_rag
 from . import sources as _sources
 from .config import Config, load
-from .executor import DataSourceError, Executor
+from . import executor as _executor_mod
+from .executor import DataSourceError, Executor, MaskUnresolved
 from .graph import ask as run_ask, jsonable, resume as run_resume
 from .quota import build_quota
 from .qcache import build_answer_cache, make_key as _cache_key
@@ -507,6 +508,34 @@ def _friendly_validation_message(errors: list[dict]) -> str:
     return "提交的内容不符合要求，请检查后重试。"
 
 
+def fallback_status(cfg: Config) -> dict[str, Any]:
+    """备选模型的配置与密钥状态。
+
+    **这一格之前根本不存在。** 代码里 LlmClient._fallback_client() 只看配置
+    有没有 fallback 这一项，不检查密钥；密钥要到真正兜底那一刻才在 _build()
+    里报 LlmNotConfigured。于是漏建 Secret 的部署今天看起来一切正常，直到
+    主模型真的抖那天，兜底当场失效 —— 而那正是最需要它的时刻。
+
+    只读环境变量、不发探测请求（与 trace.langsmith_status 同一做法）：探测
+    要花钱、要等超时，还会在成本页上多出一笔没人发起过的调用。因此它答得了
+    "密钥在不在"，**答不了"这把密钥有没有过期"** —— 界面上不要写成"可用"。
+    """
+    spec = (cfg.llm or {}).get("fallback")
+    if not spec:
+        return {"configured": False, "model": "", "provider": "",
+                "env": "", "key_present": False}
+    if isinstance(spec, str):          # 仅换模型名，其余沿用主配置
+        spec = {"model": spec}
+    env = str(spec.get("api_key_env") or cfg.llm.get("api_key_env") or "")
+    return {
+        "configured": True,
+        "model": str(spec.get("model") or ""),
+        "provider": str(spec.get("provider") or cfg.llm.get("provider") or ""),
+        "env": env,
+        "key_present": bool(env and os.environ.get(env)),
+    }
+
+
 def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     cfg: Config = load(config_path)
     app = FastAPI(title="askdb", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -770,6 +799,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 # 不区分的话，页面会对访问者显示"去 .env 里配密钥"——
                 # 那是给部署方看的话，访问者既看不懂也做不到。
                 "disabled": bool(cfg.llm.get("disabled", False)),
+                # 备选模型armed没armed。**这一格之前根本不存在** ——
+                # 代码里 _fallback_client() 只看配置有没有 fallback 这一项，
+                # 不检查密钥；密钥要到真正兜底那一刻才在 _build() 里报
+                # LlmNotConfigured。于是漏建 Secret 的部署今天看起来一切正常，
+                # 直到主模型真的抖那天，兜底当场失效 —— 而那正是最需要它的时刻。
+                #
+                # 只读环境变量、不发探测请求（与 trace.langsmith_status 同一做法）：
+                # 探测要花钱、要等超时，还会在成本页上多出一笔没人发起的调用。
+                # 因此它只答得了"密钥在不在"，答不了"这把密钥有没有过期"。
+                "fallback": fallback_status(cfg),
             },
             "tenant": {
                 "enabled": cfg.tenant_enabled,
@@ -1108,7 +1147,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             return {"ok": False, "error": str(e), "hint": e.hint,
                     "checks": [], "latency_ms": None}
         latency = next((c["ms"] for c in checks if "ms" in c), None)
+        # 这个接口回答的是"自检全过吗"，所以 ok 仍是**全部**检查都过。
+        # 与 /api/sources 那条路径的 ok 语义有意不同：那边回答的是"能不能接入"。
+        # warnings 两边同一个形状，界面据它把"红=连不上"与"黄=有告警"分开。
+        warned = _executor_mod.advisory_failures(checks)
         return {"ok": all(c["ok"] for c in checks), "checks": checks,
+                "warnings": [{"name": c["name"], "detail": c["detail"]}
+                             for c in checks if c["name"] in warned],
                 "latency_ms": latency}
 
     @app.get("/api/introspect")
@@ -1305,9 +1350,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         with Executor(derived) as ex:
             checks = ex.self_check()
             tables = ex.introspect()
+        # ok 只看**阻断项** —— 账号姿态那几项没过照样能接入（见
+        # executor.ADVISORY_CHECKS），但它们要以 warnings 单独出接口：
+        # 只把 ok 翻成 true 而不交代原因，界面上就成了一次"检查通过"，
+        # 那正是这次放宽最容易滑向的地方。
+        warned = _executor_mod.advisory_failures(checks)
         return {
-            "ok": all(c["ok"] for c in checks),
+            "ok": not _executor_mod.blocking_failures(checks),
             "checks": checks,
+            # 没过的警示项：名字 + 原话。前端直接摆出来，不再自己拼措辞。
+            "warnings": [{"name": c["name"], "detail": c["detail"]}
+                         for c in checks if c["name"] in warned],
             "latency_ms": next((c["ms"] for c in checks if "ms" in c), None),
             # 库里此刻真有多少张表。卡片上的 table_count 是白名单快照，
             # 两个数不是一回事 —— 同时给出来，界面才看得见漂移。
@@ -1354,11 +1407,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             raise HTTPException(status_code=400, detail=f"{e}｜{e.hint}") from e
 
         if not probe["ok"]:
-            failed = [c["name"] for c in probe["checks"] if not c["ok"]]
+            failed = _executor_mod.blocking_failures(probe["checks"])
             raise HTTPException(status_code=400,
                                 detail=f"连接自检未通过：{'、'.join(failed)}")
         _sources.save_source(cfg, src)
-        _sources.record_probe(cfg, src, ok=probe["ok"], latency_ms=probe["latency_ms"],
+        # 落盘的 last_ok 仍然是「**全部**检查都过」，不是「允许接入」：卡片上
+        # 那盏灯要能把带告警的源与全绿的源区分开，而这一版有意不加表字段
+        # （askdb_sources 没有迁移机制，加列会在旧表上把读路径打崩）。
+        # 前端据 last_ok + last_latency_ms 判三态：连不上 / 有告警 / 正常。
+        _sources.record_probe(cfg, src, ok=probe["ok"] and not probe["warnings"],
+                              latency_ms=probe["latency_ms"],
                               visible_count=probe["visible_count"])
         return JSONResponse({"source": _sources.to_public(src), **probe}, status_code=201)
 
@@ -1397,7 +1455,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             t["allowed"] = t["name"] in allowed
         # 这个 GET 会写一次记录。它不是幂等纯读，但写的只是这次检查自身的
         # 结果，属于把已经付出的出站建连代价存下来，不改任何配置。
-        _sources.record_probe(cfg, src, ok=probe["ok"], latency_ms=probe["latency_ms"],
+        _sources.record_probe(cfg, src, ok=probe["ok"] and not probe["warnings"],
+                              latency_ms=probe["latency_ms"],
                               visible_count=probe["visible_count"])
         probe["checked_at"] = src.last_checked_at
         return JSONResponse(probe)
@@ -2803,7 +2862,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "multi_step": False, "converged_early": "",
             "rows_returned": out.get("row_count") or 0,
             "masked_columns": out.get("masked_columns") or [],
+            # 可信度那四条痕迹**沿用首跑**，与 masked_columns 同一个道理：
+            # 它们描述的是"这个答案是怎么来的"，而答案就是首跑那一个。
+            # 耗时 / token / 成本描述的是"这次调用发生了什么"，所以上面清零；
+            # 两类字段在这里必须分开处理 —— 一起清零的话，追踪页要么按缺省
+            # 判成满分，要么整条拒判，而工作台拿着同一份结果照样打了分，
+            # 同一次查询两页两个答案。
             "mask_degraded": bool(out.get("mask_degraded")),
+            "recall_blind": bool(out.get("recall_blind")),
+            "scope_narrowed": bool(out.get("scope_narrowed")),
+            "truncated": bool(out.get("truncated")),
             "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0,
             "steps": steps,
         })
@@ -2970,6 +3038,18 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             try:
                 ex.set_org(org)
                 res = ex.run(g.sql, limit_capped="R-09" in g.rules_fired)
+            except MaskUnresolved as e:
+                # 与 agent 模式同一条规矩：判不出投影来源就不返回，
+                # 而不是把整行涂成星号递出去（见 executor._mask 的注释）。
+                steps.append({"step": "execute", "ms": 0, "status": "blocked", "note": str(e)})
+                _audit(rejected_by="P03", sql_final=g.sql, rules_fired=g.rules_fired,
+                       explain_rows=ep.est_rows)
+                return JSONResponse({
+                    "ok": False, "question": "（直查模式）", "sql_final": g.sql,
+                    "rejected_by": "P03", "error": str(e), "hint": e.hint,
+                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                    "trace_id": trace_id,
+                })
             except DataSourceError as e:
                 steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
                 _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,
@@ -2984,8 +3064,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         note = f"返回 {res.row_count} 行"
         if res.masked_columns:
             note += f"；已脱敏 {len(res.masked_columns)} 列（{'、'.join(res.masked_columns[:5])}）"
-        if res.mask_degraded:
-            note += "；SQL 解析不出投影来源，本次按整行从严脱敏"
         steps.append({"step": "execute", "ms": res.elapsed_ms, "status": "ok",
                       "note": note})
         _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,

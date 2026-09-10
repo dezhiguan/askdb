@@ -15,6 +15,34 @@ from pathlib import Path
 from typing import Any
 
 
+#: Span 状态口径 —— 三档，一处定义。
+#:
+#: 原来只有 ok/blocked/failed/skipped 四个值在用，而页面上实际只区分
+#: 「等于 ok」与「不等于 ok」两态。于是两类信息一起丢了：主模型失败后被
+#: 重试救回来的那条链路，和一次就成的干净链路，长得一模一样；向量召回
+#: 回落关键词这种「跑成了但能力降级了」的情况，只能算成成功。
+#:
+#: OK 档   = 按主路径完成（hit 是命中应答缓存，那是一次正常收尾）
+#: SOFT 档 = 有产出，但不是主路径的产出，或产出本身需要存疑
+#: 其余    = 硬失败（failed / blocked / skipped）
+OK_STATUSES = frozenset({"ok", "hit"})
+SOFT_STATUSES = frozenset({
+    "fallback",     # 由备选模型 / 重试救回来的产出
+    "degraded",     # 产出了，但能力低于主路径（如向量召回回落关键词）
+    "empty",        # 执行成功但零行
+})
+
+
+def step_failed(status: str) -> bool:
+    """这一步是不是**硬失败**。
+
+    SOFT 档不算失败 —— 把 fallback 算成失败，「模型调用成功率」会在切备选
+    成功时反而下跌；把 empty 算成失败，一次如实返回零行的查询会变成故障。
+    但它们也不是 ok，那正是这三个值存在的理由。
+    """
+    return status not in OK_STATUSES and status not in SOFT_STATUSES
+
+
 @dataclass
 class StepTrace:
     step: str
@@ -24,7 +52,28 @@ class StepTrace:
     cached_in: int = 0          # tok_in 中命中前缀缓存的部分（含在 tok_in 里，不另计）
     cost_cny: float = 0.0       # 该步的金额，按**当次实际应答的模型**的单价算
     note: str = ""
-    status: str = "ok"          # ok | blocked | failed | skipped
+    status: str = "ok"          # 取值见本模块开头的三档口径
+    #: 这一步的第几次尝试 / 共几次。**失败的尝试各占一条 StepTrace**，
+    #: 不被成功的那次覆盖 —— 覆盖掉的话，"重试救回来了"这件事在库里
+    #: 就不存在，前端再怎么改也渲染不出来。0 表示这一步只跑了一次。
+    attempt: int = 0
+    attempts_total: int = 0
+    #: **实际应答的模型**，按次记。整条链路一个 model 字段是不够的：
+    #: 主模型超时切备选时，那个字段记的是配置里的主模型，与真正出活的
+    #: 那个不是同一个，账也跟着记错。
+    model: str = ""
+    #: 失败时的厂商错误码 / 异常类名。空字符串表示这一步没失败。
+    #: **不含任何内容**，因此可以随 /api/trace 出接口。
+    error_code: str = ""
+    #: 厂商回的原始错误消息，原样保留不截断。
+    #: **有意与 note 分开**：厂商的 4xx 消息可能回显请求片段（提示词里带着
+    #: 表结构与用户的问题），而 /api/trace 是免登录可读的、刻意不放 SQL 与
+    #: 问题原文。所以它不进 STEP_FIELDS —— 只留在审计记录与 /api/replay
+    #: （要登录、要开关）那条路上，与 sql_raw/question 同一道边界。
+    error_message: str = ""
+    #: 失败后做了什么 —— 切备选、就地重试、回落备用路径、放行。
+    #: 没有它，一条 failed 的 span 只说明"这里断过"，说不清链路怎么活下来的。
+    disposition: str = ""
     #: 该步涉及的表名。目前只有 schema_recall 填：note 里的"命中 N 张表"是个
     #: 数字，而看的人真正要判断的是**哪 N 张** —— 召回偏了与召回对了，在那个
     #: 数字上完全一样。放结构化字段而不是拼进 note，是因为界面要能逐张列出，
@@ -43,14 +92,23 @@ class Tracer:
     def add(
         self, step: str, since: float, note: str = "", status: str = "ok",
         tok_in: int = 0, tok_out: int = 0, cached_in: int = 0, cost_cny: float = 0.0,
-        tables: list[str] | None = None,
+        tables: list[str] | None = None, ms: int | None = None,
+        attempt: int = 0, attempts_total: int = 0, model: str = "",
+        error_code: str = "", error_message: str = "", disposition: str = "",
     ) -> StepTrace:
+        """ms 显式传入时不按 since 算 —— 一个节点落多条 span（每次尝试一条）
+        时，since 是**整个节点**的起点，拿它算每一条就等于给每次尝试都记上
+        全节点的耗时，几条加起来远超总耗时。只有单条 span 的节点才用 since。
+        """
         st = StepTrace(
             step=step,
-            ms=int((time.perf_counter() - since) * 1000),
+            ms=int((time.perf_counter() - since) * 1000) if ms is None else int(ms),
             tok_in=tok_in, tok_out=tok_out, cached_in=cached_in,
             cost_cny=cost_cny, note=note, status=status,
             tables=list(tables or []),
+            attempt=attempt, attempts_total=attempts_total, model=model,
+            error_code=error_code, error_message=error_message,
+            disposition=disposition,
         )
         self.steps.append(st)
         return st
@@ -87,8 +145,12 @@ class Tracer:
         out = []
         for s in self.steps:
             d = asdict(s)
-            if not d.get("tables"):
-                d.pop("tables", None)
+            # 同理，新增的五个字段绝大多数步骤都用不上（只跑一次、没失败），
+            # 空值一律不落盘，免得每条审计凭空胖五个键。
+            for k in ("tables", "attempt", "attempts_total", "model",
+                      "error_code", "error_message", "disposition"):
+                if not d.get(k):
+                    d.pop(k, None)
             out.append(d)
         return out
 
@@ -150,6 +212,17 @@ def call_cost_cny(
     miss = int(tok_in or 0) - cached
     amount = (miss / 1000 * p_in + cached / 1000 * p_cached + int(tok_out or 0) / 1000 * p_out)
     return round(amount * peak_multiplier(llm_cfg, at), 6)
+
+
+def embed_cost_cny(tokens: int, schema_rag_cfg: dict[str, Any]) -> float:
+    """一次 embedding 调用的金额。**只按输入计**——嵌入没有输出 token。
+
+    单价必须由配置给出，漏配就是 0 元。这里**不设默认价**：默认一个
+    看起来很像的数，账面就会一直是对不上的，而没人会去核对一个
+    "看起来合理"的数字。0 元在成本页上是显眼的，会被人问起来。
+    """
+    price = float(schema_rag_cfg.get("embedding_price_per_1k", 0.0) or 0.0)
+    return round(max(0, int(tokens or 0)) / 1000 * price, 6)
 
 
 def cost_cny(tok_in: int, tok_out: int, llm_cfg: dict[str, Any]) -> float:

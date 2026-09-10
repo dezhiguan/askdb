@@ -286,14 +286,38 @@ org_id:
 填环境变量名，或由服务端主密钥加密后保存。MySQL 的 TLS 沿用 PostgreSQL 那两个键：
 `sslmode=require`（只加密不验证）、`sslmode=verify-ca|verify-full` + `sslrootcert=…`。
 
-接入 MySQL 要的是一个**只授 SELECT 的账号**，与 PostgreSQL 侧的 `askdb_ro` 同一个姿态。
-自检里有三项直接检查这件事（只读、连接数上限、无写权限），拿 `root` 接会被当场拒掉：
+接入 MySQL **推荐**用一个只授 SELECT 的账号，与 PostgreSQL 侧的 `askdb_ro` 同一个姿态：
 
 ```sql
 CREATE USER 'askdb_ro'@'%' IDENTIFIED BY '…';
 GRANT SELECT ON pet.* TO 'askdb_ro'@'%';
-ALTER USER 'askdb_ro'@'%' WITH MAX_USER_CONNECTIONS 5;   -- 自检要求 > 0
+GRANT USAGE ON *.* TO 'askdb_ro'@'%' WITH MAX_USER_CONNECTIONS 5;
 ```
+
+### 高权账号（root / superuser）
+
+**能接进来，但不会显示成绿的。** 接入自检分两类，判据是"这一项证明的是什么"：
+
+| | 项 | 证明的是 | 不过时 |
+|---|---|---|---|
+| **阻断** | 网络可达与认证 · **写操作实探** · 语句超时已设置 | 这条连接**现在**写不了、以及我们不会打垮对方的库 | 拒绝接入 |
+| 警示 | 账号为只读 · 连接数上限已设置 · 非超级账号且无写权限 · 授权表集合 | 这个账号**本来就不该写**（姿态，不是当下的能力） | 照样接入，但自检行 ✕、接口出 `warnings`、卡片显示「有告警」 |
+
+写操作实探是这条链路上**唯一不靠声明的证据** —— 它真发一条 `DELETE … WHERE 1=0`，
+由引擎拒掉才算过（MySQL 报 1792）。所以 root 接进来仍然写不进去：会话级只读事务
+把着，实探每次接入都验一遍。少的是"那一层万一被绕开"时的第二道兜底，
+所以生产库仍然该用只读账号。要恢复成一项不过就不许接入：
+`datasources.strict_account_check: true`。
+
+放开高权账号的同时补了两条护栏（都是只有高权账号才碰得到的路）：
+
+- `SELECT … INTO OUTFILE / DUMPFILE` —— 顶着 SELECT 名字写**服务器上的文件**，
+  只读事务拦不住（写的不是表），账号有 FILE 权限时就是一次落地写。现在在
+  进解析器**之前**按文本拦，归因 R-02。此前它只是恰好被 sqlglot 解析不了挡着。
+- 加锁读（`FOR UPDATE` / `LOCK IN SHARE MODE` / `FOR SHARE`）—— 不改数据，
+  但会在对方生产库上挡住写入。`FOR UPDATE` 在只读事务里会被引擎拒（1792），
+  **`LOCK IN SHARE MODE` 不会**（实测放行），一条扫大表的加锁读能把对方的写
+  堵到语句超时为止。只读分析永远不需要加锁，一律拒。
 
 ---
 

@@ -15,8 +15,8 @@ from askdb import guard
 ORG = 65
 
 
-def chk(sql: str, cfg, org: int = ORG):
-    return guard.check(sql, cfg, org_id=org)
+def chk(sql: str, cfg, org: int = ORG, dialect: str = "duckdb"):
+    return guard.check(sql, cfg, org_id=org, dialect=dialect)
 
 
 # --------------------------------------------------------------------- R-01
@@ -64,6 +64,40 @@ def test_r02_comment_split_keyword_is_still_caught(cfg):
 def test_r02_case_mixing_is_still_caught(cfg):
     r = chk("dElEtE FROM documents WHERE 1=1", cfg)
     assert not r.ok and r.rejected_by == "R-02"
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT kb_id FROM documents INTO OUTFILE '/var/lib/mysql-files/x.txt'",
+    "SELECT kb_id INTO OUTFILE '/var/lib/mysql-files/x.txt' FROM documents",
+    "SELECT kb_id INTO DUMPFILE '/var/lib/mysql-files/x.bin' FROM documents",
+    "select kb_id from documents into   outfile '/tmp/x'",
+])
+def test_r02_rejects_select_that_writes_a_file(sql, cfg):
+    """顶着 SELECT 名字的写操作。
+
+    它写的是**数据库服务器上的文件**，不是表 —— 会话级只读事务因此拦不住它，
+    账号有 FILE 权限时就是一次落地写。当前 sqlglot 恰好解析不了这个语法，
+    于是它落在 R-01 上；那是运气不是护栏，解析器哪天支持了它这条路就自己开了。
+    所以在进解析器之前先按文本拦，并且归因到 R-02。
+    """
+    r = chk(sql, cfg, dialect="mysql")
+    assert not r.ok and r.rejected_by == "R-02" and "OUTFILE" in r.reason
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT kb_id FROM documents FOR UPDATE",
+    "SELECT kb_id FROM documents LOCK IN SHARE MODE",
+    "SELECT kb_id FROM documents FOR SHARE",
+])
+def test_r02_rejects_locking_reads(sql, cfg):
+    """加锁读不改数据，但会在**对方生产库**上挡住写入。
+
+    FOR UPDATE 在只读事务里会被引擎拒（实测 MySQL 1792），
+    LOCK IN SHARE MODE **不会** —— 共享锁在只读事务里合法，一条扫大表的
+    加锁读能把对方的写堵到语句超时为止。只读分析永远不需要加锁。
+    """
+    r = chk(sql, cfg, dialect="mysql")
+    assert not r.ok and r.rejected_by == "R-02" and "锁" in r.reason
 
 
 # --------------------------------------------------------------------- R-03
