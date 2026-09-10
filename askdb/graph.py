@@ -53,6 +53,10 @@ class AskState(TypedDict, total=False):
     #: 那句"这次是盲选"不能在恢复后凭空消失。
     recall_blind: bool
     recall_note: str
+    #: 召回**降级**过（配置声明 vector，实际跑的是 keyword）。与盲选分开：
+    #: 盲选是"一张都没命中"，降级是"换了一套更粗的召回"—— 后者照样能挑出
+    #: 几张表来，答案于是长得完全正常，而挑错的概率高得多。
+    recall_degraded: bool
 
     sql_raw: str
     sql_final: str
@@ -190,6 +194,9 @@ class AskResult:
     #: 出接口而不只进审计 —— 事后能查出来，救不了正在看这个数字的人。
     recall_blind: bool = False
     recall_note: str = ""
+    #: 召回降级过。出接口的理由与 recall_blind 一字不差：事后能查出来，
+    #: 救不了正在看这个数字的人。
+    recall_degraded: bool = False
     #: 脱敏判定退化过（SQL 解析不出，整行按敏感处理）。
     mask_degraded: bool = False
     #: 本次实际脱敏的列。
@@ -419,6 +426,7 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         "recall_truncated": r.truncated,
         "recall_blind": r.blind,
         "recall_note": r.note,
+        "recall_degraded": bool(r.degraded_from),
     }
 
 
@@ -1385,6 +1393,7 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         # 事后复盘一条可疑结果时，第一个要回答的问题就是"模型当时看得见
         # 该看的那张表吗"；脱敏同理，不记就无从证明当时到底脱没脱。
         "recall_blind": result.recall_blind,
+        "recall_degraded": result.recall_degraded,
         # 范围被收窄过。与 recall_blind 同一类信息：链路全绿、结果却不可全信，
         # 事后复盘一个对不上的数字时，这是第一个要看的字段。
         "scope_narrowed": result.scope_narrowed,
@@ -1535,6 +1544,7 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
         tables_hit=out.get("tables_hit", []), metrics_hit=out.get("metrics_hit", []),
         recall_blind=bool(out.get("recall_blind", False)),
         recall_note=str(out.get("recall_note", "") or ""),
+        recall_degraded=bool(out.get("recall_degraded", False)),
         mask_degraded=bool(out.get("mask_degraded", False)),
         masked_columns=out.get("masked_columns", []),
         anaphoric=bool(out.get("anaphoric", False)),

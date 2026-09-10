@@ -88,11 +88,21 @@ def test_run_raises_on_bad_sql(ex):
 
 
 def test_timeout_interrupts_long_query(cfg):
-    """R-12：DuckDB 没有 statement_timeout，靠看门狗中断。"""
-    cfg.raw["guard"]["statement_timeout_ms"] = 1
+    """R-12：DuckDB 没有 statement_timeout，靠看门狗中断。
+
+    **阈值不能取 1ms。** 看门狗是另起一条线程等 timeout 再调 con.interrupt()；
+    阈值太小时它可能在 con.execute() 真正开跑**之前**就到点，那次 interrupt
+    打在一条空闲连接上等于没打，查询随后跑完，用例报 DID NOT RAISE。
+    这条在 2026-09-10 的两轮全量里各偶发了一次，单跑却总是绿的 —— 典型的
+    竞态假红，比真 bug 更费排查时间。
+
+    取 150ms + 一条实测 ~2.9s 的查询：到点时 execute 必然已在飞行中，
+    余量二十倍。改小任何一边之前，先想清楚上面这段。
+    """
+    cfg.raw["guard"]["statement_timeout_ms"] = 150
     with Executor(cfg) as e:
         with pytest.raises(DataSourceError) as err:
-            e.run("SELECT COUNT(*) FROM range(400000000)")
+            e.run("SELECT SUM(range) FROM range(400000000)")
     assert "超时" in str(err.value)
 
 

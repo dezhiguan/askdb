@@ -174,6 +174,51 @@ def test_vector_fallback_note_survives_the_blind_note(cfg, monkeypatch):
     assert "关键词召回一张表都没命中" in r.note
 
 
+def test_degraded_recall_hands_the_model_every_table_it_can_afford(cfg, monkeypatch):
+    """降级也走盲选那条兜底 —— 它比盲选更隐蔽，后果却一样。
+
+    降级之后关键词照样能挑出几张表来，页面上一切正常；挑错的那次会连
+    "库里没有这类表"一并断言出去（实测：商品表就在白名单里，答案却写
+    "本库无商品主表"）。只要整份白名单塞得进兜底预算，就该全交给模型 ——
+    看得见全部表名是它挑不错的前提。
+    """
+    from askdb import vectors
+
+    class Dead:
+        def search(self, question, k):
+            raise vectors.EmbeddingUnavailable("批量超过厂商上限")
+
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    r = schema_rag.recall("有哪些文档", cfg, index=Dead())
+
+    assert r.mode == "keyword"
+    assert {t.name for t in r.tables} == set(cfg.tables), "降级时该把全部表交给模型"
+    assert "回落" in r.note and "全部" in r.note
+    # 盲选与降级是两件事：这次**有**表命中关键词，别把它说成盲选
+    assert r.blind is False
+
+
+def test_degraded_recall_without_budget_keeps_the_keyword_picks(cfg):
+    """塞不下全量时，保留关键词挑的那几张，并**如实说它们是怎么来的**。
+
+    说成"按白名单顺序取的、不是过线选出来的"会把排查往错方向带 ——
+    这几张确实是挑出来的，只是挑的那一档更粗。
+    """
+    from askdb import vectors
+
+    class Dead:
+        def search(self, question, k):
+            raise vectors.EmbeddingUnavailable("批量超过厂商上限")
+
+    cfg.raw["schema_rag"]["mode"] = "vector"
+    cfg.raw["schema_rag"]["token_budget"] = 60
+    cfg.raw["schema_rag"]["blind_budget"] = 60
+    r = schema_rag.recall("有哪些文档", cfg, index=Dead())
+
+    assert r.tables and len(r.tables) < len(cfg.tables)
+    assert "塞不进兜底预算" in r.note
+
+
 def test_vector_mode_recalls_metrics_by_semantics(cfg):
     """别名没写全时，靠语义把口径捞回来。"""
     cfg.raw["schema_rag"]["mode"] = "vector"

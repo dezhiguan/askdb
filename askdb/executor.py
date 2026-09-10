@@ -323,6 +323,11 @@ class _DuckBackend(_Backend):
                  "tenant": bool(r[3])} for r in rows]
 
 
+#: 一眼能看出"类型选错了"的端口。填错类型时驱动给的报错毫无指向性
+#: （PG 驱动打 3306 报的是 SSL 协商失败），这张表把它翻译成人话。
+_OTHER_DEFAULT_PORTS = {"3306": "MySQL", "5432": "PostgreSQL"}
+
+
 def _pg_connect_hint(dsn: str, upstream: str) -> str:
     """连不上 PostgreSQL 时，该去查哪一头。
 
@@ -342,7 +347,19 @@ def _pg_connect_hint(dsn: str, upstream: str) -> str:
         return (f"dsn 指向的 {local} 是隧道本地端口，真实库在 {upstream}；"
                 f"本机该端口没有服务是正常的。先确认到 {upstream} 的 SSH 隧道已建立，"
                 f"再查库名与账号。")
-    return "确认 Postgres.app 在运行、库名与账号正确、该账号已被授权。"
+    # 端口是另一种库的默认端口时，先说这一条 —— 十有八九是「数据库类型」
+    # 选错了。PG 驱动打到 3306 会报 "invalid response to SSL negotiation"，
+    # 那句话没有任何一个字指向真正的原因，照着它查会绕很远。
+    #
+    # **只提示，不拒绝**：把 PostgreSQL 跑在 3306 完全合法，替用户否掉一个
+    # 能连通的配置，比多给一句提示糟得多。
+    port = parts.get("port", "5432")
+    if port in _OTHER_DEFAULT_PORTS and _OTHER_DEFAULT_PORTS[port] != "PostgreSQL":
+        return (f"{port} 是 {_OTHER_DEFAULT_PORTS[port]} 的默认端口，"
+                f"而这里选的类型是 PostgreSQL —— 先确认「数据库类型」选对了。"
+                f"（若这个库确实是跑在 {port} 上的 PostgreSQL，再查库名与账号。）")
+    return ("确认目标机器上的 PostgreSQL 在运行、库名与账号正确、该账号已被授权；"
+            "本机调试时确认 Postgres.app 已启动。")
 
 
 class _PgBackend(_Backend):
@@ -650,7 +667,11 @@ def _masked(value) -> str:
 def _mysql_connect_hint(kv: dict[str, str], upstream: str) -> str:
     """连不上 MySQL 时该去查哪一头。与 _pg_connect_hint 同一套判断。"""
     db = kv.get("dbname", "?")
-    local = f"{kv.get('host', '?')}:{kv.get('port', '3306')}"
+    port = kv.get("port", "3306")
+    if port in _OTHER_DEFAULT_PORTS and _OTHER_DEFAULT_PORTS[port] != "MySQL":
+        return (f"{port} 是 {_OTHER_DEFAULT_PORTS[port]} 的默认端口，"
+                f"而这里选的类型是 MySQL —— 先确认「数据库类型」选对了。")
+    local = f"{kv.get('host', '?')}:{port}"
     tunneled = bool(upstream) and upstream.strip().rstrip("/").removesuffix(f"/{db}") != local
     if tunneled:
         return (f"dsn 指向的 {local} 是隧道本地端口，真实库在 {upstream}；"

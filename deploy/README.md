@@ -183,7 +183,7 @@ python -m scripts.migrate_sources_to_pg -c config/public.yaml             # 再�
 | 环境变量 | 不配的后果 | 为什么不配 |
 |---|---|---|
 | `ASKDB_ADMIN_TOKEN` | 角色成员的写入整体关闭（fail-closed），页面显示只读 | 对外实例没有可信调用方，开了等于谁都能改成员名单 |
-| `ASKDB_SECRET_KEY` | 运行时添加数据源时不接受明文口令，只能填环境变量名 | 口令一个字不落盘，这正是这个实例该有的姿态 |
+| `ASKDB_SECRET_KEY` | **2026-09-10 起已配**（此前不配）。数据源口令可以直接在界面上填，服务端加密后落 `askdb_sources.password_enc` | 不配它就等于每接一个第三方库都要改 Secret + 滚部署，而"运行时添加数据源"的意义就是不用发版。丢了这把 key，已存口令解不开（表现为认证失败） |
 
 建完用 `curl -s https://askdb.ragforge.net/api/health | jq .quota` 确认
 `backend` 是 `redis`、`multi_replica_safe` 是 `true`。若显示 `file`，说明
@@ -221,9 +221,14 @@ ssh root@8.163.30.216 "docker exec -i ragforge-postgres \
   psql -U ragforge -d careermate_db -v pwd=\"'<cm 口令>'\"" < scripts/careermate_readonly_setup.sql
 ```
 
-再建/补 Secret。两个数据源的口令走 `askdb-db`（`envFrom` 取整个 Secret，
-加键即可，不必改 manifest）—— 本实例有意不配 `ASKDB_SECRET_KEY`，
-所以数据源口令**只能填环境变量名**，明文那条路是关着的：
+再建/补 Secret。自家两个数据源的口令走 `askdb-db`（`envFrom` 取整个 Secret，
+加键即可，不必改 manifest）。
+
+> 2026-09-10 起 `ASKDB_SECRET_KEY` 已配（同一个 Secret 里加一个键即可，
+> 值用 `openssl rand -base64 32`），所以**第三方库不必再走这条路** ——
+> 口令直接在界面上填，服务端加密后落库，不用改 Secret 也不用滚部署。
+> 下面这几个变量名是给**自家 infra** 用的：部署时就知道口令，
+> 走环境变量比走加密存储少一层可丢的东西。
 
 ```bash
 kubectl -n askdb create secret generic askdb-sources \

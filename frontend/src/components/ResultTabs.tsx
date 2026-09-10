@@ -60,6 +60,11 @@ function AnswerCard({ result, onGoTab }: {
     : result.recall_blind
     ? (result.recall_note
        || '这次没有任何表命中问题里的关键词，下面用到的表是兜底选的，结果可能答非所问 —— 请核对 SQL，或在问题里直接写出表名。')
+    // 降级排在盲选之后、截断之前：它比盲选更隐蔽 —— 换成粗一档的召回照样
+    // 能挑出几张表，页面上一切正常，而挑错的那次会连"库里没有这类表"一起
+    // 断言出来（实测：商品表就在白名单里，答案却说"本库无商品主表"）。
+    : result.recall_degraded
+    ? '本次 Schema 召回从向量降级成了关键词匹配，可能没把真正相关的表交给模型 —— 请核对 SQL 用的是不是该用的那张表。'
     : result.truncated
       ? `结果达到行数上限被截断，下面只是前 ${(result.row_count ?? 0).toLocaleString()} 行，不是完整清单。`
       : (result.hedge_terms?.length

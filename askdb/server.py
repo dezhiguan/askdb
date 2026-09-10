@@ -2870,6 +2870,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 同一次查询两页两个答案。
             "mask_degraded": bool(out.get("mask_degraded")),
             "recall_blind": bool(out.get("recall_blind")),
+            "recall_degraded": bool(out.get("recall_degraded")),
             "scope_narrowed": bool(out.get("scope_narrowed")),
             "truncated": bool(out.get("truncated")),
             "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0,
