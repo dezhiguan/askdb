@@ -49,9 +49,10 @@ from typing import Any
 
 from .config import Column, Config, Table
 
-# 只有这两种后端有真正的执行与护栏实现（见 executor 的 _DuckBackend/_PgBackend
-# 与 Config.dialect）。列出别的类型就是在承诺不存在的能力。
-SUPPORTED_TYPES = ("postgresql", "duckdb")
+# 只有这三种后端有真正的执行与护栏实现（见 executor 的 _DuckBackend /
+# _PgBackend / _MySqlBackend 与 Config.dialect）。列出别的类型就是在承诺
+# 不存在的能力 —— 界面上那个下拉框是这份清单直接渲染出来的。
+SUPPORTED_TYPES = ("postgresql", "mysql", "duckdb")
 
 _ID_RE = re.compile(r"src_[0-9a-f]{12}")
 _ENV_RE = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
@@ -609,6 +610,11 @@ def to_public(src: Source, *, table_count: int | None = None) -> dict[str, Any]:
     }
 
 
+#: 各类型的默认端口。显示用 —— 连接串里没写 port= 时，界面上"主机:端口"
+#: 那一格若一律按 5432 渲染，MySQL 源就会被标成一个它根本没连的端口。
+DEFAULT_PORT = {"postgresql": "5432", "mysql": "3306"}
+
+
 def _host_of(dsn: str, type_: str) -> str:
     if type_ == "duckdb":
         return Path(dsn).name
@@ -616,4 +622,4 @@ def _host_of(dsn: str, type_: str) -> str:
     port = re.search(r"port=(\d+)", dsn)
     if not m:
         return ""
-    return f"{m.group(1)}:{port.group(1)}" if port else m.group(1)
+    return f"{m.group(1)}:{port.group(1) if port else DEFAULT_PORT.get(type_, '')}".rstrip(":")

@@ -137,7 +137,7 @@ export function AddSourceModal({ meta, onClose, onDone }: {
                   <div className="form-row">
                     <label htmlFor="src-addr">数据库地址</label>
                     <input id="src-addr" value={addr} onChange={e => setAddr(e.target.value)}
-                           placeholder="db.internal:5432" />
+                           placeholder={`db.internal:${DEFAULT_PORT[type] ?? '5432'}`} />
                   </div>
                   <div className="form-row">
                     <label htmlFor="src-db">数据库名</label>
@@ -246,7 +246,11 @@ export function AddSourceModal({ meta, onClose, onDone }: {
   )
 }
 
-const TYPE_LABEL: Record<string, string> = { postgresql: 'PostgreSQL', duckdb: 'DuckDB' }
+const TYPE_LABEL: Record<string, string> = { postgresql: 'PostgreSQL', mysql: 'MySQL', duckdb: 'DuckDB' }
+
+/** 不写端口时各类型默认连哪个端口。占位符照抄 5432 会让人把 MySQL
+ *  填成一个连不上的地址，而"地址填错"与"库没起来"在报错里长得一样。 */
+const DEFAULT_PORT: Record<string, string> = { postgresql: '5432', mysql: '3306' }
 
 function TablePick({ table, checked, onToggle }: {
   table: ScannedTable

@@ -285,6 +285,34 @@ Two keys the public instance leaves unset on purpose:
 | `ASKDB_ADMIN_TOKEN` | Role-member writes are closed entirely (fail-closed) | An open instance has no trusted caller; setting it would let anyone edit the member list |
 | `ASKDB_SECRET_KEY` | A source added at runtime cannot take a literal password, only the name of an environment variable | No password ever reaches disk — which is exactly the posture this instance should have |
 
+
+### Source types
+
+Three, and their guardrails land in different places — **different landing spots have to be
+written down**, or the reader will assume they are equivalent:
+
+| | DuckDB | PostgreSQL | MySQL / MariaDB |
+|---|---|---|---|
+| Read-only | file opened `read_only` | read-only role + `default_transaction_read_only` | session-level `SET SESSION TRANSACTION READ ONLY` (**MySQL has no account-level switch**, so the self-check also reads `SHOW GRANTS`) |
+| Statement timeout (R-12) | watchdog thread calling `interrupt()` | native `statement_timeout` | `max_execution_time` (`max_statement_time` on MariaDB), probed in order; if neither sticks the self-check goes red |
+| Scan estimate (R-11) | `EXPLAIN` cardinality | `EXPLAIN (FORMAT JSON)` | `EXPLAIN FORMAT=JSON`, falling back to the classic `EXPLAIN` rows column |
+| Row-level security | none | **yes**, `app.org_id` + RLS policies | **none** — `tenant.mode: rls` is refused at startup on MySQL rather than silently degrading to a single layer |
+| Column comments | not available | `col_description` | `COLUMN_COMMENT` |
+| Enum values | none | most-common values from `pg_stats` | native `ENUM`/`SET` read straight off the type; other columns have no free equivalent |
+
+All three share one connection-string syntax (`host=… port=… dbname=… user=…`) and the
+password never goes in it. MySQL TLS reuses the PostgreSQL keys: `sslmode=require`, or
+`sslmode=verify-ca|verify-full` with `sslrootcert=…`.
+
+MySQL needs a **SELECT-only account**, the same posture as `askdb_ro` on the PostgreSQL side —
+three self-checks test exactly this, so connecting as `root` is refused:
+
+```sql
+CREATE USER 'askdb_ro'@'%' IDENTIFIED BY '…';
+GRANT SELECT ON pet.* TO 'askdb_ro'@'%';
+ALTER USER 'askdb_ro'@'%' WITH MAX_USER_CONNECTIONS 5;   -- the self-check wants > 0
+```
+
 ---
 
 ## Repository layout
@@ -587,7 +615,7 @@ complete — measured numbers are in the section above.
 > **Not yet built:** binding members to real **auth-gateway** identities (JWKS /
 > token-exchange) — until then login uses fixed accounts and member writes fall back
 > to a shared admin token, which the public instance leaves unset. Data sources are
-> limited to DuckDB and PostgreSQL. Multi-step planning (P5) ships but is off by
+> DuckDB, PostgreSQL and MySQL/MariaDB. Multi-step planning (P5) ships but is off by
 > default (ablation F). Runtime-registered sources carry no tenant isolation by
 > design (see [Guardrails](#guardrails)). The prototype's phase-three and
 > phase-four screens — connector nodes and developer tooling — are not implemented.
@@ -604,7 +632,7 @@ complete — measured numbers are in the section above.
 | Orchestration | `langgraph` + `langgraph-checkpoint-sqlite` | Needs conditional routing and state persistence; checkpoints are what make failure replay and resume possible |
 | Abstractions / model | `langchain-core`, `langchain-openai` | Structured output; OpenAI-compatible endpoints |
 | **SQL parsing & rewriting** | `sqlglot` | A rewritable AST is the prerequisite for forced injection |
-| Queried data | DuckDB (bundled sample) / PostgreSQL | |
+| Queried data | DuckDB (bundled sample) / PostgreSQL / MySQL (`PyMySQL`) | Every driver is a main dependency: the console's type dropdown renders `SUPPORTED_TYPES` directly, so an optional extra would mean "offered but unconnectable" |
 | Source registry | PostgreSQL via `psycopg[binary,pool]` | A main dependency, not an extra — without it an instance cannot list its own sources. Pooled, because every query path reads it once |
 | Console | React + Vite, served by FastAPI | Build output is committed; the image ships no Node |
 | Interface | FastAPI + MCP | MCP per the 2026-07-28 stateless spec |

@@ -118,11 +118,33 @@ def test_rejects_metric_without_definition(tmp_path):
         load(p)
 
 
-def test_rejects_rls_mode_on_non_postgres(tmp_path):
-    main = BASE_MAIN.replace("mode: predicate", "mode: rls")
+@pytest.mark.parametrize("ds", [
+    "{type: duckdb, path: ./data/x.duckdb, read_only: true}",
+    "{type: mysql, dsn: 'host=h dbname=d user=u', read_only: true}",
+])
+def test_rejects_rls_mode_on_non_postgres(tmp_path, ds):
+    """MySQL 没有行级安全。静默降级成单层谓词，等于把配置里写着的
+    第二道防线变成一句空话 —— 所以启动就炸。"""
+    main = BASE_MAIN.replace("mode: predicate", "mode: rls").replace(
+        "datasource: {type: duckdb, path: ./data/x.duckdb, read_only: true}",
+        f"datasource: {ds}")
     p = _write(tmp_path, main, BASE_TABLES, "metrics: []")
     with pytest.raises(ValueError, match="PostgreSQL"):
         load(p)
+
+
+@pytest.mark.parametrize("ds, dialect", [
+    ("{type: duckdb, path: ./data/x.duckdb}", "duckdb"),
+    ("{type: postgresql, dsn: 'host=h dbname=d user=u'}", "postgres"),
+    ("{type: mysql, dsn: 'host=h dbname=d user=u'}", "mysql"),
+])
+def test_dialect_follows_the_datasource_type(tmp_path, ds, dialect):
+    """方言错了，护栏改写出来的 SQL 就回不去那个库 —— R-09 注入的 LIMIT、
+    R-10 注入的租户谓词都要按它重新生成。"""
+    main = BASE_MAIN.replace(
+        "datasource: {type: duckdb, path: ./data/x.duckdb, read_only: true}",
+        f"datasource: {ds}")
+    assert load(_write(tmp_path, main, BASE_TABLES, "metrics: []")).dialect == dialect
 
 
 def test_metric_matches_by_name_and_alias():

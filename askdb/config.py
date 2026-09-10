@@ -236,7 +236,7 @@ class Config:
 
     @property
     def dsn(self) -> str:
-        """PostgreSQL 连接串。密码只走环境变量，不落配置文件。"""
+        """PostgreSQL / MySQL 连接串。密码只走环境变量，不落配置文件。"""
         import os
 
         ds = self.raw.get("datasource", {})
@@ -254,7 +254,8 @@ class Config:
         # 而不是让调用方吃一个裸 KeyError('')。
         if not self.has_default_source:
             self._ds()
-        return {"duckdb": "duckdb", "postgresql": "postgres"}[self.db_type]
+        return {"duckdb": "duckdb", "postgresql": "postgres",
+                "mysql": "mysql"}[self.db_type]
 
     @property
     def tenant_enabled(self) -> bool:
@@ -473,10 +474,13 @@ def _validate(cfg: Config) -> None:
         if not (m.expr or m.predicate):
             errs.append(f"口径「{m.name}」既没有 expr 也没有 predicate")
 
+    # 行级安全只有 PostgreSQL 有。MySQL 落到这条上是**故意**的：那边没有 RLS，
+    # 选了 rls 却静默降级成单层谓词，就等于把配置里写着的第二道防线变成一句空话。
     if (cfg.has_default_source
             and cfg.raw["tenant"]["mode"] in ("rls", "rls_and_predicate")
             and cfg.db_type != "postgresql"):
-        errs.append(f"tenant.mode={cfg.raw['tenant']['mode']} 需要 PostgreSQL，当前是 {cfg.db_type}")
+        errs.append(f"tenant.mode={cfg.raw['tenant']['mode']} 需要 PostgreSQL，当前是 {cfg.db_type}"
+                    f"（该数据源没有行级安全，请改用 tenant.mode: predicate）")
 
     if errs:
         raise ValueError("配置校验未通过：\n  - " + "\n  - ".join(errs))

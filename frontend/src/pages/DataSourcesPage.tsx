@@ -9,10 +9,10 @@ import type { HealthState } from '../useHealth'
 import { useCountdown } from '../useCountdown'
 
 /** 数据源类型的短标。图标位 34px，放不下全名。 */
-const TYPE_MARK: Record<string, string> = { duckdb: 'DK', postgresql: 'PG' }
+const TYPE_MARK: Record<string, string> = { duckdb: 'DK', postgresql: 'PG', mysql: 'MY' }
 
 /** 副标题里的引擎名。卡片副标题是「引擎 · host:port」，引擎位要给人看的写法。 */
-const TYPE_NAME: Record<string, string> = { duckdb: 'DuckDB', postgresql: 'PostgreSQL' }
+const TYPE_NAME: Record<string, string> = { duckdb: 'DuckDB', postgresql: 'PostgreSQL', mysql: 'MySQL' }
 
 /** 一张运行时数据源卡的连接检查结果。状态灯、延迟、库内表数、最后检查
  *  四处都靠它 —— 本次会话刚测过就用本地这份，否则退回后端落盘的上一次。 */

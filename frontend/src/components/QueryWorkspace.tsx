@@ -242,8 +242,8 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   )
 }
 
-const MARK: Record<string, string> = { duckdb: 'DK', postgresql: 'PG' }
-const DIALECT: Record<string, string> = { duckdb: 'DuckDB', postgresql: 'PostgreSQL' }
+const MARK: Record<string, string> = { duckdb: 'DK', postgresql: 'PG', mysql: 'MY' }
+const DIALECT: Record<string, string> = { duckdb: 'DuckDB', postgresql: 'PostgreSQL', mysql: 'MySQL' }
 
 /* ---------------- 最近查询（照原型：localStorage，按数据源分桶，上限 10） ---------------- */
 

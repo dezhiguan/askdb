@@ -331,7 +331,7 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb",
         return GuardResult(ok=False, rejected_by="R-04", reason=err)
 
     # ---------- R-24 相对时间锚点 ----------
-    anchor = _time_anchor(root, cfg, question)
+    anchor = _time_anchor(root, cfg, question, dialect)
     if anchor.rejected:
         return GuardResult(ok=False, rejected_by="R-24", reason=anchor.reason)
     if anchor.note:
@@ -796,6 +796,18 @@ _NOW_NAMES = frozenset({"now", "today", "current_date", "current_timestamp",
                         "clock_timestamp"})
 
 
+#: 「昨天」在各方言里的写法。这句话是**回灌给模型的**，给一个在当前库上
+#: 跑不通的示例（MySQL 不认 INTERVAL '1 day' 那种带引号的写法），
+#: 只会让它下一轮改成写死日期 —— 而写死日期正是这条规则要拦的东西。
+#: 与 llm.INTERVAL_EXAMPLE 是同一件事的两处落点：那边是首轮提示词，
+#: 这边是被拦下之后的纠正话术，**改一处必须改另一处**。
+_INTERVAL_EXAMPLE = {
+    "mysql": "CURDATE() - INTERVAL 1 DAY",
+    "postgres": "CURRENT_DATE - INTERVAL '1 day'",
+    "duckdb": "CURRENT_DATE - INTERVAL '1 day'",
+}
+
+
 @dataclass
 class _Anchor:
     rejected: bool = False
@@ -835,7 +847,8 @@ def _date_literals(root: exp.Expression) -> list[str]:
             if e.is_string and re.fullmatch(r"\d{4}-\d{2}(-\d{2})?.*", e.name or "")]
 
 
-def _time_anchor(root: exp.Expression, cfg: Config, question: str) -> _Anchor:
+def _time_anchor(root: exp.Expression, cfg: Config, question: str,
+                 dialect: str = "duckdb") -> _Anchor:
     if not question:
         return _Anchor()                     # 直查模式：没有问题文本可比对
     rel = _REL_TIME.search(question)
@@ -869,7 +882,8 @@ def _time_anchor(root: exp.Expression, cfg: Config, question: str) -> _Anchor:
                             f"SQL 却用 MAX({col.name}) 当作时间锚点。"
                             "库里最新有数据的那一天不等于今天/昨天 —— 这样算出来的数"
                             "会被当成用户问的那一天。请改用当前时间函数"
-                            "（如 CURRENT_DATE - INTERVAL '1 day'）表达相对时间；"
+                            f"（如 {_INTERVAL_EXAMPLE.get(dialect, _INTERVAL_EXAMPLE['duckdb'])}）"
+                            "表达相对时间；"
                             "若那一天确实没有数据，如实返回空结果，不要顺延到别的日子。"),
                 )
 

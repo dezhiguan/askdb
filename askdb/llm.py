@@ -44,7 +44,12 @@ SYSTEM = """你是一个只读数据查询助手，把用户的问题翻译成�
 8. SQL 方言是 {dialect}。只能使用该方言真实存在的函数：
    - postgres 无 STRFTIME/DATE_FORMAT；按月份/日期格式化用 to_char(列, 'YYYY-MM')，
      按月分桶用 date_trunc('month', 列)。
-   - duckdb 才用 strftime。不要跨方言套用另一种数据库的函数名。
+   - duckdb 才用 strftime。
+   - mysql 无 to_char/strftime/date_trunc：按月份格式化用 DATE_FORMAT(列, '%Y-%m')，
+     按月分桶用 DATE_FORMAT(列, '%Y-%m-01')；字符串拼接用 CONCAT(…)，`||` 在
+     MySQL 默认是逻辑或、不是拼接；间隔写 INTERVAL 1 DAY（数字与单位都不加
+     引号），当前日期用 CURDATE()。
+   不要跨方言套用另一种数据库的函数名。
 9. 按名称定位某一个具体实体时，优先用主键 id 精确匹配；只有在问题给的是
    名称、拿不到 id 时才按名称匹配。按名称匹配一律用规范化的等值/包含，且
    **把匹配到的名称一并选进结果列**，让读的人能看出到底匹配上了哪一个。
@@ -73,7 +78,7 @@ SYSTEM = """你是一个只读数据查询助手，把用户的问题翻译成�
    用子查询定位 A、外层只选 B（可再带一列 A 的名称便于核对），不要把 A 的
    整行档案返回 —— 那没有回答问题。
 14. **相对时间一律用当前时间函数表达。** 用户消息里会给出【当前日期】。问到
-   今天/昨天/本周/本月/最近 N 天时，写 `CURRENT_DATE - INTERVAL '1 day'`
+   今天/昨天/本周/本月/最近 N 天时，写 {interval_example}
    这样的表达式，不要凭印象写死一个日期字面量，更**不要拿 `MAX(时间列)`
    当"今天"** —— 库里最新有数据的那一天不是今天，这么写会把前天的数
    贴上"昨日"的标签返回。用户问的那一天若确实没有数据，就让查询自然返回
@@ -90,6 +95,17 @@ SYSTEM = """你是一个只读数据查询助手，把用户的问题翻译成�
    三个不同年月、还混进一条两年前的。只取某一期时，要把期次一并选进结果列。
 
 如果问题无法用给定的表回答，就在 reasoning 里说明缺什么，sql 字段返回空字符串。"""
+
+#: 「昨天」在各方言里的正确写法。**必须跟着方言变**：MySQL 不认
+#: `INTERVAL '1 day'` 那种带引号的写法（会当成字符串，语法直接报错），
+#: 而这一条提示词的作用恰恰是让模型别写死日期 —— 给一个在当前库上跑不通的
+#: 示例，等于把它推回去写日期字面量，那正是这条规则要防的事。
+INTERVAL_EXAMPLE = {
+    "mysql": "`CURDATE() - INTERVAL 1 DAY`",
+    "postgres": "`CURRENT_DATE - INTERVAL '1 day'`",
+    "duckdb": "`CURRENT_DATE - INTERVAL '1 day'`",
+}
+DEFAULT_INTERVAL_EXAMPLE = "`CURRENT_DATE - INTERVAL '1 day'`"
 
 USER = """{schema}
 {now}
@@ -282,7 +298,9 @@ class LlmClient:
         model = self._build().with_structured_output(
             SqlDraft, method="function_calling", include_raw=True
         )
-        system = SYSTEM.format(dialect=dialect)
+        system = SYSTEM.format(
+            dialect=dialect,
+            interval_example=INTERVAL_EXAMPLE.get(dialect, DEFAULT_INTERVAL_EXAMPLE))
         # 模型不知道今天是几号 —— 不给它，"昨天""最近一个月"就只能靠猜。
         # 实测猜出来的是 `MAX(stat_date)`（返回前天的数）和 `'2025-07-01'`
         # （真实数据到 2026-09）。给了之后 R-24 才有一条**正确的出路**可指。

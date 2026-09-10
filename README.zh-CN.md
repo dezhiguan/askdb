@@ -269,6 +269,32 @@ org_id:
 | `ASKDB_ADMIN_TOKEN` | 角色成员的写入整体关闭（fail-closed） | 对外实例没有可信调用方，开了等于谁都能改成员名单 |
 | `ASKDB_SECRET_KEY` | 运行时添加数据源时不接受明文口令，只能填环境变量名 | 口令一个字不落盘，这正是这个实例该有的姿态 |
 
+### 数据源类型
+
+三种，各自的护栏落点不同 —— **落点不同就必须写下来**，否则读的人会默认它们等价：
+
+| | DuckDB | PostgreSQL | MySQL / MariaDB |
+|---|---|---|---|
+| 只读 | 文件以 `read_only` 打开 | 只读角色 + `default_transaction_read_only` | 会话级 `SET SESSION TRANSACTION READ ONLY`（**账号级开关 MySQL 没有**，所以自检额外看一眼 `SHOW GRANTS`） |
+| 语句超时 R-12 | 看门狗线程 `interrupt()` | 原生 `statement_timeout` | `max_execution_time`（MariaDB 为 `max_statement_time`），按序探测，一个都设不上就自检报红 |
+| 扫描估算 R-11 | `EXPLAIN` 的基数估计 | `EXPLAIN (FORMAT JSON)` | `EXPLAIN FORMAT=JSON`，取不到时退回经典 `EXPLAIN` 的 rows 列 |
+| 行级安全 | 无 | **有**，`app.org_id` + RLS 策略 | **无** —— `tenant.mode: rls` 在 MySQL 上启动即拒，不静默降级成单层谓词 |
+| 列注释 | 取不到 | `col_description` | `COLUMN_COMMENT`（中文注释是中文提问召回的主要依据） |
+| 枚举取值 | 无 | `pg_stats` 的高频值 | 原生 `ENUM`/`SET` 直接从类型里取；其余列没有等价的免费统计，取不到就是取不到 |
+
+连接串三种类型同一种写法（`host=… port=… dbname=… user=…`），**口令不写在里面** ——
+填环境变量名，或由服务端主密钥加密后保存。MySQL 的 TLS 沿用 PostgreSQL 那两个键：
+`sslmode=require`（只加密不验证）、`sslmode=verify-ca|verify-full` + `sslrootcert=…`。
+
+接入 MySQL 要的是一个**只授 SELECT 的账号**，与 PostgreSQL 侧的 `askdb_ro` 同一个姿态。
+自检里有三项直接检查这件事（只读、连接数上限、无写权限），拿 `root` 接会被当场拒掉：
+
+```sql
+CREATE USER 'askdb_ro'@'%' IDENTIFIED BY '…';
+GRANT SELECT ON pet.* TO 'askdb_ro'@'%';
+ALTER USER 'askdb_ro'@'%' WITH MAX_USER_CONNECTIONS 5;   -- 自检要求 > 0
+```
+
 ---
 
 ## 仓库结构
@@ -542,7 +568,7 @@ plan/assess 两次额外模型调用上）。判据是消融脚本里预先写�
 
 > **尚未建成：** 成员与真实 **auth-gateway** 身份的绑定（JWKS / 令牌交换）——
 > 在那之前登录用内置账号，成员写入退回共享管理员令牌，而对外实例有意不配这把令牌。
-> 数据源仅支持 DuckDB 与 PostgreSQL。多步规划（P5）已上线但默认关闭（消融组 F）。
+> 数据源支持 DuckDB、PostgreSQL 与 MySQL / MariaDB。多步规划（P5）已上线但默认关闭（消融组 F）。
 > 运行时注册的数据源按设计不做租户隔离（见[护栏规则](#护栏规则)）。原型上的
 > 阶段三 / 阶段四页面 —— Connector 节点与开发者工具 —— 未实现。
 
@@ -558,7 +584,7 @@ plan/assess 两次额外模型调用上）。判据是消融脚本里预先写�
 | 编排 | `langgraph` + `langgraph-checkpoint-sqlite` | 需要条件路由与状态持久化；检查点是失败复现与断点续跑成立的前提 |
 | 抽象 / 模型 | `langchain-core`、`langchain-openai` | 结构化输出；OpenAI 兼容端点 |
 | **SQL 解析与改写** | `sqlglot` | AST 可改写，是强制注入的前提 |
-| 被查询的数据 | DuckDB（内置样例）/ PostgreSQL | |
+| 被查询的数据 | DuckDB（内置样例）/ PostgreSQL / MySQL（`PyMySQL`） | 驱动都是**主依赖**：界面上那个类型下拉框直接渲染 `SUPPORTED_TYPES`，放进可选 extra 就会出现「选得到、连不上」 |
 | 数据源注册表 | PostgreSQL，走 `psycopg[binary,pool]` | **主依赖不是可选项** —— 没有它连"有哪些数据源"都读不出来。用连接池，因为每条查询路径都要读一次 |
 | 控制台 | React + Vite，由 FastAPI 托管 | 构建产物入 git；镜像里不带 Node |
 | 对外 | FastAPI + MCP | MCP 按 2026-07-28 无状态规范 |

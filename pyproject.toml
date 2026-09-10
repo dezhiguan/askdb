@@ -26,6 +26,13 @@ dependencies = [
     # 是不是 PG 无关，纯 duckdb 部署同样要装。pool 走连接池：数据源在每条
     # 查询路径上都要读一次，裸连接会给每次问答加一次建连往返。
     "psycopg[binary,pool]>=3.2",
+    # MySQL / MariaDB 数据源（askdb/executor.py 的 _MySqlBackend）。
+    # **主依赖，不是可选项** —— 与 psycopg 同一条理由，也是同一次事故的教训：
+    # 界面上那个「数据库类型」下拉框直接渲染 sources.SUPPORTED_TYPES，
+    # 放进可选 extra 就会出现"选得到 MySQL、连不上 MySQL"，而 Dockerfile 里
+    # 那行 pip install ".[web,redis,postgres]" 恰好不会装它 —— chromadb
+    # 那次线上两天没人发现，就是这个形状。纯 Python 实现，无编译依赖。
+    "PyMySQL>=1.1",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "typer>=0.12",
