@@ -1135,15 +1135,21 @@ def _scope_note(out: dict[str, Any]) -> str:
 def _answering_model(steps: Any) -> str:
     """这次链路里**真正出活**的那个模型。
 
-    取最后一条成功的模型 span 上记的 model：多步链路里判定/生成/自检可能
-    分别落在不同模型上（其中一次切了备选），而审计只有一个 model 字段，
-    最后出活的那个是最贴近"这条答案是谁给的"的口径。
-    一条都没有（直查、命中缓存、老记录）就返回空串，交给调用方兜底。
+    优先取 generate_sql 那条 —— 答案是那条 SQL 查出来的，它由谁生成，
+    这次结果就该记在谁头上。**不能笼统取"最后一条模型 span"**：多步链路里
+    判定与自检也各是一次模型调用，而备选只在失败时顶上一次，下一次调用会
+    回到主模型。于是"生成切了备选、自检又回到主模型"这种链路，按最后一条取
+    就又记成主模型 —— 正是这次要修的那个错，绕一圈原样回来。
+
+    没有 generate_sql（规划失败等）才退回最后一条成功的模型 span；
+    一条都没有（直查、命中缓存、老记录）返回空串，交给调用方兜底。
     """
-    for st in reversed(list(steps or [])):
-        if st.get("status") in ("ok", "fallback") and st.get("model"):
+    rows = [st for st in (steps or [])
+            if st.get("status") in ("ok", "fallback") and st.get("model")]
+    for st in reversed(rows):
+        if st.get("step") == "generate_sql":
             return str(st["model"])
-    return ""
+    return str(rows[-1]["model"]) if rows else ""
 
 
 def _audit_of(result: AskResult, cfg: Config, kind: str,

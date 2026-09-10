@@ -60,10 +60,18 @@ interface ChainHealth {
 function chainHealth(steps: ReplayStep[]): ChainHealth {
   const failed = steps.filter(s => stepFailed(s.status))
   const soft = steps.filter(s => stepSoft(s.status))
-  // 最后一条**成功且记了模型**的 span：多步链路里判定/生成/自检可能落在
-  // 不同模型上，最后出活的那个最贴近"这条答案是谁给的"
-  const answering = [...steps].reverse().find(s => s.model && !stepFailed(s.status))?.model ?? ''
-  const replaced = failed.find(s => s.model && s.model !== answering)?.model ?? ''
+  /* 出活的那个模型：优先取 generate_sql —— 答案是那条 SQL 查出来的。
+     **不能笼统取"最后一条模型 span"**：多步链路里判定与自检也各是一次调用，
+     而备选只在失败时顶上一次，下一次会回到主模型。按最后一条取的话，
+     "生成切了备选、自检又回到主模型"这种链路会把回退整个抹平，
+     下面那个 replaced 跟着变空，⇄ 那行小字就不出现了。 */
+  const answered = steps.filter(s => s.model && !stepFailed(s.status))
+  const gen = [...answered].reverse().find(s => s.step === 'generate_sql')
+  const winner = gen ?? answered[answered.length - 1]
+  const answering = winner?.model ?? ''
+  /* 被顶掉的主模型只在**同一步**里找：别的步骤上的失败与这一步换没换模型无关。 */
+  const replaced = failed.find(s => s.model && s.model !== answering
+                                    && (!winner || s.step === winner.step))?.model ?? ''
   return {
     failed,
     soft,
