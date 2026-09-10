@@ -1001,11 +1001,6 @@ auth:
       roles: [MARKETING]
       note: 市场部 · 品牌策划
       password_hash: "scrypt$16384$8$1$m8xIrpXT4CvaEmAMSXGcUg==$gIJih4fcd6/95jMApiLVo7PfbB/moWxZtn0VwEGGlNE="
-    - username: shaojinli
-      display_name: 邵金莉
-      roles: [SYS_ADMIN]
-      note: 平台运维 · 平台运维工程师
-      password_hash: "scrypt$16384$8$1$zDZQwz2sTBlxz3+ngB+fuQ==$2uIhBDJfmfgwUttyFEjCMW84botUEcN3qcmyJNg2xgU="
     - username: liuran2
       display_name: 刘然
       roles: [DEV]
