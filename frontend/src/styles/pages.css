@@ -73,6 +73,9 @@
 .card-status { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font: 7px var(--mono); }
 .card-status.off { color: var(--amber); }
 .card-status.bad { color: var(--red); }
+/* 连得上、但接入自检里有没通过的项。**与红的不可用必须分开**：一个高权账号
+   接进来的源照样查得动，标成不可用会把人支去查一条根本不存在的连接故障 */
+.card-status.warn { color: var(--amber); }
 /* 从未检查过 —— 既不是好也不是坏，别用绿灯或红灯替它表态 */
 .card-status.idle { color: var(--muted); }
 .online { width: 6px; height: 6px; border-radius: 50%; background: var(--green-2); box-shadow: 0 0 0 3px rgba(44,179,110,.12); }
@@ -160,6 +163,13 @@
   color: var(--red);
   font-size: 8px;
 }
+
+/* 「可以用，但账号姿态没过」走琥珀而不是红：红条的含义是"这条路走不通",
+   而这里走得通 —— 用红色说它，人只会去找一个并不存在的故障。
+   放在 .audit-error 之后覆写，是为了复用那一块的排版尺寸 */
+.warn-banner { border-color: #d7b995; background: var(--amber-wash); color: var(--ink-2); }
+.warn-banner ul { margin: 5px 0; padding-left: 15px; }
+.warn-banner li { margin: 2px 0; }
 
 /* 成本那格可点开分布，做成按钮而不是给 div 挂 onClick —— 键盘能聚焦、读屏能念 */
 
@@ -288,7 +298,50 @@
   border-radius: 6px;
   background: var(--paper-2);
 }
-.cost-bars i { flex: 1; border-radius: 2px 2px 0 0; background: var(--green-2); }
+/* 一根柱子是一个按钮：整条竖着的热区（不只柱身那一小截），
+   否则矮的那几天要把指针精确停在 3px 上才出数。 */
+.cost-bars { position: relative; }
+.cost-bars button {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: default;
+}
+.cost-bars button > span {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  background: var(--green-2);
+}
+.cost-bars button:hover > span,
+.cost-bars button.on > span { background: var(--green); }
+.cost-bars button:focus-visible { outline: 1px solid var(--green); outline-offset: 1px; }
+
+.cost-tip {
+  position: absolute;
+  /* 贴图**内侧**上沿，不往外顶：图上方紧挨着标题行，往外飘会被它盖掉半行，
+     而且抽屉一滚就飘到别处去了 */
+  top: 5px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  box-shadow: 0 2px 6px rgb(20 35 27 / 12%);
+  color: var(--ink);
+  font: 7px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;      /* 提示自己不能吃掉悬停，否则会闪 */
+}
+.cost-tip.left { transform: translateX(-100%); }
+.cost-tip b { font-size: 7.5px; }
+.cost-tip span { color: var(--ink-2); }
 .cost-axis { display: flex; justify-content: space-between; margin-top: 4px; color: var(--muted); font: 6.5px var(--mono); }
 
 /* ---------------- 数据源（已接 /api/health · schema · introspect · selfcheck） ---------------- */

@@ -512,3 +512,26 @@ def test_error_without_a_numeric_code_is_judged_by_its_message():
     assert ex_mod._is_mysql_timeout(
         RuntimeError("(3024) maximum statement execution time exceeded"))
     assert not ex_mod._is_mysql_timeout(RuntimeError("Unknown column 'a'"))
+
+
+def test_root_account_is_admitted_with_warnings(mysql_cfg, monkeypatch):
+    """拿 root 接 MySQL：能接入，但那三项一直红着。
+
+    引擎那一层没有放松 —— 只读事务照旧 SET，写操作实探照旧真发一条 DELETE。
+    降级的只是"这个账号本来就不该写"这类**姿态**判断。
+    """
+    mysql_cfg.tables = {}
+    install_fake_pymysql(monkeypatch, [
+        (r"^SELECT TABLE_NAME FROM information_schema", (["t"], [("orders",)])),
+        (r"^DELETE FROM", FakeError(1792, "Cannot execute statement in a READ ONLY transaction")),
+        (r"^SHOW GRANTS", (["g"], [("GRANT ALL PRIVILEGES ON *.* TO `root`@`%`",)])),
+        (r"@@session\.max_user_connections", (["v"], [(0,)])),
+    ] + BASE_SCRIPT)
+    with Executor(mysql_cfg) as ex:
+        checks = ex.self_check()
+
+    assert ex_mod.blocking_failures(checks) == []
+    assert set(ex_mod.advisory_failures(checks)) == {
+        "账号为只读", "连接数上限已设置", "非超级账号且无写权限"}
+    # 引擎层没松：写照旧被拒
+    assert [c["ok"] for c in checks if c["name"] == "写操作实探"] == [True]

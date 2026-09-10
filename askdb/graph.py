@@ -32,7 +32,7 @@ from .config import Config
 from .executor import DataSourceError, Executor, MaskUnresolved
 from .llm import LlmClient, LlmNotConfigured
 from .quota import QuotaExceeded, build_quota
-from .audit import PHASE_STARTED, day_tz
+from .audit import MODEL_STEPS, PHASE_STARTED, day_tz
 from .trace import Tracer, now_iso, write_audit
 
 
@@ -308,10 +308,14 @@ def _llm_spans(d: Deps, step: str, usage: Any = None) -> _LlmSpan:
                 cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
             )
             continue
+        # note 写**我们自己的话**，厂商原文进 error_message —— 见 trace.py
+        # 那两个字段的注释：/api/trace 免登录可读，不能让 4xx 回显把提示词
+        # 里的表结构与用户问题捎出去。
         d.tracer.add(
-            step, 0.0, a.error_message, status="failed", ms=a.ms,
+            step, 0.0, "模型调用失败，未产出", status="failed", ms=a.ms,
             attempt=i if total > 1 else 0, attempts_total=n_total,
-            model=a.model, error_code=a.error_code, disposition=a.disposition,
+            model=a.model, error_code=a.error_code,
+            error_message=a.error_message, disposition=a.disposition,
             tok_in=a.usage.input_tokens, tok_out=a.usage.output_tokens,
             cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
         )
@@ -387,10 +391,16 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     # 回落是一次**失败 + 一次降级产出**，不是一次成功。原来两件事都被压进
     # 上面那句 note 的尾巴里，状态列照记 ok —— 配置声明 vector、实际每次都在
     # 跑 keyword，线上这么跑了两天没人看得出来（schema_rag 模块开头那段）。
+    # embedding 的账记在这一步：它就是这一步花的钱。model 记嵌入模型名 ——
+    # 一条链路可能同时用了生成模型与嵌入模型，按记录级那一个 model 字段
+    # 分摊，嵌入这笔就永远挂在生成模型头上。
+    embed_kw = {"tok_in": r.embed_tokens, "cost_cny": r.embed_cost,
+                "model": r.embed_model} if r.embed_tokens or r.embed_model else {}
     if r.degraded_from:
         d.tracer.add("schema_recall", t,
-                     f"{r.degraded_from} 召回不可用：{r.degrade_error}", status="failed",
+                     f"{r.degraded_from} 召回不可用", status="failed",
                      ms=r.degrade_ms, error_code=r.degrade_code,
+                     error_message=r.degrade_error,
                      # model 那一列只放模型名。召回模式不是模型，塞进去会在
                      # Span 表的「尝试 · xxx」里显示成一个并不存在的模型。
                      disposition=f"回落 {r.mode} 召回（fail-open，不中断链路）")
@@ -398,9 +408,10 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         # 各记一遍全节点就成了凭空多出来的一截。
         node_ms = int((time.perf_counter() - t) * 1000)
         d.tracer.add("schema_recall", t, note, status="degraded",
-                     ms=max(0, node_ms - r.degrade_ms), tables=r.table_names)
+                     ms=max(0, node_ms - r.degrade_ms), tables=r.table_names,
+                     **embed_kw)
     else:
-        d.tracer.add("schema_recall", t, note, tables=r.table_names)
+        d.tracer.add("schema_recall", t, note, tables=r.table_names, **embed_kw)
     return {
         "schema_prompt": r.prompt,
         "tables_hit": r.table_names,
@@ -1328,15 +1339,25 @@ def _scope_note(out: dict[str, Any]) -> str:
 def _answering_model(steps: Any) -> str:
     """这次链路里**真正出活**的那个模型。
 
-    取最后一条成功的模型 span 上记的 model：多步链路里判定/生成/自检可能
-    分别落在不同模型上（其中一次切了备选），而审计只有一个 model 字段，
-    最后出活的那个是最贴近"这条答案是谁给的"的口径。
-    一条都没有（直查、命中缓存、老记录）就返回空串，交给调用方兜底。
+    优先取 generate_sql 那条 —— 答案是那条 SQL 查出来的，它由谁生成，
+    这次结果就该记在谁头上。**不能笼统取"最后一条模型 span"**：多步链路里
+    判定与自检也各是一次模型调用，而备选只在失败时顶上一次，下一次调用会
+    回到主模型。于是"生成切了备选、自检又回到主模型"这种链路，按最后一条取
+    就又记成主模型 —— 正是这次要修的那个错，绕一圈原样回来。
+
+    没有 generate_sql（规划失败等）才退回最后一条成功的模型 span；
+    一条都没有（直查、命中缓存、老记录）返回空串，交给调用方兜底。
     """
-    for st in reversed(list(steps or [])):
-        if st.get("status") in ("ok", "fallback") and st.get("model"):
+    # **只看真正过模型的节点。** schema_recall 现在也带 model（嵌入模型），
+    # 不排除的话，生成失败的链路会退到它头上 —— 审计里就记着"这次由
+    # text-embedding-v4 应答"，而嵌入模型一句话都没生成过。
+    rows = [st for st in (steps or [])
+            if st.get("step") in MODEL_STEPS
+            and st.get("status") in ("ok", "fallback") and st.get("model")]
+    for st in reversed(rows):
+        if st.get("step") == "generate_sql":
             return str(st["model"])
-    return ""
+    return str(rows[-1]["model"]) if rows else ""
 
 
 def _audit_of(result: AskResult, cfg: Config, kind: str,

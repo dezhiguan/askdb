@@ -67,7 +67,22 @@ export interface Health {
     /** 配置里是否声明了默认数据源。false 时 ok 仍为 true —— 没配不是故障 */
     configured: boolean
   }
-  llm: { ok: boolean; model: string; env: string; disabled: boolean }
+  llm: {
+    ok: boolean
+    model: string
+    env: string
+    disabled: boolean
+    /** 备选模型armed没armed。**key_present 只说明密钥在不在**，说不了
+     *  这把密钥有没有过期 —— 后端只读环境变量、不发探测请求，界面上
+     *  因此不要写成"可用"。configured 为 false 表示这套部署有意不配备选。 */
+    fallback?: {
+      configured: boolean
+      model: string
+      provider?: string
+      env: string
+      key_present: boolean
+    }
+  }
   tenant: {
     enabled: boolean
     column: string
@@ -213,6 +228,10 @@ export interface ReplayStep {
   model?: string
   /** 失败时的厂商错误码或异常类名。有值即代表这一步失败过。 */
   error_code?: string
+  /** 厂商回的原始错误消息。**这个字段在 /api/trace 上没有** —— 它可能把请求
+   *  片段回显出来，而那条接口免登录可读、刻意不放 SQL 与问题原文。
+   *  要看原文走审计中心的回放（要登录、要开关）。 */
+  error_message?: string
   /** 失败后做了什么：切备选、就地重试、回落备用路径。没有它，一条 failed
    *  只说明"这里断过"，说不清链路是怎么活下来的。 */
   disposition?: string
@@ -484,8 +503,12 @@ export interface Schema {
 }
 
 export interface SelfCheck {
+  /** 这里的 ok 是「**全部**检查都过」，与 Probe.ok（能不能接入）有意不同 ——
+   *  这个接口回答的就是"自检全过吗"。 */
   ok: boolean
-  checks: { name: string; ok: boolean; detail: string; ms?: number }[]
+  checks: { name: string; ok: boolean; detail: string; ms?: number; blocking?: boolean }[]
+  /** 没通过、但不阻断接入的项。 */
+  warnings?: { name: string; detail: string }[]
   /** 建连耗时。取不到连接时为 null —— 不要在界面上拿 0 冒充「很快」 */
   latency_ms: number | null
 }
@@ -629,8 +652,12 @@ export interface ScannedTable {
 }
 
 export interface Probe {
+  /** 能不能接入 —— 只看阻断项。账号姿态那几项没过时它仍是 true，
+   *  没通过的项在 warnings 里，界面必须一起显示，否则就成了一次"检查通过"。 */
   ok: boolean
-  checks: { name: string; ok: boolean; detail: string; ms?: number }[]
+  checks: { name: string; ok: boolean; detail: string; ms?: number; blocking?: boolean }[]
+  /** 没通过、但不阻断接入的项。空数组 = 全绿。 */
+  warnings?: { name: string; detail: string }[]
   /** 建连耗时（握手 + 认证）。连不上时为 null —— 不要在界面上拿 0 冒充「很快」 */
   latency_ms: number | null
   /** 检查那一刻库里实际可见的表数。与 SourceCard.table_count 比对即可看出漂移 */

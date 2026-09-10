@@ -54,16 +54,31 @@ interface ChainHealth {
   answering: string
   replaced: string
   toolFailed: number
-  toolSoft: number
+  /** 工具/数据库步骤里能力降级的与零行的，**分开数** —— 一次如实返回零行
+   *  不是"降级"，混成一个词会让人以为系统出了故障。 */
+  toolDegraded: number
+  toolEmpty: number
 }
 
 function chainHealth(steps: ReplayStep[]): ChainHealth {
   const failed = steps.filter(s => stepFailed(s.status))
   const soft = steps.filter(s => stepSoft(s.status))
-  // 最后一条**成功且记了模型**的 span：多步链路里判定/生成/自检可能落在
-  // 不同模型上，最后出活的那个最贴近"这条答案是谁给的"
-  const answering = [...steps].reverse().find(s => s.model && !stepFailed(s.status))?.model ?? ''
-  const replaced = failed.find(s => s.model && s.model !== answering)?.model ?? ''
+  /* 出活的那个模型：优先取 generate_sql —— 答案是那条 SQL 查出来的。
+     **不能笼统取"最后一条模型 span"**：多步链路里判定与自检也各是一次调用，
+     而备选只在失败时顶上一次，下一次会回到主模型。按最后一条取的话，
+     "生成切了备选、自检又回到主模型"这种链路会把回退整个抹平，
+     下面那个 replaced 跟着变空，⇄ 那行小字就不出现了。 */
+  /* 只看真正过模型的节点 —— Schema 召回现在也带 model（嵌入模型），
+     不排除的话，生成失败的链路会把「模型」那一格显示成 text-embedding-v4，
+     而嵌入模型一句 SQL 都没生成过。 */
+  const answered = steps.filter(s => s.model && !stepFailed(s.status)
+                                     && STEP_TYPE[s.step] === 'MODEL')
+  const gen = [...answered].reverse().find(s => s.step === 'generate_sql')
+  const winner = gen ?? answered[answered.length - 1]
+  const answering = winner?.model ?? ''
+  /* 被顶掉的主模型只在**同一步**里找：别的步骤上的失败与这一步换没换模型无关。 */
+  const replaced = failed.find(s => s.model && s.model !== answering
+                                    && (!winner || s.step === winner.step))?.model ?? ''
   return {
     failed,
     soft,
@@ -73,7 +88,9 @@ function chainHealth(steps: ReplayStep[]): ChainHealth {
     answering,
     replaced,
     toolFailed: steps.filter(s => isToolStep(s) && stepFailed(s.status)).length,
-    toolSoft: steps.filter(s => isToolStep(s) && stepSoft(s.status)).length,
+    toolDegraded: steps.filter(s => isToolStep(s)
+      && (s.status === 'degraded' || s.status === 'fallback')).length,
+    toolEmpty: steps.filter(s => isToolStep(s) && s.status === 'empty').length,
   }
 }
 
@@ -343,7 +360,12 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
 function StatTiles({ stats, today }: { stats: AuditStats | null; today: AuditStats | null }) {
   if (!stats) return <div className="stats"><div className="stat"><span>读取中…</span></div></div>
 
-  const modelCalls = Object.values(stats.by_model).reduce((sum, m) => sum + m.calls, 0)
+  /* 分母用后端的 model_calls（按 MODEL_STEPS 数的模型节点），**不再拿
+     by_model 求和**。by_model 自 2026-09-10 起按 step 归因成本，里面还多了
+     嵌入模型那一维 —— 拿它当分母的话，这一格会随成本归因口径变化而漂，
+     而两者说的本来就不是一件事：一个是"钱花在哪个模型上"，
+     一个是"平均每次模型调用多少 token"。 */
+  const modelCalls = stats.model_calls ?? 0
   const avgTokens = modelCalls > 0 ? Math.round((stats.tok_in + stats.tok_out) / modelCalls) : null
   const pct = (v: number | null | undefined) => v == null ? NA : `${Math.round(v * 100)}%`
 
@@ -454,10 +476,11 @@ function TraceDetail({ item, chain, result, onFocusTrace }: {
         </div>
         <div className="trace-fact">
           <span>工具调用</span><strong>{steps.length ? toolCalls(steps) : NA}</strong>
-          {(health.toolFailed > 0 || health.toolSoft > 0) && (
+          {(health.toolFailed > 0 || health.toolDegraded > 0 || health.toolEmpty > 0) && (
             <small className={health.toolFailed > 0 ? 'bad' : 'warn'}>
               {[health.toolFailed > 0 && `${health.toolFailed} 失败`,
-                health.toolSoft > 0 && `${health.toolSoft} 降级`].filter(Boolean).join(' · ')}
+                health.toolDegraded > 0 && `${health.toolDegraded} 降级`,
+                health.toolEmpty > 0 && `${health.toolEmpty} 空结果`].filter(Boolean).join(' · ')}
             </small>
           )}
         </div>
@@ -493,6 +516,7 @@ function ChainBanner({ health, steps }: { health: ChainHealth; steps: ReplayStep
       <b>{name(s)}</b>：{s.model ? `${s.model} ` : ''}{s.note || '调用失败'}
       {s.error_code ? `（${s.error_code}）` : ''}
       {s.disposition ? `，${s.disposition}` : ''}
+      {s.error_message ? `　${s.error_message}` : ''}
     </li>
   ))
   if (health.replaced) {
@@ -668,7 +692,13 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                             title={`答案出自 ${cachedFrom} 那次执行，点击查看它的完整链路`}
                             onClick={() => onFocusTrace?.(cachedFrom)}
                           >首跑 {cachedFrom.slice(0, 6)} ↗</button>
-                        : step.tok_in ? `prompt ${step.tok_in.toLocaleString()} tok` : NA}
+                        : step.tok_in
+                          /* Schema 召回那一步的 tok_in 是**嵌入的输入**，
+                             不是提示词 —— 自 2026-09-10 起它有真实用量了。
+                             照旧写成 "prompt" 会让人以为召回也在发提示词。 */
+                          ? `${STEP_TYPE[step.step] === 'MODEL' ? 'prompt' : 'embed'} `
+                            + `${step.tok_in.toLocaleString()} tok`
+                          : NA}
                     </td>
                     <td className="span-note" title={step.note ?? ''}>
                       <SpanNote step={step} open={openRows.has(i)} onToggle={() => toggleRow(i)} />
@@ -689,7 +719,13 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                           {step.error_code && (
                             <div><dt>错误码</dt><dd><code>{step.error_code}</code></dd></div>
                           )}
-                          {step.note && <div><dt>原始消息</dt><dd>{step.note}</dd></div>}
+                          {/* 原文只在回放那条路上有 —— /api/trace 不给（见 api.ts
+                              ReplayStep.error_message）。没有就不留空行，
+                              也不拿 note 顶上：note 是我们自己写的一句话，
+                              把它标成"原始消息"是在骗人。 */}
+                          {step.error_message && (
+                            <div><dt>原始消息</dt><dd>{step.error_message}</dd></div>
+                          )}
                           {step.disposition && <div><dt>处置</dt><dd>{step.disposition}</dd></div>}
                         </dl>
                       </td>

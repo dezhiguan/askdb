@@ -95,6 +95,11 @@ schema_rag:
   token_budget: 1500
   # 以下仅 mode: vector 生效
   embedding_model: text-embedding-v4
+  # 单价：0.0005 元/千输入 Token（百炼北京地域，2026-09-10 核对官方文档）。
+  # 嵌入只有输入、没有输出，所以只有这一个价。Batch 调用是半价，本链路
+  # 走同步接口，不适用。**漏配就是 0 元** —— trace.embed_cost_cny 有意不设
+  # 默认价：默认一个看起来很像的数，账面会一直对不上而没人去核。
+  embedding_price_per_1k: 0.0005
   min_score: 0.35        # 相似度门槛。注意它**不是硬阈值**：设计 §3.2.3 要求
                          # 「召回 Top-K（默认 3）表」，所以过线的表不足 top_k 张时，
                          # 会按相似度补齐到 top_k —— 宁可多给一张，也不让模型无表可用。

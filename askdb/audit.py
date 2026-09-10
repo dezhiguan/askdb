@@ -71,7 +71,16 @@ TRACE_FIELDS = (
 
 # 步骤对象自身也走白名单 —— 记录里的 steps 由各节点自由追加，
 # 哪天有人往里塞了 sql 或行样本，这里不会顺手带出去。
-STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables")
+# 失败与回退那五个字段一并放行：全是模型名、序号、状态码与我们自己写死的
+# 处置短语，**不含任何来自数据或用户的内容**，出接口不构成新的泄露。
+# 少了它们，页面上那条 failed span 只剩一句"这里断过"—— 说不清是该退避重试
+# 还是该换模型，也说不清链路后来是怎么活下来的。
+#
+# **error_message 有意不在其中**：厂商的 4xx 消息可能把请求片段回显出来，
+# 而提示词里带着表结构与用户的问题。它留在审计记录与 /api/replay 上，
+# 与 sql_raw / question 同一道边界。
+STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables",
+               "attempt", "attempts_total", "model", "error_code", "disposition")
 
 # 真正过模型的图节点。与前端 traceSteps.ts 的 STEP_TYPE == 'MODEL' 是同一份口径，
 # 两边都写一次是因为一个算数、一个只做展示；漂了会让「模型调用成功率」这格
@@ -1137,12 +1146,44 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
         # 缓存命中同样不进这一维：它的 model 字段写的是 "cache"，那不是一个
         # 模型，跟着记一笔会在「按模型」里凭空多出一行，并把前端拿 by_model
         # 求和当分母的「平均 Token」按未发生的调用摊薄。
-        m = None if r.get("cached") else (
-            r.get("model") or ("（未记录）" if r.get("kind", "ask") == "ask" else None))
-        if m:
-            e = by_model.setdefault(m, {"calls": 0, "cost_cny": 0.0})
-            e["calls"] += 1
-            e["cost_cny"] = round(e["cost_cny"] + float(r.get("cost_cny") or 0), 6)
+        # **按 step 归因，不是按记录**。一条链路可能同时烧了三个模型：
+        # 生成用主模型、召回用嵌入模型、主模型失败时还切过备选。记录级
+        # 只有一个 model 字段，按它分摊的话，嵌入与备选那两笔永远挂在
+        # 主模型头上 —— 成本页上「按模型」那张表因此是错的。
+        #
+        # 老记录的 step 上没有 model（这个字段是 2026-09-10 才落的），
+        # 退回记录级那一个，与改造前一致；两种记录混在同一个窗口里也不会
+        # 重复计 —— 每条记录只走其中一条路。
+        if not r.get("cached"):
+            steps = r.get("steps") or []
+            # step 上有 model 或有金额，才走按步归因。老记录两样都没有
+            # （model 是 2026-09-10 才落到 step 上的），退回记录级那一条路。
+            by_step = any(st.get("model") or st.get("cost_cny") for st in steps)
+            if by_step:
+                for st in steps:
+                    m = st.get("model")
+                    c = float(st.get("cost_cny") or 0)
+                    if not m and not c:
+                        continue
+                    # **带金额却没记模型的步骤，钱不能凭空消失**：挂回记录级
+                    # 那个模型名。成本表必须满足「各行之和 = 总额」，
+                    # 否则它就是一张对不上账的表，而对不上账的成本表
+                    # 比没有更坏 —— 看的人不会知道少的是哪一笔。
+                    key = str(m) if m else str(r.get("model") or "（未记录）")
+                    e = by_model.setdefault(key, {"calls": 0, "cost_cny": 0.0})
+                    # 次数只在**确实是一次调用**时加：没记模型的那笔是补挂
+                    # 上去的金额，不代表又发生了一次调用。
+                    if m:
+                        e["calls"] += 1
+                    e["cost_cny"] = round(e["cost_cny"] + c, 6)
+            else:
+                m = r.get("model") or (
+                    "（未记录）" if r.get("kind", "ask") == "ask" else None)
+                if m:
+                    e = by_model.setdefault(m, {"calls": 0, "cost_cny": 0.0})
+                    e["calls"] += 1
+                    e["cost_cny"] = round(
+                        e["cost_cny"] + float(r.get("cost_cny") or 0), 6)
 
     elapsed.sort()
     return {
