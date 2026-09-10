@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 import threading
 import time
@@ -185,6 +186,20 @@ class _Backend:
     def explain_rows(self, sql: str) -> tuple[int | None, str]: ...   # pragma: no cover
     def fetch(self, sql: str, cap: int) -> tuple[list[str], list[list[Any]], str]: ...  # pragma: no cover
     def env_checks(self) -> list[tuple[str, bool, str]]: ...          # pragma: no cover
+
+    @contextlib.contextmanager
+    def metadata_window(self):
+        """元数据窗口：接入向导扫表期间放宽超时预算。
+
+        R-12 的 statement_timeout 是给**用户查询**定的（生产 3 秒）。元数据
+        扫描不是用户查询：它一次要问清整个库有哪些表、每张表多少列，代价由
+        库的规模决定，与提问快慢无关。两者共用一个预算的结果是——库一大，
+        接入向导必然超时，而超时的表现是「扫描失败 500」，看不出是超时。
+
+        默认不做任何事（DuckDB 是本机文件，没有服务端超时可调）。
+        PostgreSQL 与 MySQL 各自覆盖它。
+        """
+        yield
 
     def quote_ident(self, name: str) -> str:
         """把标识符引起来，供自检的写操作实探拼 SQL 用。
@@ -372,6 +387,28 @@ class _PgBackend(_Backend):
             cur.execute("SELECT set_config('app.org_id', %s, false)",
                         (str(self.cfg.default_org),))
         return self.con
+
+    @contextlib.contextmanager
+    def metadata_window(self):
+        """扫表期间把 statement_timeout 放宽到元数据预算，出窗口即还原。
+
+        pg_class / pg_attribute 是内存里的系统目录，通常几十毫秒就回来；
+        放宽是为了库特别大时不至于卡在 R-12 上，而不是默认就该松。
+        """
+        ms = self.cfg.metadata_timeout_ms
+        back = int(self.cfg.raw["guard"]["statement_timeout_ms"])
+        con = self.connect()
+        with con.cursor() as cur:
+            cur.execute(f"SET statement_timeout = {ms}")
+        try:
+            yield
+        finally:
+            # 还原**一定要发生**：漏了就等于给后面每一条用户查询都松了绑。
+            try:
+                with con.cursor() as cur:
+                    cur.execute(f"SET statement_timeout = {back}")
+            except Exception:      # pragma: no cover - 连接已断时无所谓还原
+                self.close()
 
     def set_org(self, org_id: int) -> None:
         """每次查询前刷新 RLS 用的租户上下文。"""
@@ -784,7 +821,80 @@ class _MySqlBackend(_Backend):
     def quote_ident(self, name: str) -> str:
         return "`" + str(name).replace("`", "``") + "`"
 
+    def _set_timeout(self, ms: int) -> None:
+        """把会话超时改成 ms。用的是建连时探到的那个变量名 —— MariaDB 上叫
+        max_statement_time 且单位是秒，两边不能混。"""
+        if not self._timeout_var or self.con is None:
+            return                     # 两个变量都不认；自检里已经报红了
+        val = ms if self._timeout_var == "max_execution_time" else ms / 1000
+        with self.con.cursor() as cur:
+            cur.execute(f"SET SESSION {self._timeout_var} = {val}")
+
+    @contextlib.contextmanager
+    def metadata_window(self):
+        """扫表期间放宽两处超时，出窗口即还原。
+
+        两处都要放宽，只改一处等于没改：
+
+          · 服务端的 max_execution_time —— 到点报 3024，"Query execution
+            was interrupted"；
+          · 驱动侧的 read_timeout —— 到点报 2013，"Lost connection"，
+            而且**连接就此报废**，后面每条语句都跟着失败。
+
+        这不是把 R-12 放松了：窗口只罩 information_schema 的那几条查询，
+        用户查询走的仍是 guard.statement_timeout_ms。
+        """
+        ms = self.cfg.metadata_timeout_ms
+        back = int(self.cfg.raw["guard"]["statement_timeout_ms"])
+        con = self.connect()
+        prev_read = getattr(con, "_read_timeout", None)
+        self._set_timeout(ms)
+        # pymysql 每次读包前按这个值 settimeout，改它当场生效。私有属性，
+        # 所以 getattr/setattr 都留了退路：拿不到就只放宽服务端那一侧。
+        if prev_read is not None:
+            con._read_timeout = ms / 1000 + 5
+        try:
+            yield
+        finally:
+            try:
+                if prev_read is not None:
+                    con._read_timeout = prev_read
+                self._set_timeout(back)
+            except Exception:      # pragma: no cover - 连接已断时无所谓还原
+                self.close()
+
     # ---------- 元数据 ----------
+
+    def _meta_query(self, sql: str, args: tuple[Any, ...] = ()) -> list[tuple[Any, ...]]:
+        """跑一条 information_schema 查询，**把驱动的异常翻译成 DataSourceError**。
+
+        不翻译的后果这次真出过：扫一个 96 张表的 5.7 库，超时以
+        pymysql.OperationalError 原样冒到 FastAPI，界面上只剩一句
+        「扫描失败 500」—— 既看不出是超时，也不知道该调什么。
+        """
+        try:
+            with self.connect().cursor() as cur:
+                cur.execute(sql, args)
+                return list(cur.fetchall())
+        except DataSourceError:
+            raise
+        except Exception as e:
+            budget = self.cfg.metadata_timeout_ms
+            if _is_mysql_timeout(e):
+                # 超时会把这条连接打废（2013 之后再发什么都失败），扔掉重来
+                self.close()
+                raise DataSourceError(
+                    f"读取元数据超时（超过 {budget} ms）：这个库的 "
+                    f"information_schema 响应太慢。",
+                    hint="库里表很多、或服务端正忙。可以调大配置里的 "
+                         "guard.metadata_timeout_ms 后重试；这条超时与查询超时"
+                         "（R-12）是两个值，放宽它不会放宽用户查询。",
+                    retryable=True,
+                ) from e
+            raise DataSourceError(
+                f"读取元数据失败：{str(e).splitlines()[0]}",
+                hint="确认这个账号能读 information_schema，且连接仍然可用。",
+            ) from e
 
     def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
         """字段清单，**连注释与枚举取值一起取**。
@@ -792,31 +902,33 @@ class _MySqlBackend(_Backend):
         MySQL 的列注释与 PostgreSQL 的 col_description 是同一份东西：中文注释
         与中文提问同语种，Schema 召回命中它比任何中英词典都可靠。
         枚举比 PG 那条路还准 —— 取值写在类型里，不必靠统计视图去猜。
+
+        **列和表注释分两条查，不 JOIN。** information_schema 在 5.7 上不是真表，
+        把 COLUMNS 与 TABLES 连起来会退化成对每一行去开一次表定义；实测同一个
+        96 张表的库，分开查各几百毫秒，连起来查超过 8 秒还没回来。
         """
         if not names:
             return {}
         holes = ", ".join(["%s"] * len(names))
-        with self.connect().cursor() as cur:
-            cur.execute(f"""
-                SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE,
-                       COALESCE(c.COLUMN_COMMENT, ''), COALESCE(t.TABLE_COMMENT, ''),
-                       c.COLUMN_TYPE
-                FROM information_schema.COLUMNS c
-                LEFT JOIN information_schema.TABLES t
-                       ON t.TABLE_SCHEMA = c.TABLE_SCHEMA
-                      AND t.TABLE_NAME = c.TABLE_NAME
-                WHERE c.TABLE_SCHEMA = DATABASE() AND c.TABLE_NAME IN ({holes})
-                ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION
-            """, tuple(names))
-            rows = cur.fetchall()
-        grouped = _group_columns([r[:5] for r in rows])
+        rows = self._meta_query(f"""
+            SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE,
+                   COALESCE(COLUMN_COMMENT, ''), COLUMN_TYPE
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({holes})
+            ORDER BY TABLE_NAME, ORDINAL_POSITION
+        """, tuple(names))
+        table_desc = {r[0]: r[1] for r in self._meta_query(f"""
+            SELECT TABLE_NAME, COALESCE(TABLE_COMMENT, '')
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ({holes})
+        """, tuple(names))}
         # InnoDB 的 TABLE_COMMENT 里会带上 "; InnoDB free: …" 之类的运维文本，
         # 那不是表说明，进召回只会稀释语义
-        for cols in grouped.values():
-            for col in cols:
-                col["table_desc"] = re.sub(r"\s*;?\s*InnoDB free:.*$", "",
-                                           col.get("table_desc", "")).strip()
-        enums = {(r[0], r[1]): _mysql_enum_values(r[5]) for r in rows}
+        table_desc = {t: re.sub(r"\s*;?\s*InnoDB free:.*$", "", d or "").strip()
+                      for t, d in table_desc.items()}
+        grouped = _group_columns([(r[0], r[1], r[2], r[3], table_desc.get(r[0], ""))
+                                  for r in rows])
+        enums = {(r[0], r[1]): _mysql_enum_values(r[4]) for r in rows}
         for table, cols in grouped.items():
             for col in cols:
                 if vals := enums.get((table, col["name"])):
@@ -824,29 +936,35 @@ class _MySqlBackend(_Backend):
         return grouped
 
     def all_tables(self) -> set[str]:
-        with self.connect().cursor() as cur:
-            cur.execute("""SELECT TABLE_NAME FROM information_schema.TABLES
-                           WHERE TABLE_SCHEMA = DATABASE()""")
-            return {r[0] for r in cur.fetchall()}
+        return {r[0] for r in self._meta_query(
+            """SELECT TABLE_NAME FROM information_schema.TABLES
+               WHERE TABLE_SCHEMA = DATABASE()""")}
 
     def introspect(self) -> list[dict[str, Any]]:
         """库里全部**基表**。行数是 InnoDB 的估算值，与 PG 的 reltuples 同性质
-        —— 用来给接入向导排序，不作为答案。"""
-        with self.connect().cursor() as cur:
-            cur.execute("""
-                SELECT t.TABLE_NAME,
-                       COALESCE(t.TABLE_ROWS, 0)                AS est_rows,
-                       COUNT(c.COLUMN_NAME)                     AS n_cols,
-                       MAX(c.COLUMN_NAME IN ('org_id','organization_id','tenant_id'))
-                FROM information_schema.TABLES t
-                JOIN information_schema.COLUMNS c
-                  ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME
-                WHERE t.TABLE_SCHEMA = DATABASE() AND t.TABLE_TYPE = 'BASE TABLE'
-                GROUP BY t.TABLE_NAME, t.TABLE_ROWS
-                ORDER BY est_rows DESC
-            """)
-            return [{"name": r[0], "rows": int(r[1] or 0), "cols": int(r[2]),
-                     "tenant": bool(r[3])} for r in cur.fetchall()]
+        —— 用来给接入向导排序，不作为答案。
+
+        与 describe 同一个理由：TABLES 与 COLUMNS 分两条查，在应用侧合。
+        原来那条 JOIN + GROUP BY 是这次「扫描失败 500」的直接原因。
+        """
+        tables = self._meta_query("""
+            SELECT TABLE_NAME, COALESCE(TABLE_ROWS, 0)
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+        """)
+        stats = {r[0]: (int(r[1] or 0), bool(r[2])) for r in self._meta_query("""
+            SELECT TABLE_NAME, COUNT(*),
+                   MAX(COLUMN_NAME IN ('org_id','organization_id','tenant_id'))
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+            GROUP BY TABLE_NAME
+        """)}
+        out = [{"name": name, "rows": int(rows or 0),
+                "cols": stats.get(name, (0, False))[0],
+                "tenant": stats.get(name, (0, False))[1]}
+               for name, rows in tables]
+        out.sort(key=lambda t: t["rows"], reverse=True)
+        return out
 
     # ---------- R-11 干跑 ----------
 
@@ -1115,12 +1233,24 @@ class Executor:
         self.backend.close()
 
     def introspect(self) -> list[dict[str, Any]]:
-        """列出数据源里**全部**表，不限于白名单 —— 供接入向导选表。"""
-        return self.backend.introspect()
+        """列出数据源里**全部**表，不限于白名单 —— 供接入向导选表。
+
+        走元数据窗口：这条路径的代价由库的规模决定，不该受 R-12 的查询超时
+        约束（见 _Backend.metadata_window）。
+        """
+        with self.backend.metadata_window():
+            return self.backend.introspect()
 
     def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
-        """取指定表的字段名与类型，用于构造白名单。"""
-        return self.backend.describe(names)
+        """取指定表的字段名与类型，用于构造白名单。同样走元数据窗口。
+
+        一张表都没点时**连都不连** —— 元数据窗口本身要先建连才能改会话超时，
+        而"没有要问的东西"不该换来一条出站连接。
+        """
+        if not names:
+            return {}
+        with self.backend.metadata_window():
+            return self.backend.describe(names)
 
     def set_org(self, org_id: int) -> None:
         """把租户上下文同步给引擎（PostgreSQL 的 RLS 依赖它）。"""
@@ -1176,7 +1306,8 @@ class Executor:
             add(name, ok, detail)
 
         try:
-            actual = self.backend.all_tables()
+            with self.backend.metadata_window():
+                actual = self.backend.all_tables()
         except Exception as e:  # pragma: no cover
             add("授权表集合", False, str(e))
             return checks

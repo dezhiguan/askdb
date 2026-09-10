@@ -310,6 +310,27 @@ def test_mysql_is_offered_and_accepted(cfg):
     assert sources.derive_config(cfg, src).dialect == "mysql"
 
 
+def test_env_ladder_is_four_rungs_in_release_order(cfg):
+    """开发 → 测试 → 预生产 → 生产。**顺序即语义**：界面上那个下拉直接按
+    这个顺序渲染，把生产排在中间会让点错的概率高一档。"""
+    assert sources.ENVS == ("dev", "test", "staging", "prod_ro")
+    for env in sources.ENVS:
+        assert sources.build(name="x", type_="duckdb", dsn="d.duckdb", env=env).env == env
+
+
+def test_production_rung_keeps_its_stored_value(cfg):
+    """生产那一档存的仍是 `prod_ro` 而不是 `prod` —— 注册表里已有的生产源
+    存的就是这个值，改字面量等于让存量源变成界面不认识的档位。
+    显示名可以改（那只是一层标签），存储值不能。"""
+    assert "prod_ro" in sources.ENVS and "prod" not in sources.ENVS
+    assert sources.ENV_LABEL["prod_ro"] == "PROD"
+
+
+def test_unknown_env_falls_back_to_a_safe_rung(cfg):
+    """拼错 env 的后果必须是"看得更少"，不能是"看得更多"。"""
+    assert sources.build(name="x", type_="duckdb", dsn="d.duckdb", env="生产").env == "test"
+
+
 def test_mysql_dsn_password_is_refused_like_postgres(cfg):
     """口令写进连接串会明文落库，且 to_public 不出 dsn —— 界面上再也看不见它。
     一条纪律只要有一条绕过去的路，它就不是纪律。"""

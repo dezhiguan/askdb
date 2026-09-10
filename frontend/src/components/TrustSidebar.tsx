@@ -4,6 +4,7 @@ import type { HealthState } from '../useHealth'
 import type { Check } from '../trust'
 import { resultChecks, scoreOf, scoreTitle } from '../trust'
 import { roleLabel } from '../roles'
+import { envShort } from '../envs'
 import { useSqlDigest } from './ResultTabs'
 
 /** 右栏三块：能不能执行、按什么策略执行、执行完拿什么复核。
@@ -247,9 +248,10 @@ function identityLabel(me?: Me | null): string {
   return `${me.display_name || me.username} · ${role}`
 }
 
-/** 「数据库角色」一格。askdb 的连接一律只读，运行时源声明了环境就报环境。 */
+/** 「数据库角色」一格。askdb 的连接一律只读，运行时源声明了环境就报环境。
+ *  档位名走 envs.ts 那一份 —— 这里原来自己写死 PROD-RO / TEST-RO 两条，
+ *  加一档就会漏掉一处，而漏掉的表现是右栏显示 READ-ONLY、卡片显示预生产。 */
 function dbRoleLabel(env?: string): string {
-  if (env === 'prod_ro') return 'PROD-RO'
-  if (env === 'test') return 'TEST-RO'
-  return 'READ-ONLY'
+  const short = envShort(env)
+  return short ? `${short}-RO` : 'READ-ONLY'
 }

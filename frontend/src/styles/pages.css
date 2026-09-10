@@ -80,6 +80,36 @@
 .card-status.idle { color: var(--muted); }
 .online { width: 6px; height: 6px; border-radius: 50%; background: var(--green-2); box-shadow: 0 0 0 3px rgba(44,179,110,.12); }
 .source-actions { display: flex; gap: 6px; }
+
+/* 数据源列表的筛选条：搜索 + 类型 + 清除。与分页条同一套字号，
+   两者一上一下夹着卡片网格，看起来才是一组东西 */
+.source-filters { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.source-filters select, .source-search {
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink-2);
+  background: var(--paper);
+  font-size: 8px;
+  outline: 0;
+}
+.source-filters select { min-width: 118px; padding-right: 26px; }
+.source-search { flex: 1; max-width: 280px; }
+
+/* 选表弹窗顶上那条：筛选框 + 已选计数 + 全选/清空。
+   计数从底部操作区挪到这里 —— 它描述的是上面这个列表，离得越近越好读 */
+.pick-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.pick-toolbar .pick-count { margin-left: auto; }
+.pick-search {
+  flex: 1;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink-2);
+  background: var(--paper);
+  font-size: 8px;
+  outline: 0;
+}
 .policy-layout, .glossary-layout { display: grid; grid-template-columns: 260px minmax(0,1fr); gap: 14px; }
 .definition { padding: 18px; }
 .definition h2 { margin-bottom: 6px; }
