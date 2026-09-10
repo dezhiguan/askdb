@@ -5,6 +5,7 @@ import {
   type Introspect, type Me, type Probe, type SelfCheck, type SourceCard, type SourceList,
 } from '../api'
 import { AddSourceModal, ScanTablesModal } from '../components/AddSourceModal'
+import { useDialog } from '../components/ConfirmDialog'
 import type { HealthState } from '../useHealth'
 import { useCountdown } from '../useCountdown'
 
@@ -35,6 +36,7 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
   // 真正的边界在服务端那道写入中间件上，置灰拦不住任何人。
   // 判据别在这里"推"：me 是后端给的，前端只读不算。
   const canWrite = !!me?.username
+  const { confirm } = useDialog()
   const writeHint = canWrite ? undefined : '这个操作会改动配置，需要登录后才能执行；未登录只能只读查询'
   const [introspect, setIntrospect] = useState<Introspect | null>(null)
   const [check, setCheck] = useState<SelfCheck | null>(null)
@@ -88,12 +90,18 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
   const removeBuiltin = async () => {
     // 这一条删的是配置文件里的 datasource 段，后果和删一条运行时源完全不同：
     // 删完之后不带数据源的查询会被直接拒绝。确认文案必须把这句说出来。
-    if (!window.confirm(
-      '删除默认数据源？\n\n'
-      + `会从 ${ready?.config ?? '配置文件'} 里移除 datasource 段。`
-      + '此后不指定数据源的查询将被拒绝，需要在本页选择一个已添加的数据源。\n\n'
-      + '配置文件里的其他段（护栏、租户策略、业务口径）不受影响。'
-    )) return
+    const ok = await confirm({
+      title: '删除默认数据源？',
+      description: `会从 ${ready?.config ?? '配置文件'} 里移除 datasource 段。`,
+      detail: [
+        '此后不指定数据源的查询将被拒绝。',
+        '需要在本页选择一个已添加的数据源来接替它。',
+      ],
+      note: '配置文件里的其他段（护栏、租户策略、业务口径）不受影响。',
+      confirmText: '删除默认数据源',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       await deleteSource('builtin')
       setReload(n => n + 1)
@@ -103,7 +111,15 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
   }
 
   const removeSource = async (card: SourceCard) => {
-    if (!window.confirm(`删除数据源「${card.name}」？白名单一并删除，历史审计记录不受影响。`)) return
+    const ok = await confirm({
+      title: `删除数据源「${card.name}」？`,
+      description: '这条运行时数据源会从注册表移除，界面与查询都不再能选到它。',
+      detail: ['该数据源的表白名单一并删除。'],
+      note: '历史审计记录不受影响，已经跑过的查询仍可回放。',
+      confirmText: '删除数据源',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       await deleteSource(card.id)
       setReload(n => n + 1)

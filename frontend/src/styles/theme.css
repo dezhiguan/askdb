@@ -49,7 +49,11 @@ code, pre { font-family: var(--mono); }
 .secondary { border: 1px solid #a6c3af; color: var(--green); background: var(--green-wash); }
 .ghost { border: 1px solid var(--line); color: var(--ink-2); background: rgba(255,255,255,.45); }
 .danger { border: 1px solid #d4aaa3; color: var(--red); background: var(--red-wash); }
-.primary:hover:not(:disabled), .secondary:hover:not(:disabled), .ghost:hover:not(:disabled) { transform: translateY(-1px); }
+/* 实心红：留给"点下去就没了"的那一个按钮（确认弹窗的主操作）。
+   淡色的 .danger 在一排按钮里分量不够 —— 要删库的那一下，得比"取消"更重。 */
+.danger.solid { border: 0; color: white; background: var(--red); box-shadow: 0 6px 15px rgba(164,68,53,.22); }
+.danger.solid:hover:not(:disabled) { background: #8f382b; }
+.primary:hover:not(:disabled), .secondary:hover:not(:disabled), .ghost:hover:not(:disabled), .danger:hover:not(:disabled) { transform: translateY(-1px); }
 
 /* 禁用态的统一表现。
  *

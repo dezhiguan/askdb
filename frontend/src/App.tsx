@@ -4,6 +4,7 @@ import { AppShell, PageHeader } from './components/AppShell'
 import { LoginScreen } from './components/LoginScreen'
 import { MockNotice } from './components/MockNotice'
 import { ModalLayer } from './components/Modals'
+import { DialogProvider } from './components/ConfirmDialog'
 import { QueryWorkspace } from './components/QueryWorkspace'
 import { DataSourcesPage } from './pages/DataSourcesPage'
 import { ApprovalsPage } from './pages/ApprovalsPage'
@@ -20,6 +21,7 @@ import { useSources } from './useSources'
 import './styles/theme.css'
 import './styles/shell.css'
 import './styles/components.css'
+import './styles/dialog.css'
 import './styles/pages.css'
 import './styles/traces.css'
 import './styles/evaluation.css'
@@ -138,7 +140,9 @@ function App() {
   })()
 
   return (
-    <>
+    /* 全局确认弹窗挂在最外层：站内任何一处要问"确定吗"都走 useDialog()，
+       不再有 window.confirm —— 那个框顶着域名当标题，也排不出后果清单。 */
+    <DialogProvider>
       <AppShell
         activeView={view}
         health={health}
@@ -181,7 +185,7 @@ function App() {
       )}
       <ModalLayer active={modal} onClose={() => setModal(null)} notify={notify} />
       <div className={`toast ${toast ? 'show' : ''}`}>{toast}</div>
-    </>
+    </DialogProvider>
   )
 }
 

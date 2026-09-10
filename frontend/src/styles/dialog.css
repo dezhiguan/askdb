@@ -1,0 +1,67 @@
+/* 全站统一的确认 / 提示弹窗（components/ConfirmDialog.tsx）。
+   基座跟 .modal 一族同源 —— 同样的纸色、同样的 11px 圆角与描边、同样的
+   进场动画；只是窄一档、不带滚动，因为它只装一句问话。 */
+
+.dialog-backdrop {
+  position: fixed; inset: 0; z-index: 130;
+  display: grid; place-items: center;
+  padding: 12px;
+  background: rgba(16,35,26,.5);
+  backdrop-filter: blur(4px);
+  animation: dialogFade .18s ease both;
+}
+
+.dialog-card {
+  width: min(420px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  padding: 18px;
+  border: 1px solid #a6afa9;
+  border-radius: 11px;
+  background: var(--paper);
+  box-shadow: 0 28px 80px rgba(0,0,0,.26);
+  overflow-y: auto;
+  animation: dialogIn .22s ease both;
+}
+
+@keyframes dialogFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes dialogIn { from { opacity: 0; transform: translateY(10px) scale(.98); } to { opacity: 1; transform: none; } }
+
+/* 系统在减弱动效：只留淡入，不再位移缩放 */
+@media (prefers-reduced-motion: reduce) {
+  .dialog-card { animation: dialogFade .18s ease both; }
+}
+
+.dialog-head { display: flex; align-items: flex-start; gap: 11px; }
+
+/* 图标位。颜色由 tone 决定 —— 危险动作在读到文字之前就该看出来。 */
+.dialog-mark {
+  width: 26px; height: 26px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 8px 8px 8px 3px;
+  color: white; background: var(--green);
+  font: 700 11px var(--mono); font-style: normal;
+}
+.dialog-card.danger .dialog-mark { background: var(--red); }
+
+.dialog-copy { min-width: 0; }
+.dialog-copy h3 { margin: 2px 0 0; font-family: var(--serif); font-size: 15px; line-height: 1.45; }
+.dialog-copy p { margin: 7px 0 0; color: var(--ink-2); font-size: 8px; line-height: 1.75; }
+
+/* 后果清单。逐条列，不堆成一段 —— 删除类操作的代价要一眼数得清。 */
+.dialog-detail {
+  margin: 12px 0 0; padding: 10px 12px 10px 24px;
+  border-left: 2px solid var(--green);
+  border-radius: 0 6px 6px 0;
+  background: var(--green-wash);
+  color: var(--ink-2); font-size: 8px; line-height: 1.75;
+}
+.dialog-detail li + li { margin-top: 5px; }
+.dialog-card.danger .dialog-detail { border-left-color: var(--red); background: var(--red-wash); }
+.dialog-detail li::marker { color: var(--green); }
+.dialog-card.danger .dialog-detail li::marker { color: var(--red); }
+
+/* 脚注留给"什么**不**受影响" */
+.dialog-note { margin: 10px 0 0; color: var(--muted); font-size: 7px; line-height: 1.7; }
+
+.dialog-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 16px; }
+.dialog-actions button { min-width: 68px; }
