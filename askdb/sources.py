@@ -47,7 +47,7 @@ from pathlib import Path
 from typing import Any
 
 
-from .config import Column, Config, Table
+from .config import Column, Config, Table, mark_cached_counters
 
 # 只有这三种后端有真正的执行与护栏实现（见 executor 的 _DuckBackend /
 # _PgBackend / _MySqlBackend 与 Config.dialect）。列出别的类型就是在承诺
@@ -553,6 +553,11 @@ def derive_config(base: Config, src: Source) -> Config:
             },
             tenant_exempt=True,
         )
+
+    # 缓存计数列按结构推。运行时源的白名单是扫描出来的，没有人来逐列标 ——
+    # 而线上全是运行时源，不在这里推一遍，`cached_counter` 就只在手写白名单上
+    # 生效，等于对生产完全没作用（2026-09-10 上线后实测到的正是这个）。
+    mark_cached_counters(tables)
 
     return Config(root=base.root, raw=raw, tables=tables, metrics=[],
                   path=f"{base.path}#{src.id}", role=base.role,

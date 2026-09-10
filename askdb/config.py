@@ -104,6 +104,82 @@ class Column:
             self.sensitive = True
 
 
+#: 缓存计数列的**结构判据**。
+#:
+#: 形状是固定的：A 表上挂一个 `<x>_count`，数的是 B 表里属于自己的行数，而 B 表
+#: 通过 `<a>_id` 指回 A。`knowledge_bases.doc_count` ↔ `documents.kb_id` 就是它。
+#: 这类列由别处维护、天然会与真实计数漂移（2026-09-10 实测 doc_count 比
+#: COUNT(documents) 少 362 条）。
+#:
+#: 为什么不按列描述判：**生产库一条列注释都没有**。手写白名单里可以逐列标
+#: `cached_counter: true`，但运行时数据源的白名单是结构扫描自动生成的 ——
+#: 那条路径上没有人来标，而线上恰恰全是运行时源。这与 looks_sensitive 面对的
+#: 是同一个问题，所以给同一种答案：从结构本身推，别指望有人记得标。
+#:
+#: 误判的方向是安全的：把一个普通计数列标成缓存列，代价是口径里多一句说明、
+#: 可信度扣一分；漏判的代价是一个会漂移的数被当成精确值。偏严的那一侧。
+_COUNT_SUFFIX = ("_count", "_cnt", "_total", "_num")
+
+#: 列名词根 → 可能的表名词根。英文复数与项目里的惯用缩写都认。
+def _stem_variants(stem: str) -> set[str]:
+    s = stem.lower()
+    out = {s, s + "s", s + "es"}
+    if s.endswith("y"):
+        out.add(s[:-1] + "ies")
+    # 项目里的惯用缩写：doc→document、kb→knowledge_base、org→organization
+    out |= {"document", "documents"} if s == "doc" else set()
+    out |= {"knowledge_base", "knowledge_bases"} if s == "kb" else set()
+    out |= {"organization", "organizations"} if s == "org" else set()
+    return out
+
+
+def _fk_stems(table_name: str) -> set[str]:
+    """B 表指回 A 表时，那根外键列可能叫什么词根。"""
+    n = table_name.lower().rstrip("s")
+    out = {n}
+    if n.endswith("e"):          # knowledge_base → knowledge_bas + e
+        out.add(n[:-1])
+    if n == "document":
+        out |= {"doc"}
+    if n == "knowledge_base":
+        out |= {"kb"}
+    if n == "organization":
+        out |= {"org"}
+    return out
+
+
+def mark_cached_counters(tables: dict[str, "Table"]) -> None:
+    """就地把符合上述形状的列标成 cached_counter。
+
+    **三条构造路径都要调它**（手写白名单、运行时源扫描、测试固件）——
+    Column.__post_init__ 里那段注释已经写过一次这个教训：分开写就迟早漏掉一条，
+    而漏掉的那条正是出事的那条。这次漏的是运行时源，也就是线上唯一在用的那条。
+    """
+    names = {n.lower() for n in tables}
+    for tname, t in tables.items():
+        back = _fk_stems(tname)
+        for col in t.columns.values():
+            if col.cached_counter:
+                continue                      # 配置显式标过，不再推
+            low = col.name.lower()
+            stem = next((low[: -len(sfx)] for sfx in _COUNT_SUFFIX
+                         if low.endswith(sfx) and len(low) > len(sfx)), "")
+            if not stem:
+                continue
+            # 存在一张"被数的表"，且它有一根指回本表的外键。
+            # 表名既认同名（chunk → chunks），也认带前缀的（chunk → document_chunks）：
+            # 真实 schema 里子表常常带着父表名做前缀，只认同名会漏掉一多半。
+            variants = _stem_variants(stem)
+            want_fk = {f"{b}_id" for b in back}
+            for tn2 in names:
+                if not (tn2 in variants or any(tn2.endswith("_" + v) for v in variants)):
+                    continue
+                target = tables[next(k for k in tables if k.lower() == tn2)]
+                if any(c.name.lower() in want_fk for c in target.columns.values()):
+                    col.cached_counter = True
+                    break
+
+
 @dataclass
 class Table:
     name: str
@@ -428,6 +504,7 @@ def parse_tables(spec: list[dict[str, Any]]) -> dict[str, Table]:
             tenant_exempt=bool(t.get("tenant_exempt", False)),
             time_exempt=bool(t.get("time_exempt", False)),
         )
+    mark_cached_counters(tables)
     return tables
 
 
