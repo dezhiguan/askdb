@@ -285,10 +285,14 @@ def _llm_spans(d: Deps, step: str, usage: Any = None) -> _LlmSpan:
                 cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
             )
             continue
+        # note 写**我们自己的话**，厂商原文进 error_message —— 见 trace.py
+        # 那两个字段的注释：/api/trace 免登录可读，不能让 4xx 回显把提示词
+        # 里的表结构与用户问题捎出去。
         d.tracer.add(
-            step, 0.0, a.error_message, status="failed", ms=a.ms,
+            step, 0.0, "模型调用失败，未产出", status="failed", ms=a.ms,
             attempt=i if total > 1 else 0, attempts_total=n_total,
-            model=a.model, error_code=a.error_code, disposition=a.disposition,
+            model=a.model, error_code=a.error_code,
+            error_message=a.error_message, disposition=a.disposition,
             tok_in=a.usage.input_tokens, tok_out=a.usage.output_tokens,
             cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
         )
@@ -337,8 +341,9 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     # 跑 keyword，线上这么跑了两天没人看得出来（schema_rag 模块开头那段）。
     if r.degraded_from:
         d.tracer.add("schema_recall", t,
-                     f"{r.degraded_from} 召回不可用：{r.degrade_error}", status="failed",
+                     f"{r.degraded_from} 召回不可用", status="failed",
                      ms=r.degrade_ms, error_code=r.degrade_code,
+                     error_message=r.degrade_error,
                      # model 那一列只放模型名。召回模式不是模型，塞进去会在
                      # Span 表的「尝试 · xxx」里显示成一个并不存在的模型。
                      disposition=f"回落 {r.mode} 召回（fail-open，不中断链路）")

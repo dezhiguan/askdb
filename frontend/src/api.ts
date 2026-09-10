@@ -213,6 +213,10 @@ export interface ReplayStep {
   model?: string
   /** 失败时的厂商错误码或异常类名。有值即代表这一步失败过。 */
   error_code?: string
+  /** 厂商回的原始错误消息。**这个字段在 /api/trace 上没有** —— 它可能把请求
+   *  片段回显出来，而那条接口免登录可读、刻意不放 SQL 与问题原文。
+   *  要看原文走审计中心的回放（要登录、要开关）。 */
+  error_message?: string
   /** 失败后做了什么：切备选、就地重试、回落备用路径。没有它，一条 failed
    *  只说明"这里断过"，说不清链路是怎么活下来的。 */
   disposition?: string

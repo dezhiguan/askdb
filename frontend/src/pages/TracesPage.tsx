@@ -54,7 +54,10 @@ interface ChainHealth {
   answering: string
   replaced: string
   toolFailed: number
-  toolSoft: number
+  /** 工具/数据库步骤里能力降级的与零行的，**分开数** —— 一次如实返回零行
+   *  不是"降级"，混成一个词会让人以为系统出了故障。 */
+  toolDegraded: number
+  toolEmpty: number
 }
 
 function chainHealth(steps: ReplayStep[]): ChainHealth {
@@ -81,7 +84,9 @@ function chainHealth(steps: ReplayStep[]): ChainHealth {
     answering,
     replaced,
     toolFailed: steps.filter(s => isToolStep(s) && stepFailed(s.status)).length,
-    toolSoft: steps.filter(s => isToolStep(s) && stepSoft(s.status)).length,
+    toolDegraded: steps.filter(s => isToolStep(s)
+      && (s.status === 'degraded' || s.status === 'fallback')).length,
+    toolEmpty: steps.filter(s => isToolStep(s) && s.status === 'empty').length,
   }
 }
 
@@ -462,10 +467,11 @@ function TraceDetail({ item, chain, result, onFocusTrace }: {
         </div>
         <div className="trace-fact">
           <span>工具调用</span><strong>{steps.length ? toolCalls(steps) : NA}</strong>
-          {(health.toolFailed > 0 || health.toolSoft > 0) && (
+          {(health.toolFailed > 0 || health.toolDegraded > 0 || health.toolEmpty > 0) && (
             <small className={health.toolFailed > 0 ? 'bad' : 'warn'}>
               {[health.toolFailed > 0 && `${health.toolFailed} 失败`,
-                health.toolSoft > 0 && `${health.toolSoft} 降级`].filter(Boolean).join(' · ')}
+                health.toolDegraded > 0 && `${health.toolDegraded} 降级`,
+                health.toolEmpty > 0 && `${health.toolEmpty} 空结果`].filter(Boolean).join(' · ')}
             </small>
           )}
         </div>
@@ -501,6 +507,7 @@ function ChainBanner({ health, steps }: { health: ChainHealth; steps: ReplayStep
       <b>{name(s)}</b>：{s.model ? `${s.model} ` : ''}{s.note || '调用失败'}
       {s.error_code ? `（${s.error_code}）` : ''}
       {s.disposition ? `，${s.disposition}` : ''}
+      {s.error_message ? `　${s.error_message}` : ''}
     </li>
   ))
   if (health.replaced) {
@@ -697,7 +704,13 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                           {step.error_code && (
                             <div><dt>错误码</dt><dd><code>{step.error_code}</code></dd></div>
                           )}
-                          {step.note && <div><dt>原始消息</dt><dd>{step.note}</dd></div>}
+                          {/* 原文只在回放那条路上有 —— /api/trace 不给（见 api.ts
+                              ReplayStep.error_message）。没有就不留空行，
+                              也不拿 note 顶上：note 是我们自己写的一句话，
+                              把它标成"原始消息"是在骗人。 */}
+                          {step.error_message && (
+                            <div><dt>原始消息</dt><dd>{step.error_message}</dd></div>
+                          )}
                           {step.disposition && <div><dt>处置</dt><dd>{step.disposition}</dd></div>}
                         </dl>
                       </td>

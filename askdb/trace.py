@@ -63,7 +63,14 @@ class StepTrace:
     #: 那个不是同一个，账也跟着记错。
     model: str = ""
     #: 失败时的厂商错误码 / 异常类名。空字符串表示这一步没失败。
+    #: **不含任何内容**，因此可以随 /api/trace 出接口。
     error_code: str = ""
+    #: 厂商回的原始错误消息，原样保留不截断。
+    #: **有意与 note 分开**：厂商的 4xx 消息可能回显请求片段（提示词里带着
+    #: 表结构与用户的问题），而 /api/trace 是免登录可读的、刻意不放 SQL 与
+    #: 问题原文。所以它不进 STEP_FIELDS —— 只留在审计记录与 /api/replay
+    #: （要登录、要开关）那条路上，与 sql_raw/question 同一道边界。
+    error_message: str = ""
     #: 失败后做了什么 —— 切备选、就地重试、回落备用路径、放行。
     #: 没有它，一条 failed 的 span 只说明"这里断过"，说不清链路怎么活下来的。
     disposition: str = ""
@@ -87,7 +94,7 @@ class Tracer:
         tok_in: int = 0, tok_out: int = 0, cached_in: int = 0, cost_cny: float = 0.0,
         tables: list[str] | None = None, ms: int | None = None,
         attempt: int = 0, attempts_total: int = 0, model: str = "",
-        error_code: str = "", disposition: str = "",
+        error_code: str = "", error_message: str = "", disposition: str = "",
     ) -> StepTrace:
         """ms 显式传入时不按 since 算 —— 一个节点落多条 span（每次尝试一条）
         时，since 是**整个节点**的起点，拿它算每一条就等于给每次尝试都记上
@@ -100,7 +107,8 @@ class Tracer:
             cost_cny=cost_cny, note=note, status=status,
             tables=list(tables or []),
             attempt=attempt, attempts_total=attempts_total, model=model,
-            error_code=error_code, disposition=disposition,
+            error_code=error_code, error_message=error_message,
+            disposition=disposition,
         )
         self.steps.append(st)
         return st
@@ -140,7 +148,7 @@ class Tracer:
             # 同理，新增的五个字段绝大多数步骤都用不上（只跑一次、没失败），
             # 空值一律不落盘，免得每条审计凭空胖五个键。
             for k in ("tables", "attempt", "attempts_total", "model",
-                      "error_code", "disposition"):
+                      "error_code", "error_message", "disposition"):
                 if not d.get(k):
                     d.pop(k, None)
             out.append(d)

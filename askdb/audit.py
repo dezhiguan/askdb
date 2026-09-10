@@ -66,7 +66,16 @@ TRACE_FIELDS = (
 
 # 步骤对象自身也走白名单 —— 记录里的 steps 由各节点自由追加，
 # 哪天有人往里塞了 sql 或行样本，这里不会顺手带出去。
-STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables")
+# 失败与回退那五个字段一并放行：全是模型名、序号、状态码与我们自己写死的
+# 处置短语，**不含任何来自数据或用户的内容**，出接口不构成新的泄露。
+# 少了它们，页面上那条 failed span 只剩一句"这里断过"—— 说不清是该退避重试
+# 还是该换模型，也说不清链路后来是怎么活下来的。
+#
+# **error_message 有意不在其中**：厂商的 4xx 消息可能把请求片段回显出来，
+# 而提示词里带着表结构与用户的问题。它留在审计记录与 /api/replay 上，
+# 与 sql_raw / question 同一道边界。
+STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables",
+               "attempt", "attempts_total", "model", "error_code", "disposition")
 
 # 真正过模型的图节点。与前端 traceSteps.ts 的 STEP_TYPE == 'MODEL' 是同一份口径，
 # 两边都写一次是因为一个算数、一个只做展示；漂了会让「模型调用成功率」这格
