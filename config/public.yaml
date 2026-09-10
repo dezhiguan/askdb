@@ -483,6 +483,42 @@ auth:
       roles: [DEV]
       note: 技术研发 · 基础架构工程师 · 仿真测试
       password_hash: "scrypt$16384$8$1$u6R9rfpTiRRmzVwrkmbu0A==$Ci3JyuInZ/0xVIHVUTu8KlU8+p0VbZy+9Pry16BGKnE="
+    # 2026-09-10 加，仿真测试账号（产品部 7 人，名册里已登记的成员补登录口令）。
+    - username: fuwanqi
+      display_name: 傅婉琪
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理 · 仿真测试
+      password_hash: "scrypt$16384$8$1$fUr/dvasjbgZWKrrAt5tFA==$jQsxArk9gWEFjmEkkHUWYpToNwcgj2gizuaF40xG2Qc="
+    - username: weiyuqian
+      display_name: 韦雨芊
+      roles: [PRODUCT]
+      note: 产品部 · 高级产品经理 · 仿真测试
+      password_hash: "scrypt$16384$8$1$1ZNT9pKdKjNrsOZvdLlA2g==$wrH0JK9jNW2J3LNIq3uBR5NuqWv9kvIGt1tVxkFaQgI="
+    - username: zhuyufan
+      display_name: 朱宇帆
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理 · 仿真测试
+      password_hash: "scrypt$16384$8$1$foFWUf87Ps0kejGlIj3Eyg==$xDS58MbDdFjoWkegoSN0DrJU8MujsplRHv8LeZvTAUs="
+    - username: guoyize
+      display_name: 郭一泽
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理 · 仿真测试
+      password_hash: "scrypt$16384$8$1$quyl56eQ8DyC8Wj4KUImeA==$OBcA20QbU2ANRjPCTQ45gSAK1D3430V03XI3sSGjJBo="
+    - username: guyan
+      display_name: 顾妍
+      roles: [PRODUCT]
+      note: 产品部 · 高级产品经理 · 仿真测试
+      password_hash: "scrypt$16384$8$1$IaRJ5gGxnOZQnFjPFZAuiA==$58/8nMpCgAnMAZK2Jx4MCSG60j/vlraSJW1k9sjKPsc="
+    - username: zhangchunrong
+      display_name: 张春蓉
+      roles: [PRODUCT]
+      note: 产品部 · 产品总监 · 仿真测试
+      password_hash: "scrypt$16384$8$1$lwFCSgIOgA2YRE7UwuGrCw==$hF2xV7ljyz0VbyVe/AAQiVUZMeve/MNbpT1lGnyplGY="
+    - username: shenkeyan
+      display_name: 沈可妍
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理 · 仿真测试
+      password_hash: "scrypt$16384$8$1$bg1uR0KRRmNdz5yZ8y8Okw==$1wISpdvNq+kGBXgYZf5OoUlx51aHLELmTtacgfJsJVM="
 
 # ---------------------------------------------------------------------------
 # 身份与权限：角色成员名单
