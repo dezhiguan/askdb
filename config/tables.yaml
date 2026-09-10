@@ -29,7 +29,7 @@ tables:
       id:        { type: BIGINT,  desc: 知识库 ID }
       org_id:    { type: BIGINT,  desc: 组织 ID, tenant: true }
       name:      { type: VARCHAR, desc: 知识库名称 }
-      doc_count: { type: BIGINT,  desc: 文档数缓存计数器，可能与实际漂移，以 documents 实际统计为准 }
+      doc_count: { type: BIGINT,  cached_counter: true, desc: 文档数缓存计数器，可能与实际漂移，以 documents 实际统计为准 }
 
   - name: orgs
     desc: 组织（租户）

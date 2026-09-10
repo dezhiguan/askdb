@@ -78,6 +78,18 @@ class Column:
     #: 数据期限所依据的时间列。语义与 tenant 完全对称：
     #: 那个标"按谁隔离"，这个标"按哪一列算新旧"。
     time: bool = False
+    #: 缓存/派生计数列 —— 值由别处维护，与真实计数会漂移。
+    #:
+    #: 典型是 knowledge_bases.doc_count 这类给列表页排序用的计数器。
+    #: 2026-09-10 生产实测：同一天同一分钟，「文档数最多的 5 个知识库」走
+    #: COUNT(documents) 得 7,901，「哪个知识库文档量最大」走 doc_count 得 7,539，
+    #: 差 362 篇，两次都是 100 分可信度、都没提口径差异。
+    #:
+    #: 标了不等于禁用 —— 列表页排序本来就该用它。标的作用是让链路认得出
+    #: "这个数来自缓存计数器"，从而在口径声明里写明、在可信度上扣一分。
+    #: 靠列 desc 里写"⚠️ 可能漂移"是不够的：那句话只有模型看得见，
+    #: 而恰恰是模型没当回事。
+    cached_counter: bool = False
 
     def __post_init__(self) -> None:
         # 内置模式命中即敏感，**配置只能往上加、不能往下摘**（`sensitive: false`
@@ -405,6 +417,7 @@ def parse_tables(spec: list[dict[str, Any]]) -> dict[str, Table]:
                 tenant=bool(col.get("tenant", False)),
                 sensitive=bool(col.get("sensitive", False)),
                 time=bool(col.get("time", False)),
+                cached_counter=bool(col.get("cached_counter", False)),
             )
             for name, col in t["columns"].items()
         }

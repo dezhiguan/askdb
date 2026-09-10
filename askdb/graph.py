@@ -13,6 +13,7 @@ P0 为单步链路；plan / assess 两个节点与重规划回边在 P5 补齐�
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 import uuid
@@ -26,9 +27,9 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 
-from . import guard, observe, planner, schema_rag
+from . import clarify, guard, observe, planner, schema_rag
 from .config import Config
-from .executor import DataSourceError, Executor
+from .executor import DataSourceError, Executor, MaskUnresolved
 from .llm import LlmClient, LlmNotConfigured
 from .quota import QuotaExceeded, build_quota
 from .audit import MODEL_STEPS, PHASE_STARTED, day_tz
@@ -90,6 +91,18 @@ class AskState(TypedDict, total=False):
     out_of_scope: bool
     # 执行报错是否可由重试救回（超时可以，连接不可达不行）
     exec_retryable: bool
+    #: 问句是纯指代追问（clarify 节点判定）。产品上没有多轮上下文，
+    #: 这类问题只能澄清，不能猜一个主体把答案编出来。
+    anaphoric: bool
+    #: 推理里出现的猜测措辞。**必须一路出到接口并进可信度分母** ——
+    #: 模型自认不确定却照样给结果，是这套系统里最难被发现的一类错。
+    hedge_terms: list[str]
+    #: 从推理里抹掉的假陈述（虚构的"沿用上一轮"、护栏行为的转述）。
+    scrubbed_claims: list[str]
+    #: 本次 SQL 用到的缓存/派生计数列（如 knowledge_bases.doc_count）。
+    derived_columns: list[str]
+    #: 本次结果的口径声明。**必出字段**：模型没给就由链路按事实合成。
+    caliber: str
     # assess 判"不足"时给出的下一步目标。设计图上 [8] 判不足必然回到 [2]，
     # 没有"重规划反悔"这条边 —— 模型若在 [2] 给不出目标，就用这个兜底。
     next_goal: str
@@ -181,6 +194,16 @@ class AskResult:
     mask_degraded: bool = False
     #: 本次实际脱敏的列。
     masked_columns: list[str] = field(default_factory=list)
+    #: 问句是纯指代追问。
+    anaphoric: bool = False
+    #: 推理里的猜测措辞。非空 = 模型自认不确定，可信度必须跟着降。
+    hedge_terms: list[str] = field(default_factory=list)
+    #: 从推理里抹掉的假陈述。留档，让"我们改了模型的话"这件事本身可审计。
+    scrubbed_claims: list[str] = field(default_factory=list)
+    #: 用到的缓存/派生计数列。这类列与真实计数会漂移，出现即降可信度。
+    derived_columns: list[str] = field(default_factory=list)
+    #: 本次口径声明，必出。
+    caliber: str = ""
     attempts: int = 1
     step_count: int = 1
     multi_step: bool = False
@@ -324,6 +347,35 @@ def _upstream_degraded(d: Deps) -> bool:
 
 # 节点
 # --------------------------------------------------------------------------
+
+def _n_clarify(state: AskState, config: RunnableConfig) -> dict[str, Any]:
+    """纯指代追问在这里就停住 —— 不召回、不生成、不花一分钱。
+
+    放在链路最前面而不是让模型自己判：模型判过了，判得不稳。2026-09-10 的
+    1030 次跑测里，「那前三名呢」被答成了 eval_experiments 的 top1 命中数前三，
+    reasoning 还写着"沿用上一轮口径"；而同一批里「第二名呢」它又老老实实说了
+    "缺少上一轮上下文"。同一类问题两种行为，说明这件事不能交给它自觉。
+
+    判定是确定性的（见 clarify.is_anaphoric），且刻意收得很紧 —— 误判一条正常
+    问题的代价比漏判一条追问更大。
+    """
+    d = _deps(config)
+    # 多步链路的子步骤自带【本步目标】，那才是真的"上一步"，不适用这条判定。
+    if state.get("goal") or state.get("carry"):
+        return {}
+    t = d.tracer.start()
+    v = clarify.is_anaphoric(state["question"], d.cfg)
+    if not v.anaphoric:
+        d.tracer.add("clarify", t, "问句主体明确")
+        return {}
+    d.tracer.add("clarify", t, f"需要澄清：{v.reason}", status="blocked")
+    return {
+        "error": f"这个问题缺少查询对象：{v.reason}。",
+        "error_hint": v.ask,
+        "rejected_by": "NEED_CONTEXT",
+        "anaphoric": True,
+    }
+
 
 def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     d = _deps(config)
@@ -537,8 +589,33 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             "reasoning": draft.reasoning,
             **_spent(state, usage),
         }
+    # ---- 输出层：把与事实不符的两类句子从 reasoning 里抹掉 ----
+    # 单步查询里不存在"上一轮"，任何"沿用上一轮口径"都是虚构的；护栏做了什么
+    # 由 rules_fired 说了算，不由模型转述。抹掉而不是拒答 —— 这些句子挂在一条
+    # 可能完全正确的 SQL 上，为一句多余的话丢掉结果不划算。但它们必须消失：
+    # 留着就是在替一个没发生的动作背书（2026-09-10 跑测：27 条虚构上一轮、
+    # 66 条声称"租户隔离由系统注入"而护栏只注入了 LIMIT）。
+    reasoning, scrubbed = clarify.scrub_reasoning(
+        draft.reasoning or "",
+        multi_step=bool(state.get("goal") or state.get("carry")),
+        # 这一步还没过护栏，租户谓词注没注入要到 guard 之后才知道。
+        # 保守起见按"没注入"处理：真注入了，guard 那步会把它写进 rewrites，
+        # 用户在改写清单上看得到，不靠 reasoning 转述。
+        tenant_injected=False,
+    )
+    hedges = clarify.find_hedges(reasoning)
+    if scrubbed:
+        d.tracer.add("scrub", t, "已从推理中移除无事实依据的陈述："
+                                 + "；".join(scrubbed[:3]), status="blocked")
+    if hedges:
+        # 猜测措辞不抹 —— 那是模型的真实态度，抹掉反而是掩盖。
+        # 它要做的是一路传到可信度上，让分数替用户把这件事说出来。
+        d.tracer.add("hedge", t, f"推理含猜测措辞：{'、'.join(hedges[:3])}",
+                     status="blocked")
     d.tracer.add("generate_sql", t, label, **_sp_kw(sp))
-    return {"sql_raw": draft.sql, "reasoning": draft.reasoning,
+    return {"sql_raw": draft.sql, "reasoning": reasoning,
+            "caliber": (getattr(draft, "caliber", "") or "").strip(),
+            "hedge_terms": hedges, "scrubbed_claims": scrubbed,
             "error": None, "rejected_by": None, **_spent(state, usage)}
 
 
@@ -595,8 +672,14 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             "est_rows": r.est_rows,
             # 记下被拦的那一版。重试若靠"加个过滤条件"跑通，最终结果就不是
             # 用户问的那个范围 —— 到 finalize 时要能说出这件事。
-            "scan_blocked_sql": state.get("sql_final", ""),
-            "scan_blocked_rows": r.est_rows,
+            #
+            # **只在真的因为扫描量被拦时才记**。explain 的 ok=False 有两种来源：
+            # 扫描量超阈值（est_rows 有值），和执行计划压根生成不出来（类型不匹配
+            # 之类的语义错，est_rows 是 None）。后者是一次普通的语义错重试，
+            # 重试版本与被拦版本之间的差异是"改对了写法"，不是"收窄了范围" ——
+            # 混在一起记，会让一次正常的纠错被判成随手收窄。
+            **({"scan_blocked_sql": state.get("sql_final", ""),
+                "scan_blocked_rows": r.est_rows} if r.est_rows is not None else {}),
         }
     if not r.ok:
         # 已获批准。如实记下"这一步本该拦下但按审批放行"，
@@ -610,6 +693,34 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     blocked = state.get("scan_blocked_sql", "")
     if blocked:
         was = state.get("scan_blocked_rows")
+        # 收窄成什么范围，决定了这个数还能不能用。
+        #
+        # 换成预聚合汇总表（换 FROM、不加过滤）是我们希望它走的那条路，结果仍是
+        # 全量口径，标一句"范围收窄过"就够。但**随手加一个用户没提过的过滤条件**
+        # 是另一回事：跑出来的数根本不是用户问的那个范围。2026-09-10 实测，
+        # 问「一共有多少个分块」被收窄成 `WHERE kb_id = 1`，返回一个大大的「0」，
+        # 而全量是 1,386,242 —— 旁边那句"此结果只是单个知识库的分块数"的告知
+        # 完全没能阻止它被当成答案。
+        #
+        # 所以这里从"告知"升级为"拒答"：告知解决的是可追溯，解决不了可信。
+        arb = guard.arbitrary_narrowing(blocked, state["sql_final"],
+                                        state["question"], d.cfg, d.cfg.dialect)
+        if arb:
+            shown = "、".join(f"`{p}`" for p in arb[:3])
+            d.tracer.add("dry_run", t, f"收窄范围是模型自行挑的（{shown}），不作为答案返回",
+                         status="blocked")
+            return {
+                "error": (f"这个问题需要全量扫描，超过了单次查询的扫描阈值。"
+                          f"重试时加上的过滤条件（{shown}）是模型自己挑的、"
+                          f"不是你问的范围，按这个范围算出来的数不能当答案。"),
+                "error_hint": ("换用预聚合的汇总表来问；或缩小到你真正关心的范围"
+                               "（写明具体是哪一个、哪段时间）；确需全量可申请高成本查询审批。"),
+                "rejected_by": "R-11",
+                "needs_approval": True,
+                "est_rows": state.get("scan_blocked_rows"),
+                # 不再进反思重试：反思只会让它换一个同样随手挑的过滤条件。
+                "out_of_scope": True,
+            }
         d.tracer.add("dry_run", t, f"{est}（原查询预估 {was:,} 行被 R-11 拦下，"
                                    f"本次是收窄范围后的查询）" if was else est,
                      status="ok")
@@ -634,6 +745,26 @@ def _all_zero_columns(res: Any) -> list[str]:
     return out
 
 
+#: `<某某>.name = '字面量'` 这种**未做规范化**的名称等值。带了 LOWER/REPLACE/TRIM
+#: 的不算 —— 那已经是规范化过的写法，零行多半真的是没有。
+_NAME_EQ = re.compile(
+    r"(?<![\w.(])(?:\w+\.)?(?:name|title|display_name|username|slug|label)\s*=\s*'([^']{1,60})'",
+    re.IGNORECASE)
+
+
+def _name_predicate(sql: str) -> str:
+    """SQL 里按名称做精确等值比较的那个字面量。没有就返回空串。"""
+    if not sql:
+        return ""
+    # 出现在同一条谓词里的规范化函数会把它救回来，那种就不提示了
+    for m in _NAME_EQ.finditer(sql):
+        head = sql[max(0, m.start() - 40):m.start()].lower()
+        if any(f in head for f in ("lower(", "upper(", "replace(", "trim(", "regexp")):
+            continue
+        return m.group(1)
+    return ""
+
+
 def _empty_note(res: Any, sql: str) -> str:
     """把"查不到"与"确实是 0"分开说。
 
@@ -647,6 +778,16 @@ def _empty_note(res: Any, sql: str) -> str:
     后者正是 COALESCE 抹平后的样子，光看 row_count 判断不出来。
     """
     if res.row_count == 0:
+        # 零行最常见的真因不是"确实没有数据"，而是**名字没匹配上**：
+        # 库里叫「岗位 JD 库」，用户打的是「岗位JD库」，SQL 写成精确等值，
+        # 返回零行。2026-09-10 实测这条被页面解释成"筛选条件太严 / 当前租户下
+        # 没有这类记录"，用户于是得出"这个库是空的"这个完全错误的结论。
+        # 先认这一种，认不出再说时间与枚举。
+        named = _name_predicate(sql)
+        if named:
+            return (f"结果为空。SQL 里按名称精确匹配「{named}」——"
+                    f"库里没有**叫这个名字**的记录（名称里的空格、大小写都要完全一致）。"
+                    f"先确认名字写对了，再考虑是不是真的没有数据")
         return "结果为空。请确认过滤条件（尤其是时间范围与枚举取值）落在有数据的区间里"
     if not res.rows:
         return ""
@@ -680,6 +821,13 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         d.executor.set_org(state["org_id"])   # RLS 兜底层读这个上下文
         res = d.executor.run(state["sql_final"],
                              limit_capped="R-09" in (state.get("rules_fired") or []))
+    except MaskUnresolved as e:
+        # 脱敏判定不出投影来源 —— 库是好的，是我们不敢返回。记成 blocked 而不是
+        # failed：工具健康度那张表要能把"数据源坏了"和"我们主动挡下"分开看。
+        d.tracer.add("execute", t, str(e), status="blocked")
+        return {"error": str(e), "error_hint": e.hint, "rejected_by": "P03",
+                # 可重试：让模型把子查询/CTE 摊开，投影来源就解析得出来了
+                "exec_retryable": True}
     except DataSourceError as e:
         d.tracer.add("execute", t, str(e), status="failed")
         return {"error": str(e), "error_hint": e.hint, "rejected_by": "EXEC",
@@ -815,11 +963,45 @@ def _n_reflect(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     return {"attempt": n}
 
 
+def _synth_caliber(state: AskState, cfg: Config, derived: list[str]) -> str:
+    """口径声明的兜底合成 —— 让它成为**必出字段**而不是"希望模型写"。
+
+    模型自己给的那句最好（它知道自己选了哪个口径），但 2026-09-10 的跑测里
+    它给得极不稳定：同一天问「文档数最多的 5 个知识库」声明了口径，问
+    「哪个知识库文档量最大」就一句不提，而后者恰恰用了会漂移的缓存计数列。
+    靠模型自觉的字段等于没有这个字段，所以这里按链路自己掌握的事实补一句。
+    """
+    bits: list[str] = []
+    if state.get("metrics_hit"):
+        bits.append("按业务口径「" + "」「".join(list(state["metrics_hit"])[:2]) + "」")
+    tables = list(state.get("tables_hit") or [])
+    if tables:
+        bits.append("统计对象：" + "、".join(tables[:3]))
+    if derived:
+        # 这一句是整个字段最要紧的部分：用了缓存计数器必须写在脸上。
+        bits.append("数值取自缓存计数列 " + "、".join(derived)
+                    + "（由别处维护，与实时统计可能有出入）")
+    return "；".join(bits)
+
+
 def _n_finalize(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     d = _deps(config)
     t = d.tracer.start()
+    sql = state.get("sql_final") or state.get("sql_raw") or ""
+    derived = guard.derived_columns_used(sql, d.cfg, d.cfg.dialect) if sql else []
+    caliber = (state.get("caliber") or "").strip()
+    synth = _synth_caliber(state, d.cfg, derived)
+    if not caliber:
+        caliber = synth
+    elif derived and all(c not in caliber for c in derived):
+        # 模型写了口径但漏掉"用的是缓存列"这件事 —— 补上，不覆盖它原本那句。
+        caliber += "；数值取自缓存计数列 " + "、".join(derived)
+    if derived:
+        d.tracer.add("finalize", t, "本次用到缓存计数列：" + "、".join(derived),
+                     status="blocked")
+        t = d.tracer.start()
     d.tracer.add("finalize", t, "已附最终 SQL 与判定链路")
-    return {}
+    return {"derived_columns": derived, "caliber": caliber}
 
 
 # --------------------------------------------------------------------------
@@ -857,6 +1039,11 @@ def _route_after_dry_run(state: AskState) -> Literal["execute", "reflect", "fina
         return "execute"
     if state.get("rejected_by") == "EXEC":
         return "finalize"
+    # 已经判定"模型自己挑了个范围"的那次拒绝不进反思：再来一轮，它只会换一个
+    # 同样是自己挑的过滤条件，而每一轮都在真实烧 token。out_of_scope 的语义
+    # 与 _route_after_guard 那处一致 —— 重试改变不了结论的，就别重试。
+    if state.get("out_of_scope"):
+        return "finalize"
     # 干跑失败两种情形都值得重试：计划生成失败是语义错，
     # 扫描量超限则可以让模型补上筛选条件。次数仍受 R-14 约束。
     return "reflect" if _can_retry(state) else "finalize"
@@ -879,6 +1066,7 @@ def _route_after_assess(state: AskState) -> Literal["plan", "finalize"]:
 
 def _build_skeleton() -> StateGraph:
     g = StateGraph(AskState)
+    g.add_node("clarify", _n_clarify)
     g.add_node("retrieve", _n_retrieve)
     g.add_node("plan", _n_plan)
     g.add_node("assess", _n_assess)
@@ -889,7 +1077,12 @@ def _build_skeleton() -> StateGraph:
     g.add_node("reflect", _n_reflect)
     g.add_node("finalize", _n_finalize)
 
-    g.set_entry_point("retrieve")
+    g.set_entry_point("clarify")
+    g.add_conditional_edges(
+        "clarify",
+        lambda s: "finalize" if s.get("rejected_by") == "NEED_CONTEXT" else "retrieve",
+        {"retrieve": "retrieve", "finalize": "finalize"},
+    )
     g.add_edge("retrieve", "plan")
     g.add_conditional_edges(
         "plan",
@@ -1197,6 +1390,15 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         "scope_narrowed": result.scope_narrowed,
         "masked_columns": result.masked_columns,
         "mask_degraded": result.mask_degraded,
+        # 语义侧的三个信号。与 recall_blind / scope_narrowed 同一类：链路全绿、
+        # 结果却不可全信。**必须进审计**，否则追踪页那枚可信度角标与工作台右栏
+        # 会算出两个分数 —— 同一次查询两页两个答案，可信侧栏就此作废。
+        "hedge_terms": result.hedge_terms,
+        "derived_columns": result.derived_columns,
+        "anaphoric": result.anaphoric,
+        # 我们改过模型的话这件事本身也要可审计
+        "scrubbed_claims": result.scrubbed_claims,
+        "caliber": result.caliber,
         # 结果被 R-13 截断。与上面两条同类：不进审计的话，事后在追踪页上
         # "只看到前 N 行"和"一共就这么多行"长得一模一样。
         "truncated": result.truncated,
@@ -1335,6 +1537,11 @@ def _execute(cfg: Config, *, question: str, org: int, trace_id: str,
         recall_note=str(out.get("recall_note", "") or ""),
         mask_degraded=bool(out.get("mask_degraded", False)),
         masked_columns=out.get("masked_columns", []),
+        anaphoric=bool(out.get("anaphoric", False)),
+        hedge_terms=list(out.get("hedge_terms") or []),
+        scrubbed_claims=list(out.get("scrubbed_claims") or []),
+        derived_columns=list(out.get("derived_columns") or []),
+        caliber=str(out.get("caliber", "") or ""),
         attempts=out.get("attempt", 0) + 1,
         step_count=max(out.get("step_no", 1), 1),
         multi_step=bool(out.get("multi_step", False)),

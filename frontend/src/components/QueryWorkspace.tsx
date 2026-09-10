@@ -160,6 +160,12 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
       // current 会回落到第一项，此时 sourceId 还是旧值 —— 照它发就是界面显示 A、实际查 B
       const value = mode === 'ask' ? await askQuestion(text, current.id) : await runSql(text, current.id)
       setResult(value)
+      // 发出去了就把输入框清空。原来提交后原文留在框里，下一个问题打上去就
+      // 接在了上一句后面 —— 2026-09-10 的跑测里每问一条都得先手动全选覆盖，
+      // 真实用户不会每次都记得，日活上千就会稳定产出一批拼接出来的脏问句。
+      // 清空放在拿到结果之后：请求失败时原文还在，用户不用重打。
+      // 「最近查询」里点一下就能把它填回来，误清的代价也兜住了。
+      if (mode === 'ask') setQuestion('')
       // 被拦下时先看拦截原因，而不是一张空结果表
       setTab(value.ok ? 'result' : value.rejected_by === 'INTERRUPTED' ? 'checkpoint' : 'sql')
       recent.upsert(

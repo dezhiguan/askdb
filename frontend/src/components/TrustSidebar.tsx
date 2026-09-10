@@ -70,6 +70,8 @@ export function TrustSidebar({ health, source, result, mode, me, onResultTab, on
         attempts: result.attempts, maskDegraded: result.mask_degraded,
         recallBlind: result.recall_blind, recallNote: result.recall_note,
         scopeNarrowed: result.scope_narrowed, scopeNote: result.scope_note,
+        hedgeTerms: result.hedge_terms, derivedColumns: result.derived_columns,
+        anaphoric: result.anaphoric,
       })
     : admissionChecks(ready, !!source, whitelist)
   const score = scoreOf(scored)

@@ -792,6 +792,8 @@ function TrustBadge({ item, chain }: { item: AuditItem; chain: TraceChain | null
     truncated: chain.truncated, attempts: chain.attempts ?? item.attempts,
     maskDegraded: chain.mask_degraded, recallBlind: chain.recall_blind,
     scopeNarrowed: chain.scope_narrowed,
+    hedgeTerms: chain.hedge_terms, derivedColumns: chain.derived_columns,
+    anaphoric: chain.anaphoric,
   })
   const score = scoreOf(checks)
   const head = mode === 'sql' ? '本次执行可信度' : '本次结果可信度'

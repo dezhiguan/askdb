@@ -543,18 +543,40 @@ NARROW_SQL = ("SELECT COUNT(*) AS 数量 FROM documents "
 
 
 def test_scope_narrowed_is_recorded_when_retry_beats_the_threshold(cfg, ex):
-    """扫描量超限 → 回灌"缩小时间范围" → 模型加了条件跑通。
+    """扫描量超限 → 回灌"缩小时间范围" → 模型沿**用户给的时间维度**收紧后跑通。
 
-    链路每一步都成功，rejected_by 是 null，页面上与全量结果毫无区别 ——
-    实测「一共有多少笔订单」因此答 54,192，真值 120 万。留痕是唯一的补救。
+    用户自己划了时间范围时，模型把范围收得更紧仍然是在回答他问的那件事，
+    所以放行 —— 但必须留痕：链路每一步都成功、rejected_by 是 null，
+    页面上与全量结果毫无区别。
     """
     # 阈值卡在两版的预估扫描量之间：第一版 527 行被拦，加了时间窗的第二版
     # 210 行放行。（数字是注入租户谓词之后的估算，不是裸 SQL 的。）
     cfg.raw["guard"]["max_scan_rows"] = 300
-    r = run(cfg, ex, OK_SQL, NARROW_SQL)
+    r = graph.ask("2024 年以来每个月的文档量", cfg, executor=ex,
+                  llm=FakeLlm(OK_SQL, NARROW_SQL))
     assert r.ok, f"第二版应当放行：{r.rejected_by} {r.error}"
     assert r.scope_narrowed is True
     assert "不是全量" in r.scope_note
+
+
+def test_narrowing_the_model_made_up_is_refused_not_flagged(cfg, ex):
+    """用户没提过的过滤条件 —— 拒答，不是"给个数再附一句说明"。
+
+    2026-09-10 生产实测：问「一共有多少个分块」，扫描超阈值后模型重试成
+    `WHERE kb_id = 1`，返回一个大大的「0」（全量是 1,386,242），旁边配着
+    一句"此结果只是单个知识库的分块数"的告知。告知一个字都没错，也一点用
+    都没有 —— 没有人会把「0」读成"我没答上来"。
+
+    与上一条的区别只在于问句有没有给出这个范围：给了就是收紧，没给就是编。
+    """
+    cfg.raw["guard"]["max_scan_rows"] = 300
+    r = graph.ask("一共有多少个文档", cfg, executor=ex,
+                  llm=FakeLlm(OK_SQL, NARROW_SQL))
+    assert not r.ok, "模型自己挑的范围不能当答案返回"
+    assert r.rejected_by == "R-11"
+    assert "不是你问的范围" in r.error
+    # 拒答要给得出下一步，否则用户只能干瞪眼
+    assert "预聚合" in r.hint or "审批" in r.hint
 
 
 def test_scope_is_not_flagged_on_a_clean_first_try(cfg, ex):
@@ -567,7 +589,8 @@ def test_narrowing_is_written_into_the_audit_record(cfg, ex):
     """事后复盘一个对不上的数字时，这是第一个要看的字段。"""
     import json as _json
     cfg.raw["guard"]["max_scan_rows"] = 300
-    r = run(cfg, ex, OK_SQL, NARROW_SQL)
+    r = graph.ask("2024 年以来每个月的文档量", cfg, executor=ex,
+                  llm=FakeLlm(OK_SQL, NARROW_SQL))
     assert r.ok and r.scope_narrowed
     recs = [_json.loads(ln) for ln in cfg.audit_log.read_text().splitlines() if ln.strip()]
     final = [x for x in recs if x.get("trace_id") == r.trace_id and "sql_final" in x]

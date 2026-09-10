@@ -120,6 +120,14 @@
 /* 「这个答案可能是错的」。要**比正文重**：它与旁边那句模型自述的分量完全不同，
    排版上分不出来就等于没说。只在盲选/脱敏退化时出现，不是常驻旁白。 */
 .answer-warning { margin-top: 6px !important; padding: 5px 7px; border: 1px solid #d8a24a; border-radius: 5px; background: rgba(255, 244, 224, .9); color: #7a4b06 !important; font-size: 7.5px !important; font-weight: 600; line-height: 1.6 !important; }
+/* 口径是**必出**字段，所以给的是常驻旁白的分量，不抢警告的位。
+   它回答的是"这个数到底数的是什么" —— 不该逼人去读 SQL 才知道。 */
+.answer-caliber { margin-top: 5px !important; color: var(--ink-2); font-size: 7.5px !important; line-height: 1.6 !important; }
+.answer-caliber b { color: var(--ink); }
+/* 命中缓存 / 已抹除的陈述：都是"这次查询发生了什么"的事实交代，
+   语气中性 —— 它们不表示结果可疑，只是不说就会被误读。 */
+.answer-cached,
+.answer-scrubbed { margin-top: 5px !important; padding: 4px 7px; border-left: 2px solid #9fc5ab; border-radius: 0 4px 4px 0; background: rgba(240, 246, 241, .8); color: var(--ink-2) !important; font-size: 7px !important; line-height: 1.6 !important; }
 .answer-actions { display: flex; gap: 6px; flex: none; }
 .answer-actions button { padding: 6px 8px; border: 1px solid #9fc5ab; border-radius: 5px; color: var(--green); background: rgba(255,255,255,.55); font-size: 7px; font-weight: 700; cursor: pointer; }
 .answer-actions button:hover { background: white; }

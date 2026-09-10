@@ -33,7 +33,7 @@ from . import schema_rag as _schema_rag
 from . import sources as _sources
 from .config import Config, load
 from . import executor as _executor_mod
-from .executor import DataSourceError, Executor
+from .executor import DataSourceError, Executor, MaskUnresolved
 from .graph import ask as run_ask, jsonable, resume as run_resume
 from .quota import build_quota
 from .qcache import build_answer_cache, make_key as _cache_key
@@ -2996,6 +2996,18 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             try:
                 ex.set_org(org)
                 res = ex.run(g.sql, limit_capped="R-09" in g.rules_fired)
+            except MaskUnresolved as e:
+                # 与 agent 模式同一条规矩：判不出投影来源就不返回，
+                # 而不是把整行涂成星号递出去（见 executor._mask 的注释）。
+                steps.append({"step": "execute", "ms": 0, "status": "blocked", "note": str(e)})
+                _audit(rejected_by="P03", sql_final=g.sql, rules_fired=g.rules_fired,
+                       explain_rows=ep.est_rows)
+                return JSONResponse({
+                    "ok": False, "question": "（直查模式）", "sql_final": g.sql,
+                    "rejected_by": "P03", "error": str(e), "hint": e.hint,
+                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                    "trace_id": trace_id,
+                })
             except DataSourceError as e:
                 steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
                 _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,
@@ -3010,8 +3022,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         note = f"返回 {res.row_count} 行"
         if res.masked_columns:
             note += f"；已脱敏 {len(res.masked_columns)} 列（{'、'.join(res.masked_columns[:5])}）"
-        if res.mask_degraded:
-            note += "；SQL 解析不出投影来源，本次按整行从严脱敏"
         steps.append({"step": "execute", "ms": res.elapsed_ms, "status": "ok",
                       "note": note})
         _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,

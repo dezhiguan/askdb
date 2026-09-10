@@ -342,12 +342,17 @@ export interface TraceChain {
   cached?: boolean | null
   /** 命中缓存时，答案是哪一次真跑留下的。空串表示旧格式缓存里没记 */
   cached_from?: string | null
-  /** 可信度那枚角标要判的四条痕迹（见 trust.ts）。老记录里没有这些字段，
+  /** 可信度那枚角标要判的痕迹（见 trust.ts）。老记录里没有这些字段，
    *  一律 undefined —— 与 false 是两件事，别在这里补默认值。 */
   recall_blind?: boolean | null
   scope_narrowed?: boolean | null
   mask_degraded?: boolean | null
   truncated?: boolean | null
+  /** 语义侧三条（2026-09-10 加）。与上面四条同源，两页必须判同一份。 */
+  hedge_terms?: string[] | null
+  derived_columns?: string[] | null
+  anaphoric?: boolean | null
+  caliber?: string | null
 }
 
 /** 节点链的三种结局。**取不到不能再collapse成 null**：
@@ -778,6 +783,9 @@ export interface AskResult {
   scope_narrowed?: boolean
   /** 收窄的说明：原查询预估扫描多少行、下一步该怎么办。 */
   scope_note?: string
+  /** 空结果 / 全零结果的说明。零行最常见的真因是**名称没匹配上**，
+   *  而不是"没有数据" —— 由后端判定后写在这里，页面直接用。 */
+  empty_note?: string
 
   tables_hit?: string[]
   metrics_hit?: string[]
@@ -788,8 +796,22 @@ export interface AskResult {
   recall_note?: string
   /** 被脱敏的返回列。星号得有个出处，否则看的人以为库里就是这样。 */
   masked_columns?: string[]
-  /** 脱敏判定退化过：SQL 解析不出投影来源，整行按敏感返回。 */
+  /** 脱敏判定退化过：SQL 解析不出投影来源，整行按敏感返回。
+   *  2026-09-10 起这条路改成拒答（rejected_by = P03），所以正常链路里恒为 false；
+   *  字段保留是为了老审计记录还读得出来。 */
   mask_degraded?: boolean
+  /** 本次口径声明，**必出**：数的是哪张表的什么、用了哪个业务口径、
+   *  数值是实时统计还是取自缓存计数列。模型没写就由链路按事实合成。 */
+  caliber?: string
+  /** 模型推理里出现的猜测措辞（"无法确定""作为占位"…）。非空 = 它自己也不确定。 */
+  hedge_terms?: string[]
+  /** 用到的缓存/派生计数列。这类计数器会与实时统计漂移。 */
+  derived_columns?: string[]
+  /** 问句是纯指代追问。正常链路在 clarify 节点就拦下了，这里是兜底。 */
+  anaphoric?: boolean
+  /** 从推理里抹掉的无事实依据陈述（虚构的"沿用上一轮"、护栏行为的转述）。
+   *  展示出来，"我们改过模型的话"这件事本身才是可审计的。 */
+  scrubbed_claims?: string[]
   attempts?: number
   step_count?: number
   multi_step?: boolean
