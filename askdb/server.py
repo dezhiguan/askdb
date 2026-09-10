@@ -35,6 +35,7 @@ from . import sources as _sources
 from .config import Config, load
 from . import executor as _executor_mod
 from .executor import DataSourceError, Executor, MaskUnresolved
+from .agent import run_agent
 from .graph import ask as run_ask, jsonable, resume as run_resume
 from .quota import build_quota
 from .qcache import build_answer_cache, make_key as _cache_key
@@ -2946,7 +2947,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             if hit is not None:
                 return JSONResponse(_serve_cached_ask(hit, scoped, q_text, eff_org))
 
-        r = run_ask(q_text, scoped, org_id=req.org_id)
+        # agent.enabled 打开时走 LLM 自主决策链路（v2）；否则走既有固定管道。
+        # 默认关，不影响现网。as_task（可续跑任务线）暂仍走管道 —— agent 的
+        # 断点续跑接线见后续步骤；在此之前不让任务落到还不能续跑的链路上。
+        if bool(scoped.raw.get("agent", {}).get("enabled", False)) and not req.as_task:
+            r = run_agent(q_text, scoped, org_id=req.org_id)
+        else:
+            r = run_ask(q_text, scoped, org_id=req.org_id)
         out = r.to_dict()
         if r.rejected_by == "R-11" and not scoped.scan_waiver:
             # 与直查同一条口径：超阈值挂起，不是终结。

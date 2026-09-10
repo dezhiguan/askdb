@@ -55,6 +55,16 @@ planner:
   cost_cap_tokens: 12000             # R-17 单次问答累计 token 上限，0 表示不限
   on_cap_reached: converge           # converge | fail —— 触顶后收敛作答并标注，不静默返回
 
+# 可信数据 Agent —— LLM 自主决策链路（v2，见 docs/design-trusted-data-agent-v2.html）。
+# 打开后 /api/ask 走 agent.run_agent：意图预检 + LLM 每轮自选工具
+# (search_schema / get_table_schema / execute_sql) 的 ReAct 循环，替掉固定管道的
+# 编排；安全不变（execute_sql 仍过 guard/dry_run/只读/脱敏）。**默认关**，
+# 关闭时与从前完全一致。as_task 任务线暂仍走管道（agent 续跑接线待补）。
+agent:
+  enabled: false
+  max_steps: 6                       # R-16 循环步数上限（工具调用次数），超则收敛
+  cost_cap_tokens: 12000             # R-17 累计 token 上限，未配则沿用 planner.cost_cap_tokens
+
 schema_rag:
   # 本机测试实例走全量注入：32 张表整体约 3178 token，成本可接受，且召回这一维
   # 被固定住，测别的东西时不会被它干扰。
