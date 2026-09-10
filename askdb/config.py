@@ -528,9 +528,14 @@ def load(config_path: str | Path = "config/askdb.yaml") -> Config:
     _load_dotenv(root)
     raw = _load_yaml(cfg_path)
 
-    tables = parse_tables(_load_yaml(root / raw["tables_file"])["tables"])
+    # 内置语义层（表白名单 + 业务口径）只在配置带内置数据源时才有意义。
+    # 只走运行时注册表的部署（askdb.yaml / public.yaml）不配这两项：
+    # 每个运行时源的白名单跟着源存在 askdb_sources 表里，护栏用的是按源
+    # 派生的配置（sources.derive_config），这里留一份空壳只会误导人。
+    tables = parse_tables(_load_yaml(root / raw["tables_file"])["tables"]) if raw.get("tables_file") else {}
 
-    metrics = [Metric(**m) for m in (_load_yaml(root / raw["metrics_file"])["metrics"] or [])]
+    metrics = ([Metric(**m) for m in (_load_yaml(root / raw["metrics_file"])["metrics"] or [])]
+               if raw.get("metrics_file") else [])
 
     cfg = Config(root=root, raw=raw, tables=tables, metrics=metrics,
                  path=str(cfg_path.relative_to(root) if cfg_path.is_relative_to(root) else cfg_path))
@@ -543,7 +548,9 @@ def _validate(cfg: Config) -> None:
     errs: list[str] = []
 
     tcol = cfg.tenant_column
-    if cfg.tenant_enabled:
+    # 无内置源且白名单为空：tenant 段只是给"将来若配回内置源"的姿态声明，
+    # 没有任何查询路径会用到 cfg.tables，下面这批表级校验无从谈起也不必拦。
+    if cfg.tenant_enabled and (cfg.has_default_source or cfg.tables):
         if not cfg.tenant_tables():
             errs.append(
                 "开启了租户隔离，但没有任何表声明归属。"

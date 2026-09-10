@@ -125,5 +125,5 @@ observability:
   checkpoint_db: ../data/checkpoints-ragforge-eval.sqlite
   daily_quota: 3000                  # 仅评测；生产配置仍为 100
 
-tables_file: ../config/schemas/ragforge-prod-tables.yaml
-metrics_file: ../config/schemas/ragforge-prod-metrics.yaml
+tables_file: ./config/ragforge-prod-tables.yaml
+metrics_file: ./config/ragforge-prod-metrics.yaml

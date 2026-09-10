@@ -539,9 +539,10 @@ def test_health_reports_config_path(client):
 def test_schema_endpoint_is_scoped_to_the_caller(cfg, monkeypatch):
     """/api/schema 的表必须按角色收窄，口径则一律给出、逐条标 queryable。
 
-    表收窄：用未收窄的配置，会让人看到自己查不了的表连同全部字段 —— 实测
-    public.yaml 下匿名角色只能查 knowledge_bases / orgs，这个接口却把
-    documents 与 model_usage 的字段一起吐出来。
+    表收窄：用未收窄的配置，会让人看到自己查不了的表连同全部字段。
+    2026-09-10 起 public.yaml 不再携带内置语义层（tables/metrics 为空），
+    这条改用仍带内置语义层的 sample.yaml —— 测的是收窄链路本身，
+    不是某份配置当下的取值。
 
     口径不收窄（2026-09-06 产品决定）：原来跟着表一起摘掉，理由是别让模型
     照着写出被 R-03 拦下的 SQL —— 但喂模型的是 ask 链路里的 scoped.metrics，
@@ -553,8 +554,8 @@ def test_schema_endpoint_is_scoped_to_the_caller(cfg, monkeypatch):
     from askdb.config import load
 
     root = Path(__file__).resolve().parent.parent
-    public = load(root / "config" / "public.yaml")
-    # 这条测的是**按角色收窄**，不是登录门。public.yaml 当下就是 required: false
+    public = load(root / "config" / "sample.yaml")
+    # 这条测的是**按角色收窄**，不是登录门。对外实例当下就是 required: false
     # （2026-09-07 改回），这里仍然显式关一次：required 是产品取舍、翻过两次，
     # 一旦再翻回 true，匿名会被读门直接 401、够不着收窄那一步，而失败信息会指向
     # 登录，跟这条用例要测的收窄逻辑毫无关系。收窄本身与登录无关。

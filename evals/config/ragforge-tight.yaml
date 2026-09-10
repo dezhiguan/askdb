@@ -144,5 +144,5 @@ observability:
   # 数字按旧口径乘 3 折算，保持实际可用量不变。
   daily_quota: 300                   # 主库上更保守
 
-tables_file: ../config/schemas/ragforge-prod-tables.yaml
-metrics_file: ../config/schemas/ragforge-prod-metrics.yaml
+tables_file: ./config/ragforge-prod-tables.yaml
+metrics_file: ./config/ragforge-prod-metrics.yaml

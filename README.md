@@ -244,8 +244,8 @@ can be edited without touching thresholds:
 | `config/askdb.yaml` | Local development instance. No datasource block either — sources come from the runtime registry |
 | `config/sample.yaml` | The bundled DuckDB sample database, used by the evaluation and fault-injection runs |
 | `config/public.yaml` | The public instance. Carries **no datasource block at all** — every source comes from the runtime registry |
-| `config/schemas/` | **Table allowlists and metric definitions**, named after the data source: `sample-*` (sample database), `ragforge-dev-*` (local ragforge database), `ragforge-prod-*` (cloud ragforge database) |
-| `evals/config/` | Frozen evaluation configs (`ragforge-prod.yaml` — the one the production evaluation ran on — plus its variants `ragforge-eval.yaml` and `ragforge-tight.yaml`), kept so a published run stays reproducible |
+| `config/schemas/` | **Table allowlists and metric definitions**, named after the data source (currently only `sample-*`). Since 2026-09-10 the entry configs carry no built-in semantic layer — every source comes from the runtime registry, and each source's allowlist lives in the database with it |
+| `evals/config/` | Frozen evaluation configs (`ragforge-prod.yaml` — the one the production evaluation ran on — plus its variants `ragforge-eval.yaml` and `ragforge-tight.yaml`) **together with the ragforge allowlist/metric files they reference**, self-contained, kept so a published run stays reproducible |
 
 The allowlist and the metric file determine accuracy far more than prompt tuning does:
 
@@ -606,7 +606,7 @@ model calls.
    is what a semantic layer is for, but it also means part of D's gain comes from
    questions written to exercise metrics. Degenerate metrics were excluded from
    question-writing; the reasoning and measured distributions are recorded in
-   `config/schemas/ragforge-prod-metrics.yaml`.
+   `evals/config/ragforge-prod-metrics.yaml`.
 
 4. **The same configuration produces different results across runs.**
    `temperature: 0` does not guarantee determinism — false-reject moved from 0%
