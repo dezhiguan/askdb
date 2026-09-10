@@ -62,8 +62,8 @@ def cfg(sample_db: Path, tmp_path: Path):
     c.raw["datasource"] = {"type": "duckdb", "path": str(sample_db), "read_only": True}
     c.raw["tenant"] = {**c.raw["tenant"], "column": "org_id",
                        "default_ctx": 65, "mode": "predicate"}
-    c.tables = parse_tables(_yaml_of(ROOT / "config" / "tables.yaml")["tables"])
-    c.metrics = [Metric(**m) for m in _yaml_of(ROOT / "config" / "metrics.yaml")["metrics"]]
+    c.tables = parse_tables(_yaml_of(ROOT / "config" / "schemas" / "sample-tables.yaml")["tables"])
+    c.metrics = [Metric(**m) for m in _yaml_of(ROOT / "config" / "schemas" / "sample-metrics.yaml")["metrics"]]
     # 回放开关同理钉死：它在开发配置里是会被打开的，而多条用例断言的是
     # "关着时 health/stats 怎么说" —— 跟着开发配置漂就会集体变红。
     c.raw["observability"] = {**c.raw["observability"], "replay_api": False}

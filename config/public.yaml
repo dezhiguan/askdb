@@ -373,8 +373,8 @@ answer_cache:
   key_prefix: askdb:qcache:public
   # redis_url_env: 留空 —— 自动复用 observability.quota.redis_url_env
 
-tables_file: ./config/ragforge-prod-tables.yaml
-metrics_file: ./config/ragforge-prod-metrics.yaml
+tables_file: ./config/schemas/ragforge-prod-tables.yaml
+metrics_file: ./config/schemas/ragforge-prod-metrics.yaml
 
 # 2026-09-01 按 @guandezhi 决定放开。
 #

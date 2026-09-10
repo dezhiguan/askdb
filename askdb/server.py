@@ -897,7 +897,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         原来跟着表一起摘掉，理由是"别列出一批用了就被 R-03 拦的口径"——
         但那件事该由**喂给模型的那份**负责，而喂模型走的是 ask 链路里的
         _scoped(cfg).metrics，与这个接口无关。收窄这里挡不住 R-03，
-        只会让业务口径中心对低权限角色整页空白：匿名在 ragforge.yaml 下
+        只会让业务口径中心对低权限角色整页空白：匿名在 askdb.yaml 下
         一条都看不到，而这一页是给人读的词典，不是给模型的提示词。
         代价说清楚：口径定义里带着表达式，因此低权限角色能看到自己查不了的
         那些表上的列名（parse_status、latency_ms 这类）。要收回来就是把

@@ -35,8 +35,8 @@ def test_i03_sql_without_api_key(monkeypatch, tmp_path, sample_db):
     raw["datasource"] = {"type": "duckdb", "path": str(sample_db), "read_only": True}
     raw["tenant"] = {**raw["tenant"], "column": "org_id",
                      "default_ctx": 65, "mode": "predicate"}
-    raw["tables_file"] = str(root / "config" / "tables.yaml")
-    raw["metrics_file"] = str(root / "config" / "metrics.yaml")
+    raw["tables_file"] = str(root / "config" / "schemas" / "sample-tables.yaml")
+    raw["metrics_file"] = str(root / "config" / "schemas" / "sample-metrics.yaml")
     raw["observability"] = {**raw["observability"],
                             "audit_log": str(tmp_path / "a.jsonl"),
                             "checkpoint_db": str(tmp_path / "c.sqlite")}
@@ -59,8 +59,8 @@ def test_i03b_sql_without_default_source(tmp_path):
     root = Path(__file__).resolve().parent.parent.parent
     raw = yaml.safe_load((root / "config" / "askdb.yaml").read_text(encoding="utf-8"))
     raw.pop("datasource", None)
-    raw["tables_file"] = str(root / "config" / "tables.yaml")
-    raw["metrics_file"] = str(root / "config" / "metrics.yaml")
+    raw["tables_file"] = str(root / "config" / "schemas" / "sample-tables.yaml")
+    raw["metrics_file"] = str(root / "config" / "schemas" / "sample-metrics.yaml")
     raw["observability"] = {**raw["observability"],
                             "audit_log": str(tmp_path / "a.jsonl"),
                             "checkpoint_db": str(tmp_path / "c.sqlite")}

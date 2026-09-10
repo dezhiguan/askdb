@@ -398,8 +398,8 @@ tbody tr.sel{background:var(--wash)}
           <p class="sub">一个数据源 = 一份配置，用启动参数切换，不改文件</p>
           <pre class="code">python -m askdb.cli serve \
   -c config/askdb.yaml         # 本机样例库
-  -c config/ragforge.yaml      # 本机 PG
-  -c config/ragforge-prod.yaml # 云上 PG</pre>
+  -c config/askdb.yaml         # 本机开发
+  -c evals/config/ragforge-prod.yaml # 云上 PG（经隧道）</pre>
           <div class="notice info" style="margin-top:10px">
             <div class="why">每份配置自带配套的 <code>*-tables.yaml</code> 与 <code>*-metrics.yaml</code>
               —— 白名单和业务口径是跟着库走的，所以换源不可能只换一个连接串。
@@ -662,7 +662,7 @@ function currentOrg() {
 const RULES = {
   "R-01": ["只能执行一条语句", "把多条语句拆开，一次问一件事。"],
   "R-02": ["只允许查询，不允许改数据", "askdb 是只读工具。要改数据请走正常的运维流程。"],
-  "R-03": ["用到了没有开放的表", "在 config/tables.yaml 里把这张表加进白名单，然后重启服务。"],
+  "R-03": ["用到了没有开放的表", "在 config/schemas/sample-tables.yaml 里把这张表加进白名单，然后重启服务。"],
   "R-04": ["用到了不存在的字段", "错误信息里已经列出该表的真实字段名，照着改即可；也可到「① 接入数据」第 3 步逐字段核对。"],
   "R-05": ["不允许 SELECT *", "显式写出需要的列，避免把不该看的字段也带出来。"],
   "R-07": ["用到了被禁用的函数", "这些函数能读文件或访问外部资源，不在只读查询的范围内。"],
@@ -670,7 +670,7 @@ const RULES = {
   "R-11": ["预计要扫描的数据量太大", "加上时间范围或更具体的筛选条件，把扫描量降下来。"],
   "EXEC": ["数据源出问题了", ""],
   "LLM":  ["模型调用没成功", ""],
-  "NO_SQL": ["这个问题用现有的表回答不了", "换个问法，或在 config/tables.yaml 里开放更多表。"],
+  "NO_SQL": ["这个问题用现有的表回答不了", "换个问法，或在 config/schemas/sample-tables.yaml 里开放更多表。"],
 };
 let CFG_PATH = "";   // 当前服务用的配置，复现命令要带它
 

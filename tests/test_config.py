@@ -61,14 +61,14 @@ def test_loads_real_project_config():
 def test_column_metadata_is_parsed():
     """列元数据（enum / tenant / 间接归属）能被解析出来。
 
-    读固定的 config/tables.yaml，不读开发配置指向的那份 —— 开发配置换一份
+    读固定的 config/schemas/sample-tables.yaml，不读开发配置指向的那份 —— 开发配置换一份
     白名单是合法操作，而这条用例考的是解析器，不是当下连着哪个库。
     """
     import yaml
 
     from askdb.config import parse_tables
 
-    spec = yaml.safe_load((ROOT / "config" / "tables.yaml").read_text(encoding="utf-8"))
+    spec = yaml.safe_load((ROOT / "config" / "schemas" / "sample-tables.yaml").read_text(encoding="utf-8"))
     tables = parse_tables(spec["tables"])
     status = tables["documents"].columns["status"]
     assert "COMPLETED" in status.enum
@@ -251,7 +251,7 @@ def test_tight_config_differs_from_prod_only_in_scan_threshold():
     """
     from askdb.config import load
 
-    prod, tight = load("config/ragforge-prod.yaml"), load("config/ragforge-tight.yaml")
+    prod, tight = load("evals/config/ragforge-prod.yaml"), load("evals/config/ragforge-tight.yaml")
     assert set(prod.tables) == set(tight.tables)
     assert [m.name for m in prod.metrics] == [m.name for m in tight.metrics]
     assert prod.default_org == tight.default_org
@@ -260,7 +260,7 @@ def test_tight_config_differs_from_prod_only_in_scan_threshold():
     # 它在数据源页上是一张永远「不可用」的卡），prod.dsn 现在直接抛。
     # 这条比对的**本意**因此弱了一档 —— 原来它保证两份配置打同一个库，
     # 现在只保证护栏、表白名单与租户口径一致。tight 自己仍连着库，
-    # `askdb ask -c config/ragforge-tight.yaml` 照旧能跑。
+    # `askdb ask -c evals/config/ragforge-tight.yaml` 照旧能跑。
     assert not prod.has_default_source
     assert tight.has_default_source, "回归配置自己必须还能连库，否则这套 harness 用不了"
 

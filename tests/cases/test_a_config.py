@@ -33,11 +33,11 @@ def _write_cfg(tmp: Path, sample_db: Path, mutate=None, tables=None, metrics=Non
     mf = tmp / "metrics.yaml"
     tf.write_text(yaml.safe_dump(
         tables if tables is not None
-        else yaml.safe_load((ROOT / "config" / "tables.yaml").read_text(encoding="utf-8")),
+        else yaml.safe_load((ROOT / "config" / "schemas" / "sample-tables.yaml").read_text(encoding="utf-8")),
         allow_unicode=True), encoding="utf-8")
     mf.write_text(yaml.safe_dump(
         metrics if metrics is not None
-        else yaml.safe_load((ROOT / "config" / "metrics.yaml").read_text(encoding="utf-8")),
+        else yaml.safe_load((ROOT / "config" / "schemas" / "sample-metrics.yaml").read_text(encoding="utf-8")),
         allow_unicode=True), encoding="utf-8")
     raw["tables_file"] = "./" + str(tf.relative_to(tmp)) if False else str(tf)
     raw["metrics_file"] = str(mf)
@@ -53,7 +53,7 @@ def _write_cfg(tmp: Path, sample_db: Path, mutate=None, tables=None, metrics=Non
 
 
 def _base_tables() -> dict:
-    return yaml.safe_load((ROOT / "config" / "tables.yaml").read_text(encoding="utf-8"))
+    return yaml.safe_load((ROOT / "config" / "schemas" / "sample-tables.yaml").read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------- A-01 / A-02

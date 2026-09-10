@@ -1,26 +1,44 @@
-# 接入本机 ragforge 开发库（Postgres.app，非容器）。
+# 接入云上 ragforge 库（8.163.30.216），经 SSH 本地端口转发。
 #
-# 用法：askdb check -c config/ragforge.yaml
-#       askdb serve -c config/ragforge.yaml
+# ⚠️ 该实例无只读副本（pg_is_in_recovery=false，复制槽 0），这是**主库直连**。
+#    技术设计说明书 §8 将此列为禁止项，本次为使用方明确要求后的例外。
+#    因此所有阈值都比本机开发库更严，并且只开放 5 张表。
 #
-# 只连本机开发库。按技术设计说明书 §8：生产主库禁止连接，
-# 线上只允许连只读副本，且需满足 8 项准入条件。
-
-datasource:
-  type: postgresql
-  dsn: "host=127.0.0.1 port=5432 dbname=ragforge user=askdb_ro"
-  password_env: ASKDB_PG_PASSWORD    # 密码只走环境变量，不落配置文件
+# 用法：
+#   askdb check -c evals/config/ragforge-prod.yaml
+#   askdb serve -c evals/config/ragforge-prod.yaml
+#
+# 撤销：ssh root@8.163.30.216 'docker exec -i ragforge-postgres \
+#         psql -U ragforge -d ragforge' < scripts/prod_readonly_rollback.sql
+#
+# ---------------------------------------------------------------------------
+# 2026-09-06：**默认数据源已撤掉**（产品决定）。
+#
+# 原来这里写着一条经 SSH 隧道直连云上主库的 datasource：
+#   dsn: host=127.0.0.1 port=15432 dbname=ragforge user=askdb_ro
+#   upstream: 8.163.30.216:5432   # 隧道 ssh -N -L 15432:127.0.0.1:5432 root@…
+# 隧道没起来时它在数据源页上是一张永远「不可用」的卡，而那正是这个实例
+# 最常见的状态。
+#
+# 因此本实例**没有默认数据源**：查询必须显式指定一个运行时数据源
+# （config.has_default_source 支持这种部署，不带源的查询直接被拒，
+#  不会悄悄落到某个"碰巧还在配置里"的库上）。
+# 下面的租户、护栏阈值与表白名单仍按主库场景从严，因为运行时源连的
+# 很可能就是同一个库。
+# ---------------------------------------------------------------------------
 
 tenant:
+  enabled: true
   column: org_id
-  default_ctx: 1                     # 广州日不落科技有限公司；用 --org 覆盖
-  mode: rls_and_predicate            # 应用层 AST 改写 + 数据库行级安全，双层
+  default_ctx: 316                   # 职场数据分享组织
+  mode: rls_and_predicate            # 应用层 AST 改写 + 数据库 RLS，双层
   on_unresolved: reject
 
 guard:
-  max_rows: 1000
-  max_scan_rows: 500000
-  statement_timeout_ms: 8000
+  # 主库场景：宁可查不出来，也不能把库拖慢
+  max_rows: 500
+  max_scan_rows: 200000              # documents 全表 86,546 行，够用；再大的一律打回
+  statement_timeout_ms: 5000         # 与角色级 statement_timeout 一致
   max_retry: 2
   allow_select_star: false
   allowed_schemas: [public, main]   # R-06：其余 schema 与跨库引用一律拒绝
@@ -44,6 +62,7 @@ guard:
     - get_lock
     - master_pos_wait
     - query_to_xml
+    - pg_stat_file
 
 planner:
   # 多步是兜底路径不是默认路径：能用一条 SQL（含 CTE）表达的一律单步。
@@ -58,7 +77,21 @@ planner:
   on_cap_reached: converge           # converge | fail —— 触顶后收敛作答并标注，不静默返回
 
 schema_rag:
-  mode: keyword
+  # 2026-09-07：keyword → vector。
+  #
+  # keyword 靠内置中英词典把"用户"接到 users，那是**枚举**：词典收不到的词就
+  # 会偏（实测"有多少个待办"接不上 career_tasks，只被盲选示警兜住）。每接一个
+  # 新业务域就得再加一轮词，是打地鼠。vector 是泛化：表注释、字段名、枚举值
+  # 都自动参与匹配，换个库也能用。设计 §3.2.3 写的就是这条路线
+  # （"P0 关键词/别名，P1 换向量检索"），两种模式共用同一份文档构造逻辑。
+  #
+  # 兜底没变：取不到密钥、维度不符、网络不通都抛 EmbeddingUnavailable，
+  # 自动回落 keyword 并在 recall_note 里说明 —— 召回退化只是准确率下降，
+  # 不该让整条链路不可用。
+  #
+  # 代价：每次提问多一次 embedding 往返（几十~百余毫秒），成本是一次问答的
+  # 零头；首次使用某个数据源时现场建一次索引（几十段文本），那一次会慢。
+  mode: vector
   top_k: 3
   max_k: 5
   token_budget: 1500
@@ -73,6 +106,9 @@ schema_rag:
                          # 「召回 Top-K（默认 3）表」，所以过线的表不足 top_k 张时，
                          # 会按相似度补齐到 top_k —— 宁可多给一张，也不让模型无表可用。
                          # 想让它成为硬阈值，得先改设计文档里的 Top-K 约定。
+                         # **但"一条都没过线"仍算盲选**：那时补齐进来的表是保底，
+                         # 不是相关度选出来的，recall.blind 会置位并示警（与 keyword
+                         # 那边"只有泛词命中"是同一件事）。
   max_metrics: 2         # 口径是强约束（"必须用此定义"），塞多了会误导模型
 
 llm:
@@ -106,23 +142,27 @@ llm:
     peak_utc_offset_hours: 8
 
 observability:
-  replay_api: true    # 本机开发：判定链路可回放
-  audit_log: ./data/audit-ragforge.jsonl
-  checkpoint_db: ./data/checkpoints-ragforge.sqlite
+  audit_log: ../data/audit-ragforge-prod.jsonl
+  checkpoint_db: ../data/checkpoints-ragforge-prod.sqlite
   # 口径是**模型调用次数**，不是提问数：一次提问会调好几次模型
   # （多步规划每步一次生成 + 一次评估，反思重试再各来一次）。
   # 数字按旧口径乘 3 折算，保持实际可用量不变。
-  daily_quota: 600
+  daily_quota: 300                   # 主库上更保守
 
-tables_file: ./config/ragforge-dev-tables.yaml
-metrics_file: ./config/ragforge-dev-metrics.yaml
+tables_file: ../config/schemas/ragforge-prod-tables.yaml
+metrics_file: ../config/schemas/ragforge-prod-metrics.yaml
 
 # ---------------------------------------------------------------------------
-# 本机开发：把登录、角色、身份、回放一并打开
+# 2026-09-06 补：登录、角色收窄、身份库。
 #
-# 这几段原本只配在 public.yaml，导致本地跑起来看不到登录与角色收窄 ——
-# 「本地没有的功能」和「本地没配的功能」长得一模一样，已经因此误判过一次。
-# 开发配置就该能跑通全部功能。
+# 这三段原本只在 config/askdb.yaml 与 config/public.yaml 里有，这份主库配置
+# 漏了 auth 段 —— auth.enabled(cfg) 是「配置里开 且 有会话密钥」两个条件相与，
+# 少一个就整体 fail-closed，前端显示「登录未启用」。
+# 主库连的是真数据，比开发库更需要审计里有名有姓，不该是三份配置里唯一关着的。
+#
+# 账号名单与口令哈希与 config/askdb.yaml 是同一份 ——
+# 账号跟着配置文件分裂，会出现「在这台登得进、换一台就说账号不存在」。
+# 会话密钥走 ASKDB_SESSION_SECRET（见 .env），不入配置。
 # ---------------------------------------------------------------------------
 
 # 2026-09-06：**此处原有 role_policies，已整块撤掉**（产品决定）。
@@ -136,13 +176,9 @@ metrics_file: ./config/ragforge-dev-metrics.yaml
 # 之间重新出现差别的决定，别顺手做。
 auth:
   enabled: true
-  required: false          # 匿名可用；登录不放宽可见面，只放开写
-  cookie_secure: false     # 本地 http 调试
+  required: false          # 匿名可查；登录不放宽可见面，只放开写（与开发库一致）
+  cookie_secure: false     # 本机 http 调试；对外入口的配置在 public.yaml
   accounts:
-    # 下面这批是团队实名账号，与 config/askdb.yaml 同一份名单、同一批口令哈希。
-    # 共享平台就该是同一批人：账号跟着配置文件分裂，会出现「在这台登得进、
-    # 换一台就说账号不存在」——2026-09-06 已经踩过一次。
-    # 口令不入配置，这里只有哈希（askdb hash-password 生成）。
     - username: linxiao
       display_name: 林晓
       roles: [PRODUCT]
@@ -214,3 +250,11 @@ identity:
   # 连接串走 ASKDB_IDENTITY_DSN（见 .env），不写进仓库
   enabled: true
   password_env: ASKDB_IDENTITY_PG_PASSWORD
+
+# 回归评测跑在哪。**固定一个数据源**，不跟着页面上当前选的源走：
+# 同一套题在不同库上的分数不可比，考场一换，历史成绩之间立刻失去意义。
+# source 可写数据源 id 或名字（名字能跟着仓库走到别的机器上）。
+evaluation:
+  source: "ragforge 本地库"
+  golden: evals/golden-ragforge.jsonl
+  out: evals/results/ragforge-blind.json
