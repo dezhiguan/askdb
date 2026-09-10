@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { ENV_LABEL, ENV_ORDER } from '../envs'
 import {
   createSource, RateLimited, scanSource, setSourceTables, testSource,
   type Probe, type ScannedTable, type SourceInput, type SourceList,
@@ -31,6 +32,7 @@ export function AddSourceModal({ meta, onClose, onDone }: {
   const [probe, setProbe] = useState<Probe | null>(null)
   const [sourceId, setSourceId] = useState('')
   const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [filter, setFilter] = useState('')
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
@@ -120,8 +122,9 @@ export function AddSourceModal({ meta, onClose, onDone }: {
                 <div className="form-row">
                   <label htmlFor="src-env">环境</label>
                   <select id="src-env" value={env} onChange={e => setEnv(e.target.value)}>
-                    <option value="test">测试环境</option>
-                    <option value="prod_ro">生产只读镜像</option>
+                    {ENV_ORDER.map(code => (
+                      <option key={code} value={code}>{ENV_LABEL[code]}</option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -223,8 +226,15 @@ export function AddSourceModal({ meta, onClose, onDone }: {
                 勾选的表会带着字段名与类型写入白名单 —— R-04（字段真实性）与
                 R-05（展开 SELECT *）靠它判定。
               </p>
+              <PickToolbar
+                tables={probe?.tables ?? []}
+                picked={picked}
+                onPick={setPicked}
+                query={filter}
+                onQuery={setFilter}
+              />
               <div className="pick-list">
-                {probe?.tables.map(table => (
+                {(probe?.tables ?? []).filter(t => matchTable(t, filter)).map(table => (
                   <TablePick
                     key={table.name}
                     table={table}
@@ -243,7 +253,6 @@ export function AddSourceModal({ meta, onClose, onDone }: {
                 代表租户，猜错的后果是越权。要做隔离仍然得写配置文件。
               </p>
               <div className="modal-actions">
-                <span className="pick-count">已选 {picked.size} / {probe?.tables.length ?? 0}</span>
                 <button className="ghost" onClick={onDone}>稍后再选</button>
                 <button className="primary" disabled={!!busy} onClick={saveTables}>
                   {busy === 'tables' ? '保存中…' : '保存白名单'}
@@ -256,6 +265,53 @@ export function AddSourceModal({ meta, onClose, onDone }: {
     </div>
   )
 }
+
+/** 选表列表顶上的一条：已选多少、一键全选/清空、按名字筛。
+ *
+ *  两个弹窗（新增第二步、配置里的「开放的表」）用的是同一份列表，
+ *  所以工具条也共用一份 —— 只在其中一处加，另一处迟早会被问"为什么那边有"。
+ *
+ *  **全选是显式动作，不是默认值。** 新源默认一张都不开放这条没有变：
+ *  白名单同时是安全边界与准确率边界，默认全开等于把两条边界一起取消。
+ *  库里表多的时候（这批库有 96 张）逐个点确实难受，给一个按钮就够了。
+ */
+function PickToolbar({ tables, picked, onPick, query, onQuery }: {
+  tables: ScannedTable[]
+  picked: Set<string>
+  onPick: (next: Set<string>) => void
+  query: string
+  onQuery: (value: string) => void
+}) {
+  // 筛过之后，全选只作用于**看得见的这些** —— 筛完还全选整库，
+  // 是没有人想要的那个语义
+  const visible = tables.filter(t => matchTable(t, query))
+  const allPicked = visible.length > 0 && visible.every(t => picked.has(t.name))
+  const toggleAll = () => {
+    const next = new Set(picked)
+    for (const t of visible) {
+      if (allPicked) next.delete(t.name)
+      else next.add(t.name)
+    }
+    onPick(next)
+  }
+  return (
+    <div className="pick-toolbar">
+      <input
+        className="pick-search"
+        value={query}
+        placeholder="按表名筛选"
+        onChange={e => onQuery(e.target.value)}
+      />
+      <span className="pick-count">已选 {picked.size} / {tables.length}</span>
+      <button type="button" className="ghost" disabled={visible.length === 0} onClick={toggleAll}>
+        {allPicked ? '清空' : query ? `全选这 ${visible.length} 张` : '全选'}
+      </button>
+    </div>
+  )
+}
+
+const matchTable = (table: ScannedTable, query: string) =>
+  !query.trim() || table.name.toLowerCase().includes(query.trim().toLowerCase())
 
 const TYPE_LABEL: Record<string, string> = { postgresql: 'PostgreSQL', mysql: 'MySQL', duckdb: 'DuckDB' }
 
@@ -307,6 +363,7 @@ export function ScanTablesModal({ id, name, cached, onScanned, onClose, onDone }
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [scanning, setScanning] = useState(false)
+  const [filter, setFilter] = useState('')
   const [coolUntil, setCoolUntil] = useState(0)
   const cooldown = useCountdown(coolUntil)
 
@@ -366,8 +423,15 @@ export function ScanTablesModal({ id, name, cached, onScanned, onClose, onDone }
             </div>
           )}
           {!probe && !error && <p className="drawer-note">扫描中…</p>}
+          <PickToolbar
+            tables={probe?.tables ?? []}
+            picked={picked}
+            onPick={setPicked}
+            query={filter}
+            onQuery={setFilter}
+          />
           <div className="pick-list">
-            {probe?.tables.map(table => (
+            {(probe?.tables ?? []).filter(t => matchTable(t, filter)).map(table => (
               <TablePick
                 key={table.name}
                 table={table}
@@ -382,7 +446,6 @@ export function ScanTablesModal({ id, name, cached, onScanned, onClose, onDone }
             ))}
           </div>
           <div className="modal-actions">
-            <span className="pick-count">已选 {picked.size} / {probe?.tables.length ?? 0}</span>
             {/* 上面那份可能是本次会话早先扫的。库结构变过就点这里，
                 不必把弹窗关掉再开 —— 那本来也拉不到新的了 */}
             <button className="ghost" disabled={scanning || cooldown > 0} onClick={runScan}>

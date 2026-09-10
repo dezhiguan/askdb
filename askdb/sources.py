@@ -411,13 +411,19 @@ def delete_source(cfg: Config, sid: str) -> bool:
 # 新建
 # --------------------------------------------------------------------------
 
-#: 环境档位，按"离生产的距离"从远到近排列。
+#: 环境档位，按"离生产的距离"从远到近排列。**顺序即语义**，界面上那个下拉
+#: 直接按这个顺序渲染 —— 一个把生产排在中间的下拉，点错的概率会高一档。
 #:
-#: 三档而不是两档：角色 scope 区分了「开发及测试环境」与「仅测试环境」，
+#: 四档而不是两档：角色 scope 区分了「开发及测试环境」与「仅测试环境」，
 #: 而枚举只有 test/prod_ro 时这两者无法区分 —— 枚举撑不起角色已经宣称的粒度。
-ENVS: tuple[str, ...] = ("dev", "test", "prod_ro")
+#: 2026-09-10 补上「预生产」（staging），四档才对得上真实的发布链路。
+#:
+#: **生产那一档的值仍然是 `prod_ro`，不是 `prod`。** 这不是笔误：注册表里
+#: 已有的生产源存的就是这个值，改字面量等于让存量源变成一个界面不认识的档位。
+#: 显示名可以改（那只是一层标签），存储值不能。
+ENVS: tuple[str, ...] = ("dev", "test", "staging", "prod_ro")
 
-ENV_LABEL = {"dev": "DEV", "test": "TEST", "prod_ro": "PROD-RO"}
+ENV_LABEL = {"dev": "DEV", "test": "TEST", "staging": "STAGING", "prod_ro": "PROD"}
 
 
 def build(*, name: str, type_: str, dsn: str, env: str = "test",
