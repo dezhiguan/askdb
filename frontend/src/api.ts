@@ -995,6 +995,9 @@ export interface Me {
   enabled: boolean
   /** false = 匿名可用，登录是可选的能力展示而不是门 */
   required: boolean
+  /** 当前身份能不能发起查询。后端按 required / query_requires_login 算好
+   *  给出去的**结论**，这里不重推 —— 判据只能有一处。 */
+  can_query: boolean
   username: string | null
   display_name: string
   roles: string[]

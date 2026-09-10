@@ -400,10 +400,24 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST https://askdb.ragforge.net/api/
 > 期望 401 且 `code` 为 `login_required`；若是 `login_unavailable`，说明会话密钥
 > 没配、登录整体关闭 —— 门关着，但也没人进得来。
 
-护栏是否生效：
+查询是否要求登录（2026-09-10 起 `auth.query_requires_login: true`）：
 
 ```bash
 curl -s -X POST https://askdb.ragforge.net/api/sql \
+  -H 'Content-Type: application/json' \
+  -d '{"sql":"SELECT 1"}' | python3 -m json.tool   # 期望 401 + code: login_required
+```
+
+> 2026-09-10 前这一步是匿名发 `DELETE` 验护栏、期望 `200 + R-02`。查询要求
+> 登录之后，匿名请求在中间件就被拦下，根本到不了护栏 —— 匿名 401 验证的是
+> 登录门，不是护栏。哪天这里出现 200，说明开关被回滚了，需要有人知道。
+
+护栏是否生效（要先登录拿会话，任一内置账号都行）：
+
+```bash
+curl -s -c /tmp/askdb.jar -X POST https://askdb.ragforge.net/api/auth/login \
+  -H 'Content-Type: application/json' -d '{"username":"<内置账号>","password":"<口令>"}'
+curl -s -b /tmp/askdb.jar -X POST https://askdb.ragforge.net/api/sql \
   -H 'Content-Type: application/json' \
   -d '{"sql":"DELETE FROM documents"}' | python3 -m json.tool
 ```

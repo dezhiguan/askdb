@@ -19,8 +19,9 @@
 -- ⚠️ 该实例无只读副本，这是**主库直连**，与 askdb_ro 同一个例外口径。
 --
 -- ⚠️ 这把钥匙看得到**全部组织**的数据，包括各组织上传的文档正文。
---    开放范围由 askdb 侧表白名单决定；config/public.yaml 的 auth.required
---    必须是 true —— 行级边界在这条链路上已经没有了。
+--    开放范围由 askdb 侧表白名单决定；config/public.yaml 的
+--    auth.query_requires_login 必须是 true（2026-09-10 起的口径；
+--    required 已定为 false）—— 行级边界在这条链路上已经没有了。
 --
 -- 执行（超级用户或 ragforge 属主）：
 --   PWD='<新生成的强口令>'

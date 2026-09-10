@@ -82,6 +82,11 @@ _P95_TARGET_MS = 4000
 #: 往这张表里加一条 = 显式声明「这个接口未登录也能调」，请当成一次安全决定来 review。
 #: ask / sql / resume 是 POST，但它们是**查询**：读走的是角色收窄那条路（_scoped），
 #: 不归写入拦截管。auth 两条是认证本身，拦了就没人能登录了。
+#:
+#: 查询三条的豁免是**有条件的**：auth.query_requires_login 打开的实例上，
+#: 未登录连查询也拦（判定在 _gate_writes 里，紧挨着豁免判断 —— 分开放两处，
+#: 改其中一处的人看不见另一处）。新增查询类 POST 接口时要同步进 _QUERY_PATHS，
+#: 否则它在那种实例上只是无条件豁免，开关对它不生效。
 _WRITE_EXEMPT_PATHS = frozenset({
     "/api/ask",
     "/api/sql",
@@ -91,6 +96,8 @@ _WRITE_EXEMPT_PATHS = frozenset({
     "/api/auth/login",
     "/api/auth/logout",
 })
+#: 「会真的去查库」的那几条 POST。auth.query_requires_login 只作用于这张表。
+_QUERY_PATHS = frozenset({"/api/ask", "/api/sql", "/api/resume"})
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 #: 被写门拦下时，用来把话说到**这一次点的那个动作**上。
@@ -104,6 +111,10 @@ _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: 「方法 + 路径形状」自己认一遍，`*` 匹配任意一段。认不出来时退回通用说法 ——
 #: 新增写接口忘了登记，后果只是话说得笼统一点，不会漏掉拦截本身。
 _WRITE_ACTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    # 查询三条只在 auth.query_requires_login 的实例上会被拦到这里
+    ("POST", ("api", "ask"), "发起查询"),
+    ("POST", ("api", "sql"), "执行直查 SQL"),
+    ("POST", ("api", "resume"), "续跑查询"),
     ("POST", ("api", "eval", "run"), "运行回归评测"),
     ("POST", ("api", "sources", "test"), "测试数据源连接"),
     ("POST", ("api", "sources"), "接入数据源"),
@@ -593,7 +604,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         「已登录」认两种凭据。只认会话 cookie 会把部署方现有的管理通道打死：
         角色成员增删走的是 ASKDB_ADMIN_TOKEN，那也是一种身份，只是不来自浏览器。
         """
-        if request.method in _WRITE_METHODS and request.url.path not in _WRITE_EXEMPT_PATHS:
+        path = request.url.path
+        exempt = path in _WRITE_EXEMPT_PATHS
+        # 查询三条的豁免是有条件的：auth.query_requires_login 的实例上，
+        # 未登录的查询不豁免，落回下面同一套 401（含管理员令牌通道）——
+        # 拦截口径与写操作完全一致，前端因此只需要认一种 login_required，
+        # 不用为查询单开一类。
+        if (exempt and path in _QUERY_PATHS and _auth.query_requires_login(cfg)
+                and not _auth.read(request.cookies.get(_auth.COOKIE_NAME))):
+            exempt = False
+        if request.method in _WRITE_METHODS and not exempt:
             by_session = bool(_auth.read(request.cookies.get(_auth.COOKIE_NAME)))
             admin = os.environ.get("ASKDB_ADMIN_TOKEN", "")
             by_token = bool(admin) and secrets.compare_digest(
@@ -617,10 +637,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                                   "（ASKDB_SESSION_SECRET），登录整体关闭，因此没有人能执行它。"
                                   "配置该环境变量后重启，或由运维携带管理员令牌调用。",
                     })
+                # 「未登录还能做什么」两种实例答案不同，说错了会把人引去
+                # 试一条同样走不通的路。
+                left = ("只能浏览" if _auth.query_requires_login(cfg)
+                        else "只能浏览与只读查询")
                 return JSONResponse(status_code=401, content={
                     "code": "login_required",
                     "detail": f"{subject}需要登录后才能执行。"
-                              "你当前未登录，只能浏览与只读查询。请先登录再试。",
+                              f"你当前未登录，{left}。请先登录再试。",
                 })
         return await call_next(request)
 
@@ -2669,6 +2693,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return {
             "enabled": _auth.enabled(cfg),
             "required": _auth.required(cfg),
+            # 当前身份能不能发起查询。**结论在这里算好给出去**，前端不自己
+            # 从 required / query_requires_login 推 —— 判据一旦长在两处，
+            # 改开关的人必然漏掉一处，表现为"按钮能点、点了 401"或反过来。
+            "can_query": bool(username) or not (
+                _auth.required(cfg) or _auth.query_requires_login(cfg)),
             "username": username,
             # 角色与姓名一次取完：这个接口每次页面加载都会调，分两次查等于
             # 把对身份库的往返翻倍，而它俩要的是同一份名单。

@@ -166,6 +166,20 @@ def required(cfg: Config) -> bool:
     return bool(_section(cfg).get("required")) and enabled(cfg)
 
 
+def query_requires_login(cfg: Config) -> bool:
+    """查询（/api/ask、/api/sql、/api/resume）是否要求登录。
+
+    与 required 是两档不同的门：required=true 锁整个站；这一条只锁
+    「会真的去查库」的三条 POST 路径，浏览面（审计、数据源、质量中心、
+    口径）保持匿名可读。对外实例走的是这一档 —— 运行时源没有行级收窄，
+    匿名可查等于把接入库的数据开给公网，登录是查询之前唯一的一道门。
+
+    与 required 同样受 enabled 约束：登录整体关闭的实例上打开这一条，
+    等于一扇没有钥匙的门 —— 谁都查不了，那只能是配置错误，不是意图。
+    """
+    return bool(_section(cfg).get("query_requires_login")) and enabled(cfg)
+
+
 def accounts(cfg: Config) -> dict[str, Account]:
     out: dict[str, Account] = {}
     for spec in _section(cfg).get("accounts") or []:

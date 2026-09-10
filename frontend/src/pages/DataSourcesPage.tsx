@@ -60,7 +60,9 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
   // 判据别在这里"推"：me 是后端给的，前端只读不算。
   const canWrite = !!me?.username
   const { confirm } = useDialog()
-  const writeHint = canWrite ? undefined : '这个操作会改动配置，需要登录后才能执行；未登录只能只读查询'
+  // 「未登录还能做什么」跟着实例走：查询也要登录的实例上不能许诺"只读查询"
+  const writeHint = canWrite ? undefined
+    : `这个操作会改动配置，需要登录后才能执行；未登录只能${me?.can_query ? '只读查询' : '浏览'}`
   const [introspect, setIntrospect] = useState<Introspect | null>(null)
   const [check, setCheck] = useState<SelfCheck | null>(null)
   const [checkedAt, setCheckedAt] = useState<Date | null>(null)

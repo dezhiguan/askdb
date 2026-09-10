@@ -54,10 +54,12 @@
 #
 # 行级边界就此消失，只剩表级白名单，而两个源都是全表开放。
 # 2026-09-07 当天曾用 auth.required=true 把可见面收回到三个内建账号，同日按
-# @guandezhi 决定又改回 false（见下方 auth 段）：这个站点要的是不带账号也能
-# 完整走一遍链路。**所以现在没有任何一层在做行级收窄** —— ragforge 全部组织
-# 与 careermate 生产库（含用户手机号、简历、对话、口令哈希）对公网匿名可读。
-# 要收窄，改的是运行时源的表白名单或给它配回租户列，不是 auth 那一行。
+# @guandezhi 决定又改回 false（见下方 auth 段）。**现在没有任何一层在做
+# 行级收窄** —— ragforge 全部组织与 careermate 生产库（含用户手机号、简历、
+# 对话、口令哈希）对**登录用户**全表可查。2026-09-10 起查询要求登录
+# （auth.query_requires_login，见 auth 段），"对公网匿名可读"从那天起不再
+# 成立；但行级边界依旧没有 —— 要收窄，改的是运行时源的表白名单或给它
+# 配回租户列，不是 auth 那一行。
 #
 # 口令只走环境变量，云上由 k8s Secret 注入（见 deploy/k8s/askdb.yaml）；
 # 连接串存在 askdb_sources 表里，同样不进本文件。
@@ -447,6 +449,14 @@ auth:
   #   3. 回放关闭（observability.replay_api: false）—— 它会返回 SQL 全文
   #   4. 成本：daily_quota + nginx 对 /api/ask 的 per-IP 限流
   required: false
+  # 2026-09-10 按 @guandezhi 决定：**查询要登录**（/api/ask、/api/sql、
+  # /api/resume 三条，未登录 401，前端同步置灰）。浏览面不动 ——
+  # 护栏、审计、数据源、质量中心仍匿名可看，「让人看到这套系统长什么样」
+  # 的来意保留；「不带账号真的去查生产库」这半截收回来。
+  # 上面 required 注释里"未登录即可只读查询"从本日起不再成立，
+  # 匿名可读生产数据那个窟窿也随之关上（数据面仍未做行级收窄，
+  # 收的是入口 —— 登录账号仍然全表可查，边界的性质没变，见上）。
+  query_requires_login: true
   cookie_secure: true            # 入口强制 HTTPS
   accounts:
     - username: product
