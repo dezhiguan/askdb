@@ -507,6 +507,34 @@ def _friendly_validation_message(errors: list[dict]) -> str:
     return "提交的内容不符合要求，请检查后重试。"
 
 
+def fallback_status(cfg: Config) -> dict[str, Any]:
+    """备选模型的配置与密钥状态。
+
+    **这一格之前根本不存在。** 代码里 LlmClient._fallback_client() 只看配置
+    有没有 fallback 这一项，不检查密钥；密钥要到真正兜底那一刻才在 _build()
+    里报 LlmNotConfigured。于是漏建 Secret 的部署今天看起来一切正常，直到
+    主模型真的抖那天，兜底当场失效 —— 而那正是最需要它的时刻。
+
+    只读环境变量、不发探测请求（与 trace.langsmith_status 同一做法）：探测
+    要花钱、要等超时，还会在成本页上多出一笔没人发起过的调用。因此它答得了
+    "密钥在不在"，**答不了"这把密钥有没有过期"** —— 界面上不要写成"可用"。
+    """
+    spec = (cfg.llm or {}).get("fallback")
+    if not spec:
+        return {"configured": False, "model": "", "provider": "",
+                "env": "", "key_present": False}
+    if isinstance(spec, str):          # 仅换模型名，其余沿用主配置
+        spec = {"model": spec}
+    env = str(spec.get("api_key_env") or cfg.llm.get("api_key_env") or "")
+    return {
+        "configured": True,
+        "model": str(spec.get("model") or ""),
+        "provider": str(spec.get("provider") or cfg.llm.get("provider") or ""),
+        "env": env,
+        "key_present": bool(env and os.environ.get(env)),
+    }
+
+
 def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     cfg: Config = load(config_path)
     app = FastAPI(title="askdb", docs_url="/api/docs", openapi_url="/api/openapi.json")
@@ -770,6 +798,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 # 不区分的话，页面会对访问者显示"去 .env 里配密钥"——
                 # 那是给部署方看的话，访问者既看不懂也做不到。
                 "disabled": bool(cfg.llm.get("disabled", False)),
+                # 备选模型armed没armed。**这一格之前根本不存在** ——
+                # 代码里 _fallback_client() 只看配置有没有 fallback 这一项，
+                # 不检查密钥；密钥要到真正兜底那一刻才在 _build() 里报
+                # LlmNotConfigured。于是漏建 Secret 的部署今天看起来一切正常，
+                # 直到主模型真的抖那天，兜底当场失效 —— 而那正是最需要它的时刻。
+                #
+                # 只读环境变量、不发探测请求（与 trace.langsmith_status 同一做法）：
+                # 探测要花钱、要等超时，还会在成本页上多出一笔没人发起的调用。
+                # 因此它只答得了"密钥在不在"，答不了"这把密钥有没有过期"。
+                "fallback": fallback_status(cfg),
             },
             "tenant": {
                 "enabled": cfg.tenant_enabled,

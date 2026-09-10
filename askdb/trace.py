@@ -214,6 +214,17 @@ def call_cost_cny(
     return round(amount * peak_multiplier(llm_cfg, at), 6)
 
 
+def embed_cost_cny(tokens: int, schema_rag_cfg: dict[str, Any]) -> float:
+    """一次 embedding 调用的金额。**只按输入计**——嵌入没有输出 token。
+
+    单价必须由配置给出，漏配就是 0 元。这里**不设默认价**：默认一个
+    看起来很像的数，账面就会一直是对不上的，而没人会去核对一个
+    "看起来合理"的数字。0 元在成本页上是显眼的，会被人问起来。
+    """
+    price = float(schema_rag_cfg.get("embedding_price_per_1k", 0.0) or 0.0)
+    return round(max(0, int(tokens or 0)) / 1000 * price, 6)
+
+
 def cost_cny(tok_in: int, tok_out: int, llm_cfg: dict[str, Any]) -> float:
     """全部未命中缓存、按当前计费时段的粗算 —— 只用于事前估算与展示。
 

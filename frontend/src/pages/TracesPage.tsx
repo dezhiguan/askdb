@@ -68,7 +68,11 @@ function chainHealth(steps: ReplayStep[]): ChainHealth {
      而备选只在失败时顶上一次，下一次会回到主模型。按最后一条取的话，
      "生成切了备选、自检又回到主模型"这种链路会把回退整个抹平，
      下面那个 replaced 跟着变空，⇄ 那行小字就不出现了。 */
-  const answered = steps.filter(s => s.model && !stepFailed(s.status))
+  /* 只看真正过模型的节点 —— Schema 召回现在也带 model（嵌入模型），
+     不排除的话，生成失败的链路会把「模型」那一格显示成 text-embedding-v4，
+     而嵌入模型一句 SQL 都没生成过。 */
+  const answered = steps.filter(s => s.model && !stepFailed(s.status)
+                                     && STEP_TYPE[s.step] === 'MODEL')
   const gen = [...answered].reverse().find(s => s.step === 'generate_sql')
   const winner = gen ?? answered[answered.length - 1]
   const answering = winner?.model ?? ''
@@ -356,7 +360,12 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
 function StatTiles({ stats, today }: { stats: AuditStats | null; today: AuditStats | null }) {
   if (!stats) return <div className="stats"><div className="stat"><span>读取中…</span></div></div>
 
-  const modelCalls = Object.values(stats.by_model).reduce((sum, m) => sum + m.calls, 0)
+  /* 分母用后端的 model_calls（按 MODEL_STEPS 数的模型节点），**不再拿
+     by_model 求和**。by_model 自 2026-09-10 起按 step 归因成本，里面还多了
+     嵌入模型那一维 —— 拿它当分母的话，这一格会随成本归因口径变化而漂，
+     而两者说的本来就不是一件事：一个是"钱花在哪个模型上"，
+     一个是"平均每次模型调用多少 token"。 */
+  const modelCalls = stats.model_calls ?? 0
   const avgTokens = modelCalls > 0 ? Math.round((stats.tok_in + stats.tok_out) / modelCalls) : null
   const pct = (v: number | null | undefined) => v == null ? NA : `${Math.round(v * 100)}%`
 
@@ -683,7 +692,13 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                             title={`答案出自 ${cachedFrom} 那次执行，点击查看它的完整链路`}
                             onClick={() => onFocusTrace?.(cachedFrom)}
                           >首跑 {cachedFrom.slice(0, 6)} ↗</button>
-                        : step.tok_in ? `prompt ${step.tok_in.toLocaleString()} tok` : NA}
+                        : step.tok_in
+                          /* Schema 召回那一步的 tok_in 是**嵌入的输入**，
+                             不是提示词 —— 自 2026-09-10 起它有真实用量了。
+                             照旧写成 "prompt" 会让人以为召回也在发提示词。 */
+                          ? `${STEP_TYPE[step.step] === 'MODEL' ? 'prompt' : 'embed'} `
+                            + `${step.tok_in.toLocaleString()} tok`
+                          : NA}
                     </td>
                     <td className="span-note" title={step.note ?? ''}>
                       <SpanNote step={step} open={openRows.has(i)} onToggle={() => toggleRow(i)} />

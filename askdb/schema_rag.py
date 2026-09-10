@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .config import Config, Metric, Table
+from .trace import embed_cost_cny
 
 log = logging.getLogger("askdb.schema_rag")
 
@@ -104,6 +105,11 @@ class Recall:
     degrade_error: str = ""     # 回落原因的原始消息
     degrade_code: str = ""      # 异常类名，当错误码用
     degrade_ms: int = 0         # 失败那次尝试自己烧掉的时间
+    #: 这次召回真正烧掉的 embedding 输入 token 与金额（vector 模式才有）。
+    #: 全是厂商回传的实测值，取不到就是 0 —— 不估。
+    embed_tokens: int = 0
+    embed_cost: float = 0.0
+    embed_model: str = ""
 
     @property
     def table_names(self) -> list[str]:
@@ -481,6 +487,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     blind = False
     degraded_from = degrade_error = degrade_code = ""
     degrade_ms = 0
+    embed_tokens, embed_cost, embed_model = 0, 0.0, ""
 
     if mode == "all":
         note_healthy("all")
@@ -496,7 +503,13 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         max_metrics = int(cfg.raw["schema_rag"].get("max_metrics", 2))
         _t_vec = time.perf_counter()
         try:
-            hits = idx.search(question, want)
+            # 带用量的那个入口优先 —— 没有它就拿不到"这次召回花了多少钱"。
+            # 取不到时退回 search()：测试替身与旧实现只有这一个方法。
+            with_usage = getattr(idx, "search_with_usage", None)
+            if callable(with_usage):
+                hits, embed_tokens = with_usage(question, want)
+            else:
+                hits, embed_tokens = idx.search(question, want), 0
         except EmbeddingUnavailable as e:
             # 召回退化只是准确率下降，不该让整条链路不可用。
             # **但它必须留痕**：配置声明 vector 而实际在跑 keyword，这件事
@@ -510,6 +523,8 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
             mode, note = "keyword", f"向量召回不可用，已回落关键词：{e}"
         else:
             note_healthy("vector")
+            embed_model = str(cfg.raw["schema_rag"].get("embedding_model", ""))
+            embed_cost = embed_cost_cny(embed_tokens, cfg.raw["schema_rag"])
             ranked = [(h.score, cfg.tables[h.key.split(":", 1)[1]])
                       for h in hits
                       if h.key.startswith("table:") and h.key.split(":", 1)[1] in cfg.tables]
@@ -639,6 +654,9 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         degrade_error=degrade_error,
         degrade_code=degrade_code,
         degrade_ms=degrade_ms,
+        embed_tokens=embed_tokens,
+        embed_cost=embed_cost,
+        embed_model=embed_model,
     )
 
 

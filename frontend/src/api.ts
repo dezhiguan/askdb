@@ -67,7 +67,22 @@ export interface Health {
     /** 配置里是否声明了默认数据源。false 时 ok 仍为 true —— 没配不是故障 */
     configured: boolean
   }
-  llm: { ok: boolean; model: string; env: string; disabled: boolean }
+  llm: {
+    ok: boolean
+    model: string
+    env: string
+    disabled: boolean
+    /** 备选模型armed没armed。**key_present 只说明密钥在不在**，说不了
+     *  这把密钥有没有过期 —— 后端只读环境变量、不发探测请求，界面上
+     *  因此不要写成"可用"。configured 为 false 表示这套部署有意不配备选。 */
+    fallback?: {
+      configured: boolean
+      model: string
+      provider?: string
+      env: string
+      key_present: boolean
+    }
+  }
   tenant: {
     enabled: boolean
     column: string

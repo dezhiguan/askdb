@@ -207,6 +207,19 @@ function admissionChecks(ready: Health | null, hasSource: boolean,
         : '还没选数据源，到「数据源」页选一个再提问' },
     { label: '模型可用', ok: ready.llm.ok,
       why: '未配模型密钥，只能直查 SQL' },
+    /* 备选模型：**没配就整项不列**，与下面白名单那项同一个原则 ——
+       有意不配备选是一种合法部署，缺席不等于不通过，不该白扣一分。
+       配了才判，判的是"密钥下发了没有"。
+       在这之前这件事在任何地方都看不出来：_fallback_client() 只看配置有没有
+       fallback 这一项、不检查密钥，密钥要到真正兜底那一刻才报错 —— 漏建
+       Secret 的部署一切看起来正常，直到主模型真抖那天兜底当场失效。 */
+    ...(ready.llm.fallback?.configured ? [{
+      label: '备选模型密钥已下发',
+      ok: ready.llm.fallback.key_present,
+      why: `配了备选模型 ${ready.llm.fallback.model}，但 ${ready.llm.fallback.env} `
+        + '没有下发到运行环境 —— 主模型限流或故障时兜底会当场失效，'
+        + '而那正是最需要它的时刻',
+    }] : []),
     { label: '返回行上限已设 · R-13', ok: g.max_rows > 0,
       why: '没有返回行上限，一次查询可能拉回整表' },
     { label: '扫描行上限已设 · R-11', ok: g.max_scan_rows > 0,

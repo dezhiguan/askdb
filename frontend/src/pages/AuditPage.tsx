@@ -588,7 +588,11 @@ function CostBreakdown({ stats }: { stats: AuditStats | null }) {
       <table className="drawer-table">
         <thead><tr><th>模型</th><th className="num">次数</th><th className="num">成本</th></tr></thead>
         <tbody>
-          {Object.entries(stats.by_model).map(([model, value]) => (
+          {/* 按成本降序：嵌入模型的次数可能与生成模型同量级，但金额差两个数量级，
+              按插入序排会让"钱到底花在哪"要靠一行行读 */}
+          {Object.entries(stats.by_model)
+            .sort((a, b) => b[1].cost_cny - a[1].cost_cny)
+            .map(([model, value]) => (
             <tr key={model}><td className="mono">{model}</td><td className="num">{value.calls}</td><td className="num">¥{value.cost_cny}</td></tr>
           ))}
           {Object.keys(stats.by_model).length === 0 && (

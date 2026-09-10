@@ -31,7 +31,7 @@ from .config import Config
 from .executor import DataSourceError, Executor
 from .llm import LlmClient, LlmNotConfigured
 from .quota import QuotaExceeded, build_quota
-from .audit import PHASE_STARTED, day_tz
+from .audit import MODEL_STEPS, PHASE_STARTED, day_tz
 from .trace import Tracer, now_iso, write_audit
 
 
@@ -339,6 +339,11 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     # 回落是一次**失败 + 一次降级产出**，不是一次成功。原来两件事都被压进
     # 上面那句 note 的尾巴里，状态列照记 ok —— 配置声明 vector、实际每次都在
     # 跑 keyword，线上这么跑了两天没人看得出来（schema_rag 模块开头那段）。
+    # embedding 的账记在这一步：它就是这一步花的钱。model 记嵌入模型名 ——
+    # 一条链路可能同时用了生成模型与嵌入模型，按记录级那一个 model 字段
+    # 分摊，嵌入这笔就永远挂在生成模型头上。
+    embed_kw = {"tok_in": r.embed_tokens, "cost_cny": r.embed_cost,
+                "model": r.embed_model} if r.embed_tokens or r.embed_model else {}
     if r.degraded_from:
         d.tracer.add("schema_recall", t,
                      f"{r.degraded_from} 召回不可用", status="failed",
@@ -351,9 +356,10 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         # 各记一遍全节点就成了凭空多出来的一截。
         node_ms = int((time.perf_counter() - t) * 1000)
         d.tracer.add("schema_recall", t, note, status="degraded",
-                     ms=max(0, node_ms - r.degrade_ms), tables=r.table_names)
+                     ms=max(0, node_ms - r.degrade_ms), tables=r.table_names,
+                     **embed_kw)
     else:
-        d.tracer.add("schema_recall", t, note, tables=r.table_names)
+        d.tracer.add("schema_recall", t, note, tables=r.table_names, **embed_kw)
     return {
         "schema_prompt": r.prompt,
         "tables_hit": r.table_names,
@@ -1149,8 +1155,12 @@ def _answering_model(steps: Any) -> str:
     没有 generate_sql（规划失败等）才退回最后一条成功的模型 span；
     一条都没有（直查、命中缓存、老记录）返回空串，交给调用方兜底。
     """
+    # **只看真正过模型的节点。** schema_recall 现在也带 model（嵌入模型），
+    # 不排除的话，生成失败的链路会退到它头上 —— 审计里就记着"这次由
+    # text-embedding-v4 应答"，而嵌入模型一句话都没生成过。
     rows = [st for st in (steps or [])
-            if st.get("status") in ("ok", "fallback") and st.get("model")]
+            if st.get("step") in MODEL_STEPS
+            and st.get("status") in ("ok", "fallback") and st.get("model")]
     for st in reversed(rows):
         if st.get("step") == "generate_sql":
             return str(st["model"])
