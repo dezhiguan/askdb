@@ -9,10 +9,13 @@ export const STEP_NAMES: Record<string, string> = {
   // 唯一不由 tracer.add 产生的节点：命中应答缓存时，服务端手写这一条当整条链路
   cache: '应答缓存',
   quota: '配额检查',
+  clarify: '问句主体判定',
   schema_recall: 'Schema 召回',
   plan: '单步/多步判定',
   generate_sql: 'SQL 生成',
   guard: '静态校验',
+  scrub: '推理文案核对',
+  hedge: '不确定性标记',
   dry_run: 'EXPLAIN 干跑',
   execute: '只读执行',
   assess: '结果自检',
@@ -26,7 +29,12 @@ export const STEP_NAMES: Record<string, string> = {
 export const STEP_TYPE: Record<string, string> = {
   cache: 'SYS',
   quota: 'GUARD',
+  clarify: 'GUARD',
   guard: 'GUARD',
+  // 这两步判的是模型**说了什么**，不是数据 —— 与静态校验同属护栏一档：
+  // 一个拦 SQL，一个拦文案里没有事实依据的陈述。
+  scrub: 'GUARD',
+  hedge: 'GUARD',
   schema_recall: 'TOOL',
   plan: 'MODEL',
   generate_sql: 'MODEL',

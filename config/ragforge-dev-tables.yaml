@@ -22,8 +22,8 @@ tables:
       name:            { type: VARCHAR,   desc: 知识库名称 }
       description:     { type: TEXT,      desc: 知识库描述 }
       embedding_model: { type: VARCHAR,   desc: 该库使用的向量模型 }
-      doc_count:       { type: INTEGER,   desc: "文档数缓存计数器，会与实际漂移；以 documents 实际统计为准" }
-      chunk_count:     { type: INTEGER,   desc: 分块数缓存计数器，同样可能漂移 }
+      doc_count:       { type: INTEGER,   cached_counter: true, desc: "文档数缓存计数器，会与实际漂移；以 documents 实际统计为准" }
+      chunk_count:     { type: INTEGER,   cached_counter: true, desc: 分块数缓存计数器，同样可能漂移 }
       status:          { type: VARCHAR,   desc: 知识库状态 }
       kb_type:         { type: VARCHAR,   desc: 知识库类型 }
       visibility:      { type: VARCHAR,   desc: 可见性 }

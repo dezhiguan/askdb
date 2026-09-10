@@ -58,10 +58,15 @@ TRACE_FIELDS = (
     "tok_in", "tok_out", "step_count", "multi_step", "attempts",
     "elapsed_ms", "cost_cny", "rejected_by", "source", "source_name",
     "cached", "cached_from",
-    # 结果可信度那枚角标要判的四条痕迹。全是布尔标志，不带任何内容 ——
-    # 它们出接口不构成新的泄露，而少了它们追踪页就只能空着那枚角标
-    # （工作台侧栏判的是同四条，两处必须同源，否则同一次查询两个分）。
+    # 结果可信度那枚角标要判的痕迹。原来是四条机械护栏标志，2026-09-10 之后
+    # 加了三条语义信号（猜测措辞、缓存计数列、纯指代追问）—— 那次跑测里
+    # 1030 条有 11/12 拿满分，包括模型自己写着"作为占位，口径需人工确认"的
+    # 那一条，原因就是语义风险一项都不进分母。
+    # 它们出接口不构成新的泄露：hedge_terms 是命中的措辞词、derived_columns
+    # 是列名，都不带数据内容。少了它们追踪页那枚角标就与工作台右栏对不上
+    # （两处必须同源，否则同一次查询两个分）。
     "recall_blind", "scope_narrowed", "mask_degraded", "truncated",
+    "hedge_terms", "derived_columns", "anaphoric", "caliber",
 )
 
 # 步骤对象自身也走白名单 —— 记录里的 steps 由各节点自由追加，

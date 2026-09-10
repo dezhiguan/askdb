@@ -62,9 +62,11 @@ function AnswerCard({ result, onGoTab }: {
        || '这次没有任何表命中问题里的关键词，下面用到的表是兜底选的，结果可能答非所问 —— 请核对 SQL，或在问题里直接写出表名。')
     : result.truncated
       ? `结果达到行数上限被截断，下面只是前 ${(result.row_count ?? 0).toLocaleString()} 行，不是完整清单。`
-      : result.mask_degraded
-      ? '这条 SQL 的投影来源解析不出，本次按整行从严脱敏 —— 星号是系统加的，不是库里的值。'
-      : ''
+      : (result.hedge_terms?.length
+      ? `模型在推理里写了「${result.hedge_terms.slice(0, 2).join('」「')}」—— 它自己也不确定这个口径对不对，先确认口径再用这个数。`
+      : result.derived_columns?.length
+      ? `这个数取自缓存计数列 ${result.derived_columns.join('、')}，由别处维护、会与实时统计漂移（实测差过 362 条）—— 要精确值请按明细表实时统计。`
+      : '')
 
   return (
     <div className="answer-card">
@@ -72,7 +74,26 @@ function AnswerCard({ result, onGoTab }: {
         <div>
           <strong>{headline}</strong>
           {result.reasoning && <p>{result.reasoning}</p>}
+          {/* 口径是必出字段：这个数到底数的是什么，不该让人去读 SQL 才知道。 */}
+          {result.caliber && <p className="answer-caliber"><b>口径</b>：{result.caliber}</p>}
           {warning && <p className="answer-warning">{warning}</p>}
+          {/* 命中缓存要说出来。不说的话页面显示「耗时 0ms · ¥0.0000」，
+              读起来像"这次查询又快又免费"，而实际上它根本没查 ——
+              数据新鲜度取决于首跑那一次，用户有权知道。 */}
+          {result.cached && (
+            <p className="answer-cached">
+              本次未查库：答案来自应答缓存，是首跑那一次的完整结果。
+              下方耗时与成本因此为 0，数据新鲜度以「数据快照」为准。
+            </p>
+          )}
+          {/* 我们改过模型的话，这件事本身要摆在明面上 */}
+          {!!result.scrubbed_claims?.length && (
+            <p className="answer-scrubbed">
+              已从推理中移除 {result.scrubbed_claims.length} 处无事实依据的陈述
+              （模型声称承接了上一轮查询，或转述了护栏行为）——
+              护栏实际做了哪些改写，见「原生 SQL」里的改写清单。
+            </p>
+          )}
         </div>
         <div className="answer-actions">
           <button onClick={() => onGoTab('sql')}>查看原生 SQL</button>
@@ -180,9 +201,17 @@ function ResultPane({ result }: { result: AskResult }) {
         <div className="notice info">
           <div className="t">◇ 结果为空</div>
           <div className="why">SQL 正常执行了，只是没有符合条件的行 —— 这不是错误。</div>
+          {/* 后端算出来的那一句最准（它认得出"按名称精确匹配、而库里那个名字
+              带空格"这种真因），有就用它。原来这里写死一句"或当前租户
+              （org_id = 316）下没有这类记录"：既把内部 org id 泄露到页面上，
+              又在单租户库上完全是假的 —— 那条 SQL 里根本没有租户过滤，
+              于是把排查方向指向了一个不存在的原因。 */}
           <div className="fix">
-            <b>可能的原因：</b>时间范围内确实没有数据；筛选条件太严；
-            或当前租户（org_id = {result.org_id}）下没有这类记录。上面的 SQL 可以复制出来自己调。
+            {result.empty_note
+              ? <><b>可能的原因：</b>{result.empty_note}</>
+              : <><b>可能的原因：</b>名称写法与库里不完全一致（空格、大小写）；
+                  时间范围内确实没有数据；枚举取值拼错了。</>}
+            {' '}上面的 SQL 可以复制出来自己调。
           </div>
         </div>
       </div>
