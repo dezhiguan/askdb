@@ -46,6 +46,9 @@ class ToolContext:
     org_id: int
     #: 复用同一个只读执行器可省去重复建连；不传则按 cfg 现建一个。
     executor: Executor | None = None
+    #: 上一步 execute_sql 的**已脱敏**结果。分析/导出类工具只吃它，不再回库
+    #: —— 这是"分析工具不得成为绕过安全闸的新通道"（§10.1）的落点。
+    last_result: dict[str, Any] | None = None
 
 
 @dataclass
@@ -180,6 +183,73 @@ def execute_sql(sql: str, cfg: Config, org_id: int,
 
 
 # --------------------------------------------------------------------------
+# 第 2 层：分析（对已过闸结果计算，无对外副作用）
+# --------------------------------------------------------------------------
+def analyze_result(ctx: ToolContext) -> ToolResult:
+    """对上一步 execute_sql 的**已脱敏**结果做汇总统计 —— 只吃 ctx.last_result，
+    不再回库。脱敏列跳过数值统计（打码值本就不该参与计算）。"""
+    d = ctx.last_result
+    if not d or not d.get("rows"):
+        return ToolResult(ok=False, tool="analyze_result",
+                          error="没有可分析的结果，请先用 execute_sql 取数")
+    cols = d.get("columns", [])
+    rows = d.get("rows", [])
+    masked = set(d.get("masked_columns", []))
+    stats = []
+    for i, c in enumerate(cols):
+        vals = [r[i] for r in rows if i < len(r)]
+        nonnull = [v for v in vals if v is not None]
+        entry: dict[str, Any] = {"column": c, "count": len(nonnull),
+                                 "distinct": len({str(v) for v in nonnull})}
+        if c in masked:
+            entry["note"] = "已脱敏，跳过数值统计"
+        else:
+            nums = []
+            ok_num = True
+            for v in nonnull:
+                try:
+                    nums.append(float(str(v).replace(",", "")))
+                except (ValueError, TypeError):
+                    ok_num = False
+                    break
+            if ok_num and nums:
+                entry.update(min=min(nums), max=max(nums),
+                             mean=round(sum(nums) / len(nums), 4), sum=round(sum(nums), 4))
+        stats.append(entry)
+    return ToolResult(ok=True, tool="analyze_result",
+                      data={"n_rows": len(rows), "stats": stats})
+
+
+# --------------------------------------------------------------------------
+# 第 3 层：副作用（越出只读边界）—— 只能经人工确认由 Runtime 放行，LLM 不能直接触发
+# --------------------------------------------------------------------------
+def export_result(ctx: ToolContext, fmt: str = "csv") -> ToolResult:
+    """把上一步**已脱敏**结果导出为 CSV/JSON 文本。副作用工具：真正的落盘/投递
+    由部署方接，这里产出载荷。**不由 LLM 直接触发**（见 invoke / run_side_effect）。"""
+    import csv
+    import io
+    import json as _json
+
+    d = ctx.last_result
+    if not d or not d.get("rows"):
+        return ToolResult(ok=False, tool="export_result", error="没有可导出的结果")
+    cols = d.get("columns", [])
+    rows = d.get("rows", [])
+    if fmt == "json":
+        payload = _json.dumps([dict(zip(cols, r)) for r in rows], ensure_ascii=False)
+    else:
+        fmt = "csv"
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(cols)
+        for r in rows:
+            w.writerow(r)
+        payload = buf.getvalue()
+    return ToolResult(ok=True, tool="export_result",
+                      data={"format": fmt, "rows": len(rows), "payload": payload})
+
+
+# --------------------------------------------------------------------------
 # 工具规格 + 注册表
 # --------------------------------------------------------------------------
 @dataclass
@@ -220,6 +290,14 @@ def _t_exec(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     return execute_sql(str(sql), ctx.cfg, ctx.org_id, ctx.executor)
 
 
+def _t_analyze(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    return analyze_result(ctx)
+
+
+def _t_export(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
+    return export_result(ctx, str((args or {}).get("format", "csv")))
+
+
 REGISTRY: dict[str, Tool] = {
     "search_schema": Tool(
         "search_schema", Tier.READ,
@@ -233,10 +311,18 @@ REGISTRY: dict[str, Tool] = {
         "execute_sql", Tier.READ,
         "执行一条只读 SQL：自动过护栏(AST)、干跑估行、只读执行、脱敏；返回结果行",
         {"sql": "一条只读 SELECT/CTE"}, _t_exec),
+    "analyze_result": Tool(
+        "analyze_result", Tier.ANALYZE,
+        "对上一步 execute_sql 的结果做汇总统计（计数/去重/数值 min-max-mean-sum），不再回库",
+        {}, _t_analyze),
+    "export_result": Tool(
+        "export_result", Tier.SIDE_EFFECT,
+        "把上一步结果导出为 CSV/JSON（副作用：需人工确认后由 Runtime 放行，不能直接触发）",
+        {"format": "csv 或 json"}, _t_export),
 }
 
 
-def tool_specs(tiers: tuple[Tier, ...] = (Tier.READ,)) -> list[dict[str, Any]]:
+def tool_specs(tiers: tuple[Tier, ...] = (Tier.READ, Tier.ANALYZE)) -> list[dict[str, Any]]:
     """列出可暴露给 LLM 选择的工具规格。默认只给只读原子。
 
     工具太多会拉低选择准确率、挤爆上下文预算，所以按层级/任务上下文控制暴露面
@@ -260,4 +346,18 @@ def invoke(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             ok=False, tool=name,
             error="副作用工具必须经人工确认闸，不能由 LLM 直接触发",
             note="HITL required")
+    return t.call(args, ctx)
+
+
+def run_side_effect(name: str, args: dict[str, Any], ctx: ToolContext,
+                    approved: bool = False) -> ToolResult:
+    """副作用工具（发邮件/导出/写回）的**唯一**执行路径 —— 由 Runtime 在**人工确认后**
+    调用，approved 必须为真。这就是"副作用工具在哪里被调用"的答案：不在 LLM 决策里，
+    而在这条经人工放行的 Runtime 通道里（设计 §工具体系与注入）。"""
+    t = REGISTRY.get(name)
+    if t is None or t.tier is not Tier.SIDE_EFFECT:
+        return ToolResult(ok=False, tool=name, error=f"不是副作用工具或不存在：{name}")
+    if not approved:
+        return ToolResult(ok=False, tool=name, note="HITL required",
+                          error="副作用动作需人工确认后由 Runtime 放行")
     return t.call(args, ctx)

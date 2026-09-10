@@ -289,6 +289,7 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
         item: dict[str, Any] = {"tool": action.tool, "args": action.args, "brief": _brief(res)}
         if res.ok and action.tool == "execute_sql":
             last_exec = res.data
+            ctx.last_result = res.data          # 供 analyze_result / export_result 用
             item["preview"] = {"columns": res.data.get("columns", []),
                                "rows": planner.preview_rows(res.data.get("rows", []))}
         elif res.ok and action.tool == "get_table_schema":
