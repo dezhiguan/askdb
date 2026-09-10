@@ -2754,7 +2754,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "multi_step": False, "converged_early": "",
             "rows_returned": out.get("row_count") or 0,
             "masked_columns": out.get("masked_columns") or [],
+            # 可信度那四条痕迹**沿用首跑**，与 masked_columns 同一个道理：
+            # 它们描述的是"这个答案是怎么来的"，而答案就是首跑那一个。
+            # 耗时 / token / 成本描述的是"这次调用发生了什么"，所以上面清零；
+            # 两类字段在这里必须分开处理 —— 一起清零的话，追踪页要么按缺省
+            # 判成满分，要么整条拒判，而工作台拿着同一份结果照样打了分，
+            # 同一次查询两页两个答案。
             "mask_degraded": bool(out.get("mask_degraded")),
+            "recall_blind": bool(out.get("recall_blind")),
+            "scope_narrowed": bool(out.get("scope_narrowed")),
+            "truncated": bool(out.get("truncated")),
             "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0,
             "steps": steps,
         })

@@ -559,14 +559,20 @@ function TrustBadge({ item, chain }: { item: AuditItem; chain: TraceChain | null
            `这次被 ${item.rejected_by ?? '护栏'} 拦下，SQL 没有在数据库上执行，`
            + '没有产出结果，无从判可信度')
   }
-  if (item.cached ?? chain?.cached) {
-    return na('可信度 · 见首跑',
-              '答案来自应答缓存，可信度看首跑那条链路（下方「命中缓存」一行可跳转）')
-  }
   if (!chain) return na(`可信度 ${NA}`, '节点链还没取到')
-  const traced = [chain.truncated, chain.scope_narrowed,
-                  chain.mask_degraded, chain.recall_blind].some(v => v != null)
-  if (!traced) return na('可信度 · 判据不全', '这条记录早于可信度痕迹落库，不给分')
+  // 命中缓存照样打分：痕迹沿用首跑（见 server._serve_cached_ask），而工作台
+  // 拿着同一份结果也是这么打的。只有旧格式那些没沿用痕迹的缓存记录判不了。
+  const cached = Boolean(item.cached ?? chain.cached)
+  const traced = cached
+    ? chain.recall_blind != null && chain.truncated != null
+    : [chain.truncated, chain.scope_narrowed,
+       chain.mask_degraded, chain.recall_blind].some(v => v != null)
+  if (!traced) {
+    return cached
+      ? na('可信度 · 见首跑',
+           '这条缓存记录没有沿用首跑的可信度痕迹（旧格式），分看首跑那条链路')
+      : na('可信度 · 判据不全', '这条记录早于可信度痕迹落库，不给分')
+  }
 
   const mode = item.kind === 'sql' ? 'sql' : 'ask'
   const checks = resultChecks({
@@ -579,7 +585,8 @@ function TrustBadge({ item, chain }: { item: AuditItem; chain: TraceChain | null
   const head = mode === 'sql' ? '本次执行可信度' : '本次结果可信度'
   return (
     <span className={`status ${score === 100 ? '' : 'wait'}`}
-          title={scoreTitle(head, checks, mode)}>
+          title={scoreTitle(head, checks, mode)
+                 + (cached ? '\n（答案来自应答缓存，痕迹沿用首跑那一次）' : '')}>
       可信度 {score ?? NA}
     </span>
   )
