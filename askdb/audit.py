@@ -85,7 +85,7 @@ STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables",
 # 真正过模型的图节点。与前端 traceSteps.ts 的 STEP_TYPE == 'MODEL' 是同一份口径，
 # 两边都写一次是因为一个算数、一个只做展示；漂了会让「模型调用成功率」这格
 # 与页面上标 MODEL 的那些 span 对不上 —— tests 里钉住了两边一致。
-MODEL_STEPS = frozenset({"plan", "generate_sql", "assess", "reflect"})
+MODEL_STEPS = frozenset({"plan", "generate_sql", "assess", "reflect", "intent", "decide"})
 
 
 # /api/replay 的字段白名单（判定链路回放接口设计说明 §4.2）。

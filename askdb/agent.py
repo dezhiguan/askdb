@@ -306,7 +306,9 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
         step_count += 1
         res = tools.invoke(action.tool, action.args, ctx)
         tt = tracer.start()
-        tracer.add(f"tool:{action.tool}", tt, _brief(res),
+        # 静态 step 名（工具名进 note）：复放/追踪页的步骤映射是静态表，
+        # 动态 step id 会显示成原始串（见 tests/test_frontend）。
+        tracer.add("tool_call", tt, f"{action.tool}·{_brief(res)}",
                    status="ok" if res.ok else "blocked")
 
         # 高成本查询 → 挂起人工审批（HITL）。把 R-11 顶到结果层，交由 server
