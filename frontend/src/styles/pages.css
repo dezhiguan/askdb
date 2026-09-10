@@ -298,7 +298,50 @@
   border-radius: 6px;
   background: var(--paper-2);
 }
-.cost-bars i { flex: 1; border-radius: 2px 2px 0 0; background: var(--green-2); }
+/* 一根柱子是一个按钮：整条竖着的热区（不只柱身那一小截），
+   否则矮的那几天要把指针精确停在 3px 上才出数。 */
+.cost-bars { position: relative; }
+.cost-bars button {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: default;
+}
+.cost-bars button > span {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  background: var(--green-2);
+}
+.cost-bars button:hover > span,
+.cost-bars button.on > span { background: var(--green); }
+.cost-bars button:focus-visible { outline: 1px solid var(--green); outline-offset: 1px; }
+
+.cost-tip {
+  position: absolute;
+  /* 贴图**内侧**上沿，不往外顶：图上方紧挨着标题行，往外飘会被它盖掉半行，
+     而且抽屉一滚就飘到别处去了 */
+  top: 5px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  box-shadow: 0 2px 6px rgb(20 35 27 / 12%);
+  color: var(--ink);
+  font: 7px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;      /* 提示自己不能吃掉悬停，否则会闪 */
+}
+.cost-tip.left { transform: translateX(-100%); }
+.cost-tip b { font-size: 7.5px; }
+.cost-tip span { color: var(--ink-2); }
 .cost-axis { display: flex; justify-content: space-between; margin-top: 4px; color: var(--muted); font: 6.5px var(--mono); }
 
 /* ---------------- 数据源（已接 /api/health · schema · introspect · selfcheck） ---------------- */
