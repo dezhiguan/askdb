@@ -1163,7 +1163,21 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
                 for st in steps:
                     m = st.get("model")
                     c = float(st.get("cost_cny") or 0)
-                    if not m and not c:
+                    # **这一步算不算一次模型调用，看的是节点本身，不是它有没有
+                    # 记下模型名。** step 级 cost_cny 早就在落盘，step 级 model
+                    # 是 2026-09-10 才加的：中间这段时间的记录，每一条的
+                    # generate_sql 都是"有金额、无模型名"。原来只在 `if m` 时
+                    # 加次数，于是这些记录的钱补挂上去了、次数一次都没加 ——
+                    # 生产上因此长出「qwen3.8-flash 6 次 ¥1.64」这种自相矛盾的
+                    # 行：¥1.64 实际来自一千二百多次调用，单次成本被算成
+                    # ¥0.27（真实值 ¥0.0013），差两个数量级。
+                    #
+                    # 用 MODEL_STEPS 判而不是"有金额就算"：失败的那次调用金额
+                    # 是 0，但它确实调过；反过来，将来某个非模型节点若带上金额
+                    # 又没记模型名，只补钱不计次，不会虚增。这也让这张表的次数
+                    # 与「模型调用成功率」的分母 model_calls 同源。
+                    is_call = bool(m) or st.get("step") in MODEL_STEPS
+                    if not is_call and not c:
                         continue
                     # **带金额却没记模型的步骤，钱不能凭空消失**：挂回记录级
                     # 那个模型名。成本表必须满足「各行之和 = 总额」，
@@ -1171,9 +1185,7 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
                     # 比没有更坏 —— 看的人不会知道少的是哪一笔。
                     key = str(m) if m else str(r.get("model") or "（未记录）")
                     e = by_model.setdefault(key, {"calls": 0, "cost_cny": 0.0})
-                    # 次数只在**确实是一次调用**时加：没记模型的那笔是补挂
-                    # 上去的金额，不代表又发生了一次调用。
-                    if m:
+                    if is_call:
                         e["calls"] += 1
                     e["cost_cny"] = round(e["cost_cny"] + c, 6)
             else:

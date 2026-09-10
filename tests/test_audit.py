@@ -136,6 +136,43 @@ def test_stats_window_and_block_rate(tmp_path: Path):
     assert sum(d["calls"] for d in st["daily"]) == 2
 
 
+def test_stats_by_model_counts_calls_without_step_model(tmp_path: Path):
+    """花钱的模型节点没记模型名时，次数也要算 —— 钱和次数必须同进同出。
+
+    step 级 cost_cny 比 step 级 model 早落盘一段时间，这中间的记录每一条都是
+    「generate_sql 有金额、无模型名」。曾经只在 step 带 model 时才 +1，于是这些
+    记录的钱补挂到了记录级模型头上、次数一次都没加：生产上 30 天窗口显示
+    「qwen3.8-flash 6 次 ¥1.64」，单次成本 ¥0.27，比真实值高两个数量级。
+
+    这里同时钉住三件事：无模型名的模型节点计次、带模型名的节点按自己的名字
+    计次、非模型节点带金额只补钱不计次（不虚增）。
+    """
+    p = tmp_path / "audit.jsonl"
+    _write(p, [
+        # 老形态：模型节点有金额、无模型名 → 挂记录级模型，次数照加
+        _rec("aaaaaaaaaaa1", _now(1), model="qwen3.8-flash", cost_cny=0.004,
+             steps=[{"step": "schema_recall", "ms": 20, "status": "ok"},
+                    {"step": "generate_sql", "ms": 900, "status": "ok",
+                     "cost_cny": 0.003},
+                    {"step": "assess", "ms": 300, "status": "ok",
+                     "cost_cny": 0.001}]),
+        # 新形态：节点自报模型名，嵌入与生成各归各的
+        _rec("bbbbbbbbbbb2", _now(1), model="qwen3.8-flash", cost_cny=0.0025,
+             steps=[{"step": "schema_recall", "ms": 20, "status": "ok",
+                     "model": "text-embedding-v4", "cost_cny": 0.0005},
+                    {"step": "generate_sql", "ms": 900, "status": "ok",
+                     "model": "qwen3.8-flash", "cost_cny": 0.002}]),
+    ])
+    st = audit.stats(p, days=30)
+    assert st["by_model"] == {
+        "qwen3.8-flash": {"calls": 3, "cost_cny": 0.006},
+        "text-embedding-v4": {"calls": 1, "cost_cny": 0.0005},
+    }
+    # 各行之和 = 总额：这张表对不上账比没有更坏
+    assert round(sum(v["cost_cny"] for v in st["by_model"].values()), 6) \
+        == st["cost_cny"]
+
+
 def test_sql_endpoint_writes_audit_even_when_blocked(cfg, monkeypatch):
     """直查模式一调用一条审计，拦截也留痕（kind=sql）。"""
     from fastapi.testclient import TestClient
