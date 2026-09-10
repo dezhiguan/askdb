@@ -31,13 +31,6 @@
 .nav-copy { flex: 1; }
 .nav-copy strong { display: block; font-size: 9px; }
 .nav-copy small { display: block; margin-top: 2px; color: var(--muted); font-size: 7px; }
-.nav-badge { padding: 2px 4px; border-radius: 99px; color: var(--green); background: var(--green-wash); font: 6px var(--mono); }
-.phase-card { margin-top: 20px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: rgba(250,249,245,.68); }
-.phase-card > span { color: var(--muted); font: 7px var(--mono); }
-.phase-card strong { display: block; margin-top: 4px; font-size: 9px; }
-.phase-card p { margin: 7px 0 0; color: var(--muted); font-size: 7px; line-height: 1.5; }
-.progress { height: 4px; margin-top: 9px; border-radius: 4px; background: #d8d5cc; overflow: hidden; }
-.progress i { display: block; width: 35%; height: 100%; background: var(--green-2); }
 .main-content { min-width: 0; overflow-y: auto; }
 /* 入场动画**只动 opacity，不动 transform**。
  *
