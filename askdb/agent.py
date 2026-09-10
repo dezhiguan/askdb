@@ -261,6 +261,15 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
         tt = tracer.start()
         tracer.add(f"tool:{action.tool}", tt, _brief(res),
                    status="ok" if res.ok else "blocked")
+
+        # 高成本查询 → 挂起人工审批（HITL）。把 R-11 顶到结果层，交由 server
+        # 既有 _open_approval 建审批单：等审批 = 一次无界等待，正是任务/异步的
+        # 落点（设计 §2/§3）。带上被拦的 SQL 与预估扫描量，审批人才看得到差在哪。
+        if res.rejected_by == "R-11":
+            return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
+                           rejected_by="R-11", last_exec=res.data,
+                           error=res.error, tables_hit=tables_hit,
+                           step_count=max(1, step_count))
         item: dict[str, Any] = {"tool": action.tool, "args": action.args, "brief": _brief(res)}
         if res.ok and action.tool == "execute_sql":
             last_exec = res.data
