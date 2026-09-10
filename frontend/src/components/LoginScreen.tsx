@@ -89,10 +89,14 @@ export function LoginScreen({ me, onClose, onDone, onSkip, notify, dismissible =
   }
 
   // 一键体验 = **跳过登录**，不是以某个账号进入。不发任何请求、不建会话，
-  // 关掉这扇门之后就是未登录身份本身：能只读查询，一切写操作被后端中间件拦下。
+  // 关掉这扇门之后就是未登录身份本身：一切写操作被后端中间件拦下；
+  // 查询给不给，看实例配置（me.can_query）—— 下面三处措辞都跟着它走，
+  // 许诺一个后端会 401 的能力，比不给这个入口更糟。
   const skip = () => {
     onSkip()
-    notify('已以未登录身份进入 · 可以查询，但改动配置的操作需要登录')
+    notify(me.can_query
+      ? '已以未登录身份进入 · 可以查询，但改动配置的操作需要登录'
+      : '已以未登录身份进入 · 可以浏览审计与数据源，查询需要登录')
   }
 
   return (
@@ -143,7 +147,9 @@ export function LoginScreen({ me, onClose, onDone, onSkip, notify, dismissible =
                     <i className="login-entry-icon">TRY</i>
                     <span className="login-entry-copy">
                       <strong>一键体验</strong>
-                      <small>跳过登录直接查数，改动配置的操作需要登录</small>
+                      <small>{me.can_query
+                        ? '跳过登录直接查数，改动配置的操作需要登录'
+                        : '跳过登录浏览护栏与审计，发起查询需要登录'}</small>
                     </span>
                     <b className="login-entry-arrow">↗</b>
                   </button>
@@ -157,7 +163,9 @@ export function LoginScreen({ me, onClose, onDone, onSkip, notify, dismissible =
                 <i>✓</i>
                 <span>{me.required
                   ? '账号由部署方内置，没有注册与找回密码入口。每次查询都会记入审计，标明是以哪个身份发起的。'
-                  : '未登录也能查数，走的是同一条执行路径、同样受护栏约束；但添加数据源、改成员这类会改动配置的操作，必须登录。'}</span>
+                  : me.can_query
+                  ? '未登录也能查数，走的是同一条执行路径、同样受护栏约束；但添加数据源、改成员这类会改动配置的操作，必须登录。'
+                  : '未登录可以浏览护栏、审计与数据源；发起查询和改动配置都需要登录。账号由部署方内置，没有注册入口。'}</span>
               </div>
             </div>
 

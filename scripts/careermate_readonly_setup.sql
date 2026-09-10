@@ -12,8 +12,9 @@
 --    agent_messages 的完整对话、user_long_term_memory 的用户画像。
 --    开放范围由 askdb 侧的表白名单决定（PUT /api/sources/{sid}/tables），
 --    库这一层只负责"只读"。改白名单前先想清楚谁能登录 askdb ——
---    config/public.yaml 的 auth.required 必须是 true，那是行级边界撤掉之后
---    唯一挡在公网与这些数据之间的东西。
+--    config/public.yaml 的 auth.query_requires_login 必须是 true
+--    （2026-09-10 起的口径；required 已定为 false，见该文件 auth 段），
+--    那是行级边界撤掉之后唯一挡在公网与这些数据之间的东西。
 --
 -- 执行**必须用超级用户或 careermate 属主**：GRANT ... ON ALL TABLES 要求
 -- 对每张表有属主权限，用 -U ragforge 会静默只授到它自己拥有的那些表上。

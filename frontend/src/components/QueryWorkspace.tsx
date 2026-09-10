@@ -39,6 +39,11 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   const [schema, setSchema] = useState<Schema | null>(null)
   const { items: sourceCards, sourceId, setSourceId, defaultId } = sources
   const guard = writeGuard(me ?? null, '清空历史记录')
+  // 查询本身在部分实例上也要登录（auth.query_requires_login）。can_query 是
+  // 后端按当前身份算好的结论，这里不从 required 之类自己推 —— 判据只能有一处。
+  // me 还没回来时先按不可查处理，方向与 writeGuard 一致：宁可灰一瞬，
+  // 也不要"能点、点了 401"。
+  const canQuery = !!me && me.can_query !== false
   const [menuOpen, setMenuOpen] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -146,6 +151,11 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
     // 进链路 —— 两条入口对同一个状态给出不同结果，用户看到的就是"有时能发、
     // 有时不能，还不说为什么"。
     if (running) return
+    // 与输入框/按钮的 disabled 同一套判定，理由同上面那条 Enter 的注释
+    if (!canQuery) {
+      setError('查询需要登录后才能执行，请先登录。')
+      return
+    }
     if (!usable) {
       setError(ready
         ? '当前数据源不可执行查询：先到「数据源」确认连接与开放表。'
@@ -207,14 +217,18 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
               ref={inputRef}
               className={mode === 'sql' ? 'mono' : ''}
               value={question}
+              disabled={!canQuery}
               onChange={e => setQuestion(e.target.value)}
               onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey && mode === 'ask') { e.preventDefault(); run() }
               }}
-              placeholder={mode === 'ask' ? '例如：各知识库分别有多少文档'
+              placeholder={!canQuery ? '登录后可查询'
+                : mode === 'ask' ? '例如：各知识库分别有多少文档'
                 : 'SELECT ... —— 直查不经模型，只跑护栏、干跑与只读执行'}
             />
-            <button className="send" onClick={run} disabled={running || !usable || !question.trim()}>
+            <button className="send" onClick={run}
+                    disabled={running || !canQuery || !usable || !question.trim()}
+                    title={canQuery ? undefined : '查询需要登录后才能执行'}>
               {running ? '…' : '↗'}
             </button>
           </div>
@@ -234,6 +248,7 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
               mode={mode}
               schema={schema}
               usable={usable}
+              needsLogin={!canQuery}
               sourceName={current.name}
               recent={visibleRecent}
               guard={guard}
@@ -381,10 +396,11 @@ function useRecentQueries() {
 
 /** 示例问题按**当前库的白名单和口径**生成，不写死。
  *  写死的示例换个数据源就全是查不出结果的废话，还会让人以为库里有这些表。 */
-function Welcome({ mode, schema, usable, sourceName, recent, guard, onFill, onDelete, onClear }: {
+function Welcome({ mode, schema, usable, needsLogin, sourceName, recent, guard, onFill, onDelete, onClear }: {
   mode: Mode
   schema: Schema | null
   usable: boolean
+  needsLogin: boolean
   sourceName: string
   recent: RecentQuery[]
   guard: WriteGuard
@@ -420,9 +436,13 @@ function Welcome({ mode, schema, usable, sourceName, recent, guard, onFill, onDe
       <div className="welcome-intro">
         <div className="welcome-mark">↯</div>
         <div>
-          <h2>{usable ? '今天想从数据里确认什么？' : '当前不可执行查询'}</h2>
+          {/* 未登录优先于"数据源不可用"：两句话指向的下一步动作完全不同，
+              后一句会把没登录的人引去数据源页白查一圈 */}
+          <h2>{needsLogin ? '登录后可查询' : usable ? '今天想从数据里确认什么？' : '当前不可执行查询'}</h2>
           <p>
-            {usable
+            {needsLogin
+              ? '本实例的查询需要登录。审计、数据源与质量中心仍可直接浏览。'
+              : usable
               ? '系统会召回相关表、生成只读 SQL，并在护栏与成本检查通过后执行。结果附带 SQL，可自行核对。'
               : '先到「数据源」确认连接与白名单。'}
           </p>

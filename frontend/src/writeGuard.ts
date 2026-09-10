@@ -18,11 +18,14 @@ export interface WriteGuard {
 
 export function writeGuard(me: Me | null, what = '这个操作'): WriteGuard {
   const can = !!me?.username
+  // 「未登录还能做什么」跟着实例配置走：查询也要登录的实例上，
+  // 这句话里不能再许诺"可以查询"。
+  const left = me?.can_query ? '未登录可以浏览与查询' : '未登录可以浏览'
   return {
     can,
     props: {
       disabled: !can,
-      title: can ? undefined : `${what}需要登录后才能执行；未登录可以浏览与查询`,
+      title: can ? undefined : `${what}需要登录后才能执行；${left}`,
     },
   }
 }
