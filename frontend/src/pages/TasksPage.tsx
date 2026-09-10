@@ -26,6 +26,7 @@ import {
   type TaskSourceOption,
 } from '../components/Modals'
 import type { View } from '../types'
+import { personName } from '../person'
 import { ruleTitle } from '../rules'
 import { writeGuard } from '../writeGuard'
 import { rolesLabel } from '../roles'
@@ -240,6 +241,8 @@ export function TasksPage({ onNavigate, notify, me }: {
   const totalAll = result?.total_all ?? 0
   const sourceOptions = result?.sources ?? []
   const userOptions = result?.users ?? []
+  const labelForUser = (value: string, label: string) =>
+    personName(label === value ? '' : label, value, me) || label || value
   // 成功率没有收尾样本时给 null，不是 0% —— 后者是在报一个没发生过的失败
   const rateLabel = loading ? '读取中…'
     : stats.success_rate === null ? '暂无收尾记录'
@@ -266,7 +269,10 @@ export function TasksPage({ onNavigate, notify, me }: {
     filters.user !== 'all'
       ? {
         label: '发起人',
-        value: userOptions.find(item => item.value === filters.user)?.label ?? filters.user,
+        value: labelForUser(
+          filters.user,
+          userOptions.find(item => item.value === filters.user)?.label ?? filters.user,
+        ),
         onClear: () => patch({ user: 'all' }),
       } : null,
     filters.since !== 'all'
@@ -444,7 +450,9 @@ export function TasksPage({ onNavigate, notify, me }: {
             >
               <option value="all">全部发起人</option>
               {userOptions.map(item => (
-                <option key={item.value} value={item.value}>{item.label}</option>
+                <option key={item.value} value={item.value}>
+                  {labelForUser(item.value, item.label)}
+                </option>
               ))}
             </select>
             <select
@@ -465,53 +473,55 @@ export function TasksPage({ onNavigate, notify, me }: {
               容器保留以对齐结构（:empty 时不占位） */}
           <div className="created-task-list" />
 
-          {/* 表头。列宽与 .task-row 共用 --task-cols，两处分开写必然漂。
+          {/* 表头与行包进 .task-list：列宽只定一份，子项 subgrid 对齐。
               筛空时不渲染 —— 空态卡片上挂一条孤零零的表头没有意义。 */}
           {visible.length > 0 && (
-            <div className="task-head" role="row">
-              <span />
-              <span>任务 / 线程</span>
-              <span>风险</span>
-              <span>关键信息</span>
-              <span>状态</span>
-              <span className="right">操作</span>
+            <div className="task-list">
+              <div className="task-head" role="row">
+                <span />
+                <span>任务 / 线程</span>
+                <span>风险</span>
+                <span>关键信息</span>
+                <span>状态</span>
+                <span className="right">操作</span>
+              </div>
+
+              {visible.map(task => (
+                <div className="task-row" key={task.thread_id} data-task-id={task.thread_id}>
+                  <i className={`task-state ${STATUS_WAIT[task.status] ? 'wait' : ''}`}>{STATE_GLYPH[task.status]}</i>
+                  <div className="task-main">
+                    <strong title={task.question ?? ''}>{task.question || '（无问题文本）'}</strong>
+                    {/* 发起人显示姓名，与审计中心 / 成员名册「姓名」同一口径；
+                        名册里查不到、未登录（姓名不下发）时退回账号，title 留账号 */}
+                    <small title={task.user ? `发起人账号 ${task.user}` : undefined}>
+                      {task.thread_id} · {personName(task.user_name, task.user, me)} · {fmtClock(task.ts)}
+                      {' · 已执行 '}{task.attempts_on_thread} 次
+                    </small>
+                  </div>
+                  {/* 第三列**恒为风险**：后端对每一条线程都算了档（audit._risk，
+                      没有收尾码时兜底 LOW），所以这一列能被表头钉住。原来
+                      running / interrupted 两档在这里放的是"阶段"和"现场：检查点在"
+                      —— 一个表头之下三种含义，那样的表头是在骗人。 */}
+                  <div className="task-meta"><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
+                  {/* 第四列是唯一随状态变的一列，所以只有它保留行内小标签 */}
+                  {keyInfo(task)}
+                  <div><span className={`status ${STATUS_WAIT[task.status] ? 'wait' : ''}`}
+                             title={task.next_actor ?? ''}>{STATUS_LABEL[task.status]}</span></div>
+                  {task.status === 'done' ? (
+                    <button className="ghost task-view-result" onClick={() => openDetail(task, 'result')}>查看结果</button>
+                  ) : (
+                    <button
+                      className={task.resumable ? 'danger task-view-reason' : 'secondary task-view-reason'}
+                      disabled={busy === task.thread_id}
+                      onClick={() => openDetail(task, 'reason')}
+                    >
+                      {busy === task.thread_id ? '续跑中…' : '查看原因'}
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
-
-          {visible.map(task => (
-            <div className="task-row" key={task.thread_id} data-task-id={task.thread_id}>
-              <i className={`task-state ${STATUS_WAIT[task.status] ? 'wait' : ''}`}>{STATE_GLYPH[task.status]}</i>
-              <div className="task-main">
-                <strong title={task.question ?? ''}>{task.question || '（无问题文本）'}</strong>
-                {/* 发起人显示姓名，与审计中心同一格口径；名册里查不到、
-                    未登录（姓名不下发）时退回账号，title 里始终留着账号 */}
-                <small title={task.user ? `发起人账号 ${task.user}` : undefined}>
-                  {task.thread_id} · {task.user_name || task.user} · {fmtClock(task.ts)}
-                  {' · 已执行 '}{task.attempts_on_thread} 次
-                </small>
-              </div>
-              {/* 第三列**恒为风险**：后端对每一条线程都算了档（audit._risk，
-                  没有收尾码时兜底 LOW），所以这一列能被表头钉住。原来
-                  running / interrupted 两档在这里放的是"阶段"和"现场：检查点在"
-                  —— 一个表头之下三种含义，那样的表头是在骗人。 */}
-              <div className="task-meta"><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
-              {/* 第四列是唯一随状态变的一列，所以只有它保留行内小标签 */}
-              {keyInfo(task)}
-              <div><span className={`status ${STATUS_WAIT[task.status] ? 'wait' : ''}`}
-                         title={task.next_actor ?? ''}>{STATUS_LABEL[task.status]}</span></div>
-              {task.status === 'done' ? (
-                <button className="ghost task-view-result" onClick={() => openDetail(task, 'result')}>查看结果</button>
-              ) : (
-                <button
-                  className={task.resumable ? 'danger task-view-reason' : 'secondary task-view-reason'}
-                  disabled={busy === task.thread_id}
-                  onClick={() => openDetail(task, 'reason')}
-                >
-                  {busy === task.thread_id ? '续跑中…' : '查看原因'}
-                </button>
-              )}
-            </div>
-          ))}
 
           {visible.length === 0 && (
             <div className="task-empty">

@@ -36,12 +36,7 @@
    裁掉，也就不需要 portal。 */
 
 .tasks-page .task-row {
-  display: grid;
-  /* 列宽定义在 filterbar.css 的 --task-cols 上，表头与行共用同一份 */
-  grid-template-columns: var(--task-cols);
-  gap: 9px;
-  align-items: center;
-  min-width: 0;
+  /* 列宽由 .task-list 的 subgrid 提供，这里只排行内样式 */
   padding: 10px 13px;
   border-bottom: 1px solid #e1ded5;
 }

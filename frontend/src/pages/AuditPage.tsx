@@ -6,6 +6,7 @@ import {
 } from '../api'
 import { KIND_NAMES, STEP_NAMES, stepFailed } from '../traceSteps'
 import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
+import { personName } from '../person'
 import { rolesLabel } from '../roles'
 
 
@@ -111,7 +112,10 @@ export function AuditPage({ me }: { me: Me | null }) {
     user !== undefined
       ? {
         label: '发起人',
-        value: (list?.users ?? []).find(item => item.id === user)?.name ?? user,
+        value: (() => {
+          const hit = (list?.users ?? []).find(item => item.id === user)
+          return personName(hit && hit.name !== hit.id ? hit.name : '', user, me) || hit?.name || user
+        })(),
         onClear: () => setUser(undefined),
       } : null,
     since !== 'all'
@@ -140,7 +144,7 @@ export function AuditPage({ me }: { me: Me | null }) {
     const head = ['时间', 'trace_id', '姓名', '账号', '角色', '自然语言问题', '数据源', '策略结果', '耗时(s)', '成本(CNY)']
     const cell = (v: string) => `"${v.replace(/"/g, '""')}"`
     const rows = list.items.map(item => [
-      fmtTime(item.ts), item.trace_id, item.user ? who(item) : DASH, item.user || DASH,
+      fmtTime(item.ts), item.trace_id, item.user ? who(item, me) : DASH, item.user || DASH,
       item.role || DASH, item.question ?? '',
       item.source_name || item.source || DASH,
       guardText(item), (item.elapsed_ms / 1000).toFixed(1), String(item.cost_cny ?? 0),
@@ -226,7 +230,9 @@ export function AuditPage({ me }: { me: Me | null }) {
                   onChange={event => setUser(event.target.value === ALL ? undefined : event.target.value)}>
             <option value={ALL}>全部发起人</option>
             {(list?.users ?? []).map(item => (
-              <option key={item.id} value={item.id}>{item.name}</option>
+              <option key={item.id} value={item.id}>
+                {personName(item.name === item.id ? '' : item.name, item.id, me) || item.name || '（匿名）'}
+              </option>
             ))}
           </select>
         )}
@@ -252,7 +258,7 @@ export function AuditPage({ me }: { me: Me | null }) {
           </thead>
           <tbody>
             {list?.items.map(item => (
-              <AuditRow key={item.trace_id + item.ts} item={item} stats={stats}
+              <AuditRow key={item.trace_id + item.ts} item={item} stats={stats} me={me}
                 textVisible={textVisible(list)} onReplay={openReplay} />
             ))}
             {list && list.items.length === 0 && !loading && (
@@ -363,20 +369,23 @@ function guardText(item: AuditItem): string {
 
 /** 这一行显示的发起人：有姓名就显示人（官德志），否则退回账号（guandezhi）。
  *  退回不是兜底凑数 —— 名册里没登记的账号、以及未登录时（姓名是 PII，
- *  后端不下发）就是只有账号，显示账号是如实说清楚"只知道这些"。 */
-function who(item: AuditItem): string {
-  return item.user_name || item.user
+ *  后端不下发）就是只有账号，显示账号是如实说清楚"只知道这些"。
+ *  当前登录者若接口漏了 user_name，用 me.display_name（与成员名册「姓名」同值）。 */
+function who(item: AuditItem, me: Me | null): string {
+  return personName(item.user_name, item.user, me)
 }
 
-function AuditRow({ item, stats, textVisible, onReplay }: {
+function AuditRow({ item, stats, textVisible, onReplay, me }: {
   item: AuditItem
   stats: AuditStats | null
   /** 问题原文可见（= 已登录）。复放返回的是 SQL 全文，比这一行更敏感，同一判据 */
   textVisible: boolean
   onReplay: (traceId: string) => void
+  me: Me | null
 }) {
   const replayOn = !!stats?.replay_api && textVisible
   const link = stats && item.kind !== 'sql' ? tracingLink(stats.tracing, item.trace_id) : null
+  const name = who(item, me)
 
   return (
     // 整行可点开判定链路复放（原型行为）；回放开关关着时行不可点，只当静态记录
@@ -393,10 +402,10 @@ function AuditRow({ item, stats, textVisible, onReplay }: {
           一起把发起人抹掉（textVisible=false），而登录后仍为空的那些，是那次
           调用本来就没有登录发起 —— 都写成 — 会把"你看不到"读成"没有人"。 */}
       <td title={item.user
-        ? `发起人 ${item.user_name ? `${item.user_name}（${item.user}）` : item.user} · 生效角色 ${rolesLabel(item.role) || DASH}（${item.role || DASH}）`
+        ? `发起人 ${name !== item.user ? `${name}（${item.user}）` : item.user} · 生效角色 ${rolesLabel(item.role) || DASH}（${item.role || DASH}）`
         : textVisible ? '这次调用未登录发起，只记录了生效角色' : '登录后可见发起人'}>
         {item.user
-          ? who(item)
+          ? name
           : <span className="audit-na">{textVisible ? '匿名' : DASH}</span>} / {rolesLabel(item.role) || DASH}
       </td>
       <td className="audit-question" title={item.question ?? ''}>

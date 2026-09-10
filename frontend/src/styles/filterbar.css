@@ -78,15 +78,26 @@
 
 /* ---------------- 任务列表表头 ---------------- */
 
-/* 列宽与 .task-row 同一份定义，两处引用同一个变量 —— 分开写必然漂 */
+/* 列宽只在 .task-list 上定一份。表头与行用 subgrid 吃同一组轨道 ——
+   以前头/行各自 display:grid + 末列 auto，按钮比「操作」两个字宽，
+   fr 列分到的剩余宽度就不一样，表头会整列往右漂。 */
 .tasks-page {
-  --task-cols: 34px minmax(170px, 1.5fr) .55fr .9fr .8fr auto;
+  --task-cols: 34px minmax(170px, 1.5fr) .55fr .9fr .8fr 5.25rem;
 }
-.tasks-page .task-head {
+.tasks-page .task-list {
   display: grid;
   grid-template-columns: var(--task-cols);
+}
+.tasks-page .task-list .task-head,
+.tasks-page .task-list .task-row {
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
   gap: 9px;
   align-items: center;
+  min-width: 0;
+}
+.tasks-page .task-head {
   padding: 8px 13px;
   color: var(--muted);
   background: var(--paper-2);

@@ -78,8 +78,8 @@ button:disabled { cursor: not-allowed; }
 .eyebrow::before { content: ""; width: 14px; height: 1px; background: var(--green); }
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 8px; }
-th { padding: 8px; border-bottom: 1px solid var(--line); color: var(--muted); background: var(--paper-2); text-align: left; font: 7px var(--mono); white-space: nowrap; }
-td { padding: 9px 8px; border-bottom: 1px solid #e4e1d9; font: 7px var(--mono); }
+th { padding: 8px 9px; border-bottom: 1px solid var(--line); color: var(--muted); background: var(--paper-2); text-align: left; font: 7px var(--mono); white-space: nowrap; }
+td { padding: 8px 9px; border-bottom: 1px solid #e4e1d9; font: 7px var(--mono); }
 td.good { color: var(--green); font-weight: 800; }
 .mask { padding: 2px 4px; border-radius: 3px; color: #8e521a; background: var(--amber-wash); }
 .align-right { display: flex; justify-content: flex-end; margin-top: 8px; }

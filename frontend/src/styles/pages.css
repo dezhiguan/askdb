@@ -208,8 +208,23 @@
 /* 成本那格可点开分布，做成按钮而不是给 div 挂 onClick —— 键盘能聚焦、读屏能念 */
 
 .audit-table { width: 100%; border-collapse: collapse; font-size: 8px; }
-.audit-table th, .audit-table td { padding: 8px 9px; border-bottom: 1px solid var(--line); text-align: left; }
-.audit-table th { color: var(--muted); font: 7px var(--mono); font-weight: 700; letter-spacing: .08em; }
+/* th/td 共用同一套 padding —— theme.css 里 th 与 td 水平内边距曾经不一致，
+   表头会看起来比数据更靠左。letter-spacing 只留很轻一档，避免汉字表头
+   视觉上再往外扩一截。 */
+.audit-table th, .audit-table td {
+  padding: 8px 9px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+.audit-table th {
+  color: var(--muted);
+  font: 7px var(--mono);
+  font-weight: 700;
+  letter-spacing: .04em;
+  background: var(--paper-2);
+}
 .audit-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .audit-table tr:last-child td { border-bottom: 0; }
 .audit-question { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
