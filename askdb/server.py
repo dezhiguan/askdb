@@ -35,6 +35,8 @@ from . import sources as _sources
 from .config import Config, load
 from . import executor as _executor_mod
 from .executor import DataSourceError, Executor, MaskUnresolved
+from . import async_runner as _async_runner
+from .agent import run_agent
 from .graph import ask as run_ask, jsonable, resume as run_resume
 from .quota import build_quota
 from .qcache import build_answer_cache, make_key as _cache_key
@@ -2946,7 +2948,23 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             if hit is not None:
                 return JSONResponse(_serve_cached_ask(hit, scoped, q_text, eff_org))
 
-        r = run_ask(q_text, scoped, org_id=req.org_id)
+        # agent.enabled 打开时走 LLM 自主决策链路（v2）；否则走既有固定管道。
+        # 默认关，不影响现网。as_task（可续跑任务线）仍走管道 —— 它用 LangGraph
+        # 检查点续跑；agent 循环尚不支持中途落检查点续跑，故任务线不落到 agent。
+        if bool(scoped.raw.get("agent", {}).get("enabled", False)) and not req.as_task:
+            # 长任务自动异步：主请求最多等 async_after_ms，超时转后台并提示去任务中心
+            # （后台线程跑完写 final 审计，任务中心据审计更新状态）。见 §2。
+            import uuid as _uuid
+            _tid = _uuid.uuid4().hex[:12]
+            _thr = int(scoped.raw.get("agent", {}).get("async_after_ms", 8000))
+            r, _notice = _async_runner.run_or_detach(
+                lambda: run_agent(q_text, scoped, org_id=req.org_id,
+                                  trace_id=_tid, thread_id=_tid),
+                _thr, _tid)
+            if _notice is not None:
+                return JSONResponse(_notice)
+        else:
+            r = run_ask(q_text, scoped, org_id=req.org_id)
         out = r.to_dict()
         if r.rejected_by == "R-11" and not scoped.scan_waiver:
             # 与直查同一条口径：超阈值挂起，不是终结。
