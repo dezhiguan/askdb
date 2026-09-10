@@ -98,6 +98,10 @@
 
 /* 选表弹窗顶上那条：筛选框 + 已选计数 + 全选/清空。
    计数从底部操作区挪到这里 —— 它描述的是上面这个列表，离得越近越好读 */
+/* 「你可能选错了类型」这类提醒走琥珀：它不是错误（配置可能就是对的），
+   用红色说它，人会去找一个并不存在的故障 */
+.warn-note { color: #8a5a12; }
+
 .pick-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .pick-toolbar .pick-count { margin-left: auto; }
 .pick-search {

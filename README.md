@@ -278,12 +278,29 @@ Secrets never sit in a config file. Model keys, database passwords, the session
 signing key, the Redis URL and the observability keys all arrive as environment
 variables from Kubernetes Secrets — see [`deploy/README.md`](deploy/README.md).
 
-Two keys the public instance leaves unset on purpose:
+One key the public instance leaves unset on purpose:
 
 | Variable | Consequence | Why |
 |---|---|---|
 | `ASKDB_ADMIN_TOKEN` | Role-member writes are closed entirely (fail-closed) | An open instance has no trusted caller; setting it would let anyone edit the member list |
-| `ASKDB_SECRET_KEY` | A source added at runtime cannot take a literal password, only the name of an environment variable | No password ever reaches disk — which is exactly the posture this instance should have |
+
+`ASKDB_SECRET_KEY` (the master key for source passwords) **has been set since
+2026-09-10**; this section used to say it was deliberately left unset. The reason for
+the change matters more than the conclusion:
+
+Without a master key, a runtime-added source can only reference an **environment
+variable name**, and that variable has to be in the pod first — meaning a Secret edit
+and a rollout for every database added. That works for our own infrastructure
+(`RAGFORGE_RO_ALL_PASSWORD` and friends, known at deploy time). It does **not** work
+for third-party databases, and "add a source at runtime" exists precisely so that no
+deploy is needed.
+
+The cost, stated plainly: passwords no longer stay off disk entirely — they are stored
+Fernet-encrypted in `askdb_sources.password_enc`, with the master key living only in the
+environment, so the database alone does not decrypt them. **If the master key is lost or
+rotated, stored passwords cannot be decrypted** — the code deliberately falls back to
+`None` and surfaces it as an authentication failure rather than an opaque crypto error.
+Guard that key like a database password.
 
 
 ### Source types

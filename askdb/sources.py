@@ -441,7 +441,14 @@ def build(*, name: str, type_: str, dsn: str, env: str = "test",
     if not dsn:
         raise SourceError("连接串不能为空")
     if password_env and not _ENV_RE.fullmatch(password_env):
-        raise SourceError("环境变量名不合规：需为大写字母开头的 3-64 位大写字母/数字/下划线")
+        # 实测里这一栏被填进口令本身不止一次，而原来的报错只说"格式不对" ——
+        # 它把一次**填错了框**讲成一次拼写错误，读的人会去改大小写，
+        # 而正确动作是切到旁边那一档。所以把两件事都说出来。
+        raise SourceError(
+            "环境变量名不合规：需为大写字母开头的 3-64 位大写字母/数字/下划线。"
+            "这一栏要的是**环境变量名**（服务端拿它去读自己的环境变量），不是口令本身；"
+            "要直接填口令，请点右边的「直接填密码」。"
+        )
     if password_env and password:
         raise SourceError("环境变量名与明文口令只能二选一")
     # 连接串里内嵌口令 = 绕开上面那条纪律的后门。

@@ -141,6 +141,13 @@ export function AddSourceModal({ meta, onClose, onDone }: {
                     <label htmlFor="src-addr">数据库地址</label>
                     <input id="src-addr" value={addr} onChange={e => setAddr(e.target.value)}
                            placeholder={`db.internal:${DEFAULT_PORT[type] ?? '5432'}`} />
+                    {portMismatch(type, addr) && (
+                      <p className="cred-note warn-note">
+                        端口 {addr.split(':')[1]} 通常是 {portMismatch(type, addr)} 的，
+                        而「数据库类型」选的是 {TYPE_LABEL[type] ?? type} —— 确认一下是不是选错了。
+                        （这只是提醒：把 {TYPE_LABEL[type] ?? type} 跑在这个端口上完全合法。）
+                      </p>
+                    )}
                   </div>
                   <div className="form-row">
                     <label htmlFor="src-db">数据库名</label>
@@ -318,6 +325,22 @@ const TYPE_LABEL: Record<string, string> = { postgresql: 'PostgreSQL', mysql: 'M
 /** 不写端口时各类型默认连哪个端口。占位符照抄 5432 会让人把 MySQL
  *  填成一个连不上的地址，而"地址填错"与"库没起来"在报错里长得一样。 */
 const DEFAULT_PORT: Record<string, string> = { postgresql: '5432', mysql: '3306' }
+
+/** 端口看着像另一种库时，返回那种库的名字，否则空串。
+ *
+ *  存在的理由是一次实测：类型停在 PostgreSQL、地址填了 :3306，点测试连接
+ *  得到的是 "received invalid response to SSL negotiation: J" —— 那句话里
+ *  没有一个字指向真正的原因（类型选错了）。在填表这一刻就说，比连完再猜省事。
+ *
+ *  **只提醒不阻断**：把 PostgreSQL 跑在 3306 完全合法，替用户否掉一个能连通的
+ *  配置，比多给一句提醒糟得多。后端 _pg_connect_hint 里有同一条判断兜底。 */
+function portMismatch(type: string, addr: string): string {
+  const port = addr.split(':')[1]?.trim()
+  if (!port) return ''
+  const owner: Record<string, string> = { '5432': 'postgresql', '3306': 'mysql' }
+  const guess = owner[port]
+  return guess && guess !== type ? (TYPE_LABEL[guess] ?? guess) : ''
+}
 
 function TablePick({ table, checked, onToggle }: {
   table: ScannedTable

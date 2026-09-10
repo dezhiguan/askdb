@@ -292,6 +292,9 @@ def test_wrong_master_key_fails_closed(monkeypatch):
     ({"type": "oracle"}, "不支持的数据库类型"),
     ({"name": ""}, "名称不能为空"),
     ({"password_env": "小写不合规"}, "环境变量名不合规"),
+    # 实测里这一栏被填进口令本身不止一次 —— 报错必须把"填错了框"说出来，
+    # 只说"格式不对"会让人去改大小写，而正确动作是切到「直接填密码」
+    ({"password_env": "zhongkeda8866"}, "直接填密码"),
     ({"password_env": "OK_ENV", "password": "p"}, "二选一"),
 ])
 def test_build_rejects_bad_input(over, hit):
