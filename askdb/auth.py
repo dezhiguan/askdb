@@ -213,13 +213,14 @@ def identity_of(cfg: Config, username: str) -> tuple[list[str], str]:
 
     if identity.enabled(cfg):
         try:
-            for m in identity.list_members(cfg):
-                if m["username"].lower() != name.lower():
-                    continue
-                if m["role_code"] not in roles:
-                    roles.append(m["role_code"])
-                if not display and m.get("display_name"):
-                    display = str(m["display_name"])
+            # 定向查这一个账号。这里曾经是 list_members(cfg) 整表读再逐行比
+            # 用户名 —— 名册涨到万人之后，每次页面加载（/api/auth/me）都要把
+            # 全表拉进内存，只为拿回一两行。
+            for _uname, code, member_name in identity.member_rows(cfg, [name]):
+                if code not in roles:
+                    roles.append(code)
+                if not display and member_name:
+                    display = member_name
         except Exception:
             pass
     return roles, display

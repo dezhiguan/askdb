@@ -110,7 +110,7 @@ export function ApprovalsPage({ notify }: { notify: (message: string) => void })
               </strong>
               <small>
                 <span className="mono">{item.id}</span>
-                {' · '}{item.user || '—'}
+                {' · '}<span title={item.user ? `申请人账号 ${item.user}` : undefined}>{item.user_name || item.user || '—'}</span>
                 {item.roles?.length ? `（${item.roles.map(roleLabel).join('+')}）` : ''}
                 {' · '}{fmt(item.ts)}
                 {' · 预估扫描 '}

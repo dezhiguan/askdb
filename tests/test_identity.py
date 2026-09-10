@@ -304,21 +304,24 @@ def test_display_name_comes_from_config_and_identity_store(cfg, monkeypatch):
     # 配置内置账号：直接给配置里的姓名，不必碰身份库
     assert auth.display_name_of(cfg, "linxiao") == "林晓"
 
-    # 只登记在身份库里的人：配置里查不到，姓名只能从那里来
+    # 只登记在身份库里的人：配置里查不到，姓名只能从那里来。
+    # 打桩打在 member_rows 上 —— 这条读路径按用户名定向查，不整表读名册
+    ROSTER = {
+        "db_only": [("db_only", "SYS_ADMIN", "库里那个人")],
+        "no_name": [("no_name", "DEV", "")],
+    }
     monkeypatch.setattr(identity, "enabled", lambda _c: True)
-    monkeypatch.setattr(identity, "list_members", lambda _c, role_code="": [
-        {"username": "db_only", "display_name": "库里那个人", "role_code": "SYS_ADMIN"},
-        {"username": "no_name", "display_name": "", "role_code": "DEV"},
-    ])
+    monkeypatch.setattr(identity, "member_rows",
+                        lambda _c, names: ROSTER.get(list(names)[0].lower(), []))
     assert auth.display_name_of(cfg, "db_only") == "库里那个人"
     # 登记了但没写姓名：返回空串，由调用方决定退回什么 —— 不替它编一个
     assert auth.display_name_of(cfg, "no_name") == ""
     assert auth.display_name_of(cfg, "查无此人") == ""
 
     # 身份库连不上不该让顶栏空掉，更不该抛
-    def boom(_c, role_code=""):
+    def boom(_c, _names):
         raise RuntimeError("身份库连不上")
 
-    monkeypatch.setattr(identity, "list_members", boom)
+    monkeypatch.setattr(identity, "member_rows", boom)
     assert auth.display_name_of(cfg, "db_only") == ""
     assert auth.display_name_of(cfg, "linxiao") == "林晓"   # 配置那条不受影响

@@ -483,7 +483,12 @@ export function TasksPage({ onNavigate, notify, me }: {
               <i className={`task-state ${STATUS_WAIT[task.status] ? 'wait' : ''}`}>{STATE_GLYPH[task.status]}</i>
               <div className="task-main">
                 <strong title={task.question ?? ''}>{task.question || '（无问题文本）'}</strong>
-                <small>{task.thread_id} · {task.user} · {fmtClock(task.ts)} · 已执行 {task.attempts_on_thread} 次</small>
+                {/* 发起人显示姓名，与审计中心同一格口径；名册里查不到、
+                    未登录（姓名不下发）时退回账号，title 里始终留着账号 */}
+                <small title={task.user ? `发起人账号 ${task.user}` : undefined}>
+                  {task.thread_id} · {task.user_name || task.user} · {fmtClock(task.ts)}
+                  {' · 已执行 '}{task.attempts_on_thread} 次
+                </small>
               </div>
               {/* 第三列**恒为风险**：后端对每一条线程都算了档（audit._risk，
                   没有收尾码时兜底 LOW），所以这一列能被表头钉住。原来

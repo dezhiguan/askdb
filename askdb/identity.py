@@ -23,6 +23,7 @@ import os
 import dataclasses
 from dataclasses import dataclass
 from typing import Any
+from collections.abc import Iterable
 
 from .config import Config
 
@@ -511,6 +512,69 @@ def _rows(cfg: Config, sql: str, params: tuple[Any, ...] = ()) -> list[tuple[Any
             return con.execute(sql, params).fetchall()
     except psycopg.errors.UndefinedTable:
         return []
+
+
+def member_rows(cfg: Config, usernames: Iterable[str]) -> list[tuple[str, str, str]]:
+    """名册里这几个账号登记的行：``(小写用户名, 角色码, 姓名)``，新登记的在前。
+
+    **按用户名定向查，不走 list_members。** 那个函数是整表读（名册是万人
+    量级），而这里每次要的只是一两个人 —— /api/auth/me 每次页面加载都要问
+    一遍"我是谁"，用整表读去回答它，代价随名册人数一起涨，而答案只有一行。
+
+    只出库表登记的那部分。配置内置的账号由 auth.accounts 给（进程内、条数
+    固定），两边在各自的调用方合并 —— 在这里合并的话，"这个人在名册里登记过
+    吗"就答不出来了。表还没建 = 一个人都没登记过，_rows 已按空处理。
+    """
+    wanted = sorted({u.strip().lower() for u in usernames if u and u.strip()})
+    if not wanted or not enabled(cfg):
+        return []
+    rows = _rows(cfg,
+                 "SELECT lower(username), role_code, display_name"
+                 " FROM askdb_role_members WHERE lower(username) = ANY(%s)"
+                 # 与 list_members 同一个排序，这样"多行取先到的那条"在两条
+                 # 读取路径上选中的是同一行
+                 " ORDER BY created_at DESC, id DESC",
+                 (wanted,))
+    return [(str(r[0]), str(r[1]), str(r[2] or "")) for r in rows]
+
+
+def display_names(cfg: Config, usernames: Iterable[str]) -> dict[str, str]:
+    """一批账号的**姓名**，键为小写用户名；查不到的不进字典。
+
+    界面上该显示的是人（官德志），不是网关用户名（guandezhi）—— 后者是账号
+    标识，对同事没有辨识度。审计与任务两页每页十条、下拉几十项，逐个走
+    auth.display_name_of 会把整份名册读上十几遍（万人量级），所以这里合成
+    一条 IN 查询，且只取真填了姓名的那些行。
+
+    取不到就少一个键，由调用方退回用户名 —— 这里不替它编一个名字，
+    身份库连不上也不抛：审计页不该因为名册查不到就整页打不开。
+    """
+    wanted = {u.strip().lower() for u in usernames if u and u.strip()}
+    if not wanted:
+        return {}
+
+    from . import auth                      # 延迟导入：auth 反向依赖本模块
+
+    out: dict[str, str] = {}
+    accs = auth.accounts(cfg)
+    for key in wanted:
+        acc = accs.get(key)
+        # accounts() 没写 display_name 时拿用户名兜底，那不算"有姓名"
+        if acc and acc.display_name and acc.display_name != acc.username:
+            out[key] = acc.display_name
+
+    rest = [k for k in wanted if k not in out]
+    if rest:
+        try:
+            rows = member_rows(cfg, rest)
+        except Exception:
+            return out
+        for uname, _code, name in rows:
+            if name:
+                # 同一个人可能挂在多个角色下，姓名取先到的那条：它们本该一致，
+                # 不一致时也不该由这一页去裁决哪个对
+                out.setdefault(uname, name)
+    return out
 
 
 def builtin_members(cfg: Config, role_code: str = "") -> list[dict[str, Any]]:

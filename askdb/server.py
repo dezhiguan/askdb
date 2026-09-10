@@ -11,6 +11,7 @@ import dataclasses
 import os
 import secrets
 import time
+from collections.abc import Iterable
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -1834,6 +1835,23 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         out["shipped"] = "E"     # 当前默认配置对应的组（多步已按消融结论关闭）
         return out
 
+    def _display_names(request: Request, users: Iterable[str]) -> dict[str, str]:
+        """这批账号的姓名，键为小写用户名 —— 页面上显示的是人，不是网关用户名。
+
+        **未登录一律不补**：姓名是 PII，成员名册那一页对匿名访问者就是脱敏
+        下发的（网关用户名按产品决定放出来看，姓名与备注抹成圆点）。审计与
+        任务两页同样匿名可读，这里不设同一道边界的话，从审计页就能把整份
+        名册的真名读出来 —— 那条脱敏也就等于没做。
+
+        身份库不可用不抛：少了姓名，调用方退回用户名照常渲染。
+        """
+        if _current_user(request) is None:
+            return {}
+        try:
+            return _identity.display_names(cfg, users)
+        except Exception:
+            return {}
+
     @app.get("/api/audit")
     def audit_list(request: Request, page: int = 1, page_size: int = 10,
                    q: str = "", kind: str = "", status: str = "",
@@ -1875,14 +1893,26 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         if user is not None and not with_text:
             raise HTTPException(status_code=403,
                                 detail="当前身份看不到发起人，不能按发起人筛选")
-        return list_audits(cfg, page=page, page_size=page_size,
-                           q=q.strip(), kind=kind.strip(),
-                           with_text=with_text,
-                           only_user=_audit_owner_filter(request),
-                           status=wanted,
-                           source=None if source is None else source.strip(),
-                           user=None if user is None else user.strip(),
-                           since=window)
+        result = list_audits(cfg, page=page, page_size=page_size,
+                             q=q.strip(), kind=kind.strip(),
+                             with_text=with_text,
+                             only_user=_audit_owner_filter(request),
+                             status=wanted,
+                             source=None if source is None else source.strip(),
+                             user=None if user is None else user.strip(),
+                             since=window)
+        # 发起人补一格姓名。**账号不动**：user 仍是筛选与归属判定的键，
+        # 姓名只是显示层多出来的一格，取不到就由前端退回账号。
+        items = result["items"]
+        facet = result.get("users") or []
+        names = _display_names(
+            request,
+            [str(it.get("user") or "") for it in items] + [u["id"] for u in facet])
+        for it in items:
+            it["user_name"] = names.get(str(it.get("user") or "").lower(), "")
+        for u in facet:
+            u["name"] = names.get(str(u["id"]).lower()) or u["name"]
+        return result
 
     @app.get("/api/audit/stats")
     def audit_stats(request: Request, days: int = 30) -> dict[str, Any]:
@@ -2151,11 +2181,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """
         _require_login(request)
         can_approve = _can(request, _identity.APPROVE)
-        return {
-            "can_approve": can_approve,
-            "items": _approvals.listing(
-                cfg, only_user=None if can_approve else (_current_user(request) or "")),
-        }
+        items = _approvals.listing(
+            cfg, only_user=None if can_approve else (_current_user(request) or ""))
+        # 申请人同样按姓名显示（这一页要登录才进得来，不涉匿名脱敏那条边界）
+        names = _display_names(request, [str(it.get("user") or "") for it in items])
+        for it in items:
+            it["user_name"] = names.get(str(it.get("user") or "").lower(), "")
+        return {"can_approve": can_approve, "items": items}
 
     @app.post("/api/approvals/{approval_id}/decide")
     def approvals_decide(approval_id: str, req: DecideRequest,
@@ -2341,6 +2373,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 state = is_resumable(str(it.get("thread_id") or ""), cfg)
                 if state is not None:
                     it["resumable"] = state
+        # 发起人补姓名，与审计中心同一格显示口径（同一份流水，两页不能一页
+        # 写账号、一页写人名）。owner 判定仍只认账号。
+        names = _display_names(
+            request,
+            [str(it.get("user") or "") for it in result["items"]]
+            + [str(u["value"]) for u in result.get("users") or []])
+        for it in result["items"]:
+            it["user_name"] = names.get(str(it.get("user") or "").lower(), "")
+        for u in result.get("users") or []:
+            u["label"] = names.get(str(u["value"]).lower()) or u["label"]
         # user 是**当前账号**，不是过滤条件：页面拿它与每条的 owner 比，
         # 判断哪些是自己的、续跑入口对谁开。匿名时为空串。
         result["user"] = username

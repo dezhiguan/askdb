@@ -109,6 +109,10 @@ export interface AuditItem {
    *  未登录时后端把它抹成空串（与 question 同一道边界，见 text_visible）；
    *  已登录时的空串是真的没有发起人 —— 那次调用本来就是匿名发的。 */
   user: string
+  /** 发起人姓名。界面上显示的是人（官德志），不是网关用户名（guandezhi）——
+   *  后者仍是筛选与归属判定的键，两者不能互换。名册里查不到、或未登录
+   *  （姓名是 PII，与成员名册同一道边界）时为空串，页面退回账号显示。 */
+  user_name?: string
   /** 未登录时为 null —— 是"看不到"，不是"没有" */
   question: string | null
   rejected_by: string | null
@@ -976,6 +980,10 @@ export interface Task {
   kind: string
   role: string
   user: string
+  /** 发起人姓名。界面上显示的是人（官德志），不是网关用户名（guandezhi）——
+   *  后者仍是筛选与归属判定的键，两者不能互换。名册里查不到、或未登录
+   *  （姓名是 PII，与成员名册同一道边界）时为空串，页面退回账号显示。 */
+  user_name?: string
   /** 这条线程上已经跑过几次（首次 + 每次续跑各算一次） */
   attempts_on_thread: number
   /** 这条线程跑在哪个数据源上（审计 summary 字段）。老记录可能没有，
@@ -1360,6 +1368,10 @@ export interface Approval {
   status: 'REQUESTED' | 'APPROVED' | 'REJECTED' | 'CONSUMED'
   ts: string
   user: string
+  /** 发起人姓名。界面上显示的是人（官德志），不是网关用户名（guandezhi）——
+   *  后者仍是筛选与归属判定的键，两者不能互换。名册里查不到、或未登录
+   *  （姓名是 PII，与成员名册同一道边界）时为空串，页面退回账号显示。 */
+  user_name?: string
   roles: string[]
   kind: 'ask' | 'sql'
   question: string

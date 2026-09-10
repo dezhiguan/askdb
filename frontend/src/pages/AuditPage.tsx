@@ -135,10 +135,13 @@ export function AuditPage({ me }: { me: Me | null }) {
   // 也不把 SQL 文本塞进来 —— 列表本来就不含 SQL，导出同样不含。
   const exportReport = () => {
     if (!list || list.items.length === 0) return
-    const head = ['时间', 'trace_id', '用户', '角色', '自然语言问题', '数据源', '策略结果', '耗时(s)', '成本(CNY)']
+    // 姓名与账号**各占一列**：表格里只显示人名（那是给人看的），
+    // 导出的是审计凭据，事后要按账号对得上人
+    const head = ['时间', 'trace_id', '姓名', '账号', '角色', '自然语言问题', '数据源', '策略结果', '耗时(s)', '成本(CNY)']
     const cell = (v: string) => `"${v.replace(/"/g, '""')}"`
     const rows = list.items.map(item => [
-      fmtTime(item.ts), item.trace_id, item.user || DASH, item.role || DASH, item.question ?? '',
+      fmtTime(item.ts), item.trace_id, item.user ? who(item) : DASH, item.user || DASH,
+      item.role || DASH, item.question ?? '',
       item.source_name || item.source || DASH,
       guardText(item), (item.elapsed_ms / 1000).toFixed(1), String(item.cost_cny ?? 0),
     ].map(cell).join(','))
@@ -358,6 +361,13 @@ function guardText(item: AuditItem): string {
   return `${item.rejected_by} 拦截`
 }
 
+/** 这一行显示的发起人：有姓名就显示人（官德志），否则退回账号（guandezhi）。
+ *  退回不是兜底凑数 —— 名册里没登记的账号、以及未登录时（姓名是 PII，
+ *  后端不下发）就是只有账号，显示账号是如实说清楚"只知道这些"。 */
+function who(item: AuditItem): string {
+  return item.user_name || item.user
+}
+
 function AuditRow({ item, stats, textVisible, onReplay }: {
   item: AuditItem
   stats: AuditStats | null
@@ -376,15 +386,17 @@ function AuditRow({ item, stats, textVisible, onReplay }: {
     >
       <td className="mono">{fmtTime(item.ts)}</td>
       <td className="mono">{item.trace_id}</td>
-      {/* 原型是「林晓 / 产品」一格。账号与角色都由审计记录如实给出。
+      {/* 原型是「林晓 / 产品」一格：显示的是**人**，不是网关用户名 ——
+          姓名由后端按名册补在 user_name 上（未登录不下发，姓名是 PII），
+          取不到就退回账号。角色仍由审计记录如实给出。
           空账号有两种来路，措辞必须分开：未登录看这一页时后端会连同问题原文
           一起把发起人抹掉（textVisible=false），而登录后仍为空的那些，是那次
           调用本来就没有登录发起 —— 都写成 — 会把"你看不到"读成"没有人"。 */}
       <td title={item.user
-        ? `发起人 ${item.user} · 生效角色 ${rolesLabel(item.role) || DASH}（${item.role || DASH}）`
+        ? `发起人 ${item.user_name ? `${item.user_name}（${item.user}）` : item.user} · 生效角色 ${rolesLabel(item.role) || DASH}（${item.role || DASH}）`
         : textVisible ? '这次调用未登录发起，只记录了生效角色' : '登录后可见发起人'}>
         {item.user
-          ? item.user
+          ? who(item)
           : <span className="audit-na">{textVisible ? '匿名' : DASH}</span>} / {rolesLabel(item.role) || DASH}
       </td>
       <td className="audit-question" title={item.question ?? ''}>
