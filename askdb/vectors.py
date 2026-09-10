@@ -104,6 +104,13 @@ CREATE TABLE IF NOT EXISTS askdb_schema_vectors (
 _vec_ns: str | None = None
 
 
+#: 单次 embedding 请求最多发几条。**上限由厂商定，不由我们定**：百炼是 20，
+#: 超了返回 400 InvalidParameter 而不是自动截断。取 10 留一半余量，与
+#: `_embedder()` 里给 langchain 的 chunk_size 保持同一个数 —— 两条路发出去的
+#: 请求形状不该不一样。配置可覆盖：schema_rag.embed_batch。
+_EMBED_BATCH = 10
+
+
 def _vector_ns() -> str:
     """pgvector 所在 schema（已加引号）。扩展没装时**明确报出来**，不猜。"""
     global _vec_ns
@@ -212,9 +219,20 @@ class VectorIndex:
             _embedders[ck] = emb
         return emb
 
+    def _batch_size(self) -> int:
+        return max(1, int(self.cfg.raw["schema_rag"].get("embed_batch", _EMBED_BATCH)))
+
     def _embed(self, texts: list[str], *, query: bool = False
                ) -> tuple[list[list[float]], int]:
-        """向量 + **厂商回传的真实输入 token 数**。
+        """向量 + **厂商回传的真实输入 token 数**。**按厂商上限分批发。**
+
+        分批不是优化，是能不能用的问题：百炼的 embedding 端点单请求最多 20 条，
+        超了直接 400。而建索引一次要嵌入整份白名单 —— 96 张表的源上，这一条
+        400 会让 `_build` 每次都失败，链路照旧可用（回落关键词），于是表现成
+        "配置写着 vector，实际一直在跑 keyword"，只在 note 与 /api/health 里
+        留一行字。`_embedder()` 上那个 chunk_size 管不到这里：它只在 langchain
+        自己的 embed_documents 里生效，而下面这条路是**绕过它直接调 client**
+        （为了拿真实 usage）。
 
         不走 langchain 的 embed_documents/embed_query —— 它们只把向量交出来，
         usage 在响应里但被丢掉了。拿不到真实用量就只能本地估 token，而估出来
@@ -223,6 +241,16 @@ class VectorIndex:
         底层客户端取不到时（langchain 换了实现）退回它自己的方法，**用量记 0
         而不是估一个** —— 成本页上宁可空着，也不要一个来路不明的数。
         """
+        size = self._batch_size()
+        if len(texts) > size:
+            # 顺序必须与入参一致：调用方按下标把向量配回 keys。
+            vecs: list[list[float]] = []
+            total = 0
+            for i in range(0, len(texts), size):
+                part, tok = self._embed(texts[i:i + size], query=query)
+                vecs.extend(part)
+                total += tok
+            return vecs, total
         emb = self._embedder()
         client = getattr(emb, "client", None)
         # 与 langchain 自己发出去的请求参数逐字一致：model、encoding_format、

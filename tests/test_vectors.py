@@ -200,3 +200,59 @@ def test_reset_cache_clears_the_extension_schema_too(cfg, vec_store, fake_embed)
     assert vectors._vec_ns, "查过一次之后应缓存下来"
     vectors.reset_cache()
     assert vectors._vec_ns is None
+
+
+# ------------------------------------------------------------------ 批量上限
+
+class _BatchLimitedClient:
+    """假的 embeddings client：**超过厂商上限就 400**，与百炼一致。
+
+    百炼不会替你截断，它直接拒绝整个请求，于是建索引每次都失败、链路每次都
+    回落关键词 —— 而回落之后一切"正常"，只有 note 里一行字。
+    """
+
+    LIMIT = 20
+
+    def __init__(self):
+        self.batches: list[int] = []
+
+    def create(self, input, **params):          # noqa: A002 —— 与 SDK 参数名一致
+        texts = list(input)
+        self.batches.append(len(texts))
+        if len(texts) > self.LIMIT:
+            raise RuntimeError(
+                "Error code: 400 - batch size is invalid, "
+                f"it should not be larger than {self.LIMIT}.: input.contents")
+        return {"data": [{"embedding": [float(len(t)), 0.1, 0.1]} for t in texts],
+                "usage": {"prompt_tokens": sum(len(t) for t in texts)}}
+
+
+def test_embedding_requests_are_split_to_the_vendor_batch_limit(cfg, monkeypatch):
+    """一次要嵌入整份白名单，条数由库的规模决定 —— 必须按厂商上限分批。
+
+    `_embedder()` 上的 chunk_size 管不到这条路：那是给 langchain 的
+    embed_documents 用的，而 _embed 为了拿真实 usage 直接调 client。
+    """
+    client = _BatchLimitedClient()
+    fake = type("E", (), {"client": client, "_invocation_params": {"model": "m"}})()
+    monkeypatch.setattr(vectors.VectorIndex, "_embedder", lambda self: fake)
+
+    idx = vectors.VectorIndex(cfg)
+    docs = [f"表 t{i}" for i in range(96)]
+    vecs, tokens = idx._embed(docs)
+
+    assert len(vecs) == 96, "分批之后条数与顺序都要还原成入参那一份"
+    assert vecs[0][0] == float(len(docs[0])) and vecs[-1][0] == float(len(docs[-1]))
+    assert client.batches and max(client.batches) <= _BatchLimitedClient.LIMIT
+    # 用量是各批之和，不是最后一批
+    assert tokens == sum(len(d) for d in docs)
+
+
+def test_small_batches_still_go_out_in_one_request(cfg, monkeypatch):
+    """分批不该把"本来一次就够"的调用拆成好几次 —— 每一次都是一趟网络往返。"""
+    client = _BatchLimitedClient()
+    fake = type("E", (), {"client": client, "_invocation_params": {"model": "m"}})()
+    monkeypatch.setattr(vectors.VectorIndex, "_embedder", lambda self: fake)
+
+    vectors.VectorIndex(cfg)._embed(["一", "二", "三"])
+    assert client.batches == [3]

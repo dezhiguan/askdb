@@ -578,11 +578,20 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     # 模型看得见 33 张表的表名时不会挑错，看不见时只能在给它的 3 张里硬凑。
     # 塞不进就如实说"这次是盲选"，让上层把不确定性透出去，而不是伪装成一次
     # 正常召回。§3.2.3「禁止全库注入」针对的是**常态**，不是这种召回失败的兜底。
-    if blind:
-        # 措辞跟着模式走：两种模式失败的**方式**不同，排查的下一步也不同。
+    # **降级也走这条兜底。** 盲选是"一张都没命中"，降级是"换了一档更粗的
+    # 召回"—— 后者照样能挑出几张表来，页面上一切正常，而挑错的那次会连
+    # "库里没有这类表"一起断言出去：实测 96 张表的源上问「商城里有几件商品」，
+    # 向量召回因厂商批量上限整个不可用、回落关键词后挑中了 mall_spec，
+    # 答案写着"本库无商品主表"，而 mall_goods 就在白名单里。
+    # 兜底代价与盲选那条一模一样（同一份 blind_budget），换回来的是模型
+    # 看得见全部表名 —— 这正是它挑不错的前提。
+    if blind or degraded_from:
+        # 措辞跟着模式走：三种失败的**方式**不同，排查的下一步也不同。
         # keyword 是词对不上（该加别名/注释），vector 是语义都不够近（该看
-        # 阈值或问法）。给一句放之四海的"召回失败"，等于让人自己去猜。
-        why = ("没有一张表的语义相似度达到阈值" if mode == "vector"
+        # 阈值或问法），降级是召回根本没按配置跑（该看 embedding 那条路）。
+        # 给一句放之四海的"召回失败"，等于让人自己去猜。
+        why = (f"{degraded_from} 召回不可用、已回落{mode}召回" if degraded_from and not blind
+               else "没有一张表的语义相似度达到阈值" if mode == "vector"
                else "关键词召回一张表都没命中")
         whole = _render(all_tables, metrics)
         if all_tables and _est_tokens(whole) <= blind_budget:
@@ -595,6 +604,12 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
             eff_budget = blind_budget
             said = (f"{why}，已改为把全部 {len(all_tables)} 张表"
                     f"交给模型自行判断（盲选兜底预算内）")
+        elif degraded_from and not blind:
+            # 降级但塞不下全量：这几张表**是**关键词挑出来的，不是兜底顺序，
+            # 说成"不是过线选出来的"会把人往错方向带。
+            said = (f"{why}，全部 {len(all_tables)} 张表塞不进兜底预算，"
+                    f"下列 {len(picked)} 张是按更粗的一档挑的，"
+                    "可能漏掉真正该用的那张；结果请核对 SQL")
         else:
             said = (f"{why}，下列 {len(picked)} 张表是按"
                     + ("相似度顺序" if mode == "vector" else "白名单顺序")
