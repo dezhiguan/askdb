@@ -477,6 +477,12 @@ auth:
       display_name: 陈嘉伟
       roles: [PRODUCT]
       password_hash: "scrypt$16384$8$1$XLoQr1kl3fXZlUm5EA2EPg==$VkbXmB3NQSwMF4SNkRHAf6TGpZzmYUKgJtnyva/KSlI="
+    # 2026-09-10 加，仿真测试账号（sim_accounts_200 首个，先落一个验证链路）。
+    - username: wangbo
+      display_name: 王波
+      roles: [DEV]
+      note: 技术研发 · 基础架构工程师 · 仿真测试
+      password_hash: "scrypt$16384$8$1$u6R9rfpTiRRmzVwrkmbu0A==$Ci3JyuInZ/0xVIHVUTu8KlU8+p0VbZy+9Pry16BGKnE="
 
 # ---------------------------------------------------------------------------
 # 身份与权限：角色成员名单
