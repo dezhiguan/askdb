@@ -50,9 +50,12 @@ BASE_TABLES = """\
 
 def test_loads_real_project_config():
     cfg = load(ROOT / "config" / "askdb.yaml")
-    assert "documents" in cfg.tables
+    # 2026-09-10 起入口配置不带内置语义层：数据源全部来自运行时注册表，
+    # 每个源的白名单跟着源存在 askdb_sources 表里，这里必须是空的 ——
+    # 有人把 tables_file 写回来，说明又出现了一份没人消费的"内置白名单"。
+    assert not cfg.has_default_source
+    assert cfg.tables == {} and cfg.metrics == []
     assert cfg.tenant_column == "org_id"
-    assert cfg.tenant_tables()
     assert cfg.max_rows > 0 and cfg.max_retry >= 0
     assert cfg.deny_functions
     assert cfg.audit_log.name.endswith(".jsonl")

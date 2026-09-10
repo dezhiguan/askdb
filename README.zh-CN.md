@@ -231,8 +231,8 @@ rollout、健康检查全绿，只有界面停在上一版 —— CI 因此自�
 | `config/askdb.yaml` | 本机开发实例。同样没有 datasource 段 —— 数据源来自运行时注册表 |
 | `config/sample.yaml` | 自带的 DuckDB 样例库，评测与故障注入跑的是这一份 |
 | `config/public.yaml` | 对外实例。**整段没有 datasource** —— 所有数据源都来自运行时注册表 |
-| `config/schemas/` | **表白名单与业务口径定义**，按数据源命名：`sample-*`（样例库）、`ragforge-dev-*`（本机 ragforge 库）、`ragforge-prod-*`（云上 ragforge 库） |
-| `evals/config/` | 冻结的评测配置（`ragforge-prod.yaml` 生产实测那一轮用的就是它，及其变体 `ragforge-eval.yaml`、`ragforge-tight.yaml`），留着是为了让已公开的那几轮还能复现 |
+| `config/schemas/` | **表白名单与业务口径定义**，按数据源命名（当前仅 `sample-*`）。入口配置 2026-09-10 起不再携带内置语义层 —— 数据源全部来自运行时注册表，白名单跟着源存在库里 |
+| `evals/config/` | 冻结的评测配置（`ragforge-prod.yaml` 生产实测那一轮用的就是它，及其变体 `ragforge-eval.yaml`、`ragforge-tight.yaml`）**连同它们引用的 ragforge 表白名单与口径**，自包含存放，留着是为了让已公开的那几轮还能复现 |
 
 白名单与口径这两份是准确率的决定因素，而不是提示词调优：
 
@@ -552,7 +552,7 @@ plan/assess 两次额外模型调用上）。判据是消融脚本里预先写�
    我据实测分布补入了六个**有区分度**的口径 —— 即"按定义算"与"凭直觉算"
    结果不同的那些。这是语义层本该做的事，但也意味着 D 组的增量部分来自
    "题目就是冲着口径出的"。退化口径一律未用于出题，理由与实测分布都写在
-   `config/schemas/ragforge-prod-metrics.yaml` 里。
+   `evals/config/ragforge-prod-metrics.yaml` 里。
 
 4. **同一配置两次跑结果不同。** `temperature: 0` 不保证确定性 —— 盲测第二、
    三次误拒率从 0% 变为 6.2%。所有单次数字都应视作带噪声的观测。

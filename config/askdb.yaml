@@ -147,8 +147,10 @@ observability:
   # 生产配置（ragforge*.yaml）仍按 100～200 从严。
   daily_quota: 3000
 
-tables_file: ./config/schemas/ragforge-dev-tables.yaml
-metrics_file: ./config/schemas/ragforge-dev-metrics.yaml
+# 有意不配 tables_file / metrics_file：这套部署没有内置数据源，
+# 每个运行时源的白名单跟着源存在 askdb_sources 表里（sources.derive_config
+# 按源派生护栏配置），入口配置留一份"内置语义层"只会误导人。
+# 没有任何数据源时查询直接被拒 —— 这是预期行为，不是缺配置。
 
 # 运行时添加只读数据源。开着的时候，服务端会按界面填入的地址主动建连 ——
 # askdb 不设账号体系，所以这等于把出站建连的能力交给任何能打开页面的人。

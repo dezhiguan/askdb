@@ -373,8 +373,11 @@ answer_cache:
   key_prefix: askdb:qcache:public
   # redis_url_env: 留空 —— 自动复用 observability.quota.redis_url_env
 
-tables_file: ./config/schemas/ragforge-prod-tables.yaml
-metrics_file: ./config/schemas/ragforge-prod-metrics.yaml
+# 有意不配 tables_file / metrics_file：本实例没有内置数据源（见文件开头），
+# 白名单与护栏按运行时源逐个派生（sources.derive_config）。
+# 代价说清楚：业务口径中心从此为空页 —— 口径定义只能由懂业务的人写，
+# 运行时源目前没有这一层；要恢复词典，先给主力源补一对
+# config/schemas/<源名>-tables/metrics.yaml 再把这两行写回来。
 
 # 2026-09-01 按 @guandezhi 决定放开。
 #
