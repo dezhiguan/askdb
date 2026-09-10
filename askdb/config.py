@@ -332,6 +332,20 @@ class Config:
         return int(self.raw["guard"]["max_rows"])
 
     @property
+    def metadata_timeout_ms(self) -> int:
+        """元数据扫描（接入向导列表、取字段）的时间预算。
+
+        与 guard.statement_timeout_ms 是两件事：那一条是 R-12，管**用户查询**
+        能跑多久；这一条管的是"问清这个库有哪些表"能等多久，代价跟库的规模
+        走。共用一个值的后果见 executor 里 metadata_window 的说明。
+
+        不配就是 20 秒 —— 老配置文件照旧能起，不必为了升级去改每一份。
+        20 而不是 30：入口 nginx 对这条路径的 proxy_read_timeout 是 30 秒，
+        配得比它大只会把一次可解释的超时换成一个 504。
+        """
+        return int(self.raw["guard"].get("metadata_timeout_ms", 20_000))
+
+    @property
     def max_retry(self) -> int:
         return int(self.raw["guard"]["max_retry"])
 
