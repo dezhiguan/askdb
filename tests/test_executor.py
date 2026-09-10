@@ -178,3 +178,58 @@ def test_enum_backfill_keeps_values_already_parsed_from_comments(monkeypatch):
     monkeypatch.setattr(backend, "connect", lambda: Conn(), raising=False)
     out = backend._attach_enums(["t"], grouped)
     assert out["t"][0]["enum"] == ["A", "B"]
+
+
+# ==========================================================================
+# 阻断项 / 警示项（2026-09-10）
+#
+# 账号姿态那几项从"一项不过就不许接入"降为"接入放行但一直红着"。
+# 这组用例钉的是**降级不等于消失**：标记还在、名字还出得来、开关能收回去。
+# ==========================================================================
+
+from askdb import executor as _ex          # noqa: E402  —— 与上面的用例分区放
+
+
+def _posture_fails(monkeypatch, cfg, names=("账号为只读",)):
+    """把某几项姿态检查打成失败，模拟拿高权账号接库。"""
+    def fake(self):
+        return [(n, n not in names, "假装的检查结果")
+                for n in ("账号为只读", "语句超时已设置", "连接数上限已设置")]
+
+    monkeypatch.setattr(_ex._DuckBackend, "env_checks", fake)
+    with Executor(cfg) as e:
+        return e.self_check()
+
+
+def test_account_posture_failure_does_not_block(cfg, monkeypatch):
+    checks = _posture_fails(monkeypatch, cfg)
+    assert _ex.blocking_failures(checks) == []
+    assert _ex.advisory_failures(checks) == ["账号为只读"]
+    # **仍然是 ✕**：允许接入与检查通过是两件事，界面按 ok 渲染
+    assert [c["ok"] for c in checks if c["name"] == "账号为只读"] == [False]
+
+
+def test_timeout_failure_still_blocks(cfg, monkeypatch):
+    """语句超时护的是**对方的库**，不是我们的账号姿态 —— 它不在降级之列。"""
+    checks = _posture_fails(monkeypatch, cfg, names=("语句超时已设置",))
+    assert _ex.blocking_failures(checks) == ["语句超时已设置"]
+
+
+def test_write_probe_always_blocks(cfg, monkeypatch):
+    """唯一不靠声明的那条证据：真发一条写语句，由引擎拒掉。
+    它永远阻断，strict 开关也管不着它。"""
+    monkeypatch.setattr(_ex._DuckBackend, "fetch",
+                        lambda self, sql, cap: ([], [], ""))   # 写没被拒
+    with Executor(cfg) as e:
+        checks = e.self_check()
+    probe = [c for c in checks if c["name"] == "写操作实探"][0]
+    assert not probe["ok"] and probe["blocking"]
+    assert "写操作实探" in _ex.blocking_failures(checks)
+
+
+def test_strict_switch_restores_the_old_behaviour(cfg, monkeypatch):
+    cfg.raw["datasources"] = {**cfg.raw.get("datasources", {}),
+                              "strict_account_check": True}
+    checks = _posture_fails(monkeypatch, cfg)
+    assert _ex.blocking_failures(checks) == ["账号为只读"]
+    assert _ex.advisory_failures(checks) == []

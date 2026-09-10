@@ -479,8 +479,12 @@ export interface Schema {
 }
 
 export interface SelfCheck {
+  /** 这里的 ok 是「**全部**检查都过」，与 Probe.ok（能不能接入）有意不同 ——
+   *  这个接口回答的就是"自检全过吗"。 */
   ok: boolean
-  checks: { name: string; ok: boolean; detail: string; ms?: number }[]
+  checks: { name: string; ok: boolean; detail: string; ms?: number; blocking?: boolean }[]
+  /** 没通过、但不阻断接入的项。 */
+  warnings?: { name: string; detail: string }[]
   /** 建连耗时。取不到连接时为 null —— 不要在界面上拿 0 冒充「很快」 */
   latency_ms: number | null
 }
@@ -624,8 +628,12 @@ export interface ScannedTable {
 }
 
 export interface Probe {
+  /** 能不能接入 —— 只看阻断项。账号姿态那几项没过时它仍是 true，
+   *  没通过的项在 warnings 里，界面必须一起显示，否则就成了一次"检查通过"。 */
   ok: boolean
-  checks: { name: string; ok: boolean; detail: string; ms?: number }[]
+  checks: { name: string; ok: boolean; detail: string; ms?: number; blocking?: boolean }[]
+  /** 没通过、但不阻断接入的项。空数组 = 全绿。 */
+  warnings?: { name: string; detail: string }[]
   /** 建连耗时（握手 + 认证）。连不上时为 null —— 不要在界面上拿 0 冒充「很快」 */
   latency_ms: number | null
   /** 检查那一刻库里实际可见的表数。与 SourceCard.table_count 比对即可看出漂移 */

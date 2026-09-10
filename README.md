@@ -304,14 +304,42 @@ All three share one connection-string syntax (`host=… port=… dbname=… user
 password never goes in it. MySQL TLS reuses the PostgreSQL keys: `sslmode=require`, or
 `sslmode=verify-ca|verify-full` with `sslrootcert=…`.
 
-MySQL needs a **SELECT-only account**, the same posture as `askdb_ro` on the PostgreSQL side —
-three self-checks test exactly this, so connecting as `root` is refused:
+A **SELECT-only account** is recommended, the same posture as `askdb_ro` on the
+PostgreSQL side:
 
 ```sql
 CREATE USER 'askdb_ro'@'%' IDENTIFIED BY '…';
 GRANT SELECT ON pet.* TO 'askdb_ro'@'%';
-ALTER USER 'askdb_ro'@'%' WITH MAX_USER_CONNECTIONS 5;   -- the self-check wants > 0
+GRANT USAGE ON *.* TO 'askdb_ro'@'%' WITH MAX_USER_CONNECTIONS 5;
 ```
+
+### Privileged accounts (root / superuser)
+
+**They are admitted, but never shown as clean.** The self-check splits in two, by what
+each item actually proves:
+
+| | Items | Proves | On failure |
+|---|---|---|---|
+| **Blocking** | reachability & auth · **write probe** · statement timeout | this connection cannot write *right now*, and we will not flatten the target database | registration refused |
+| Advisory | account is read-only · connection limit · not a superuser · whitelist visibility | the account *should not* be able to write (posture, not present capability) | admitted, but the row stays ✕, the API returns `warnings`, and the card reads "有告警" |
+
+The write probe is the only item that does not rely on a declaration — it really issues
+`DELETE … WHERE 1=0` and the engine must reject it (MySQL error 1792). So root still
+cannot write: the session-level read-only transaction holds, and the probe re-verifies on
+every registration. What is missing is the second line of defence if that layer is ever
+bypassed, so production databases should still use a read-only account. Set
+`datasources.strict_account_check: true` to make the advisory items blocking again.
+
+Two guardrails were added alongside, both reachable only by privileged accounts:
+
+- `SELECT … INTO OUTFILE / DUMPFILE` — a write wearing a SELECT's name, targeting the
+  *server's filesystem*, so the read-only transaction does not stop it. Now rejected by a
+  text scan *before* parsing, attributed to R-02. Previously it was blocked only because
+  sqlglot happened not to parse it.
+- Locking reads (`FOR UPDATE` / `LOCK IN SHARE MODE` / `FOR SHARE`) — they change nothing
+  but block writers on the target database. `FOR UPDATE` is refused by the engine in a
+  read-only transaction (1792); **`LOCK IN SHARE MODE` is not** (verified), and a locking
+  read over a large table blocks writers until the statement timeout fires.
 
 ---
 

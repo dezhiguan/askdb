@@ -129,6 +129,11 @@ def _direct_tables(select: exp.Select) -> list[tuple[exp.Table, exp.Join | None]
     return out
 
 
+#: 顶着 SELECT 名字的写操作。只认 MySQL 这两种写法 —— PostgreSQL 的
+#: `COPY … TO PROGRAM` 不是 SELECT，AST 那一层（R-02）本来就拦得住。
+_WRITES_FILE = re.compile(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", re.I)
+
+
 def referenced_tables(sql: str, dialect: str = "duckdb") -> set[str]:
     """这条 SQL 引用到的真实表（不含 CTE 别名）。
 
@@ -223,6 +228,20 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb",
                        "深层嵌套仅解析就可能占满 CPU，已在解析前拒绝。",
             )
 
+    # ---------- R-02 写文件的 SELECT ----------
+    # 放在解析**之前**：`SELECT … INTO OUTFILE '/var/lib/mysql-files/x'` 是一条
+    # 写操作，但它顶着 SELECT 的名字 —— 语句类型白名单按 AST 判，判不出它。
+    # 当前 sqlglot 恰好解析不了这个语法，于是它被 R-01 挡着；**那是运气,不是护栏**：
+    # 解析器哪天支持了它，这条路就自己开了，而且会归因成"语法没问题"。
+    # 会话级只读事务也拦不住它（写的是服务器文件系统，不是表），
+    # 账号有 FILE 权限时就是一次落地写 —— 允许高权账号接入之后，这条必须自己拦。
+    if _WRITES_FILE.search(sql):
+        return GuardResult(
+            ok=False, rejected_by="R-02",
+            reason="禁止 INTO OUTFILE / INTO DUMPFILE：它顶着 SELECT 的名字，"
+                   "写的却是数据库服务器上的文件",
+        )
+
     # ---------- R-01 单语句限制 ----------
     try:
         stmts = sqlglot.parse(sql, dialect=dialect)
@@ -242,6 +261,17 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb",
         return GuardResult(
             ok=False, rejected_by="R-02",
             reason=f"只允许 SELECT / WITH…SELECT，实际是 {type(root).__name__.upper()}",
+        )
+
+    # 加锁读同样归 R-02：它不改数据，但会在**对方生产库**上加锁挡住写入。
+    # FOR UPDATE 在只读事务里会被引擎拒（实测 1792），LOCK IN SHARE MODE
+    # **不会** —— 共享锁在只读事务里合法，一条扫大表的加锁读能把对方的写堵到
+    # 语句超时为止。只读分析永远不需要加锁，所以这里一律拒，不区分锁型。
+    for lock in root.find_all(exp.Lock):
+        return GuardResult(
+            ok=False, rejected_by="R-02",
+            reason="禁止加锁读（FOR UPDATE / LOCK IN SHARE MODE / FOR SHARE）："
+                   "只读查询不需要加锁，而锁会挡住这个库上的写入",
         )
 
     ctes = _cte_names(root)

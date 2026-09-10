@@ -374,6 +374,12 @@ metrics_file: ./config/ragforge-prod-metrics.yaml
 #   2. 未配 ASKDB_SECRET_KEY 时不接受明文口令，只能填环境变量名（sources.py）
 datasources:
   allow_runtime_add: true
+  # 账号姿态那几项（账号为只读 / 连接数上限 / 无写权限）要不要**阻断**接入。
+  # 默认 false：拿 root 一类的高权账号接库要能做成，没过的项由界面
+  # 一直摆着（自检行 ✕ + 卡片「有告警」+ 接口 warnings）。
+  # 打开则恢复成"一项不过就不许接入"。**无论取什么值，写操作实探
+  # 永远阻断** —— 它真发一条写语句由引擎拒掉，是唯一不靠声明的证据。
+  strict_account_check: false
   # 2026-09-08 加：**不带 source 的调用落到哪个库**，由部署方在这里指定。
   #
   # 在此之前它由注册顺序决定 —— 界面回落到列表第一个，服务端则直接拒绝。

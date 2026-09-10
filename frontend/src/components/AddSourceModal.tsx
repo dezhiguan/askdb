@@ -183,6 +183,17 @@ export function AddSourceModal({ meta, onClose, onDone }: {
                 </>
               )}
 
+              {probe && (probe.warnings?.length ?? 0) > 0 && (
+                <div className="audit-error warn-banner">
+                  <b>这个连接可以用，但账号姿态没过：</b>
+                  <ul>
+                    {probe.warnings!.map(w => <li key={w.name}>{w.name} —— {w.detail}</li>)}
+                  </ul>
+                  只读事务与「写操作实探」仍然把着，写不进去；但账号本身有写权限时，
+                  少的是那一层被绕开时的兜底。生产库请改用只授 SELECT 的账号。
+                </div>
+              )}
+
               {probe && probe.checks.length > 0 && (
                 <div className="check-list">
                   {probe.checks.map(item => (

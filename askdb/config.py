@@ -258,6 +258,18 @@ class Config:
                 "mysql": "mysql"}[self.db_type]
 
     @property
+    def strict_account_check(self) -> bool:
+        """接入自检里的**账号姿态**项要不要阻断接入。
+
+        默认 false：拿一个高权账号（root / superuser）接库这件事要能做成，
+        由界面把没过的项一直摆着。设为 true 恢复成"一项不过就不许接入"。
+
+        无论开关取什么值，**实证那一项（写操作实探）永远阻断** ——
+        它真发一条写语句、由引擎拒掉，是这条链路上唯一不靠声明的证据。
+        """
+        return bool(self.raw.get("datasources", {}).get("strict_account_check", False))
+
+    @property
     def tenant_enabled(self) -> bool:
         """是否做租户隔离。
 

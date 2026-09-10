@@ -73,6 +73,9 @@
 .card-status { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font: 7px var(--mono); }
 .card-status.off { color: var(--amber); }
 .card-status.bad { color: var(--red); }
+/* 连得上、但接入自检里有没通过的项。**与红的不可用必须分开**：一个高权账号
+   接进来的源照样查得动，标成不可用会把人支去查一条根本不存在的连接故障 */
+.card-status.warn { color: var(--amber); }
 /* 从未检查过 —— 既不是好也不是坏，别用绿灯或红灯替它表态 */
 .card-status.idle { color: var(--muted); }
 .online { width: 6px; height: 6px; border-radius: 50%; background: var(--green-2); box-shadow: 0 0 0 3px rgba(44,179,110,.12); }
@@ -160,6 +163,13 @@
   color: var(--red);
   font-size: 8px;
 }
+
+/* 「可以用，但账号姿态没过」走琥珀而不是红：红条的含义是"这条路走不通",
+   而这里走得通 —— 用红色说它，人只会去找一个并不存在的故障。
+   放在 .audit-error 之后覆写，是为了复用那一块的排版尺寸 */
+.warn-banner { border-color: #d7b995; background: var(--amber-wash); color: var(--ink-2); }
+.warn-banner ul { margin: 5px 0; padding-left: 15px; }
+.warn-banner li { margin: 2px 0; }
 
 /* 成本那格可点开分布，做成按钮而不是给 div 挂 onClick —— 键盘能聚焦、读屏能念 */
 

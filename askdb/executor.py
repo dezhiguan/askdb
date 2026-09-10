@@ -93,6 +93,39 @@ def parse_kv_dsn(dsn: str, *, keep_password: bool = False) -> dict[str, str]:
     return out
 
 
+#: **警示项** —— 不过也允许接入，但必须一直红着。
+#:
+#: 判据是"这一项证明的是什么"：
+#:
+#:   · 「写操作实探」证明的是**这条连接现在写不了** —— 真发一条 DELETE，
+#:     由引擎拒掉。它是实证，所以它阻断。
+#:   · 下面这几项证明的是**这个账号本来就不该写**（授权、连接数上限）。
+#:     那是姿态，不是当下的能力。姿态不合格的账号仍然写不进去（会话级只读
+#:     事务 + 实探把着），只是万一那层被绕开时没有第二道兜底。
+#:
+#: 2026-09-10 按 @guandezhi 的决定从阻断降为警示：拿 root 接一个库这件事
+#: 要能做成。**但它绝不静默** —— 自检行照旧显示 ✕，接口另出一份 warnings，
+#: 卡片上是「有告警」而不是「正常」。要恢复成阻断，配置里打开
+#: datasources.strict_account_check。
+ADVISORY_CHECKS: frozenset[str] = frozenset({
+    "账号为只读",
+    "连接数上限已设置",
+    "非超级账号且无写权限",     # MySQL
+    "非超级用户且不绕过 RLS",    # PostgreSQL
+    "授权表集合",               # 白名单与库不一致：该改白名单，不是拒绝这个库
+})
+
+
+def blocking_failures(checks: list[dict[str, Any]]) -> list[str]:
+    """没过的**阻断项**名字。空列表 = 可以接入（可能仍有警示）。"""
+    return [c["name"] for c in checks if not c["ok"] and c.get("blocking", True)]
+
+
+def advisory_failures(checks: list[dict[str, Any]]) -> list[str]:
+    """没过的警示项名字。接入放行，但界面必须把它们摆出来。"""
+    return [c["name"] for c in checks if not c["ok"] and not c.get("blocking", True)]
+
+
 @dataclass
 class ExplainResult:
     est_rows: int | None
@@ -1098,8 +1131,15 @@ class Executor:
         """
         checks: list[dict[str, Any]] = []
 
+        strict = self.cfg.strict_account_check
+
         def add(name: str, ok: bool, detail: str, **extra: Any) -> None:
-            checks.append({"name": name, "ok": ok, "detail": detail, **extra})
+            # blocking 跟着**每一项**走，不是全局开关：调用方据此决定"能不能存"，
+            # 而界面照旧按 ok 显示 ✓/✕ —— 两件事分开，才不会出现
+            # "允许接入" 被渲染成 "检查通过"。
+            checks.append({"name": name, "ok": ok, "detail": detail,
+                           "blocking": strict or name not in ADVISORY_CHECKS,
+                           **extra})
 
         t0 = time.perf_counter()
         try:

@@ -18,6 +18,19 @@ const TYPE_NAME: Record<string, string> = { duckdb: 'DuckDB', postgresql: 'Postg
  *  四处都靠它 —— 本次会话刚测过就用本地这份，否则退回后端落盘的上一次。 */
 type CardProbe = { ok: boolean; latency: number | null; visible: number | null; at: Date }
 
+/** 这次检查到底是「连不上」还是「连得上但有告警」。
+ *
+ *  两者都记成 last_ok=false，卡片上却不能都写「不可用」—— 一个高权账号接进来的
+ *  源照样查得动，标成不可用会把人支去查一条根本不存在的连接故障。
+ *
+ *  判据是延迟有没有值：那个数只有在**真的连上并跑完检查**时才写得进去
+ *  （建连失败时 record_probe 不带 latency）。有意不为此新增表字段 ——
+ *  askdb_sources 没有迁移机制，加列会在旧表上把读路径打崩。
+ *  哪几项在告警，点「测试连接」看，那里逐项列。 */
+function reachable(p: CardProbe): boolean {
+  return p.ok || p.latency != null
+}
+
 /** 后端落盘的上一次检查。从没检查过返回 null —— 这时候该显示「未检查」，
  *  不是假设它是好的。 */
 function lastProbe(card: SourceCard): CardProbe | null {
@@ -284,7 +297,9 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
           // 没检查过就如实说没检查过，不拿绿灯替它担保。
           // 连不上排在「待配置」前面：一个既没勾表又连不上的源，先要解决的
           // 是连不上；显示成「待配置」会把人支去勾表，而那一步根本进行不下去
-          const statusClass = probe && !probe.ok ? 'bad' : pending ? 'off' : probe ? '' : 'idle'
+          const warned = probe != null && !probe.ok && reachable(probe)
+          const statusClass = probe && !probe.ok && !warned ? 'bad'
+            : warned ? 'warn' : pending ? 'off' : probe ? '' : 'idle'
           // 白名单里有表在库里已经不见了：库改了结构而白名单没跟上，
           // 这时候查询会撞在自检的「授权表集合」上，得在卡片上先看得见
           const drift = probe?.visible != null && probe.visible < card.table_count
@@ -293,7 +308,8 @@ export function DataSourcesPage({ health, me }: { health: HealthState; me: Me | 
               <div className="source-top">
                 <i className="db-icon">{TYPE_MARK[card.type] ?? card.type.slice(0, 2).toUpperCase()}</i>
                 <span className={`card-status ${statusClass}`}>
-                  {probe && !probe.ok ? '● 不可用'
+                  {probe && !probe.ok && !warned ? '● 不可用'
+                    : warned ? <span title="连得上，但接入自检里有没通过的项；点「测试连接」看是哪几项">● 有告警</span>
                     : pending ? '● 待配置'
                     : probe ? <><i className="online" /> 正常</>
                     : '● 未检查'}
