@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>askdb 审计复放 · 失败与回退可视化设计 V1.0</title>
+<title>askdb 审计复放 · 失败与回退可视化设计 V1.2</title>
 <style>
   :root{
     --bg:#efece6; --card:#fff; --line:#e6e1d8; --line2:#f0ece4;
@@ -46,7 +46,9 @@
   .conf{position:absolute;top:22px;right:26px;display:flex;align-items:center;gap:8px;
         background:var(--bad-bg);color:var(--bad);border:1px solid #f0d6d3;
         border-radius:999px;padding:5px 13px;font-size:12.5px;font-weight:600}
-  .conf small{font-weight:500;opacity:.8}
+  .conf{background:#f6f4ef;color:var(--ink2);border-color:var(--line)}
+  .conf .deg{background:var(--bad-bg);color:var(--bad);border:1px solid #f0d6d3;
+             border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:600}
 
   .banner{margin:0 26px 20px;border:1px solid #f0dcc4;background:#fdf6ea;border-radius:11px;padding:13px 16px}
   .banner .bt{font-size:12px;font-weight:700;color:var(--warn);letter-spacing:.6px;margin-bottom:9px}
@@ -157,11 +159,11 @@
 
   <dl class="meta">
     <div><dt>拟制日期</dt><dd>2026-09-10</dd></div>
-    <div><dt>版本</dt><dd>V1.0</dd></div>
+    <div><dt>版本</dt><dd>V1.2</dd></div>
     <div><dt>最近修订</dt><dd>2026-09-10</dd></div>
     <div><dt>拟制</dt><dd>官德志（架构）</dd></div>
     <div><dt>适用范围</dt><dd>审计复放 · Trace 详情页</dd></div>
-    <div><dt>状态</dt><dd>待评审</dd></div>
+    <div><dt>状态</dt><dd>已落地</dd></div>
   </dl>
 
   <h2 class="sh"><span class="num">1</span>问题</h2>
@@ -180,7 +182,7 @@
     <div class="hd">
       <h3>修复后验证1450知识库一共有多少个</h3>
       <div class="sub">caee4828f2e2 · <span class="st">PARTIAL — 含 1 次工具失败 / 1 次模型回退</span> · RETRY ×1</div>
-      <div class="conf">可信度 低 <small>· 降级链路</small></div>
+      <div class="conf">可信度 67 <span class="deg">链路降级</span></div>
     </div>
 
     <div class="banner">
@@ -309,23 +311,54 @@
       <li><b>模型格显示回退链而非终态。</b>主体显示实际产出模型，下方标注 <code>⇄ 回退自 &lt;主模型&gt;</code>，主模型名加删除线，格子带橙色下划线作为可扫视信号。</li>
       <li><b>工具调用格拆出成败。</b>次数之下补 <code>n 失败 · m 降级</code>；耗时与 Token 同步区分「有效」与「重试废弃」，避免用总数掩盖返工成本。</li>
       <li><b>顶部异常横幅只在非纯净链路出现。</b>三条事实句给出：哪个环节失败、回退到什么、代价是什么。纯净链路不渲染该区块，日常不增加噪音。</li>
-      <li><b>空结果与上游降级联判。</b>只读执行返回 0 行时，若链路上存在 <code>FAILED/DEGRADED</code>，标为 <code>EMPTY</code> 并在输出摘要中明确不可判定为无数据；可信度徽标随之从「—」降为「低 · 降级链路」。</li>
+      <li><b>空结果与上游降级联判。</b>只读执行返回 0 行时一律标 <code>EMPTY</code>；若链路上还存在 <code>FAILED/DEGRADED</code>，在输出摘要与顶部横幅中明确「不可判定为无数据」。<b>可信度徽标不动</b>，另挂一枚「链路降级」角标 —— 理由见下节。</li>
     </ol>
   </div>
 
-  <h2 class="sh"><span class="num">4</span>前置依赖与风险</h2>
+  <h2 class="sh"><span class="num">4</span>与可信度分的边界</h2>
+  <p class="lead">
+    本设计成稿时，追踪页那枚角标还是写死的「可信度 —」。落地当天该版位已被另一条线做成<b>真打分</b>
+    （<code>frontend/src/trust.ts</code>，通过率模型：分数 = 通过项 / 适用项，每项都是链路记下的事实，
+    明确拒绝加权扣分）。本设计因此改为<b>不动那个分</b>，在它旁边另挂一枚「链路降级」角标。两条理由：
+  </p>
+  <div class="panel" style="margin-bottom:14px">
+    <ol class="numbered">
+      <li><b>把降级折成扣几分，等于给通过率模型塞一个没有出处的权重。</b>「回退扣 10 分」的 10 从哪来说不清，
+        而该模型正是为了避开这种数字才写成通过率的。</li>
+      <li><b>降级角标说的是事实，不是判断。</b>「主模型超时切了备选」能从 span 上逐字读出来，
+        它不需要先被折算成一个分数才成立。</li>
+    </ol>
+  </div>
   <div class="risk">
-    <div class="rl">阻塞项 · 上线前必须查明</div>
-    <p>本设计假设后端<b>真的保留了失败尝试的 Span</b>。若现有 trace 在重试成功后覆盖写同一条 Span，则失败记录根本不存在于库中，前端无论怎么改都渲染不出来 —— 阶段一必须先确认写入侧行为，再动前端。</p>
+    <div class="rl">遗留缺口 · 需另行定夺</div>
+    <p><b>可信度分目前判不到回退与降级。</b><code>trust.ts</code> 那六项取自审计记录的字段
+    （截断 / 重试次数 / 脱敏降级 / 召回盲选 / 结果行数），主模型切备选、向量召回回落<b>只留在 span 上，一项都不占</b>。
+    于是会出现「可信度 100 + 链路降级」并排的组合 —— 两枚角标各自都没说错，但读的人有权问这个 100 是怎么来的。
+    要闭合的话，自然的做法是给 <code>resultChecks</code> 增加「模型未回退」「Schema 召回未降级」两项，
+    由 span 派生后与既有六项同权计入分母。本设计<b>不擅自改动</b>该模块 —— 它由另一条线在迭代，口径变更应由其定夺。</p>
+  </div>
+
+  <h2 class="sh"><span class="num">5</span>前置依赖与风险</h2>
+  <div class="risk">
+    <div class="rl">阻塞项 · 已查实（V1.1 回填）</div>
+    <p>本设计假设后端<b>真的保留了失败尝试的 Span</b>。查实结果比预估更深：回退与重试<b>整个发生在 <code>LlmClient</code> 内部</b>，Tracer 在外面只拿得到最后返回的那个结果 —— 主模型超时、切备选、切成功，三件事在审计里一件都不剩，不是被覆盖，是从来没写过。<br>
+    连带查出一处更硬的缺陷：审计记录里的 <code>model</code> 直接取 <code>cfg.llm["model"]</code>，即配置声明的主模型。切备选跑完，库里照样记着主模型 —— 页面看不出回退只是表象，<b>存下来的那条记录本身就是错的</b>，按模型分摊的成本也跟着记到了没出活的那个头上。</p>
   </div>
   <p class="lead">
-    Span 记录需具备的字段：<code>attempt</code>（第几次尝试 / 共几次）、<code>status</code>（五元枚举）、
-    <code>error_code</code>、<code>error_message</code>（原样保留，前端截断）、<code>disposition</code>（重试 / 回退 / 熔断 / fail-open）、
-    <code>model</code>（每次尝试各自记录，而非整条链路一个）、<code>tokens_wasted</code>。
-    其中 <code>disposition</code> 与 <code>tokens_wasted</code> 为新增，其余需核对是否已有。
+    Span 记录实际落的字段：<code>attempt</code> / <code>attempts_total</code>（第几次尝试 / 共几次）、
+    <code>status</code>（三档口径，见下）、<code>error_code</code>（厂商状态码，取不到才退回异常类名）、
+    <code>disposition</code>（切备选 / 就地重试 / 回落备用路径），以及<b>按次记的</b> <code>model</code>。
+    原始错误消息复用既有的 <code>note</code> 字段，<b>不在后端截断</b> —— 截了就再也拿不回来，截断交给前端。
+    <br>
+    <b>废弃 token 不另设字段</b>：失败的那条 span 自己带着这次真实烧掉的 <code>tok_in/tok_out</code>，
+    成功那条只记它自己的。前端把失败 span 的 token 加起来就是废弃量 —— 多一个冗余字段，
+    就多一处会和 span 对不上的地方。
+    <br>
+    落盘时零值字段一律省掉（沿用 <code>tables</code> 既有做法）：绝大多数步骤只跑一次、没失败，
+    每条审计凭空多五个键，乘上几十万条不是小事。
   </p>
 
-  <h2 class="sh"><span class="num">5</span>分阶段落地</h2>
+  <h2 class="sh"><span class="num">6</span>分阶段落地</h2>
   <div class="panel">
     <div class="phase">
       <h3><span class="p">阶段一</span>写入侧留痕<span class="d">2026-09-11 ~ 2026-09-16</span></h3>
@@ -349,16 +382,20 @@
       <h3><span class="p">阶段三</span>空结果联判与可信度口径<span class="d">2026-09-24 ~ 2026-09-30</span></h3>
       <ul>
         <li>零行结果与上游降级联判，落 <code>EMPTY</code> 状态。</li>
-        <li>可信度徽标接入降级因子，降级链路不得给出高可信度。</li>
+        <li>非纯净链路挂「链路降级」角标，悬停说明降在哪几处（不改动可信度分，理由见第 4 节）。</li>
         <li>回归：覆盖工具失败、模型回退、零行、纯净四类链路各一条。</li>
       </ul>
     </div>
   </div>
 
-  <h2 class="sh"><span class="num">6</span>修订记录</h2>
+  <h2 class="sh"><span class="num">7</span>修订记录</h2>
   <table class="doc" style="border:1px solid var(--line);border-radius:12px;overflow:hidden">
     <thead><tr><th style="width:90px">版本</th><th style="width:120px">日期</th><th>修订内容</th></tr></thead>
     <tbody>
+      <tr><td class="mono">V1.2</td><td class="mono">2026-09-10</td>
+          <td>落地当天追踪页可信度版位已被另一条线做成真打分（<code>trust.ts</code> 通过率模型）。本设计据此改为不动那个分、另挂「链路降级」角标，并新增第 4 节交代边界与遗留缺口：<b>该分数目前判不到回退与降级</b>，会出现「可信度 100 + 链路降级」并排。</td></tr>
+      <tr><td class="mono">V1.1</td><td class="mono">2026-09-10</td>
+          <td>按落地结果回填两处。其一：可信度徽标不改判为「低 · 降级链路」，改为另挂「链路降级」角标 —— 不打分的版位不该借降级之名填一个分数进去。其二：阻塞项已查实且比预估更深 —— 回退整个发生在 <code>LlmClient</code> 内部，Tracer 从来看不到失败的尝试；且审计记录里的 <code>model</code> 写的是配置声明的主模型，切备选跑完仍记主模型，<b>库里存的本来就是错的</b>，按模型分摊的成本一并记错。</td></tr>
       <tr><td class="mono">V1.0</td><td class="mono">2026-09-10</td>
           <td>首版。定义 Span 五元状态枚举、模型回退链呈现、工具成败拆分、异常横幅与空结果联判，给出三阶段落地路径与写入侧字段要求。</td></tr>
     </tbody>

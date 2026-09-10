@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -15,7 +17,8 @@ from .config import Config
 from .quota import QuotaExceeded, build_quota
 from .trace import call_cost_cny
 
-__all__ = ["LlmClient", "LlmNotConfigured", "LlmUsage", "SqlDraft", "QuotaExceeded"]
+__all__ = ["LlmAttempt", "LlmClient", "LlmNotConfigured", "LlmUsage", "SqlDraft",
+           "QuotaExceeded"]
 
 
 class LlmNotConfigured(RuntimeError):
@@ -163,6 +166,48 @@ class LlmUsage:
         self.cost_cny = round(self.cost_cny + other.cost_cny, 6)
 
 
+def _err_code(exc: BaseException) -> str:
+    """把异常折成一个能放进表格一列的短码。
+
+    优先用厂商自己给的状态码 —— 「HTTP 429」和「HTTP 504」是两回事，前者
+    该退避重试、后者该换模型，折成同一个异常类名就分不出来了。取不到再退回
+    从消息里抠三位数字（openai 客户端把它写成 "Error code: 429 - {...}"），
+    都没有才用类名。**不编码**：宁可给个类名，也不猜一个看起来很像的数字。
+    """
+    for attr in ("status_code", "http_status", "code"):
+        v = getattr(exc, attr, None)
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, int):
+            return f"HTTP {v}"
+        if isinstance(v, str) and v.strip():
+            return v.strip()[:32]
+    m = re.search(r"[Ee]rror code:\s*(\d{3})", str(exc))
+    if m:
+        return f"HTTP {m.group(1)}"
+    return type(exc).__name__
+
+
+@dataclass
+class LlmAttempt:
+    """**一次真实的厂商调用**。
+
+    这是本次改造的地基：回退与重试原本整个发生在 LlmClient 内部，
+    Tracer 在外面只看得到最后返回的那个结果 —— 主模型超时、切备选、
+    切成功，三件事在审计里一件都不剩。把每次尝试都记下来，
+    上层才有东西可落 span。
+    """
+
+    model: str
+    status: str = "ok"              # ok | failed
+    ms: int = 0
+    error_code: str = ""
+    error_message: str = ""
+    disposition: str = ""           # 失败后做了什么
+    is_fallback: bool = False       # 这次尝试是不是备选模型出的
+    usage: LlmUsage = field(default_factory=LlmUsage)
+
+
 class LlmClient:
     """主模型 + 可选备选模型。
 
@@ -170,12 +215,16 @@ class LlmClient:
     不在"生成的 SQL 不对"时切换 —— 那是反思重试该干的事，两者不要混。
     """
 
-    def __init__(self, cfg: Config, llm_cfg: dict | None = None, is_fallback: bool = False):
+    def __init__(self, cfg: Config, llm_cfg: dict | None = None, is_fallback: bool = False,
+                 journal: list[LlmAttempt] | None = None):
         self.cfg = cfg
         self.llm_cfg = llm_cfg if llm_cfg is not None else cfg.llm
         self.is_fallback = is_fallback
         self._model = None
         self._fallback: LlmClient | None = None
+        # 主客户端与备选客户端**共用同一本流水**：备选是主模型失败后的下一次
+        # 尝试，两者属于同一步，分开记就拼不回"先谁后谁"。
+        self._journal: list[LlmAttempt] = [] if journal is None else journal
         # 配额扣在这里，而不是请求入口：一次提问会触发多次模型调用
         # （多步规划每步生成 + 每步评估 + 反思重试），按请求计数会大幅低估花费。
         self.quota = build_quota(cfg)
@@ -200,8 +249,39 @@ class LlmClient:
             spec = {"model": spec}
         merged = {**{k: v for k, v in self.llm_cfg.items() if k != "fallback"}, **spec}
         if self._fallback is None:
-            self._fallback = LlmClient(self.cfg, llm_cfg=merged, is_fallback=True)
+            self._fallback = LlmClient(self.cfg, llm_cfg=merged, is_fallback=True,
+                                       journal=self._journal)
         return self._fallback
+
+    # ---- 调用流水 ----
+
+    def take_attempts(self) -> list[LlmAttempt]:
+        """取走并清空本步的尝试流水。
+
+        **每个调用点都必须取一次**，包括抛异常的分支：不取的话，这一步失败的
+        尝试会顺延到下一个节点被取走，落成挂在别人名下的 span。
+        """
+        out = list(self._journal)
+        self._journal.clear()
+        return out
+
+    def _note_ok(self, t0: float, usage: LlmUsage) -> None:
+        self._journal.append(LlmAttempt(
+            model=self.model_name, status="ok", is_fallback=self.is_fallback,
+            ms=int((time.perf_counter() - t0) * 1000), usage=usage,
+        ))
+
+    def _note_fail(self, t0: float, exc: BaseException, disposition: str,
+                   usage: LlmUsage | None = None) -> None:
+        self._journal.append(LlmAttempt(
+            model=self.model_name, status="failed", is_fallback=self.is_fallback,
+            ms=int((time.perf_counter() - t0) * 1000),
+            error_code=_err_code(exc),
+            # 原始消息原样留着，截断交给前端 —— 在这里截就再也拿不回来了
+            error_message=str(exc),
+            disposition=disposition,
+            usage=usage or LlmUsage(),
+        ))
 
     @property
     def model_name(self) -> str:
@@ -262,10 +342,13 @@ class LlmClient:
         model = self._build().with_structured_output(
             schema, method="function_calling", include_raw=True
         )
+        t0 = time.perf_counter()
         try:
             out = model.invoke([("system", system), ("human", human)])
         except Exception as primary_err:
             fb = self._fallback_client()
+            self._note_fail(t0, primary_err,
+                            f"切备选模型 {fb.model_name} 重试" if fb else "无备选模型，链路终止")
             if fb is None:
                 raise
             try:
@@ -275,10 +358,15 @@ class LlmClient:
                     f"主模型 {self.model_name} 调用失败：{primary_err}；"
                     f"备选 {fb.model_name} 也失败：{fb_err}"
                 ) from primary_err
+        usage = _usage_of(out, self.llm_cfg)
         parsed = out["parsed"] if isinstance(out, dict) else out
         if parsed is None:
+            err = RuntimeError("模型未按结构化格式返回")
+            # 没产出也照记 token：这次调用真的花了钱，抛异常不是不计费的理由
+            self._note_fail(t0, err, "无重试，链路终止", usage=usage)
             raise RuntimeError("模型未按结构化格式返回，请重试或更换模型。")
-        return parsed, _usage_of(out, self.llm_cfg)
+        self._note_ok(t0, usage)
+        return parsed, usage
 
     def generate_sql(
         self,
@@ -312,10 +400,13 @@ class LlmClient:
             human = USER.format(schema=schema_prompt, question=question,
                                 step=step, now=now)
 
+        t0 = time.perf_counter()
         try:
             out = model.invoke([("system", system), ("human", human)])
         except Exception as primary_err:
             fb = self._fallback_client()
+            self._note_fail(t0, primary_err,
+                            f"切备选模型 {fb.model_name} 重试" if fb else "无备选模型，链路终止")
             if fb is None:
                 raise
             # 主模型不可用时兜底一次。失败原因串在一起抛出，便于定位到底是谁挂了。
@@ -338,12 +429,27 @@ class LlmClient:
             # 本可自愈的抖动变成了一次失败。就地重试一次，仍失败才抛。
             # 重试是**又一次真实的厂商调用**，用量照记、配额照扣 ——
             # 与切备选模型同理，不扣就等于失败重试不要钱。
+            self._note_fail(t0, RuntimeError("模型未按结构化格式返回"),
+                            "同模型就地重试一次", usage=usage)
             self._reserve()
-            retry_out = model.invoke([("system", system), ("human", human)])
+            t1 = time.perf_counter()
+            try:
+                retry_out = model.invoke([("system", system), ("human", human)])
+            except Exception as retry_err:
+                self._note_fail(t1, retry_err, "就地重试也失败，链路终止")
+                raise
             draft = retry_out["parsed"] if isinstance(retry_out, dict) else retry_out
-            usage.add(_usage_of(retry_out, self.llm_cfg))
+            retry_usage = _usage_of(retry_out, self.llm_cfg)
+            usage.add(retry_usage)
             if draft is None:
+                self._note_fail(t1, RuntimeError("模型连续两次未按结构化格式返回"),
+                                "已重试一次仍失败，链路终止", usage=retry_usage)
                 raise RuntimeError("模型连续两次未按结构化格式返回，请稍后重试或更换模型。")
+            # 救回来了。**这一条只记重试那次的用量** —— 被废弃的那次已经由
+            # 上面那条 failed 各自记着，成功这条再记一遍就是把返工的账算两遍。
+            self._note_ok(t1, retry_usage)
+            return draft, usage
+        self._note_ok(t0, usage)
         return draft, usage
 
 

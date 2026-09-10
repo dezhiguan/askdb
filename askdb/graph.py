@@ -14,6 +14,7 @@ P0 为单步链路；plan / assess 两个节点与重规划回边在 P5 补齐�
 from __future__ import annotations
 
 import sqlite3
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -222,6 +223,101 @@ def _decimal_str(v: Decimal) -> str:
 
 
 # --------------------------------------------------------------------------
+@dataclass
+class _LlmSpan:
+    """模型这一步**最终那次尝试**的落账口径。
+
+    只描述最终那次，不是全部尝试之和 —— 之和已经由失败的那几条 span 各自
+    记着了，成功那条再记一遍就是把返工的账算两遍。
+    """
+
+    status: str = "ok"
+    model: str = ""
+    ms: int | None = None       # None ＝ 没有可信的单次耗时，退回按节点起点算
+    attempt: int = 0
+    attempts_total: int = 0
+    tok_in: int = 0
+    tok_out: int = 0
+    cached_in: int = 0
+    cost_cny: float = 0.0
+
+
+def _llm_spans(d: Deps, step: str, usage: Any = None) -> _LlmSpan:
+    """把这一步模型的**每次尝试**落成独立 span，返回最终那次的落账口径。
+
+    失败的尝试在这里就地落条，各带自己的错误码、处置与真实烧掉的 token。
+    成功那次不在这里落 —— 它还要带业务 note（"生成 1 条 SELECT"、"判定单步
+    可答"），只有调用方知道该写什么。
+
+    **每个模型调用点都要调一次，异常分支也不例外。** 不调的话，这一步失败的
+    尝试会顺延到下一个节点被取走，落成挂在别人名下的 span —— 那比不记还坏。
+
+    usage 是调用方拿到的合计用量，只在流水为空时兜底（理论上不该发生，
+    但宁可退回旧口径，也不要在成功的链路上把 token 记成 0）。
+    """
+    # 记流水是 LlmClient 的**可选能力**，不进 generate_sql/structured 那份
+    # 核心契约：不记流水的实现（测试替身、将来别的模型客户端）就按"只跑了
+    # 一次"处理，退回改造前那种一步一条 span 的口径 —— 那仍然是真的，只是
+    # 少了返工的细节。要求每个替身都实现它，换来的只是一堆为观测而写的空方法。
+    take = getattr(d.llm, "take_attempts", None)
+    attempts = take() if callable(take) else []
+    total = len(attempts)
+    # 只跑一次就成的步骤不写 attempt/attempts_total —— 每条审计凭空多两个
+    # 键，乘上几十万条不是小事，而"1/1"本身不含信息。
+    n_total = total if total > 1 else 0
+    # 没有流水就**不填 model**：这一步到底是谁应答的，此时并不知道。
+    # 从配置里的主模型名顶上去正是这次要修的那个 bug —— 切了备选照样记主模型。
+    # 空着，_audit_of 会退回旧口径，那至少是"没记"而不是"记错"。
+    final = _LlmSpan(attempts_total=n_total)
+    if usage is not None:
+        final.tok_in, final.tok_out = usage.input_tokens, usage.output_tokens
+        final.cached_in, final.cost_cny = usage.cached_input_tokens, usage.cost_cny
+    for i, a in enumerate(attempts, 1):
+        if a.status == "ok":
+            final = _LlmSpan(
+                # 被重试或备选救回来的产出**不是 ok**。这一条正是页面上
+                # "看不出降级"的那半张脸：一次就成与救回来一次，原来在
+                # 状态列上是同一个字。
+                status="fallback" if total > 1 else "ok",
+                model=a.model, ms=a.ms,
+                attempt=i if total > 1 else 0, attempts_total=n_total,
+                tok_in=a.usage.input_tokens, tok_out=a.usage.output_tokens,
+                cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
+            )
+            continue
+        d.tracer.add(
+            step, 0.0, a.error_message, status="failed", ms=a.ms,
+            attempt=i if total > 1 else 0, attempts_total=n_total,
+            model=a.model, error_code=a.error_code, disposition=a.disposition,
+            tok_in=a.usage.input_tokens, tok_out=a.usage.output_tokens,
+            cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
+        )
+    return final
+
+
+def _sp_kw(sp: _LlmSpan, status: str = "") -> dict[str, Any]:
+    """摊成 tracer.add 的关键字参数。status 非空时按调用方的判定覆盖 ——
+    业务上判失败（如"不足以作答"）与模型调用本身成没成，是两件事。"""
+    kw: dict[str, Any] = {
+        "ms": sp.ms, "status": sp.status, "model": sp.model,
+        "attempt": sp.attempt, "attempts_total": sp.attempts_total,
+        "tok_in": sp.tok_in, "tok_out": sp.tok_out,
+        "cached_in": sp.cached_in, "cost_cny": sp.cost_cny,
+    }
+    if status:
+        kw["status"] = status
+    return kw
+
+
+def _upstream_degraded(d: Deps) -> bool:
+    """本次链路在这一步之前是否已经失败或降级过。
+
+    给"返回 0 行"用：零行本身是执行成功，但如果 Schema 召回回落过、模型
+    是被备选救回来的，这个 0 就不能当成"确实没有数据"来读。
+    """
+    return any(st.status in ("failed", "degraded", "fallback") for st in d.tracer.steps)
+
+
 # 节点
 # --------------------------------------------------------------------------
 
@@ -236,7 +332,23 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         note += f"；因 token 预算裁掉 {'、'.join(r.truncated)}"
     if r.note:
         note += f"；{r.note}"
-    d.tracer.add("schema_recall", t, note, tables=r.table_names)
+    # 回落是一次**失败 + 一次降级产出**，不是一次成功。原来两件事都被压进
+    # 上面那句 note 的尾巴里，状态列照记 ok —— 配置声明 vector、实际每次都在
+    # 跑 keyword，线上这么跑了两天没人看得出来（schema_rag 模块开头那段）。
+    if r.degraded_from:
+        d.tracer.add("schema_recall", t,
+                     f"{r.degraded_from} 召回不可用：{r.degrade_error}", status="failed",
+                     ms=r.degrade_ms, error_code=r.degrade_code,
+                     # model 那一列只放模型名。召回模式不是模型，塞进去会在
+                     # Span 表的「尝试 · xxx」里显示成一个并不存在的模型。
+                     disposition=f"回落 {r.mode} 召回（fail-open，不中断链路）")
+        # 减掉失败那次自己烧的时间：两条 span 加起来要等于这个节点的真实耗时，
+        # 各记一遍全节点就成了凭空多出来的一截。
+        node_ms = int((time.perf_counter() - t) * 1000)
+        d.tracer.add("schema_recall", t, note, status="degraded",
+                     ms=max(0, node_ms - r.degrade_ms), tables=r.table_names)
+    else:
+        d.tracer.add("schema_recall", t, note, tables=r.table_names)
     return {
         "schema_prompt": r.prompt,
         "tables_hit": r.table_names,
@@ -273,14 +385,20 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
                     history=planner.render_history(state.get("steps_done") or []),
                     carry=planner.render_carry(state.get("carry") or {})))
     except QuotaExceeded as e:
+        _llm_spans(d, "plan")
         d.tracer.add("plan", t, str(e), status="blocked")
         return {"error": str(e), "error_hint": "明日自动恢复。直查 SQL 不受配额限制。",
                 "rejected_by": "QUOTA"}
     except Exception as e:
+        # 先落每次尝试，再落这条收尾。主模型与备选都挂了时，页面上要看得到
+        # **是谁挂了、各报了什么码**，而不是只有一句拼起来的"规划失败"。
+        _llm_spans(d, "plan")
         d.tracer.add("plan", t, f"规划失败：{e}", status="failed")
         return {"error": f"规划失败：{e}",
                 "error_hint": "检查网络与密钥；也可关闭 planner.enabled 退回单步。",
                 "rejected_by": "LLM"}
+
+    sp = _llm_spans(d, "plan", usage)
 
     # 重规划时模型给不出目标 —— 按设计不得就此收敛。
     #
@@ -296,16 +414,13 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         fallback = (state.get("next_goal") or "").strip()
         if fallback:
             d.tracer.add("plan", t, f"重规划未给出目标，沿用结果评估的判定：{fallback}",
-                         tok_in=usage.input_tokens, tok_out=usage.output_tokens,
-                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
+                         **_sp_kw(sp))
             # 不要动 step_no —— 它由 assess 递增，这里再加一次就成了双重递增
             return {"goal": fallback, "multi_step": True, **_spent(state, usage),
                     "attempt": 0, "sql_raw": "", "error": None, "enough": False}
         # 连 assess 都没说清缺什么 —— 此时继续下去也是空转，如实收敛并标注
         d.tracer.add("plan", t, "重规划与结果评估均未给出下一步，收敛作答",
-                     status="failed",
-                     tok_in=usage.input_tokens, tok_out=usage.output_tokens,
-                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
+                     **_sp_kw(sp, status="failed"))
         return {"enough": True, "goal": "", **_spent(state, usage),
                 "converged_early": "结果评估判定不足，但未能给出下一步目标"}
 
@@ -313,8 +428,7 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         note = ("判定需多步：" + plan.reason) if plan.multi_step else ("判定单步可答：" + plan.reason)
     else:
         note = f"第 {step_no + 1} 步目标：{plan.goal}"
-    d.tracer.add("plan", t, note, tok_in=usage.input_tokens, tok_out=usage.output_tokens,
-                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
+    d.tracer.add("plan", t, note, **_sp_kw(sp))
     return {"multi_step": bool(plan.multi_step) if first else state.get("multi_step", False),
             "goal": plan.goal or "", "enough": False, **_spent(state, usage)}
 
@@ -371,13 +485,18 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             today=_today(d.cfg),
         )
     except LlmNotConfigured as e:
+        _llm_spans(d, "generate_sql")
         d.tracer.add("generate_sql", t, "未配置模型密钥", status="failed")
         return {"error": str(e), "error_hint": "配置密钥后重试", "rejected_by": "LLM"}
     except QuotaExceeded as e:
+        _llm_spans(d, "generate_sql")
         d.tracer.add("generate_sql", t, str(e), status="blocked")
         return {"error": str(e), "error_hint": "明日自动恢复。直查 SQL 不受配额限制。",
                 "rejected_by": "QUOTA"}
     except Exception as e:
+        # 主模型与备选各自的错误码、耗时、处置先落条，再落这条收尾 ——
+        # 只留一句拼接的"模型调用失败"，事后分不出该退避重试还是该换模型。
+        _llm_spans(d, "generate_sql")
         d.tracer.add("generate_sql", t, f"模型调用失败：{e}", status="failed")
         return {
             "error": f"模型调用失败：{e}",
@@ -385,7 +504,12 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             "rejected_by": "LLM",
         }
 
+    sp = _llm_spans(d, "generate_sql", usage)
     label = "生成 1 条 SELECT" if attempt == 0 else f"第 {attempt + 1} 轮重新生成"
+    if sp.status == "fallback":
+        # 谁出的活要写在摘要里。状态列那个 FALLBACK 说明"被救回来了"，
+        # 但救场的是哪个模型，只有这里说得清。
+        label += f"（由 {sp.model} 产出）"
     # **先判有没有 SQL，再落节点**。反过来写的话（这里原来就是反的），模型一条
     # SQL 都没给出来时，节点上照样记着"生成 1 条 SELECT · ok" —— 任务收尾是
     # NO_SQL、节点却显示成功，工具健康度那张表因此永远看不到这类失败，
@@ -393,9 +517,8 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     # 真的花了钱，没产出 SQL 不是不计费的理由。
     if not (draft.sql or "").strip():
         why = (draft.reasoning or "模型判断当前表结构无法回答该问题。").strip()
-        d.tracer.add("generate_sql", t, f"未生成 SQL：{why}", status="failed",
-                     tok_in=usage.input_tokens, tok_out=usage.output_tokens,
-                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
+        d.tracer.add("generate_sql", t, f"未生成 SQL：{why}",
+                     **_sp_kw(sp, status="failed"))
         return {
             "error": draft.reasoning or "模型判断当前表结构无法回答该问题。",
             "error_hint": _no_sql_hint(draft.reasoning or ""),
@@ -403,8 +526,7 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             "reasoning": draft.reasoning,
             **_spent(state, usage),
         }
-    d.tracer.add("generate_sql", t, label, tok_in=usage.input_tokens, tok_out=usage.output_tokens,
-                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
+    d.tracer.add("generate_sql", t, label, **_sp_kw(sp))
     return {"sql_raw": draft.sql, "reasoning": draft.reasoning,
             "error": None, "rejected_by": None, **_spent(state, usage)}
 
@@ -568,7 +690,15 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     empty = _empty_note(res, state.get("sql_final", ""))
     if empty:
         note += f"；{empty}"
-    d.tracer.add("execute", t, note)
+    # 执行成功但零行 —— 不是 ok，也不是失败。原来它记成 ok，于是"查不到"
+    # 与"确实是 0"在状态列上同样看不出区别（note 里那句提醒是自由文本，
+    # 统计与筛选都够不着）。
+    status = "empty" if res.row_count == 0 else "ok"
+    if res.row_count == 0 and _upstream_degraded(d):
+        # 上游降级过的零行尤其不能当成"没有数据"来读：召回回落之后，
+        # 该查的表可能压根没进模型的视野。
+        note += "；本次链路上游存在失败或降级，零行不可直接判定为无数据"
+    d.tracer.add("execute", t, note, status=status)
     return {
         "columns": [str(c) for c in res.columns],
         "rows": [[jsonable(v) for v in row] for row in res.rows],
@@ -635,31 +765,30 @@ def _n_assess(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     except QuotaExceeded as e:
         # 额度在多步途中用尽：已经跑出来的步骤是有效的，基于它们收敛作答，
         # 并如实标注为什么停在这里 —— 比丢掉已花掉的钱重来一次好。
+        _llm_spans(d, "assess")
         d.tracer.add("assess", t, str(e), status="blocked")
         return {**base, "enough": True, "converged_early": str(e)}
     except Exception as e:
+        _llm_spans(d, "assess")
         d.tracer.add("assess", t, f"评估失败，按足够处理：{e}", status="failed")
         return {**base, "enough": True}
 
+    sp = _llm_spans(d, "assess", usage)
     if a.enough:
-        d.tracer.add("assess", t, f"足以作答 ✓ {a.reason}",
-                     tok_in=usage.input_tokens, tok_out=usage.output_tokens,
-                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
+        d.tracer.add("assess", t, f"足以作答 ✓ {a.reason}", **_sp_kw(sp))
         return {**base, "enough": True, "carry": {}, **_spent(state, usage)}
 
     ok, why = planner.carry_within_limit(a.carry, d.cfg)
     if not ok:
         # R-15：下传规模超限往往说明上一步筛选本身有问题
-        d.tracer.add("assess", t, f"{why}，收敛作答（R-15）", status="blocked",
-                     tok_in=usage.input_tokens, tok_out=usage.output_tokens,
-                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
+        d.tracer.add("assess", t, f"{why}，收敛作答（R-15）",
+                     **_sp_kw(sp, status="blocked"))
         return {**base, "enough": True, "converged_early": why, **_spent(state, usage)}
 
     carried = "、".join(f"{k}={v}" for k, v in a.carry.items()) or "无"
     d.tracer.add("assess", t, f"不足以作答 → 重规划（第 {step_no}/{state.get('max_steps')} 步）"
                               f"；下传 {carried}",
-                 status="failed", tok_in=usage.input_tokens, tok_out=usage.output_tokens,
-                     cached_in=usage.cached_input_tokens, cost_cny=usage.cost_cny)
+                 **_sp_kw(sp, status="failed"))
     return {**base, "enough": False, "carry": a.carry, **_spent(state, usage),
             # 判"还不够"的人最清楚缺什么 —— 目标由 assess 给出，
             # plan 在模型说不出话时据此兜底，而不是推翻 assess 的判定
@@ -1003,13 +1132,31 @@ def _scope_note(out: dict[str, Any]) -> str:
             "或申请高成本查询审批。")
 
 
+def _answering_model(steps: Any) -> str:
+    """这次链路里**真正出活**的那个模型。
+
+    取最后一条成功的模型 span 上记的 model：多步链路里判定/生成/自检可能
+    分别落在不同模型上（其中一次切了备选），而审计只有一个 model 字段，
+    最后出活的那个是最贴近"这条答案是谁给的"的口径。
+    一条都没有（直查、命中缓存、老记录）就返回空串，交给调用方兜底。
+    """
+    for st in reversed(list(steps or [])):
+        if st.get("status") in ("ok", "fallback") and st.get("model"):
+            return str(st["model"])
+    return ""
+
+
 def _audit_of(result: AskResult, cfg: Config, kind: str,
               explain_rows: Any = None) -> dict[str, Any]:
     """审计记录统一在这里成形 —— ask / resume / 中断三条路共用一个形状。"""
     return {
         "trace_id": result.trace_id, "ts": now_iso(), "kind": kind,
         "thread_id": result.thread_id,
-        "model": cfg.llm.get("model"),
+        # **实际应答的模型**，不是配置里声明的主模型。原来这里直接写
+        # cfg.llm["model"]，主模型超时切备选跑完，审计里照样记着主模型 ——
+        # 页面看不出回退只是表象，库里存的本来就是错的，按模型分摊的成本
+        # 也跟着记到了没出活的那个头上。
+        "model": _answering_model(result.steps) or cfg.llm.get("model"),
         "org_id": result.org_id, "question": result.question,
         # 结果出自谁的可见范围 —— 少了它，同一个问题在不同角色下拿到不同行数，
         # 事后无从解释

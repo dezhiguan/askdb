@@ -38,12 +38,38 @@ export const STEP_TYPE: Record<string, string> = {
   interrupted: 'SYS',
 }
 
-/** 这一步是不是失败了。
+/** 有产出、但不是主路径的产出 —— 与后端 trace.SOFT_STATUSES 同一份口径。
+ *
+ *  这三个值是这一版加的。在此之前状态列实际只有一个取值 `ok`，于是两类
+ *  信息一起丢了：主模型超时切备选、被救回来的那条链路，和一次就成的干净
+ *  链路长得一模一样；向量召回回落关键词这种"跑成了但能力降级了"，也只能
+ *  算成成功。它们既不是 ok，也不该算失败，所以自成一档。 */
+const SOFT_STATUSES: ReadonlySet<string> = new Set(['fallback', 'degraded', 'empty'])
+
+/** 这一步是不是**硬失败**。
  *
  *  **不能拿 `status === 'ok'` 反推失败**：命中应答缓存那一步的 status 是 hit，
  *  它是一次正常收尾。按等于 ok 判，链路上唯一那个节点会渲染成红框、状态列
  *  标红 —— 一次零耗时的成功命中，在页面上长得像一次挂掉的调用。
+ *  SOFT 档同理：把 fallback 算失败，模型被备选救回来时成功率反而下跌；
+ *  把 empty 算失败，一次如实返回零行的查询会变成故障。
  *  以后再加别的非 ok 成功态，也只改这一处。 */
-export const stepFailed = (status: string): boolean => status !== 'ok' && status !== 'hit'
+export const stepFailed = (status: string): boolean =>
+  status !== 'ok' && status !== 'hit' && !SOFT_STATUSES.has(status)
+
+/** 这一步有产出但不走主路径 —— 页面上给橙色，不给红色也不给绿色。 */
+export const stepSoft = (status: string): boolean => SOFT_STATUSES.has(status)
+
+/** 状态列的中文解释。表格里显示的仍是大写英文（照原型），这句进 title。 */
+export const STATUS_HINT: Record<string, string> = {
+  ok: '按主路径完成',
+  hit: '命中应答缓存，未跑模型',
+  fallback: '由备选模型或重试救回来的产出',
+  degraded: '有产出，但能力低于主路径',
+  empty: '执行成功但返回零行',
+  failed: '这一步没有产出',
+  blocked: '被规则拦下',
+  skipped: '本次未执行',
+}
 
 export const KIND_NAMES: Record<string, string> = { ask: '提问', sql: '直查', resume: '续跑' }

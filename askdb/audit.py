@@ -23,6 +23,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .trace import step_failed
+
 # 下面这些入口（list_audits / tasks / stats / quality / get_audit / resumable）
 # 的第一个参数既可以是审计文件的 Path，也可以是 Config —— 由 read_records 决定
 # 读库还是读文件（2026-09-09 起生产读 PostgreSQL）。它们自己不碰存储，只是把
@@ -1110,7 +1112,11 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
         for st in (r.get("steps") or []):
             if st.get("step") in MODEL_STEPS:
                 model_calls += 1
-                if st.get("status") != "ok":
+                # 按三档口径判，不是"等于 ok"。切备选成功那条 span 的状态是
+                # fallback —— 按等于 ok 判，模型一旦被备选救回来，成功率反而
+                # 往下掉；而它真正的失败（那次超时）现在自己就是一条 span，
+                # 不需要再从成功的这条身上找补。
+                if step_failed(str(st.get("status") or "")):
                     model_failed += 1
 
         d0 = _day_of(str(r.get("ts", "")), tz)
@@ -1445,7 +1451,7 @@ def _nodes_of(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             e = nodes.setdefault(
                 name, {"calls": 0, "ok": 0, "ms": [], "tok": 0, "fail_notes": Counter()})
             e["calls"] += 1
-            if st.get("status") == "ok":
+            if not step_failed(str(st.get("status") or "")):
                 e["ok"] += 1
             else:
                 # 失败原因取这一步自己的 note —— 设计稿那张表最右列问的是

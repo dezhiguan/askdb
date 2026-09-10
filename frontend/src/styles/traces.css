@@ -269,3 +269,90 @@
 
 @media (max-width: 900px) {
 }
+
+/* ---------- 失败与回退的可见性 ----------
+ *
+ * 这一段全部是**只在链路没按主路径跑完时才出现**的版位：干净链路上
+ * 一个像素都不多。原因见 TracesPage 的 chainHealth —— 在此之前页面
+ * 渲染的是链路终态，被重试救回来的失败没有任何痕迹，一条降级完成的
+ * 链路和一条干净链路长得一模一样。
+ */
+.trace-detail-head .trace-badges { display: flex; align-items: center; gap: 5px; flex: none; }
+
+/* 顶部横幅。三句以内，每句对应一条真实 span，不做归因也不给建议 */
+.chain-banner {
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--line);
+  background: #fdf6ea;
+}
+.chain-banner > strong { display: block; margin-bottom: 6px; color: var(--amber); font-size: 7px; }
+.chain-banner ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.chain-banner li {
+  position: relative;
+  padding-left: 9px;
+  color: #5b4a30;
+  font: 7px var(--mono);
+  line-height: 1.5;
+  word-break: break-word;
+}
+.chain-banner li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 5px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+.chain-banner li b { color: #4a3a22; }
+
+/* 六格里的第二行小字。有代价才出现，没返工就不占位 */
+.trace-detail .trace-fact small {
+  display: block;
+  margin-top: 2px;
+  font: 6px var(--mono);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.trace-detail .trace-fact small.bad { color: var(--red); }
+.trace-detail .trace-fact small.warn { color: var(--amber); }
+/* 模型格换过人时给一道下划线 —— 这一格的值与配置里声明的不是同一个，
+   要在扫视时就看得出来，而不是等人去读底下那行小字 */
+.trace-detail .trace-fact strong.swap { color: var(--amber); box-shadow: inset 0 -2px 0 #e8c48a; }
+
+/* 链路条：软降级给琥珀，硬失败沿用原来的红 */
+.trace-detail .trace-node { position: relative; }
+.trace-detail .trace-node.soft { border-color: #d7b995; background: var(--amber-wash); }
+.trace-detail .trace-node.soft small { color: var(--amber); }
+.trace-detail .trace-node .retry-badge {
+  position: absolute;
+  top: -5px;
+  right: 4px;
+  padding: 1px 4px;
+  border-radius: 99px;
+  background: var(--red);
+  color: #fff;
+  font: 700 5px var(--mono);
+  font-style: normal;
+}
+
+/* Span 表 */
+.span-table td.warn { color: var(--amber); font-weight: 800; }
+.span-table .span-attempt {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font: 6px var(--mono);
+  font-style: normal;
+}
+/* 失败详情：默认展开，不再折一层 —— 这一行存在的全部理由就是把
+   错误码、原始消息与处置摆出来，折起来等于没记 */
+.span-table tr.span-error td { background: #fdf4f3; border-left: 2px solid #e5b3ae; }
+.span-table tr.span-error dl { margin: 0; display: flex; flex-direction: column; gap: 3px; }
+.span-table tr.span-error dl > div { display: grid; grid-template-columns: 44px 1fr; gap: 8px; }
+.span-table tr.span-error dt { color: var(--muted); font: 6px var(--mono); }
+.span-table tr.span-error dd { margin: 0; font: 6px var(--mono); color: var(--ink-2); word-break: break-word; }
+.span-table tr.span-error code { color: var(--red); background: var(--red-wash); border-radius: 3px; padding: 1px 4px; }

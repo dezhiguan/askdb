@@ -204,6 +204,18 @@ export interface ReplayStep {
    *  数字，召回偏了与召回对了在那个数字上一模一样，要判断得看是**哪几张**。
    *  其余步骤不带这个字段（后端省掉空列表）。 */
   tables?: string[]
+  /** 这一步的第几次尝试 / 共几次。**失败的尝试各占一条 step**，不被成功的
+   *  那次覆盖。只跑一次的步骤不带这两个字段（后端省掉零值）。 */
+  attempt?: number
+  attempts_total?: number
+  /** 实际应答的模型，按次记 —— 主模型超时切备选时，这两条 step 上的
+   *  model 不是同一个，而链路级那个 model 字段只有一个。 */
+  model?: string
+  /** 失败时的厂商错误码或异常类名。有值即代表这一步失败过。 */
+  error_code?: string
+  /** 失败后做了什么：切备选、就地重试、回落备用路径。没有它，一条 failed
+   *  只说明"这里断过"，说不清链路是怎么活下来的。 */
+  disposition?: string
 }
 
 export interface ReplaySnapshot {
