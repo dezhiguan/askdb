@@ -65,6 +65,13 @@ agent:
   max_steps: 6                       # R-16 循环步数上限（工具调用次数），超则收敛
   cost_cap_tokens: 12000             # R-17 累计 token 上限，未配则沿用 planner.cost_cap_tokens
 
+# Skill 层 —— 领域方法论/口径（askdb/skill.py）。通用规则内置且始终注入；
+# 这里追加**数据源特定口径**（无需改码），与通用规则一并进 LLM 系统提示。
+# skill:
+#   rules:
+#     - "JD 文档数按 documents.chunk_type='JD' 判定，不是 file_type"
+#     - "营收口径以 finance.revenue 为准，排除 status='REFUNDED' 的订单"
+
 schema_rag:
   # 本机测试实例走全量注入：32 张表整体约 3178 token，成本可接受，且召回这一维
   # 被固定住，测别的东西时不会被它干扰。

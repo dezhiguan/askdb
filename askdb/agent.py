@@ -22,7 +22,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from . import planner, tools
+from . import planner, skill, tools
 from .config import Config
 from .executor import Executor
 from .graph import AskResult
@@ -134,6 +134,21 @@ def _fmt_args(args: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _render_specs() -> str:
+    """把只读工具规格渲染成可读列表，注入 AGENT_SYSTEM。"""
+    lines = []
+    for s in tools.tool_specs():
+        params = "，".join(f"{k}（{v}）" for k, v in s["params"].items())
+        lines.append(f"- {s['name']}：{s['summary']}。参数：{params}")
+    return "\n".join(lines)
+
+
+def _sys(base: str, cfg: Config) -> str:
+    """系统提示 = 基底 + Skill 方法论口径（可信的来源，见 skill.py）。"""
+    block = skill.render(cfg)
+    return f"{base}\n\n{block}" if block else base
+
+
 def _budget(cfg: Config) -> tuple[int, int]:
     a = cfg.raw.get("agent", {}) or {}
     pl = cfg.raw.get("planner", {}) or {}
@@ -199,7 +214,7 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
     t = tracer.start()
     try:
         intent, u = client.structured(
-            IntentCheck, INTENT_SYSTEM,
+            IntentCheck, _sys(INTENT_SYSTEM, cfg),
             INTENT_USER.format(schema=schema_prompt, question=question))
     except QuotaExceeded as e:
         tracer.add("intent", t, str(e), status="blocked")
@@ -225,6 +240,7 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
                        reasoning=intent.clarify)
 
     # 3) 自主循环
+    agent_system = _sys(AGENT_SYSTEM.format(tools=_render_specs()), cfg)
     history: list[dict[str, Any]] = []
     last_exec: dict | None = None
     answer = ""
@@ -239,7 +255,7 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
             history=_render_history(history), steps_left=max_steps - step + 1)
         t = tracer.start()
         try:
-            action, u = client.structured(AgentAction, AGENT_SYSTEM, human)
+            action, u = client.structured(AgentAction, agent_system, human)
         except QuotaExceeded as e:
             tracer.add("decide", t, str(e), status="blocked")
             converged = "配额耗尽，收敛"
