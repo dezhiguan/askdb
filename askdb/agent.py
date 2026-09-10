@@ -23,12 +23,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from . import planner, skill, tools
+from .audit import PHASE_STARTED
 from .config import Config
 from .executor import Executor
-from .graph import AskResult
+from .graph import AskResult, _audit_of
 from .llm import LlmClient, LlmUsage
 from .quota import QuotaExceeded, build_quota
-from .trace import Tracer
+from .trace import Tracer, now_iso, write_audit
 
 
 # --------------------------------------------------------------------------
@@ -183,7 +184,24 @@ def _result(cfg: Config, question: str, trace_id: str, thread_id: str, org: int,
 def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
               executor: Executor | None = None, llm: LlmClient | None = None,
               trace_id: str | None = None, thread_id: str | None = None) -> AskResult:
-    """自主决策循环入口。返回与 graph.ask 同一套 AskResult。"""
+    """自主决策循环入口。返回与 graph.ask 同一套 AskResult，并写审计（收尾）。
+
+    审计是任务中心 / 复核队列 / replay 的共同数据源：它们都从审计记录派生
+    （audit.tasks / audit.needs_review），所以 agent 链路一旦如实写审计，这三样
+    立刻复用现网机制，无需各造一套。
+    """
+    result = _drive(question, cfg, org_id, executor=executor, llm=llm,
+                    trace_id=trace_id, thread_id=thread_id)
+    try:                                  # 审计不该成为查询失败的原因
+        write_audit(cfg, _audit_of(result, cfg, "ask"))
+    except Exception:
+        pass
+    return result
+
+
+def _drive(question: str, cfg: Config, org_id: int | None = None, *,
+           executor: Executor | None = None, llm: LlmClient | None = None,
+           trace_id: str | None = None, thread_id: str | None = None) -> AskResult:
     trace_id = trace_id or uuid.uuid4().hex[:12]
     thread_id = thread_id or trace_id
     org = org_id if org_id is not None else int(cfg.raw.get("tenant", {}).get("default_ctx", 0) or 0)
@@ -197,6 +215,19 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
         return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
                        rejected_by="QUOTA", error=f"已达当日模型调用上限（{used}/{dq.limit}）",
                        hint="明日自动恢复；直查 SQL 不受配额限制。")
+
+    # 发起记录先落盘：进程中途被杀时检查点/审计里仍有这条线程，任务中心据此
+    # 列得出、凭 thread_id 续得上（与 _execute 同一处理）。它只带"这条线程存在、
+    # 归谁、打哪个库、问的什么"，收尾记录到时共用 trace_id 顶掉它。
+    try:
+        write_audit(cfg, {
+            "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
+            "phase": PHASE_STARTED, "thread_id": thread_id, "org_id": org,
+            "question": question, "role": cfg.role or "ANONYMOUS", "user": cfg.user or "",
+            "source": cfg.source_id or "builtin", "source_name": cfg.source_name or cfg.path,
+        })
+    except Exception:
+        pass
 
     ex = executor or Executor(cfg)
     client = llm or LlmClient(cfg)
