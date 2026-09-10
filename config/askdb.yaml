@@ -64,6 +64,8 @@ agent:
   enabled: false
   max_steps: 6                       # R-16 循环步数上限（工具调用次数），超则收敛
   cost_cap_tokens: 12000             # R-17 累计 token 上限，未配则沿用 planner.cost_cap_tokens
+  async_after_ms: 8000               # 墙钟软阈值：同步等这么久还没完就转后台异步（§2）
+                                     # 短任务同步直返；长任务转任务中心。0 = 立即异步
 
 # Skill 层 —— 领域方法论/口径（askdb/skill.py）。通用规则内置且始终注入；
 # 这里追加**数据源特定口径**（无需改码），与通用规则一并进 LLM 系统提示。
