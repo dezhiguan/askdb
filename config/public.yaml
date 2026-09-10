@@ -472,6 +472,11 @@ auth:
       roles: [PRODUCT, DEV, QA, DESIGN]
       note: 平台负责人
       password_hash: "scrypt$16384$8$1$/KvNKD5fh4sCZ4f0dVywTw==$elUkPBeIHNa+F25GjPl07qYCtYA+/cz+It9DNkCa0xE="
+    # 2026-09-10 加。
+    - username: chenjiawei
+      display_name: 陈嘉伟
+      roles: [PRODUCT]
+      password_hash: "scrypt$16384$8$1$XLoQr1kl3fXZlUm5EA2EPg==$VkbXmB3NQSwMF4SNkRHAf6TGpZzmYUKgJtnyva/KSlI="
 
 # ---------------------------------------------------------------------------
 # 身份与权限：角色成员名单
