@@ -547,21 +547,26 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
  *      按缺省值判会一律满分 —— 那是把"没记"读成"没发生"
  */
 function TrustBadge({ item, chain }: { item: AuditItem; chain: TraceChain | null }) {
-  const na = (why: string) => (
-    <span className="status wait" title={why}>可信度 {NA}</span>
+  // 不打分时，**原因写在角标上**而不是只留一个 —。一个没有分数又不说
+  // 为什么的角标读起来就是"这块坏了"，看的人会去翻链路找一个根本不存在的分。
+  const na = (label: string, why: string) => (
+    <span className="status wait" title={why}>{label}</span>
   )
   if (!item.ok) {
-    return na(item.rejected_by === 'INTERRUPTED'
-      ? '这次执行中断，没有产出结果，无从判可信度'
-      : `这次被 ${item.rejected_by ?? '护栏'} 拦下，没有产出结果，无从判可信度`)
+    return item.rejected_by === 'INTERRUPTED'
+      ? na('未出结果 · 已中断', '这次执行中断，没有产出结果，无从判可信度')
+      : na(`未出结果 · ${item.rejected_by ?? '被拦下'}`,
+           `这次被 ${item.rejected_by ?? '护栏'} 拦下，SQL 没有在数据库上执行，`
+           + '没有产出结果，无从判可信度')
   }
   if (item.cached ?? chain?.cached) {
-    return na('答案来自应答缓存，可信度看首跑那条链路（下方「命中缓存」一行可跳转）')
+    return na('可信度 · 见首跑',
+              '答案来自应答缓存，可信度看首跑那条链路（下方「命中缓存」一行可跳转）')
   }
-  if (!chain) return na('节点链还没取到')
+  if (!chain) return na(`可信度 ${NA}`, '节点链还没取到')
   const traced = [chain.truncated, chain.scope_narrowed,
                   chain.mask_degraded, chain.recall_blind].some(v => v != null)
-  if (!traced) return na('这条记录早于可信度痕迹落库，判据不全，不给分')
+  if (!traced) return na('可信度 · 判据不全', '这条记录早于可信度痕迹落库，不给分')
 
   const mode = item.kind === 'sql' ? 'sql' : 'ask'
   const checks = resultChecks({
