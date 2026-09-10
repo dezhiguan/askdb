@@ -180,8 +180,8 @@ answer_cache:
 # 三张查不到的表，模型照着写 SQL，执行层才报"表不存在"，成绩单上表现为一批
 # 说不清原因的失败。配置文件之间只差一个词序（tables-ragforge 与
 # ragforge-tables），指错了肉眼看不出来。
-tables_file: ./config/tables.yaml
-metrics_file: ./config/metrics.yaml
+tables_file: ./config/schemas/sample-tables.yaml
+metrics_file: ./config/schemas/sample-metrics.yaml
 
 # 运行时添加只读数据源。开着的时候，服务端会按界面填入的地址主动建连 ——
 # askdb 不设账号体系，所以这等于把出站建连的能力交给任何能打开页面的人。

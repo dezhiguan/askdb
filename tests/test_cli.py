@@ -16,8 +16,8 @@ def _cfg_file(tmp_path, cfg):
     d = tmp_path / "config"
     d.mkdir(exist_ok=True)
     raw = dict(cfg.raw)
-    raw["tables_file"] = str(cfg.root / "config" / "tables.yaml")
-    raw["metrics_file"] = str(cfg.root / "config" / "metrics.yaml")
+    raw["tables_file"] = str(cfg.root / "config" / "schemas" / "sample-tables.yaml")
+    raw["metrics_file"] = str(cfg.root / "config" / "schemas" / "sample-metrics.yaml")
     p = d / "askdb.yaml"
     p.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     return str(p)

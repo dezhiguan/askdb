@@ -230,16 +230,14 @@ rollout、健康检查全绿，只有界面停在上一版 —— CI 因此自�
 |---|---|
 | `config/askdb.yaml` | 本机开发实例。同样没有 datasource 段 —— 数据源来自运行时注册表 |
 | `config/sample.yaml` | 自带的 DuckDB 样例库，评测与故障注入跑的是这一份 |
-| `config/tables.yaml` · `config/metrics.yaml` | 样例库的**表白名单与业务口径定义** |
-| `config/ragforge-dev-tables.yaml` · `ragforge-dev-metrics.yaml` | 本机 ragforge 库的同样两份，由 `askdb.yaml` 与 `ragforge.yaml` 引用 |
 | `config/public.yaml` | 对外实例。**整段没有 datasource** —— 所有数据源都来自运行时注册表 |
-| `config/ragforge-prod.yaml` + `ragforge-prod-tables.yaml` + `ragforge-prod-metrics.yaml` | ragforge 生产库，生产实测那一轮用的就是它 |
-| `config/ragforge-eval.yaml`、`ragforge-tight.yaml` …… | 冻结的评测变体，留着是为了让已公开的那几轮还能复现 |
+| `config/schemas/` | **表白名单与业务口径定义**，按数据源命名：`sample-*`（样例库）、`ragforge-dev-*`（本机 ragforge 库）、`ragforge-prod-*`（云上 ragforge 库） |
+| `evals/config/` | 冻结的评测配置（`ragforge-prod.yaml` 生产实测那一轮用的就是它，及其变体 `ragforge-eval.yaml`、`ragforge-tight.yaml`），留着是为了让已公开的那几轮还能复现 |
 
 白名单与口径这两份是准确率的决定因素，而不是提示词调优：
 
 ```yaml
-# tables.yaml —— 字段名不具自解释性，必须补业务语义
+# schemas/sample-tables.yaml —— 字段名不具自解释性，必须补业务语义
 status:
   desc: "处理状态。注意：「文档数」口径为 COMPLETED 的数量，不是全部行数"
   enum: [PENDING, PROCESSING, COMPLETED, FAILED]
@@ -249,7 +247,7 @@ org_id:
 ```
 
 ```yaml
-# metrics.yaml —— 模型永远猜不出来的那一层
+# schemas/sample-metrics.yaml —— 模型永远猜不出来的那一层
 - name: 卡住的文档
   aliases: [卡住, 处理中不动, 堆积的文档]
   predicate: "status = 'PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR"
@@ -454,7 +452,7 @@ Pod 走**内网**地址连数据机。公网那个从 Server 3 过去是超时�
 | | 合成样例库 | **真实生产库** |
 |---|---|---|
 | 数据 | `data/seed.py` 固定种子生成，11.8 万行文档 | ragforge（org 316），13 959 文档 / 1 407 检索日志 |
-| 表名与注释 | 规范、齐全 | 真实业务命名，注释靠 `tables.yaml` 补 |
+| 表名与注释 | 规范、齐全 | 真实业务命名，注释靠 `schemas/` 白名单补 |
 | 租户列 | 每张表都有 | `documents` **没有**，要经 `kb_id` 绕子查询 |
 | 缓存计数器 | 无 | `doc_count` **实测已漂移**（缓存 12 274 / 实际 12 280） |
 | 题库 | `evals/golden.jsonl` | `evals/golden-ragforge.jsonl`（冻结标签 `golden-ragforge-v1`） |
@@ -554,7 +552,7 @@ plan/assess 两次额外模型调用上）。判据是消融脚本里预先写�
    我据实测分布补入了六个**有区分度**的口径 —— 即"按定义算"与"凭直觉算"
    结果不同的那些。这是语义层本该做的事，但也意味着 D 组的增量部分来自
    "题目就是冲着口径出的"。退化口径一律未用于出题，理由与实测分布都写在
-   `config/ragforge-prod-metrics.yaml` 里。
+   `config/schemas/ragforge-prod-metrics.yaml` 里。
 
 4. **同一配置两次跑结果不同。** `temperature: 0` 不保证确定性 —— 盲测第二、
    三次误拒率从 0% 变为 6.2%。所有单次数字都应视作带噪声的观测。

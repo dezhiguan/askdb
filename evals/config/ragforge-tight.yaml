@@ -1,19 +1,35 @@
-# ragforge 生产库 · **评测专用**配置。
+# ragforge 生产库 · **护栏回归验证**配置。
 #
-# 与 ragforge-prod.yaml 的唯一差异是三处，其余（连接、白名单、口径、
-# 护栏阈值）必须逐字相同 —— 评测若跑在比生产更宽松的护栏下，测出的
-# 成绩就不代表生产链路。
+# 用途：让反思重试链路可复现地跑起来，用于验证 R-11 → reflect → R-14
+# 这条回边是否仍按预期工作。**不用于对外服务。**
 #
-#   1. daily_quota 提高到 3000：一轮六组消融 + 盲测约 400 次调用，
-#      生产配置的 100 会在中途触顶，把剩余题目判为 QUOTA 失败、污染成绩。
-#      **生产配置本身不动**。
-#   2. 审计与检查点单独落盘：评测流量不混进生产审计。
-#   3. planner.enabled 打开：消融 F 组要测多步规划。A–E 组由 ablation.py
-#      逐组覆盖此项，不受这里影响。
+# 为什么需要单独一份：正常配置下反思重试几乎不触发 —— 实测 338 次评测调用
+# 里只有 3 次（0.9%）。原因是 schema 全量注入后模型不编造字段，要么用真列、
+# 要么直接拒答。链路是通的，只是平时用不上；而"平时用不上"和"坏了"在页面上
+# 看起来一模一样，所以需要一个能主动把它逼出来的场景。
+#
+# 与 ragforge-prod.yaml 的唯一差异：
+#   1. max_scan_rows 由 200000 压到 3000 —— documents 全表聚合预估扫描
+#      约 41661 行，必然超阈值，干跑阶段被 R-11 打回并进入 reflect。
+#   2. 审计与检查点单独落盘，不混进生产审计。
 #
 # 用法：
-#   python -m evals.replay   -c config/ragforge-eval.yaml --golden evals/golden-ragforge.jsonl --blind
-#   python -m evals.ablation -c config/ragforge-eval.yaml --golden evals/golden-ragforge.jsonl
+#   askdb ask "一共有多少个文档" -c evals/config/ragforge-tight.yaml
+#
+# 预期观察到（三轮全部打回，最终诚实失败而非静默降级）：
+#   ✕ dry_run   预估扫描 41,661 行，超过阈值 3,000
+#   ✓ reflect   第 1 次重试：把真实错误回灌模型重新生成
+#   ✓ generate_sql  第 2 轮重新生成
+#   ✕ dry_run   …（同上，扫描量模型改不了）
+#   ✓ reflect   第 2 次重试
+#   ✓ generate_sql  第 3 轮重新生成
+#   ✕ dry_run   …
+#   ✓ finalize  已附最终 SQL 与判定链路   ← R-14 上限 2 次生效
+#
+# 注意这个场景里重试**救不回来** —— 全表计数的扫描量不是加个筛选条件就能降的。
+# 这是正确行为：R-14 到上限即停并如实报错，不做静默降级（§4.5）。
+# 想看"重试后成功"的情形，需要模型能据错误信息自我纠正的拦截（如 R-04 字段
+# 不存在），而那类触发依赖模型当次是否恰好写错，无法稳定构造。
 #
 datasource:
   type: postgresql
@@ -21,7 +37,7 @@ datasource:
   password_env: ASKDB_PROD_PG_PASSWORD
   # dsn 指向的是隧道本地端口；真实库在这里。界面与评测出处按此显示，
   # 否则出处栏会写成 127.0.0.1，等于把最关键的一条信息说错。
-  upstream: "8.163.30.216:5432"           # 同生产库，评测专用配置
+  upstream: "8.163.30.216:5432"           # 云上主库，经本地 SSH 隧道 15432 转发
 
 tenant:
   enabled: true
@@ -33,7 +49,7 @@ tenant:
 guard:
   # 主库场景：宁可查不出来，也不能把库拖慢
   max_rows: 500
-  max_scan_rows: 200000              # documents 全表 86,546 行，够用；再大的一律打回
+  max_scan_rows: 3000                # 刻意压低：逼出 R-11 → reflect 回边
   statement_timeout_ms: 5000         # 与角色级 statement_timeout 一致
   max_retry: 2
   allow_select_star: false
@@ -65,7 +81,7 @@ planner:
   # 默认关闭 —— 首轮消融的结论：F 组成本 +109%，多跳准确率未提升。
   # 按 §6.3 定下的规则「成本上升而多跳无收益则回退为默认关闭的开关」执行。
   # 需要多跳能力时显式打开。
-  enabled: true
+  enabled: false
   max_steps: 3                       # R-16 总步数上限
   max_carry_rows: 50                 # R-15 中间结果规模上限，超限即收敛
   carry_columns_only: true           # 仅下传标识列，不下传整行（§5.3.2 / §10.1）
@@ -121,9 +137,12 @@ llm:
     peak_utc_offset_hours: 8
 
 observability:
-  audit_log: ./data/audit-ragforge-eval.jsonl
-  checkpoint_db: ./data/checkpoints-ragforge-eval.sqlite
-  daily_quota: 3000                  # 仅评测；生产配置仍为 100
+  audit_log: ../data/audit-ragforge-tight.jsonl
+  checkpoint_db: ../data/checkpoints-ragforge-tight.sqlite
+  # 口径是**模型调用次数**，不是提问数：一次提问会调好几次模型
+  # （多步规划每步一次生成 + 一次评估，反思重试再各来一次）。
+  # 数字按旧口径乘 3 折算，保持实际可用量不变。
+  daily_quota: 300                   # 主库上更保守
 
-tables_file: ./config/ragforge-prod-tables.yaml
-metrics_file: ./config/ragforge-prod-metrics.yaml
+tables_file: ../config/schemas/ragforge-prod-tables.yaml
+metrics_file: ../config/schemas/ragforge-prod-metrics.yaml
