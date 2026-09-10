@@ -475,50 +475,1052 @@ auth:
     # 2026-09-10 加。
     - username: chenjiawei
       display_name: 陈嘉伟
-      roles: [PRODUCT]
+      roles: [DEV]
+      note: 开发
       password_hash: "scrypt$16384$8$1$XLoQr1kl3fXZlUm5EA2EPg==$VkbXmB3NQSwMF4SNkRHAf6TGpZzmYUKgJtnyva/KSlI="
     # 2026-09-10 加，仿真测试账号（sim_accounts_200 首个，先落一个验证链路）。
     - username: wangbo
       display_name: 王波
       roles: [DEV]
-      note: 技术研发 · 基础架构工程师 · 仿真测试
+      note: 技术研发 · 基础架构工程师
       password_hash: "scrypt$16384$8$1$u6R9rfpTiRRmzVwrkmbu0A==$Ci3JyuInZ/0xVIHVUTu8KlU8+p0VbZy+9Pry16BGKnE="
     # 2026-09-10 加，仿真测试账号（产品部 7 人，名册里已登记的成员补登录口令）。
     - username: fuwanqi
       display_name: 傅婉琪
       roles: [PRODUCT]
-      note: 产品部 · 产品经理 · 仿真测试
-      password_hash: "scrypt$16384$8$1$fUr/dvasjbgZWKrrAt5tFA==$jQsxArk9gWEFjmEkkHUWYpToNwcgj2gizuaF40xG2Qc="
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$ZRSA1ufevWbhMDAROUACag==$VU55Z3YSLCeZGru40LMvAVyG1rkvekbTtir4gFTg2pQ="
     - username: weiyuqian
       display_name: 韦雨芊
       roles: [PRODUCT]
-      note: 产品部 · 高级产品经理 · 仿真测试
-      password_hash: "scrypt$16384$8$1$1ZNT9pKdKjNrsOZvdLlA2g==$wrH0JK9jNW2J3LNIq3uBR5NuqWv9kvIGt1tVxkFaQgI="
+      note: 产品部 · 高级产品经理
+      password_hash: "scrypt$16384$8$1$F5Nqv7K6Wep+/GBzOYgtMQ==$LEzNi8Sl7jL1IwxYqW5Y81o9HsAgY7qhLNyToNTKkVw="
     - username: zhuyufan
       display_name: 朱宇帆
       roles: [PRODUCT]
-      note: 产品部 · 产品经理 · 仿真测试
-      password_hash: "scrypt$16384$8$1$foFWUf87Ps0kejGlIj3Eyg==$xDS58MbDdFjoWkegoSN0DrJU8MujsplRHv8LeZvTAUs="
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$65+ubhoNuhN2jC0RC52i9A==$jIKWnH/aTpMsTvHqAFLYL7LfVC9JTkdwzKGocswaZoE="
     - username: guoyize
       display_name: 郭一泽
       roles: [PRODUCT]
-      note: 产品部 · 产品经理 · 仿真测试
-      password_hash: "scrypt$16384$8$1$quyl56eQ8DyC8Wj4KUImeA==$OBcA20QbU2ANRjPCTQ45gSAK1D3430V03XI3sSGjJBo="
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$vdWK486b0zs7hFVjp+lymQ==$hH5oAPkyuHHyw69BqUSFv91qMeSK7Dzj5jFQcqCjnEU="
     - username: guyan
       display_name: 顾妍
       roles: [PRODUCT]
-      note: 产品部 · 高级产品经理 · 仿真测试
-      password_hash: "scrypt$16384$8$1$IaRJ5gGxnOZQnFjPFZAuiA==$58/8nMpCgAnMAZK2Jx4MCSG60j/vlraSJW1k9sjKPsc="
+      note: 产品部 · 高级产品经理
+      password_hash: "scrypt$16384$8$1$REPJac8XOlmEYK6oucY7cw==$VL3PXARXgI9JryW+Z4ZjQh3u/gzDYKng2yiWIbuLHPk="
     - username: zhangchunrong
       display_name: 张春蓉
       roles: [PRODUCT]
-      note: 产品部 · 产品总监 · 仿真测试
-      password_hash: "scrypt$16384$8$1$lwFCSgIOgA2YRE7UwuGrCw==$hF2xV7ljyz0VbyVe/AAQiVUZMeve/MNbpT1lGnyplGY="
+      note: 产品部 · 产品总监
+      password_hash: "scrypt$16384$8$1$Aw1MK17KY19COTkZ3gZamQ==$7o/rZfzyc9MxDaDnFr+tHEUGa9sDqhboKCzEb825/w0="
     - username: shenkeyan
       display_name: 沈可妍
       roles: [PRODUCT]
-      note: 产品部 · 产品经理 · 仿真测试
-      password_hash: "scrypt$16384$8$1$bg1uR0KRRmNdz5yZ8y8Okw==$1wISpdvNq+kGBXgYZf5OoUlx51aHLELmTtacgfJsJVM="
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$KcoB0km/RiiW8eWrgAojMQ==$Tv5IOhtm91LRH6YxrQDOK1CjMvj7ljru7r6hSxplaUk="
+    # 2026-09-10 加，仿真测试账号 200 个（sim_accounts_200 批量铺完，按名册 15 角色真实比例分配，口令=用户名）。
+    - username: chengguangjun
+      display_name: 程广军
+      roles: [QA]
+      note: 质量工程 · 质量经理
+      password_hash: "scrypt$16384$8$1$aJ3oDoAjTdOPaSOFMlOuLw==$ZtrvFlB46YoB5tm+BEC+yXmLdOf7Tr1k+s697qVJnBo="
+    - username: yaolanrong
+      display_name: 姚兰蓉
+      roles: [FINANCE]
+      note: 财务 · 会计
+      password_hash: "scrypt$16384$8$1$5VTdeAQjC7TYHg6IhK9gtQ==$GBKaIO5dPQTqQr2u0onT5Gh/JNz6aL9KSURXiyCr4Lg="
+    - username: liuyichen
+      display_name: 刘逸宸
+      roles: [DEV]
+      note: 技术研发 · 技术总监
+      password_hash: "scrypt$16384$8$1$BxTPwVYRpen6Nu9i+LpJqA==$EN3V5T4QxyKWKX2wP+bajlbaErnhKZHksl213xWtwpc="
+    - username: zhouxuehua
+      display_name: 周学华
+      roles: [SALES]
+      note: 销售中心 · 区域销售经理
+      password_hash: "scrypt$16384$8$1$S+bV/BKO/q4pdMHnyJy9Bg==$IiFVeXSqVd+e2vDwp1amcKPJQHjmYCB/JMVX+p/PKJ4="
+    - username: lifan
+      display_name: 李帆
+      roles: [SALES]
+      note: 销售中心 · 区域销售经理
+      password_hash: "scrypt$16384$8$1$NZZiDPqondp/NTQAeMB6Vw==$bNjhLeRklf7+WQlnXbfqF8EPG6328YmNbCLl59Jx1Vg="
+    - username: licheng
+      display_name: 李城
+      roles: [DEV]
+      note: 技术研发 · 技术总监
+      password_hash: "scrypt$16384$8$1$GEGQkD2qyMj/2rAOSRd7mw==$Jpk9JOeX/pxsqWQkEprE2QGRdrEauC8/Sm2YU3Qov40="
+    - username: lihuifang
+      display_name: 李惠芳
+      roles: [OPERATIONS]
+      note: 运营中心 · 运营主管
+      password_hash: "scrypt$16384$8$1$JYRkI/qDf86wFG96W0CFMQ==$B3lLZS5eS2jVeWUobZ8VDfahXgMuLrMf3u1rH4hHSGg="
+    - username: chenxiaojie
+      display_name: 陈小洁
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$eqmRKWxvfUNOVv1LlIVbPw==$wZs5m2u9tKouh1Nn5ocZj8nje7rFHmwhjwPYDTpCmUY="
+    - username: zhanglanlan
+      display_name: 张兰兰
+      roles: [QA]
+      note: 质量工程 · 质量经理
+      password_hash: "scrypt$16384$8$1$MCJarZnza6a5q+YEOmUrEg==$m+I4pXn63gS8RbjoiyrFQ1LSd9fO0i8yNeMTmgMN3X0="
+    - username: huangsujun
+      display_name: 黄素君
+      roles: [OPERATIONS]
+      note: 运营中心 · 类目运营
+      password_hash: "scrypt$16384$8$1$4hgyt327HeFEjzWjJ0KVEA==$+QpqHf5W1T0nk7wwsTDGmVSFM7a+uPbZkkS/g27bdOg="
+    - username: huzechen
+      display_name: 胡泽辰
+      roles: [DEV]
+      note: 技术研发 · 数仓工程师
+      password_hash: "scrypt$16384$8$1$b3e1pqNvNTwvMFXV/+ZoYw==$XB1qzUMR0h4fiqKWr8opz32l3B5wnqoXDCbaMMRZ6uk="
+    - username: chenfei2
+      display_name: 陈飞
+      roles: [MANAGEMENT]
+      note: 管理层 · 事业部负责人
+      password_hash: "scrypt$16384$8$1$NEpGslwBaA9zJEZMKn95ow==$F5fHYt8NFhw2GsxnvkGHci3lVf4r8GZt4bDzTC98HJo="
+    - username: yaoxiaoxiu
+      display_name: 姚小秀
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$60FOrmUDxe9JiAXmshL/xQ==$T5a7u0gdMIIvksLw97xAhLut5DxS3j5gc4jqEHPEWLw="
+    - username: zhangyiran
+      display_name: 张逸然
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$Q0VZ7zANLjLbOr2phDZ9pQ==$ytd6CNwZL00LP/gcDCN3Etp2Hf7c4U+w6aZFBKk3QB8="
+    - username: liuxiaoan
+      display_name: 刘晓安
+      roles: [DEV]
+      note: 技术研发 · 数仓工程师
+      password_hash: "scrypt$16384$8$1$B4q7SIqk0DE66VtpfoP/Rg==$f3ZTWGdNUIyE3ApRBCE5zT1gSGp/ZKHb4v7aLKVB3PM="
+    - username: lihao
+      display_name: 李浩
+      roles: [DEV]
+      note: 技术研发 · 运维开发工程师
+      password_hash: "scrypt$16384$8$1$0GO3urVMDgVBfha54k8FLA==$VXB88VpnIujft4dwvw0+lPs6Fu6Flh0KFUUNf+upeGQ="
+    - username: zhangjiashu
+      display_name: 张佳舒
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$ENQ/b9Y6FWaINpp88U/zjw==$4D6T60Q2nPBne0EOt8ClqnHUUo6XNipOV1vdwRfTYCQ="
+    - username: guojianhao
+      display_name: 郭建浩
+      roles: [SALES]
+      note: 销售中心 · 商家拓展
+      password_hash: "scrypt$16384$8$1$CM6Xnzh1kfPS30nF+hdc3w==$Vl+l31yT8pTkHx3g4B5ojzkZYeK7IWV2BvwESKqZVSY="
+    - username: luoxiufang
+      display_name: 罗秀芳
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$41yS92Jl/hZxjJmOimZ5qQ==$CMQzYv+K5w3ypNKO3PBwdGijdTa3YFBKFR5pbsrp+qg="
+    - username: zhangfang
+      display_name: 张芳
+      roles: [SALES]
+      note: 销售中心 · 商家拓展
+      password_hash: "scrypt$16384$8$1$NFIhrCw8Avne4DaZHNil3g==$EYjszaY+SqfYiHdS3CLqg/p3NUM2PrQCcAJw3kMB/Tw="
+    - username: zhanghuixia
+      display_name: 张惠霞
+      roles: [DEV]
+      note: 技术研发 · 技术经理
+      password_hash: "scrypt$16384$8$1$fj4Oy1TrsYXFBzUu+bUTNQ==$r0WQtveQHAa6ane5lLPxjrU1o8sa5dJbMBenLbtJO0A="
+    - username: liwentao
+      display_name: 李文涛
+      roles: [SALES]
+      note: 销售中心 · 销售总监
+      password_hash: "scrypt$16384$8$1$3qSQ0630HAqgB2AJRpf02Q==$XgAIi1WL3ek92/d6O5wA3oRUAzC2hDuqeY1xKjAxTXg="
+    - username: dongxuexin
+      display_name: 董学鑫
+      roles: [HR]
+      note: 人力行政 · 人力经理
+      password_hash: "scrypt$16384$8$1$vgjp7Xan/MVK7yAPnjUaIw==$ocJasODVpGy2UA2R5AJskS/pbv87qWBucBVDFSIsoBk="
+    - username: liuyongming
+      display_name: 刘永明
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$2y1oPdZb8z5C3sHgZD14HA==$FEgORpe8BkdQPz+EBnq0hjUgF2q2vX/YkJwcdwYztbM="
+    - username: wushaohao
+      display_name: 吴少浩
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$Z+2lS3zBkSC83JI5r0b/EQ==$dDZx2IvTEpBy4fI93wh+kIfEIJjYLVW3XyRRmdVnZVk="
+    - username: zhangpeng
+      display_name: 张鹏
+      roles: [DEV]
+      note: 技术研发 · 技术经理
+      password_hash: "scrypt$16384$8$1$stE0Gu6oIf2ZiK61uDtE3w==$l5TfE8V7NiyaTHNM14DB0LlbSV9b/k9aFWKMxjJxE0o="
+    - username: zhangguijuan
+      display_name: 张桂娟
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$eculW9t5iwQ2+Lgxv6jLxw==$A4eqH82kZzNWTk9PF3d3A+Nxrb7WZEZnX3ucczY2HcQ="
+    - username: zhangguina
+      display_name: 张桂娜
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据治理专员
+      password_hash: "scrypt$16384$8$1$lbDI8Fvah/1DTR7Tg+x+RA==$R0aKbEh2Y9Gu68f3lNieug3VPiTZmUpkBgywG965zOo="
+    - username: lijiashu
+      display_name: 李佳舒
+      roles: [OPERATIONS]
+      note: 运营中心 · 选品专员
+      password_hash: "scrypt$16384$8$1$UnO/lKpnDe4RI9St+u59Tw==$+uV42b3f22pwjwBdjTskfQoT2xc9u7/Uv/w5lyHU/TY="
+    - username: lijie2
+      display_name: 李杰
+      roles: [DESIGN]
+      note: 设计中心 · 交互设计师
+      password_hash: "scrypt$16384$8$1$S9jx/GT1wGFTcpxJih86/Q==$LGGLoeGV5ojHy5U7aXmTFfe/1Ul/hel/AOb/2A8xgg8="
+    - username: huhaofan
+      display_name: 胡昊凡
+      roles: [SALES]
+      note: 销售中心 · 商家拓展
+      password_hash: "scrypt$16384$8$1$3XdptUhXfvyontT013XpGA==$3WrJpOcLzSQxS0DkRXDuSsivj8XPEgwoXvKnigfpRYg="
+    - username: tianran
+      display_name: 田然
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$weIUvEHlyt4PYLzuLcqdLw==$+3lCYBX+mBMJLQga3HRfbEUE0V2x7bBtm5gQELtFZR8="
+    - username: wanglihui2
+      display_name: 王立辉
+      roles: [PRODUCT]
+      note: 产品部 · 高级产品经理
+      password_hash: "scrypt$16384$8$1$MkkDW1jb5G6f7vPgO+W6OA==$dTidK1j2IF9XzmzaQ+1IHK035oLiQp2WLmiH3IEqhSQ="
+    - username: gaoyushu
+      display_name: 高语舒
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据治理专员
+      password_hash: "scrypt$16384$8$1$jutP8Qaf7qcuq4tWLoLUIA==$bOb2QFvMkxgPQezhNz3xpfvFDggcaWcKVxw1rz5YfwM="
+    - username: huyiyue
+      display_name: 胡一悦
+      roles: [MARKETING]
+      note: 市场部 · 品牌策划
+      password_hash: "scrypt$16384$8$1$rtQlXm6AbSle+nhsIJCPsw==$mbfNt+4A7Tyr9ITFE7zp632K2GO7Rm20v1LEEymdce4="
+    - username: zhangchunting
+      display_name: 张春婷
+      roles: [OPERATIONS]
+      note: 运营中心 · 运营主管
+      password_hash: "scrypt$16384$8$1$YYAm/CbKC9mizkfgvtq/og==$BGzwdK9H5/GMalponc8zEAieaJ4N2urq+bdi7nchS1o="
+    - username: xiaohaoyang
+      display_name: 肖浩阳
+      roles: [DEV]
+      note: 技术研发 · 数仓工程师
+      password_hash: "scrypt$16384$8$1$S1ognjX0EmiD50z/6b++PQ==$6lSfLCnRLPGp2QLdiWiFVwJjZKO6V1rMh4t1BwG0h3Y="
+    - username: huangguoyu
+      display_name: 黄国宇
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$j/FjJbbGvmn27+uCYOl6+g==$lKuQyYivJJcxyPwxtaSxrdAUa5FIILLKC6OeAvRjVUs="
+    - username: gaoxiuyan
+      display_name: 高秀艳
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据治理专员
+      password_hash: "scrypt$16384$8$1$fBQHpPAndd2V15se4I/ZiQ==$U4MetNx1B2jbhfPRcTfV5wlX/+hhe6fJUqwbnRydlWY="
+    - username: huguolei
+      display_name: 胡国磊
+      roles: [OPERATIONS]
+      note: 运营中心 · 运营主管
+      password_hash: "scrypt$16384$8$1$0R7nMeUX+qQeU7WOpG16/Q==$KCWVIhDndHBsrvmwP21eO775+NX4mRR3MfuynD8XMEc="
+    - username: wangfengli
+      display_name: 王凤莉
+      roles: [HR]
+      note: 人力行政 · 行政专员
+      password_hash: "scrypt$16384$8$1$PVl32GiB2vvSL4UeSMcb5A==$tOyxGSBTBEOdssgrLGPff68x1ZdAUW1Gi8g3v67dLj0="
+    - username: chenfengxia
+      display_name: 陈凤霞
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$hC3opxHdQf8MAUDwIpBpbA==$2VcNDgFXt1ZAoUUZHRCimZCnlXGXFF5mVYwy0ORQ4qc="
+    - username: jianglong
+      display_name: 姜龙
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$YA5XF55DY7KSl+1Hnu4YUg==$uKGpFMjPJSUrVXbziqGxK+ff45eOhigf82vi7IvSOxo="
+    - username: lihaoyi
+      display_name: 李浩逸
+      roles: [SALES]
+      note: 销售中心 · 大客户销售
+      password_hash: "scrypt$16384$8$1$U78WBXqNvOUtIZGGUPV3YA==$QbB7NoZ3zknBfXGW6IEn8uP3rb2zTK+mGmq1eh7jP+8="
+    - username: wangfenglin
+      display_name: 王凤琳
+      roles: [OPERATIONS]
+      note: 运营中心 · 活动运营
+      password_hash: "scrypt$16384$8$1$ktOzd91rhLBv3gQa7MQN1Q==$qYMzynWL+4elPRqXERCSCzQipajAA6nFucmj8BO9hT0="
+    - username: sunjianming
+      display_name: 孙建明
+      roles: [DEV]
+      note: 技术研发 · 技术经理
+      password_hash: "scrypt$16384$8$1$0vWRMk2Zjjf0p7b+fDHFYw==$3YLvfrSI/iZSkh3IlqUlwa8DNemftNCtJ/MbzVKPkWo="
+    - username: xushaogang
+      display_name: 徐少刚
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$48eajQRqwW1NQpL/6t4bjg==$ELY7/+K5VmVNxEBvcOlUlv0KqXAR9xSY3MTW/yFKIeE="
+    - username: weilidong
+      display_name: 魏立东
+      roles: [SALES]
+      note: 销售中心 · 区域销售经理
+      password_hash: "scrypt$16384$8$1$o1jXScpewWEPVOngF2O+VQ==$eVJrgHG0ZV3ST5KFRy3gfC/RL5xT0gzqoG6FTTs+YMQ="
+    - username: yaochunbin
+      display_name: 姚春斌
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$ZMwG9abwf8tdBKk2rbDyPA==$gYQm592hRM3VvXj2/nFXbB4ywxEfVQIEcatqyhuK7FU="
+    - username: liuhaoze
+      display_name: 刘浩泽
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据分析师
+      password_hash: "scrypt$16384$8$1$we/VhKA2SC3MdVyFIH8Qgw==$r9jENC50/8xCXYIQroM0sooR/5fiW9Mx6vjzKeEi0xk="
+    - username: yuanyi
+      display_name: 袁逸
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$FDsmrmXqMuuoB85Ac27v9w==$DVdg18PcO7G+TfZelmmajnRnV6Oyb2Y9pllh509D6xk="
+    - username: qiushilei
+      display_name: 邱世磊
+      roles: [DEV]
+      note: 技术研发 · 基础架构工程师
+      password_hash: "scrypt$16384$8$1$tYH51sMoRMzoQsfFB+rlug==$EAaEDSo9AM9NvygI3zUHAoGNVGRYFpPgKdE4tU02Fy8="
+    - username: chenguofeng
+      display_name: 陈国峰
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$cndPfkYy+psPeT9GlcYuQQ==$FSqls4DAILy5FTuxbonxgyoEba0XQAPG0d2mth/VQdU="
+    - username: dengzezhou
+      display_name: 邓泽洲
+      roles: [OPERATIONS]
+      note: 运营中心 · 店铺运营
+      password_hash: "scrypt$16384$8$1$yvyaELMk/flrPbshtkr9wA==$AqUDKwrEVv1KbIlybtUC52RtxZRuWIU5gT4BB+Eedko="
+    - username: majinmei
+      display_name: 马金梅
+      roles: [OPERATIONS]
+      note: 运营中心 · 运营主管
+      password_hash: "scrypt$16384$8$1$nhHfZQtQJDoxca6/v8DAmQ==$4b4kR1+AXIDCDYkI1VIs2WSzyitvn8Qz5hjDb7bICdM="
+    - username: zhangting
+      display_name: 张婷
+      roles: [SALES]
+      note: 销售中心 · 销售运营
+      password_hash: "scrypt$16384$8$1$yIcviz9AINGIHo870s1IFQ==$yeVOGMeZpQcyThLQdCEYcy44VoTR2l1cYtUzRYzKSw4="
+    - username: zhanglei2
+      display_name: 张磊
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据分析师
+      password_hash: "scrypt$16384$8$1$WSyp2T6iH+nmauyfsifgXQ==$Pxh0u5jZsJcHpR/JYsiI/NuOYHxC9Nzt6tLCbratJJ8="
+    - username: zhuxiu
+      display_name: 朱秀
+      roles: [HR]
+      note: 人力行政 · 招聘专员
+      password_hash: "scrypt$16384$8$1$z5kfIfFEq9VQuc41xdvCqw==$POsENSGSUWUcyAGKePXhNlwLQi/tjLSi3Iokxa/5oic="
+    - username: suyu
+      display_name: 苏宇
+      roles: [SUPPORT]
+      note: 客户服务 · 客服经理
+      password_hash: "scrypt$16384$8$1$qlUxM8qgQYQiwN3o30egRw==$t2Ly2kQwPp3G6Q2jHPv4hMhsImOevOW0jkqXBmHpdXA="
+    - username: huangzining
+      display_name: 黄梓宁
+      roles: [SALES]
+      note: 销售中心 · 大客户销售
+      password_hash: "scrypt$16384$8$1$tPCdEFN8sUgt3VHt1x6clA==$Q5ZPRX3GKI5niYDWCyXfIEO1MoTxGsb2wnPlJvFxxwM="
+    - username: zhangqi2
+      display_name: 张淇
+      roles: [OPERATIONS]
+      note: 运营中心 · 活动运营
+      password_hash: "scrypt$16384$8$1$QK+EWHmWPfpu/S1NbgId8w==$eKOuE8f78ZekPyOqn8yz/AThGjRFMvGVcayFGhU2Qk8="
+    - username: yumuran
+      display_name: 于沐然
+      roles: [MANAGEMENT]
+      note: 管理层 · 总监
+      password_hash: "scrypt$16384$8$1$mdFw4qa8mWCq+ycRl2FFww==$XL/YAV1iHubsg0+a09EG1BqRBv5eRkqOy5TRka/NoEY="
+    - username: wangjie3
+      display_name: 王洁
+      roles: [MANAGEMENT]
+      note: 管理层 · 事业部负责人
+      password_hash: "scrypt$16384$8$1$QOJaS3wZ5Orvi4OnX5Cq8Q==$tLEBBULAE5+2CtRB9Z86tSa2QjQoDhpHmuuhU/EFITg="
+    - username: songyuyan
+      display_name: 宋语妍
+      roles: [FINANCE]
+      note: 财务 · 对账专员
+      password_hash: "scrypt$16384$8$1$Cybu4hc1N49FbSc3NOPaDA==$0PGeaCKRzQvO9VX1bSb6cox4Af5o6gXuxOsniQY2GAU="
+    - username: zhaotiancheng
+      display_name: 赵天城
+      roles: [OPERATIONS]
+      note: 运营中心 · 类目运营
+      password_hash: "scrypt$16384$8$1$M5tnM1a/POuTAw89AgV57w==$G9gpgcml3hpEMEslI9AtoaotMC0B6Z1OfOM/ISCUTug="
+    - username: zhanghuijie
+      display_name: 张惠洁
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$2wfU64O6F9rGGHvRoipW+w==$jeX6W1pauYqQ7FE3j/TEk1AAbLOdv09t3JpG+rF+qtI="
+    - username: wangruotong2
+      display_name: 王若彤
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$g8Q0x2ivVRJbUJV0BVdwMg==$zFSJ6jubt6UJvKkL72f/6mh0eKQk6U3OZFG5drhq6Rc="
+    - username: xushaoyong
+      display_name: 徐少勇
+      roles: [MARKETING]
+      note: 市场部 · 市场经理
+      password_hash: "scrypt$16384$8$1$fH0a2aOLrETt4IWZu1npbg==$ZGtXFpZEeGL/Jeti2uC3/C9OdqV9DkdglrwiNkwDnfo="
+    - username: lichunlan
+      display_name: 李春兰
+      roles: [PRODUCT]
+      note: 产品部 · 高级产品经理
+      password_hash: "scrypt$16384$8$1$FypPCxOoRytrFdB3qHSjmA==$lCYsf2PqTkqevAxkaqOimP3cx8UX00swarOcmXOLCCM="
+    - username: hudeqiang2
+      display_name: 胡德强
+      roles: [OPERATIONS]
+      note: 运营中心 · 活动运营
+      password_hash: "scrypt$16384$8$1$XDfYIkbkui+ZPQpMKPu7TA==$QMrUP9Gq1lWNjZnTg5lC4H8Oy/oYX1hZosuu+11BZ3g="
+    - username: wangyan4
+      display_name: 王妍
+      roles: [SUPPORT]
+      note: 客户服务 · 在线客服
+      password_hash: "scrypt$16384$8$1$/Y1ypouQ7dAcepUyD9VIQg==$dRBvj2WACfoOC6hB0NgbcBQI4W4NK2XZ8QhhlO0ob1E="
+    - username: sunchunxue
+      display_name: 孙春雪
+      roles: [OPERATIONS]
+      note: 运营中心 · 运营主管
+      password_hash: "scrypt$16384$8$1$jNHAQYhP8xHYs8bwyodkvw==$LtI/IFsvGHOYlyMjrJzDI7QNlBuiY788PJPXDrw4uVk="
+    - username: dongxu
+      display_name: 董旭
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$E5Ja7nqqsSUBcR9/7hmKAg==$k4TavTR24f0pMTzbF++N8CT2sw89SYT3gca60qfncaY="
+    - username: wanghan2
+      display_name: 王涵
+      roles: [SALES]
+      note: 销售中心 · 销售运营
+      password_hash: "scrypt$16384$8$1$50qlT/XdWqtxGMFE8ZCz4g==$qWFLAh/VxKGba18ja6qX3k2YQUfYkAORtyv2L8K+qxk="
+    - username: wanxuecheng
+      display_name: 万学成
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$ONoYeg44k0GXsaBUPGz0dA==$f39I3KEvPOzkkQqNixv9A15jX2JfHxT+27pyX8TLPKA="
+    - username: zhanghan3
+      display_name: 张涵
+      roles: [QA]
+      note: 质量工程 · 测试工程师
+      password_hash: "scrypt$16384$8$1$X318yrtv1sgLwHGf4yBvNA==$dCCJYYZDAB9OszOrN3KamuNRSczFYrpS3iCpL4+doN8="
+    - username: zhoujiachen2
+      display_name: 周嘉辰
+      roles: [OPERATIONS]
+      note: 运营中心 · 类目运营
+      password_hash: "scrypt$16384$8$1$YF5zQ3rTNGk+FA1CKE5fWg==$OB+dSmdLztvmffJb2/FlvcUHsiBAz8CL28PTBMu/4sg="
+    - username: humingming
+      display_name: 胡铭铭
+      roles: [QA]
+      note: 质量工程 · 测试工程师
+      password_hash: "scrypt$16384$8$1$1UzhhDetsYimNWIDZwBing==$zNp4PXXhPvYbzsoruHIO5q/uDluBAf53rx+cpk0a4ro="
+    - username: renruizhou
+      display_name: 任睿洲
+      roles: [HR]
+      note: 人力行政 · HRBP
+      password_hash: "scrypt$16384$8$1$uv8hqivvICcYQPho74mgtQ==$avl8Ur53ul+OOdIdqFqgjOkTvqTlN1TRuLyz7DPC31s="
+    - username: caojiantao
+      display_name: 曹建涛
+      roles: [FINANCE]
+      note: 财务 · 会计
+      password_hash: "scrypt$16384$8$1$pUGWnEGs+LSutMYVJW3ZSA==$ljB6iHEuFGoVlgGZRrnT34ZcH4HKHXG8I9shGIxmpO0="
+    - username: wangziyang
+      display_name: 王子洋
+      roles: [SALES]
+      note: 销售中心 · 大客户销售
+      password_hash: "scrypt$16384$8$1$vth2Z4HKUCwNQNnH8/7U+w==$zohNlBithMVWhtvnXrnU1b+tiyaZq4oEtfMUGTW6TiM="
+    - username: zhangning2
+      display_name: 张宁
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$bdBe3URD1gCdzl6fuAOC7A==$cYeEqWzBodgP3wWnE6XGCK7LaxVj8dw91OXwqBaYje4="
+    - username: chenyuyue2
+      display_name: 陈雨玥
+      roles: [SALES]
+      note: 销售中心 · 销售运营
+      password_hash: "scrypt$16384$8$1$IqxIcFgdTKgfCukCaxJaNg==$EnI+w4LP0FuVs/auFov/gzTFb9wfj38Ii1tSqHclr3g="
+    - username: huangjun
+      display_name: 黄军
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$I+FiPkKGDqc7FIPW1sOO0Q==$VMwA6mIPGEUkO5cn/4sqS5lncf4l3intOMCqVxDFN+g="
+    - username: sunshijun
+      display_name: 孙世军
+      roles: [MANAGEMENT]
+      note: 管理层 · 副总裁
+      password_hash: "scrypt$16384$8$1$b0QeMYXvKpoOxm0qVopL0w==$U/VRANyIG4RIP8ZXqbNGFnrnL/reQGNNYsX6NI5TT4k="
+    - username: tangmutong
+      display_name: 唐沐彤
+      roles: [QA]
+      note: 质量工程 · 测试工程师
+      password_hash: "scrypt$16384$8$1$veUi5kriYxCY/WTwzcb1pg==$a4A1cLiEwYImdua6O1Y3exQ7p7RSkaGytsVJ6Cbus+8="
+    - username: zhangfan3
+      display_name: 张帆
+      roles: [MANAGEMENT]
+      note: 管理层 · 总监
+      password_hash: "scrypt$16384$8$1$9Nqlhz06X7065tNCqH+gWg==$5AmUVLOrBLMfIPNE6mVbU3hJSY3DmXaM+7SldUucU9c="
+    - username: liyan3
+      display_name: 黎艳
+      roles: [SALES]
+      note: 销售中心 · 区域销售经理
+      password_hash: "scrypt$16384$8$1$uXpF2cJ2Gx6IVGhrgolJIw==$m3+vGAktZC074d4SdDbY9TLofyXleAb9PswNNTlygbQ="
+    - username: guoyiming
+      display_name: 郭亦铭
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$LfTtz8YZC8QQpJWOMoQlHw==$Dd4KUB7a3PC8kj+bYLmqPBy0+4+bUm4xRAR8Aow0Hn4="
+    - username: xiexiaoting
+      display_name: 谢晓婷
+      roles: [QA]
+      note: 质量工程 · 测试开发工程师
+      password_hash: "scrypt$16384$8$1$K1mDxeeSk9bXmXsPALt/DA==$I2jLC3/cI8dWkfw1/ITgppEFAwH8Kqbmha/S/6Ufm0Y="
+    - username: zhuyuran
+      display_name: 朱宇然
+      roles: [PRODUCT]
+      note: 产品部 · 高级产品经理
+      password_hash: "scrypt$16384$8$1$qhXqiR+u22337On7q4UXcg==$hOc1V9QjyNBQJvW0Lvr6BydbOyYEb2KnQ8NHLjgwX8w="
+    - username: liangzeming
+      display_name: 梁泽铭
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$biY0GMxQVTEg6Br6GdxjUA==$4DULMXen4SfwDKJU1IE52+raRQUbFjhKAVtcb06/NK4="
+    - username: wanglihong
+      display_name: 王丽红
+      roles: [MANAGEMENT]
+      note: 管理层 · 副总裁
+      password_hash: "scrypt$16384$8$1$aSRbWXvB1yV3cKVYeRCZPg==$VLhbbI0Zz424KO1bbHnuoKPTWbJvgstgsCioV2u9Lkk="
+    - username: zhujiaze
+      display_name: 朱嘉泽
+      roles: [MARKETING]
+      note: 市场部 · 品牌策划
+      password_hash: "scrypt$16384$8$1$m8xIrpXT4CvaEmAMSXGcUg==$gIJih4fcd6/95jMApiLVo7PfbB/moWxZtn0VwEGGlNE="
+    - username: shaojinli
+      display_name: 邵金莉
+      roles: [SYS_ADMIN]
+      note: 平台运维 · 平台运维工程师
+      password_hash: "scrypt$16384$8$1$zDZQwz2sTBlxz3+ngB+fuQ==$2uIhBDJfmfgwUttyFEjCMW84botUEcN3qcmyJNg2xgU="
+    - username: liuran2
+      display_name: 刘然
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$gyNbVO6TCm6RKdWoTurBTQ==$ZsOxrDeOnOWvOs4xDXHl8W5hLwNiOiJsbcqFBQj8xqs="
+    - username: zhangxiaodong
+      display_name: 张晓东
+      roles: [DEV]
+      note: 技术研发 · 技术经理
+      password_hash: "scrypt$16384$8$1$pgDxL6H4IAqOUZJhkkPCwA==$+Mf33F6oLXPDKMZXjBTf/t0CjtmQoEzgMLHKrmZEZgg="
+    - username: mamuming
+      display_name: 马沐铭
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$1ONzQleZylkiR41dG+kl9g==$QPKYQZ2js0CYcu4qfPTvhvPLMpnZukjN9xIvvjGXpOU="
+    - username: wujiaran
+      display_name: 吴佳然
+      roles: [SUPPORT]
+      note: 客户服务 · 在线客服
+      password_hash: "scrypt$16384$8$1$YIU/Hgts2KcUC/7rKSpu7Q==$iUaz3ZYUovIV7CCHUSBqQxuiMk53nuDbX9XvObuOGX4="
+    - username: lixinnuo
+      display_name: 李欣诺
+      roles: [DESIGN]
+      note: 设计中心 · 视觉设计师
+      password_hash: "scrypt$16384$8$1$uWX6myqhwAAjsqQWptxCfg==$YgynwY5ff6EZ2zcU02Rd45mwCA5mJVvw6ow5VaNQIsc="
+    - username: mahang
+      display_name: 马航
+      roles: [QA]
+      note: 质量工程 · 测试工程师
+      password_hash: "scrypt$16384$8$1$gwA99a0ZCMKfLAFEPzWlUQ==$iMcvtrfdK4lHc8vck4ORhc724Z41H3d/D4ZcEvXRMxQ="
+    - username: zhoumuxi
+      display_name: 周沐熙
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$rRKFMw0Bfh2mDNcYu6uvVg==$MWbPRMAW4FtnlhkcqECNP/IzpSxCvR7tmLZao1T1SVY="
+    - username: yaojinyan
+      display_name: 姚金艳
+      roles: [SUPPORT]
+      note: 客户服务 · 客服经理
+      password_hash: "scrypt$16384$8$1$XCuD+uFA6aXUKICg4h4DOA==$7tAEgC3vGqw4PKd26B0LyHaCUU3F4BEPzyYmjf6e7DY="
+    - username: wangruiyi
+      display_name: 王睿逸
+      roles: [DEV]
+      note: 技术研发 · 基础架构工程师
+      password_hash: "scrypt$16384$8$1$KLFZohNN4I4X5ej/aEM36w==$hr1UCcDu0wJRodd23GkjTDhMW89TnfterGqgnP52+Yw="
+    - username: zhangshihui
+      display_name: 张世辉
+      roles: [DEV]
+      note: 技术研发 · 运维开发工程师
+      password_hash: "scrypt$16384$8$1$Hxu2xLNcm9UH5x6KPvfSJA==$5dvY7do4nW02P9f5Gf8z/koqXgooFu9cQ5UZ7C0Rs+g="
+    - username: dingyonghao
+      display_name: 丁永浩
+      roles: [OPERATIONS]
+      note: 运营中心 · 店铺运营
+      password_hash: "scrypt$16384$8$1$f6LF90MxW7cnuxQ06/vOSw==$LWQR7m2NA/nraxZhoayKY40BVDLqCVnPKiJLsoTTlkg="
+    - username: huanglei
+      display_name: 黄磊
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$bnKdero+THh1/Xc20rrMiw==$lvthAYG+suRzmfcMxKfNimZ43pT8lEVftesG4EaPaUk="
+    - username: zhangyongyu
+      display_name: 张永宇
+      roles: [DEV]
+      note: 技术研发 · 技术总监
+      password_hash: "scrypt$16384$8$1$kcA/X5pQfbxUJx9Ig/DSoA==$c1emMwmSGykB1ba3JDXBaAzUjEGS4nG5phU9Pvx2D7A="
+    - username: liuyixi3
+      display_name: 刘亦熙
+      roles: [DEV]
+      note: 技术研发 · 数仓工程师
+      password_hash: "scrypt$16384$8$1$72zigalvgjszVRfD+okshg==$TSMAi+D/I+R2xuCsLpekVy6SDOnKwgo7CxJlYXL9weY="
+    - username: lizhengang
+      display_name: 李振刚
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$dY4l3h9F2i98T2QsrPf/GQ==$WZ7A4NJmoU7i4jm+E+pXlzU951qgSFe+lei0Mo7XfSo="
+    - username: sunyi
+      display_name: 孙逸
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$Xmgc8s2nKppAfnDlUfPRrQ==$0tdc5HmIX+LqAUBzXfGVot1CKd68xIrEgpcHIzz+2hg="
+    - username: zhangtianxi
+      display_name: 张天熙
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$Nfuggs9RHuZh8RT6ztxKaA==$1VXbfLp1TytRsY2z9SccxgKOUh9JqSpKITqLfSvtXs4="
+    - username: zhaohaoxuan
+      display_name: 赵皓轩
+      roles: [QA]
+      note: 质量工程 · 测试工程师
+      password_hash: "scrypt$16384$8$1$JqFiPGyOfSw3N6VX4EVy0w==$Vj/R3Vad9YzE0ESoioZBq2kGVLeXhWQkeG+EFse+c6k="
+    - username: fengshaopeng
+      display_name: 冯少鹏
+      roles: [DEV]
+      note: 技术研发 · 基础架构工程师
+      password_hash: "scrypt$16384$8$1$xbNmCFbNVaBbSYz3NPOxeg==$G6NXGqxQD8FfM37tgTgcNO7b5BFoJ7dgin3En7OTSzc="
+    - username: lixiaowei
+      display_name: 李晓伟
+      roles: [DEV]
+      note: 技术研发 · 技术经理
+      password_hash: "scrypt$16384$8$1$Nqgt4HiObrSWZDA5NxQBDA==$luPxnqxKmvvcSI+dP0Ap9eheN5dkCpsLqHQDDDOUTDM="
+    - username: heyihan
+      display_name: 何依涵
+      roles: [SUPPORT]
+      note: 客户服务 · 在线客服
+      password_hash: "scrypt$16384$8$1$pudaMYVA+ojD6JJdy8+wfA==$hBtPkZpCEjzWkTuHOVSuwUK4t6XkgCNRDjxS7PUQE6k="
+    - username: guozhiyong
+      display_name: 郭志勇
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据分析师
+      password_hash: "scrypt$16384$8$1$wOn7+Ic4x+v/ogghpk9Npw==$qIhVBhEfhgiL1265zzBm36dZgWVh7v4XKkdDviyqOYI="
+    - username: yushumei
+      display_name: 于淑梅
+      roles: [OPERATIONS]
+      note: 运营中心 · 运营主管
+      password_hash: "scrypt$16384$8$1$d05a2ZnYCeoOic+yIB5+0w==$iVTbre+jdEUDwmXi3k5ES5xp91/xSMoK6GGR0HKPDNQ="
+    - username: shaojianan
+      display_name: 邵建安
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$6w6R92nV1zp6Ce9LXvDQeg==$umqd7B1CYu4B9dtF82eVpxkperDRn5jL2SAa3nEcLfY="
+    - username: cuihua
+      display_name: 崔华
+      roles: [SALES]
+      note: 销售中心 · 商家拓展
+      password_hash: "scrypt$16384$8$1$jX6bVUKupJF81ARfzWulTQ==$oVSkFV3SeT7p2Q4BA8myBHSF+0+qkVllXn0Hwa1xNPI="
+    - username: guosufang
+      display_name: 郭素芳
+      roles: [OPERATIONS]
+      note: 运营中心 · 活动运营
+      password_hash: "scrypt$16384$8$1$pZmaXFo/LCKSyCwQDPq7UQ==$u6iuXeEeZ/NTCYXLcniyAl7hqYKpXf5oT/kE44mDRM0="
+    - username: xiechunan
+      display_name: 谢春安
+      roles: [DEV]
+      note: 技术研发 · 基础架构工程师
+      password_hash: "scrypt$16384$8$1$6If4nqkISKdu80ABk66OMA==$q9+hbe0P9se2RPZWWApGnlO6WbgjzO7nE0P+4BuJQ0Y="
+    - username: malimin
+      display_name: 马丽敏
+      roles: [OPERATIONS]
+      note: 运营中心 · 类目运营
+      password_hash: "scrypt$16384$8$1$xx/YE3WuARnhBXa6LOpqTA==$bWWXMbKx4ibfKwbrUVmdQjQNDLDF2SL4KjZpmE3WeEE="
+    - username: zhaoyu
+      display_name: 赵宇
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$68eqLdj5Dn0SuXYz3al25A==$b8lGeZfVnH+OgNUjUEPi76fTXW+1xxO16WHWKdTzfKg="
+    - username: zhuziran2
+      display_name: 朱子然
+      roles: [SALES]
+      note: 销售中心 · 商家拓展
+      password_hash: "scrypt$16384$8$1$NPc+HdPBmB7rriLCds8uNQ==$DMJHdORiG/Qw3sRgtEzYp3LBJANVGzGafePlvyfW6BM="
+    - username: wangwanyue
+      display_name: 王婉玥
+      roles: [OTHER]
+      note: 待定岗 · 外部顾问
+      password_hash: "scrypt$16384$8$1$fcMqc3aX82br7VX8juUo1Q==$KHgfnJBtFXTDsVXYVVZRM7w44pFoj/R4xANVxwpNzXs="
+    - username: sunyongjie
+      display_name: 孙永杰
+      roles: [FINANCE]
+      note: 财务 · 税务专员
+      password_hash: "scrypt$16384$8$1$FaCEKcZRqdoXB5elecKgdQ==$f5AAmmS6QfZ1Yh8Z6XiuUkWScB3D2J2LyYo86al1deQ="
+    - username: zhangjianing2
+      display_name: 张佳宁
+      roles: [OPERATIONS]
+      note: 运营中心 · 活动运营
+      password_hash: "scrypt$16384$8$1$elWChs2Upne4I1+VJ8USGQ==$fDw9trGbUYEnIO49SQYoJStLL1f90sXIiwmeWY3l/Ic="
+    - username: shenyibo
+      display_name: 沈亦博
+      roles: [DEV]
+      note: 技术研发 · 移动端工程师
+      password_hash: "scrypt$16384$8$1$ZSsS+/tlHK97iXeiW6RiQA==$YSpLyiEs6BRNac8TC3Omhz5z7GgLIAMp0ZIGUJ9sFw4="
+    - username: yumuran2
+      display_name: 于沐然
+      roles: [OPERATIONS]
+      note: 运营中心 · 类目运营
+      password_hash: "scrypt$16384$8$1$D6wbB+dOtmiTaJrs6GtJEQ==$Z0qzz3gBKZaot0lBJacd1klyFHBuDPcuPuml+bN5A4Y="
+    - username: weihang
+      display_name: 魏航
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$5i4Jq3/xY8qrvj+qa/SmRw==$oI2Es7hAJRae/UaBhpLw91NELXdyYUoMN4z1w+LVdAk="
+    - username: chenhang5
+      display_name: 陈航
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据分析师
+      password_hash: "scrypt$16384$8$1$FF6GjBhElzRGYuN9QNxoEQ==$HKtDaaW40/Qhh+s/AHsfR8LPxwo7ZhChYz4TR5ZkQLU="
+    - username: guorong
+      display_name: 郭蓉
+      roles: [OPERATIONS]
+      note: 运营中心 · 运营主管
+      password_hash: "scrypt$16384$8$1$5A8KgwRuJLesu6RqR76Fkg==$AC6aYhj3N0dQl21oy0FjSm7Myo2qLCfasOdYjkW3oic="
+    - username: chenkeqi
+      display_name: 陈可琪
+      roles: [PRODUCT]
+      note: 产品部 · 高级产品经理
+      password_hash: "scrypt$16384$8$1$ZOewvRPcyFzCJ7do705FCw==$HPMqLkdOYvHMJ7zuxJcwASyKjpzCk6FZywyCue//67s="
+    - username: dengyiming
+      display_name: 邓一铭
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$UcueycfbjA9JhjqP6Xrveg==$8fInb+jYZouyLhOi76foRyNZ5vCSvbfvgadilPbzy94="
+    - username: hezinuo
+      display_name: 何梓诺
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据治理专员
+      password_hash: "scrypt$16384$8$1$hyggpZzeNGRenJr/MwAtxQ==$4BhchwkJFPpIbJRNuXNtzpdSasjaXKOvGtv2rCVlf+M="
+    - username: fengmuchen
+      display_name: 冯沐辰
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$VTOt/hd6rFR3xXEvNskFvg==$eDvCzMoeyHITl4/pjvuQtSOR3h5jA+lt4eEEPUr5JwQ="
+    - username: caifan2
+      display_name: 蔡凡
+      roles: [MARKETING]
+      note: 市场部 · 品牌策划
+      password_hash: "scrypt$16384$8$1$2jcb3cUGkjLEy6QSyoTbtA==$qbuvlynf2i5cm1pkBZFnrwue+s5oc70FjKhepC+ppqM="
+    - username: linbo
+      display_name: 林博
+      roles: [DEV]
+      note: 技术研发 · 技术总监
+      password_hash: "scrypt$16384$8$1$RfEfBq0EYQBX31SCLwaGbA==$DgBNBdH6Hfd24hKArmMs7hrhUNmFoCCvx7BEwKTk2iY="
+    - username: yangwenlei
+      display_name: 杨文磊
+      roles: [DEV]
+      note: 技术研发 · 技术经理
+      password_hash: "scrypt$16384$8$1$IWZyT8+DT/339XnobsnQDw==$oOr60zlrGjU5NTh61OuyVT+nFF1Ejyyc6lVPQ/L1cQ0="
+    - username: lijiabo
+      display_name: 李家波
+      roles: [DEV]
+      note: 技术研发 · 基础架构工程师
+      password_hash: "scrypt$16384$8$1$zwVmvJRJwub1jZkHr6NjsQ==$/reo3a6MRuAwojw9uMfI8MDtQ+18G7tmRvGA0zX3+ho="
+    - username: tangqian
+      display_name: 唐芊
+      roles: [MARKETING]
+      note: 市场部 · 投放专员
+      password_hash: "scrypt$16384$8$1$PZTqMetELiZU0Qc/cWy0NA==$DyQA65J8Df8OFByuib45SHInjdcOUeDL4RKpahLL70g="
+    - username: tanzhixi
+      display_name: 谭芷汐
+      roles: [SUPPORT]
+      note: 客户服务 · 在线客服
+      password_hash: "scrypt$16384$8$1$Uqyv9Sasyfa84bV9OAFoMA==$iJcpUgSqXW/ehaayIG0t+i97sEhnfJzHYdvz/idX0U8="
+    - username: liuyiyang5
+      display_name: 刘亦洋
+      roles: [SALES]
+      note: 销售中心 · 大客户销售
+      password_hash: "scrypt$16384$8$1$choav0cpiuAQn0LMZzlqpA==$HjsNlsthUBpZX3NEPgffmwLnNRt0wgjzUEQPfuoLDKQ="
+    - username: wangyicheng2
+      display_name: 王亦城
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$RibM/r2l/3GkzrlzS8CjwQ==$2fTc790Gin3EnLXgy7z31OxNm+0Fl7ikMWsSkNo87m4="
+    - username: chenjiayue
+      display_name: 陈佳玥
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$qxBr4/5+2IQzFY25qkc73Q==$j22fGQaVSVe0YVq6O0f41MNO06ajp1ICaBSnmiQSU1M="
+    - username: luoyirui
+      display_name: 罗逸睿
+      roles: [QA]
+      note: 质量工程 · 测试开发工程师
+      password_hash: "scrypt$16384$8$1$YLz1+j7O8OGPL26dTGqXFw==$FG80HmNCancV0Awhs4MFmLxIZRngsY70sX2Gv/QB888="
+    - username: liyang6
+      display_name: 李洋
+      roles: [MARKETING]
+      note: 市场部 · 品牌策划
+      password_hash: "scrypt$16384$8$1$/bpDLLQJDILMXC6o3uuung==$VVv1Mnl3sNxiJKawCDvmTSaUspmOWTIVDhoJMvei9rQ="
+    - username: wangzifan2
+      display_name: 王子凡
+      roles: [QA]
+      note: 质量工程 · 测试工程师
+      password_hash: "scrypt$16384$8$1$I1wVcn/eow1gBghW66dlNw==$Uoy/SEDoZTky36cUkORXevuZsyzRTBjZmdzDa9Rj4fQ="
+    - username: dingjialei
+      display_name: 丁家磊
+      roles: [OPERATIONS]
+      note: 运营中心 · 类目运营
+      password_hash: "scrypt$16384$8$1$oeL1JjtQg72MCkdEv03PkA==$D6m0cEldI0N3jKTAHCUgkuz/eLNlyfm3HB+i8YIyY+8="
+    - username: chenping2
+      display_name: 陈萍
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$3rBM9vzwUuPvxT9h9v2qwg==$BLMcVrVCGCMyMjofvXgoefbu/Lo+R/fEnJTeUBRyAlk="
+    - username: chenzihang2
+      display_name: 陈子航
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$ImcZ+xV/yigvdSg08Rx4bg==$kW5/vXypiF15FVexU3nm/WS6vVC8gv+DfG986kgnFCs="
+    - username: zhengyiyi2
+      display_name: 郑一逸
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$BBdw/uNZAMSseWOY5OZrRw==$7uEPf/lrrTpUpjL6S/Seu+ojV6ThN5EidHJbm1+S9oA="
+    - username: hanruiran
+      display_name: 韩睿然
+      roles: [DATA_OWNER]
+      note: 数据与分析 · BI 工程师
+      password_hash: "scrypt$16384$8$1$FI2lNAWvSeE3cvIr8d9AaQ==$1nPVWEoE+EflDVQkFOVogb1rY2pTU7iMOr8FZwUsmAM="
+    - username: lizefan3
+      display_name: 李泽帆
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$ql4W8P/WrSesqiitY2Tg7w==$2hF9xfivmuRBf9jpusNzUz9c0W24+ecKqDPmNodWBko="
+    - username: yuyang3
+      display_name: 于洋
+      roles: [HR]
+      note: 人力行政 · 薪酬绩效
+      password_hash: "scrypt$16384$8$1$kohdVwmoRCDR0M2YTW07hg==$tbAHI21VPknyy4qQ5GdByi1erukxZ16BQxOHR3I71A4="
+    - username: houtong2
+      display_name: 侯童
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$H1kQlD2DnQ+OhOlG/ZJGiw==$njjuaJJ52aX+WzPl32JkRaNnvUdYvNMqiP5Na6wdbZw="
+    - username: xucheng
+      display_name: 徐城
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$XCmIvBNJAj4x5i7MEtGR1w==$HS2tqOxKA7JvkQ2mtf6/W8XBvUuVuMFpzfFsUowUl90="
+    - username: zhangruoyan
+      display_name: 张若妍
+      roles: [SUPPORT]
+      note: 客户服务 · 工单专员
+      password_hash: "scrypt$16384$8$1$mTcjhwQnDEahf/9eArMSjw==$MhGdInGZD+PLRh3yhANPMARqgC0nTjAuzskx5QcP3U4="
+    - username: fengsiqi
+      display_name: 冯思琪
+      roles: [OPERATIONS]
+      note: 运营中心 · 店铺运营
+      password_hash: "scrypt$16384$8$1$+lhr9fZ+lquOo77UCeoi0Q==$x3M27PMXAVHyXGf9tGzJoK1sZo4owdKjpfGpEscJVAg="
+    - username: luositong2
+      display_name: 罗思童
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$h4o/pktZQxERGCRkinBF4g==$JvCtpT2Nnjiw/F8RcFHYShb/h9zYLhUzifKmb3rVnZU="
+    - username: fumuyue
+      display_name: 傅沐玥
+      roles: [SUPPORT]
+      note: 客户服务 · 在线客服
+      password_hash: "scrypt$16384$8$1$gqtIFUb4lXoPdvRMNYIDWA==$K8Bz/SKnTE24vNDgQHS3w8xp+MpPskE6UoMQB42g5q8="
+    - username: huangtong6
+      display_name: 黄桐
+      roles: [SUPPORT]
+      note: 客户服务 · 在线客服
+      password_hash: "scrypt$16384$8$1$8UD9fZx0zeQCkP92JqRPnQ==$Uf3KMTdn/VzAVc2vRU6yZ13jvtQ9PEUUVNKQ++n3ppw="
+    - username: yuziqi
+      display_name: 于梓淇
+      roles: [HR]
+      note: 人力行政 · 招聘专员
+      password_hash: "scrypt$16384$8$1$cIHvE7UN5kmaMP4NO+tU2A==$bTyWO1bMeu1kRM4vAsrT0+JVeChXvQUhinItBO7rc3I="
+    - username: sunxue
+      display_name: 孙雪
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$bJ2VWLXqKIV6q8rD7F4Jtw==$Gb2TtFG53OIaGAFg5bFxPKEU03gt3z2Cz6JTJ2iT9dY="
+    - username: liangjiameng
+      display_name: 梁佳萌
+      roles: [DESIGN]
+      note: 设计中心 · 视觉设计师
+      password_hash: "scrypt$16384$8$1$WKj2omEfiKJX9UOd0Fr+QA==$sof8cktE0NMqt0QACIBXh+0pxYvXZLJ4N6ycHoUSyMA="
+    - username: yangqi3
+      display_name: 杨琪
+      roles: [SALES]
+      note: 销售中心 · 商家拓展
+      password_hash: "scrypt$16384$8$1$SGCaPbDinq7tFxRnmJSRNw==$H4cCp3MujLrsJWuab/gWOO5g7y5RQ23Fh4coyR7Gavs="
+    - username: sunhaochen3
+      display_name: 孙浩宸
+      roles: [DEV]
+      note: 技术研发 · 安全工程师
+      password_hash: "scrypt$16384$8$1$nu+u44Rh644M+isLrdiA1w==$XMb2mlMPAYSuA/fxWpZW7UE37EBMPfxEZQeDre97xDw="
+    - username: tangtong
+      display_name: 唐彤
+      roles: [MARKETING]
+      note: 市场部 · 内容营销
+      password_hash: "scrypt$16384$8$1$XKXElrTIUymNvwLCLrP/yQ==$AQe6v3KeP/qNg/eOks8QJdk4XCGKanu5Umkl9/KQmfY="
+    - username: xiaozhangpeng
+      display_name: 肖长鹏
+      roles: [OPERATIONS]
+      note: 运营中心 · 运营主管
+      password_hash: "scrypt$16384$8$1$u5STZ0Tyw8d4mbPS6XRHNg==$qTaKdo9gay992AcBxjucjoiXFxqiEMCah3ykB2Xc76M="
+    - username: xionghaoxuan
+      display_name: 熊皓轩
+      roles: [OPERATIONS]
+      note: 运营中心 · 活动运营
+      password_hash: "scrypt$16384$8$1$l/ON232RS5ukDd7GcWxBew==$IdlSfrAB2wvbn6xpVtg9pqdcxhBpgPseobMqWZrz7gg="
+    - username: liangjiaming
+      display_name: 梁嘉铭
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$iyKMRVoiQxeYeqo7ShcNRQ==$BoklWjGIulH923WFSeEZdlTKTsoaF6ael80Xs+pzysQ="
+    - username: wanghaochen5
+      display_name: 王皓辰
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据分析师
+      password_hash: "scrypt$16384$8$1$4BYem0j3qM8CWviw/FnEBA==$+0AoFOGciE8weaUMYlDuTYN88vO1cnunSJptJa5E0yw="
+    - username: zhangzerui2
+      display_name: 张泽睿
+      roles: [DEV]
+      note: 技术研发 · 基础架构工程师
+      password_hash: "scrypt$16384$8$1$D3EB9kedx2YlXzxw+gF6Fg==$+0mU2cum54IKeKTRVxi/6EiSqQBTa3Tcez49x8OM3Nk="
+    - username: yangzining2
+      display_name: 杨梓宁
+      roles: [DESIGN]
+      note: 设计中心 · 用户体验设计师
+      password_hash: "scrypt$16384$8$1$cRCbLpPt5O5vzbTFqKwNhQ==$Je4Rbdxxx35/BFGZML4BwcRtFLKEnYBzlWBF4JjlyXI="
+    - username: zhaolanling
+      display_name: 赵兰玲
+      roles: [SALES]
+      note: 销售中心 · 商家拓展
+      password_hash: "scrypt$16384$8$1$6Nn2RfDVFJHrsMidfAV4KA==$aaui5BpJOqvCqMTHLV7wVE2AaZ7jAexQDU2LxWutQnw="
+    - username: liuyang6
+      display_name: 刘洋
+      roles: [DEV]
+      note: 技术研发 · 基础架构工程师
+      password_hash: "scrypt$16384$8$1$/r/LfqP/5eREJCM0QiodgA==$iSsorfbbX5bRsOnXprctt1xa/q7iAqdrePKw3mQH6sQ="
+    - username: luojiayue
+      display_name: 罗佳玥
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$u/5IL9KH3gISL39wIAy34g==$735iYUEhiyC7uwgo74dLHAJ58gUlkvD1lVipgsxr5qo="
+    - username: sunmuchen
+      display_name: 孙沐宸
+      roles: [DESIGN]
+      note: 设计中心 · 用户体验设计师
+      password_hash: "scrypt$16384$8$1$yQ0h/I6fKrwzkth3E1W8fQ==$o5T3gNhbfkbXRDKg5e/XTCGQNC3ElmXuSSCQ8468G2M="
+    - username: liangyang
+      display_name: 梁阳
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$9UaHQUeI29VqVrwN0L6prg==$/KcJnZMC0PRNiIfTZ+sBDzOEXKvrShH1Wko+Ivw9skI="
+    - username: zhangnuo4
+      display_name: 张诺
+      roles: [DEV]
+      note: 技术研发 · 运维开发工程师
+      password_hash: "scrypt$16384$8$1$iTy0xLqmkTNkJBLH5Od8zg==$mxxvN2r6Khr23oGtlAifE8KUdpiRHy5EX7rvCwZr09U="
+    - username: liutong4
+      display_name: 刘童
+      roles: [LEGAL]
+      note: 法务合规 · 法务专员
+      password_hash: "scrypt$16384$8$1$Goh7QaBKbgYOBphTZFikdA==$VDxXimkkFwviu0EjBzKN0j4FlzbYo91DMkuOtypBKbM="
+    - username: songruixuan2
+      display_name: 宋睿轩
+      roles: [FINANCE]
+      note: 财务 · 成本分析
+      password_hash: "scrypt$16384$8$1$HlHfpkQbo/2EoUEM8KxM9g==$rs4ZE3GXOzX4x55J/I09+0f/F+DPST3Xr8aoOTqkfq4="
+    - username: gaozeran
+      display_name: 高泽然
+      roles: [DATA_OWNER]
+      note: 数据与分析 · BI 工程师
+      password_hash: "scrypt$16384$8$1$Jspqs5LzRx1Tx/ZfOU7ZWQ==$CupVJfHYNmGFzO8Ncu37Cc6Ja995RQ2OfFIJ4Yx3CgE="
+    - username: limingxi2
+      display_name: 李铭熙
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$TcUS8n1o+wia7KIlCcbE0w==$JBe8AJSPHJSrpcw+hFU0CpvCj4GJDdxGVMmDs84Gg/w="
+    - username: yangyuyi
+      display_name: 杨宇逸
+      roles: [PRODUCT]
+      note: 产品部 · 高级产品经理
+      password_hash: "scrypt$16384$8$1$sOYsk7vNBL2UGE6SfRzDOg==$tzwO//uq01EEO+JifBFZK0SXg+etdPfbG5G1umPZsX8="
+    - username: chenjunxuan
+      display_name: 陈俊轩
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$mXpdTKQWqcRJbeZEUvPgbA==$4NRG9FE7ZIqdGx52sjuocjs2vFVl1Ot4K6uVkTZNGyg="
+    - username: chenchen5
+      display_name: 陈辰
+      roles: [PRODUCT]
+      note: 产品部 · 产品经理
+      password_hash: "scrypt$16384$8$1$TgZHq2rxPPTSxzpMF1jNEA==$wpJfBi9M8VXcNlDKz+RiqbyeduFtUtG1ZHF+iG0OKp0="
+    - username: xuyuran2
+      display_name: 许宇然
+      roles: [DATA_OWNER]
+      note: 数据与分析 · 数据分析师
+      password_hash: "scrypt$16384$8$1$lkuwSMOjxYhF1/ZhR0xZQA==$nrSGbOs6IoguJ+SeJvn5ukxgZ48LOXZE4f6uSg6TVRI="
+    - username: pengtianrui
+      display_name: 彭天睿
+      roles: [OPERATIONS]
+      note: 运营中心 · 活动运营
+      password_hash: "scrypt$16384$8$1$cNp6h057DCiGucVLf3i9GA==$ytf8nA2s2oH62Cme3GesyYUHB00+KJ5Iq/Q1xXwVL8Y="
+    - username: yezhixi
+      display_name: 叶芷汐
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$wKsLWYgA4Uvmcc384YPqfA==$78L5wUVjj71F/5gjm1ZY/ATZ7j9GRVYxhmrur5Jxewo="
+    - username: zhouyiqi
+      display_name: 周依淇
+      roles: [OPERATIONS]
+      note: 运营中心 · 选品专员
+      password_hash: "scrypt$16384$8$1$/FUpqkdfAgZKORF2XurU8g==$qVG2L08GRVjQsjxEqZatSZKnWGLChy0j+ma9/gvAIpg="
+    - username: pengchen3
+      display_name: 彭辰
+      roles: [DEV]
+      note: 技术研发 · 运维开发工程师
+      password_hash: "scrypt$16384$8$1$HdBSl7CyBA2Ibq2k366ziw==$QZ5+lyB8hUZx4GENe9CggRSXP6H2K9Kixtr2wpXvUm0="
+    - username: zhangjiazhou
+      display_name: 张嘉洲
+      roles: [SALES]
+      note: 销售中心 · 大客户销售
+      password_hash: "scrypt$16384$8$1$5jv7Z8+ytMaEUQIeoVxmgw==$nOpdDnndt5GxlBZD4BGxt4hgX8UNlWGmWLJvkytDyXY="
+    - username: zhangyi13
+      display_name: 张逸
+      roles: [DEV]
+      note: 技术研发 · 后端工程师
+      password_hash: "scrypt$16384$8$1$qYsUTXdyC7VIiThHmZe7PA==$UWmOZT3fjiHLB0F6xWiOm+Zdl554/DdBb18GzB525pc="
+    - username: liangjunyang2
+      display_name: 梁俊阳
+      roles: [QA]
+      note: 质量工程 · 测试开发工程师
+      password_hash: "scrypt$16384$8$1$l6QzN07FsveS8SjSCwHX8A==$MryMzsu88txkIr4NzhKbD07Bw6UopYKGgl73StkRwLM="
+    - username: liuyaqian
+      display_name: 刘雅倩
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$xvBg1yXaagLM6Bksj/eyoA==$hUp4KX45B1WPckzB14YPcYewa89TZ8N6xmYOu61Yld8="
+    - username: wangwanqi2
+      display_name: 王婉琪
+      roles: [DEV]
+      note: 技术研发 · 算法工程师
+      password_hash: "scrypt$16384$8$1$38Loz1kMK3RlJ4kqoHlxCw==$SwPB9McfzHtBr+yGGpyyfccEiSfJx9ymqJc9L7rlk5E="
+    - username: sunyiyi
+      display_name: 孙依怡
+      roles: [DEV]
+      note: 技术研发 · 前端工程师
+      password_hash: "scrypt$16384$8$1$37b95cV2pHmBdRA/morjPA==$rAAGTqF4LAW0/GtX5mynb2tfGdPs7H8GN2lcaUQq6lY="
+    - username: wuyining
+      display_name: 吴一宁
+      roles: [DESIGN]
+      note: 设计中心 · 视觉设计师
+      password_hash: "scrypt$16384$8$1$vhhLrQW2v8c3nRWuSeEj4A==$K9/xoWttHBZJIKCi0YROi7Y+Xh/hTDGdUG6AtQhpjqI="
 
 # ---------------------------------------------------------------------------
 # 身份与权限：角色成员名单
