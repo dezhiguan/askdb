@@ -373,7 +373,7 @@ def _same_source(a: str, b: str) -> bool:
     return bool(a) and norm(a) == norm(b)
 
 
-def _dsn_label(dsn: str, upstream: str = "") -> str:
+def _dsn_label(dsn: str, upstream: str = "", default_port: str = "5432") -> str:
     """连接串的可展示摘要 —— 绝不带出密码。
 
     声明了 upstream 就显示 upstream：经隧道连接时 dsn 里是本地转发端口，
@@ -388,12 +388,19 @@ def _dsn_label(dsn: str, upstream: str = "") -> str:
         kv.split("=", 1) for kv in dsn.split() if "=" in kv and not kv.startswith("password=")
     )
     db = parts.get("dbname", "?")
-    local = f"{parts.get('host', '?')}:{parts.get('port', '5432')}"
+    # 端口默认值必须跟着库的类型走：MySQL 源不写 port= 时按 5432 渲染，
+    # 界面上就会标出一个它根本没连的端口，而排查连接问题时第一眼看的就是它。
+    local = f"{parts.get('host', '?')}:{parts.get('port', default_port)}"
     if upstream and _same_endpoint(upstream, local, db):
         return f"{db} @ {upstream}"
     if upstream:
         return f"{db} @ {upstream}（经隧道 {local}）"
     return f"{db} @ {local}"
+
+
+def _default_port(cfg: Config) -> str:
+    """这个类型的库不写端口时默认连哪个端口。仅用于显示。"""
+    return _sources.DEFAULT_PORT.get(cfg.db_type, "")
 
 
 def _same_endpoint(upstream: str, local: str, db: str) -> bool:
@@ -736,7 +743,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 with Executor(cfg) as ex:
                     ex.connect()
                 db_msg = (cfg.db_path.name if cfg.db_type == "duckdb"
-                          else _dsn_label(cfg.dsn, cfg.upstream))
+                          else _dsn_label(cfg.dsn, cfg.upstream, _default_port(cfg)))
             except DataSourceError as e:
                 db_ok, db_msg, db_hint = False, str(e), e.hint
         out: dict[str, Any] = {
@@ -1245,8 +1252,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "name": cfg.path,
             "type": cfg.db_type,
             "env": "builtin",
-            "host": _dsn_label(cfg.dsn, cfg.upstream) if cfg.db_type != "duckdb"
-                    else cfg.db_path.name,
+            "host": _dsn_label(cfg.dsn, cfg.upstream, _default_port(cfg))
+                    if cfg.db_type != "duckdb" else cfg.db_path.name,
             "credential": cfg.raw["datasource"].get("password_env") or "",
             "created_at": "",
             "table_count": len(cfg.tables),

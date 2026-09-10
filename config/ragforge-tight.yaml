@@ -62,6 +62,17 @@ guard:
     - lo_export
     - dblink
     - pg_sleep
+    # MySQL 侧的同类。理由与上面那几个完全一样：白名单式配置换库即用，
+    # 不靠"换库时记得补齐"。三个都不是理论风险 ——
+    #   sleep / benchmark  占住连接与 CPU（sleep 还有一个坑：MySQL 的
+    #                      max_execution_time 会中断它，但语句照样返回成功，
+    #                      于是 R-12 那一层在它身上看不出任何异常）
+    #   load_file          读服务器本地文件，与 pg_read_file 同一件事
+    - sleep
+    - benchmark
+    - load_file
+    - get_lock
+    - master_pos_wait
     - query_to_xml
     - pg_stat_file
 

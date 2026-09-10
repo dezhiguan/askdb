@@ -239,7 +239,7 @@ def test_wrong_master_key_fails_closed(monkeypatch):
 # --------------------------------------------------------------- 输入校验
 
 @pytest.mark.parametrize("over, hit", [
-    ({"type": "mysql"}, "不支持的数据库类型"),
+    ({"type": "oracle"}, "不支持的数据库类型"),
     ({"name": ""}, "名称不能为空"),
     ({"password_env": "小写不合规"}, "环境变量名不合规"),
     ({"password_env": "OK_ENV", "password": "p"}, "二选一"),
@@ -249,6 +249,35 @@ def test_build_rejects_bad_input(over, hit):
     kw.update({k if k != "type" else "type_": v for k, v in over.items()})
     with pytest.raises(sources.SourceError, match=hit):
         sources.build(**kw)
+
+
+def test_mysql_is_offered_and_accepted(cfg):
+    """界面上那个下拉框直接渲染 SUPPORTED_TYPES —— 列在里面就必须真能建。"""
+    assert "mysql" in sources.SUPPORTED_TYPES
+    src = sources.build(name="pet", type_="mysql",
+                        dsn="host=db.internal port=3306 dbname=pet user=askdb_ro")
+    assert src.type == "mysql"
+    assert sources.derive_config(cfg, src).dialect == "mysql"
+
+
+def test_mysql_dsn_password_is_refused_like_postgres(cfg):
+    """口令写进连接串会明文落库，且 to_public 不出 dsn —— 界面上再也看不见它。
+    一条纪律只要有一条绕过去的路，它就不是纪律。"""
+    with pytest.raises(sources.SourceError, match="password"):
+        sources.build(name="pet", type_="mysql",
+                      dsn="host=h dbname=pet user=root password=hunter2")
+
+
+@pytest.mark.parametrize("type_, dsn, host", [
+    ("mysql", "host=db.internal dbname=pet user=ro", "db.internal:3306"),
+    ("postgresql", "host=db.internal dbname=pet user=ro", "db.internal:5432"),
+    ("mysql", "host=db.internal port=3307 dbname=pet user=ro", "db.internal:3307"),
+])
+def test_host_label_uses_the_right_default_port(type_, dsn, host):
+    """不写 port 时一律按 5432 渲染的话，MySQL 源会被标成一个它没连的端口 ——
+    而排查连接问题时第一眼看的就是它。"""
+    src = sources.build(name="x", type_=type_, dsn=dsn)
+    assert sources.to_public(src)["host"] == host
 
 
 # --------------------------------------------------------------- 派生

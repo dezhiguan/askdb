@@ -2,13 +2,15 @@
 
 设计要点（技术设计说明书 §3.1、§4.1）：
   * 护栏优先做在**引擎层**而非应用层。应用层校验可能被绕过，引擎权限不会。
-    DuckDB 以 read_only 打开；PostgreSQL 走独立只读角色 + 会话级只读事务。
+    DuckDB 以 read_only 打开；PostgreSQL 走独立只读角色 + 会话级只读事务；
+    MySQL 没有账号级只读开关，走会话级只读事务，并在自检里另看一眼授权。
   * R-11 扫描行数阈值：执行前先 EXPLAIN 估算，超阈值直接打回。
-  * R-12 语句超时：PostgreSQL 用原生 statement_timeout；
+  * R-12 语句超时：PostgreSQL 用原生 statement_timeout；MySQL 用
+    max_execution_time（MariaDB 是 max_statement_time）；
     DuckDB 没有该设置，用看门狗线程调 interrupt() 实现。
   * R-13 结果行上限：即便 R-09 已注入 LIMIT，取数时仍再截断一次（纵深防御）。
 
-两种后端的差异全部收在本模块，上层链路对数据源无感。
+三种后端的差异全部收在本模块，上层链路对数据源无感。
 """
 
 from __future__ import annotations
@@ -71,6 +73,26 @@ def _elapsed_ms(t0: float) -> float:
     return round(ms, 1) if ms < 10 else round(ms)
 
 
+def parse_kv_dsn(dsn: str, *, keep_password: bool = False) -> dict[str, str]:
+    """把 keyword/value 连接串拆成字典。
+
+    askdb 全链路只认这一种写法（`host=… port=… dbname=… user=…`）—— 界面拼的是
+    它，注册表存的是它，`_host_of` / `_dsn_label` / 出处标识也都按它解析。
+    MySQL 这一路要是再认一种 URI 写法，上面那几处就会对同一个源给出不同的
+    显示，而"这组数字出自哪个库"正是它们存在的全部意义。
+    """
+    out: dict[str, str] = {}
+    for kv in str(dsn or "").split():
+        if "=" not in kv:
+            continue
+        key, _, val = kv.partition("=")
+        key = key.strip().lower()
+        if key == "password" and not keep_password:
+            continue
+        out[key] = val
+    return out
+
+
 @dataclass
 class ExplainResult:
     est_rows: int | None
@@ -116,6 +138,15 @@ class _Backend:
     def explain_rows(self, sql: str) -> tuple[int | None, str]: ...   # pragma: no cover
     def fetch(self, sql: str, cap: int) -> tuple[list[str], list[list[Any]], str]: ...  # pragma: no cover
     def env_checks(self) -> list[tuple[str, bool, str]]: ...          # pragma: no cover
+
+    def quote_ident(self, name: str) -> str:
+        """把标识符引起来，供自检的写操作实探拼 SQL 用。
+
+        默认原样返回 —— DuckDB 与 PostgreSQL 这条路径上一直是裸名，
+        改成加引号会顺带改掉大小写敏感性，那是另一件事。MySQL 覆盖它：
+        反引号在那边是唯一的引法，而表名撞上保留字并不罕见。
+        """
+        return str(name)
 
     def close(self) -> None:
         if self.con is not None:
@@ -241,10 +272,7 @@ def _pg_connect_hint(dsn: str, upstream: str) -> str:
     upstream 与本机端点相同时不算隧道：本机直连也可以声明 upstream，
     只是当出处标注用（与 server._dsn_label 同一套判断）。
     """
-    parts = dict(
-        kv.split("=", 1) for kv in dsn.split()
-        if "=" in kv and not kv.startswith("password=")
-    )
+    parts = parse_kv_dsn(dsn)
     db = parts.get("dbname", "?")
     local = f"{parts.get('host', '?')}:{parts.get('port', '5432')}"
     tunneled = bool(upstream) and upstream.strip().rstrip("/").removesuffix(f"/{db}") != local
@@ -529,6 +557,482 @@ def _masked(value) -> str:
 
 
 # ==========================================================================
+# MySQL / MariaDB
+# ==========================================================================
+#
+# 连接串解析在上面的 parse_kv_dsn —— 它不是 MySQL 专用的，
+# PostgreSQL 那条路径的连接提示也用它，两边解析出的主机必须是同一个。
+
+def _mysql_connect_hint(kv: dict[str, str], upstream: str) -> str:
+    """连不上 MySQL 时该去查哪一头。与 _pg_connect_hint 同一套判断。"""
+    db = kv.get("dbname", "?")
+    local = f"{kv.get('host', '?')}:{kv.get('port', '3306')}"
+    tunneled = bool(upstream) and upstream.strip().rstrip("/").removesuffix(f"/{db}") != local
+    if tunneled:
+        return (f"dsn 指向的 {local} 是隧道本地端口，真实库在 {upstream}；"
+                f"本机该端口没有服务是正常的。先确认到 {upstream} 的 SSH 隧道已建立，"
+                f"再查库名与账号。")
+    return ("确认 MySQL 在运行、库名与账号正确、该账号已被授权，"
+            "且该账号允许从这台机器连入（MySQL 的授权带主机段，"
+            "'askdb_ro'@'localhost' 连不上远端）。")
+
+
+#: 超时被取消时服务端给的错误码。
+#:   3024 / MySQL 8：max_execution_time 到点
+#:   1969 / MariaDB：max_statement_time 到点
+#:   2013 / 驱动侧：read_timeout 到点，连接已断（兜底那一层，见 connect）
+_MYSQL_TIMEOUT_CODES = frozenset({3024, 1969, 2013})
+_MYSQL_TIMEOUT_WORDS = (
+    "max_execution_time", "maximum statement execution time",
+    "max_statement_time", "query execution was interrupted",
+    "lost connection to mysql server during query",
+)
+
+#: SHOW GRANTS 里出现即视为有写权限。ALL PRIVILEGES 与 SUPER 单列，
+#: 因为它们不是"某一种写"，而是"什么都能做"。
+_MYSQL_WRITE_PRIVS = (
+    "ALL PRIVILEGES", "SUPER", "INSERT", "UPDATE", "DELETE", "REPLACE",
+    "DROP", "CREATE", "ALTER", "TRUNCATE", "INDEX", "GRANT OPTION",
+    "LOCK TABLES", "FILE", "RELOAD", "SHUTDOWN", "PROCESS",
+)
+
+
+def _mysql_error_code(e: Exception) -> int:
+    """驱动异常里的 MySQL 错误码。取不到返回 0 —— 调用方再看消息文本。"""
+    args = getattr(e, "args", ())
+    if args and isinstance(args[0], int):
+        return int(args[0])
+    return 0
+
+
+def _is_mysql_timeout(e: Exception) -> bool:
+    if _mysql_error_code(e) in _MYSQL_TIMEOUT_CODES:
+        return True
+    msg = str(e).lower()
+    return any(w in msg for w in _MYSQL_TIMEOUT_WORDS)
+
+
+def _mysql_enum_values(column_type: str) -> list[str]:
+    """`enum('ON_SALE','OFF_SHELF')` → ['ON_SALE', 'OFF_SHELF']。
+
+    MySQL 的枚举是**类型的一部分**，不像 PostgreSQL 那样要靠 pg_stats 猜 ——
+    这是这条路径上唯一一处比 PG 更准的元数据，不取白不取。取值猜错大小写
+    （`'failed'` 而库里是 `'FAILED'`）得到的是一条语法正确、结果恒空的 SQL，
+    页面上看不出任何异常。
+    """
+    t = str(column_type or "")
+    low = t.lower()
+    if not (low.startswith("enum(") or low.startswith("set(")):
+        return []
+    body = t[t.index("(") + 1: t.rindex(")")]
+    # 元素一律带单引号，内部的引号按 SQL 规矩双写
+    return [m.group(1).replace("''", "'")
+            for m in re.finditer(r"'((?:[^']|'')*)'", body)]
+
+
+class _MySqlBackend(_Backend):
+    """MySQL / MariaDB —— 护栏落点与 PostgreSQL 一一对应，实现方式不同。
+
+    三处差异必须写下来，否则读的人会默认两边等价：
+
+      * **只读是会话属性，不是账号属性。** MySQL 没有 PostgreSQL 那种
+        `ALTER ROLE … SET default_transaction_read_only`，只能在每条连接上
+        `SET SESSION TRANSACTION READ ONLY`。所以自检里「账号为只读」这一项
+        额外看一眼 SHOW GRANTS：会话开关证明这条连接写不了，授权才证明
+        这个账号本来就不该写。两个证据分量不同，都要。
+      * **语句超时有两个变量名。** MySQL 5.7.8+ 是 max_execution_time（毫秒，
+        只管 SELECT），MariaDB 是 max_statement_time（秒）。互不认识，按序试，
+        最后**如实报出用上的是哪一个** —— 一个都没设上时自检必须红，
+        而不是显示"已设置"。
+      * **没有行级安全。** 租户隔离只剩应用层 AST 改写那一层。配置里选
+        rls / rls_and_predicate 会在 config._validate 直接被拒（那条校验按
+        db_type != postgresql 判，MySQL 自然落进去），不会静默降级成单层。
+    """
+
+    #: 实际生效的超时变量名，connect 时探出来；env_checks 与超时报错都用它。
+    _timeout_var: str = ""
+
+    def connect(self):
+        if self.con is not None:
+            return self.con
+        try:
+            import pymysql
+        except ImportError as e:  # pragma: no cover - 依赖具体环境
+            raise DataSourceError(
+                "缺少 MySQL 驱动。",
+                hint='安装：uv pip install "PyMySQL>=1.1"',
+            ) from e
+
+        dsn = self.cfg.dsn
+        if not dsn:
+            raise DataSourceError(
+                "未配置 MySQL 连接串（datasource.dsn）。",
+                hint="在 config 中填写 dsn，密码用 password_env 指向环境变量。",
+            )
+        kv = parse_kv_dsn(dsn, keep_password=True)
+        if not kv.get("host"):
+            raise DataSourceError(
+                f"MySQL 连接串里没有 host=：{dsn.split('password=')[0].strip() or '(空)'}",
+                hint="连接串与 PostgreSQL 同一种写法："
+                     "host=db.internal port=3306 dbname=orders user=askdb_ro；"
+                     "口令走环境变量或主密钥加密，不要写进连接串。",
+            )
+
+        ms = int(self.cfg.raw["guard"]["statement_timeout_ms"])
+        params: dict[str, Any] = {
+            "host": kv["host"],
+            "port": int(kv.get("port") or 3306),
+            "user": kv.get("user") or None,
+            "password": kv.get("password") or "",
+            "database": kv.get("dbname") or kv.get("database") or None,
+            "charset": "utf8mb4",
+            "autocommit": True,
+            "connect_timeout": 5,
+            # 驱动侧兜底：服务端的 max_execution_time 只管 SELECT，
+            # 而 MariaDB 上它可能压根没设上。多给 5 秒余量，让服务端的
+            # 超时先说话 —— 两者同时到点的话，服务端那条消息才是准的。
+            "read_timeout": ms / 1000 + 5,
+            "write_timeout": 5,
+        }
+        params.update(_mysql_ssl_params(kv))
+
+        t0 = time.perf_counter()
+        try:
+            self.con = pymysql.connect(**params)
+        except Exception as e:
+            raise DataSourceError(
+                f"无法连接 MySQL：{str(e).splitlines()[0]}",
+                hint=_mysql_connect_hint(kv, self.cfg.upstream),
+            ) from e
+        # 与 PostgreSQL 一致：只计到握手加认证为止，下面几条 SET 是护栏配置，
+        # 算进去会让自检里那个「网络可达与认证」变成另一件事。
+        self.connect_ms = _elapsed_ms(t0)
+        self._apply_session_guards(ms)
+        return self.con
+
+    def _apply_session_guards(self, ms: int) -> None:
+        """会话级硬护栏。只读那一条**失败就炸** —— 连不上不如连不成。"""
+        with self.con.cursor() as cur:
+            try:
+                cur.execute("SET SESSION TRANSACTION READ ONLY")
+            except Exception as e:
+                self.close()
+                raise DataSourceError(
+                    f"该服务端不支持只读事务，askdb 不接受可写连接：{str(e).splitlines()[0]}",
+                    hint="只读事务需要 MySQL 5.6+ 或 MariaDB 10.0+。"
+                         "旧版本请改用别的库，或在库前放一层只读副本。",
+                ) from e
+            self._timeout_var = ""
+            for stmt, var in (
+                (f"SET SESSION max_execution_time = {ms}", "max_execution_time"),
+                (f"SET SESSION max_statement_time = {ms / 1000}", "max_statement_time"),
+            ):
+                try:
+                    cur.execute(stmt)
+                except Exception:
+                    continue          # 换一个变量名再试，两个都不认由自检报红
+                self._timeout_var = var
+                break
+
+    def quote_ident(self, name: str) -> str:
+        return "`" + str(name).replace("`", "``") + "`"
+
+    # ---------- 元数据 ----------
+
+    def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """字段清单，**连注释与枚举取值一起取**。
+
+        MySQL 的列注释与 PostgreSQL 的 col_description 是同一份东西：中文注释
+        与中文提问同语种，Schema 召回命中它比任何中英词典都可靠。
+        枚举比 PG 那条路还准 —— 取值写在类型里，不必靠统计视图去猜。
+        """
+        if not names:
+            return {}
+        holes = ", ".join(["%s"] * len(names))
+        with self.connect().cursor() as cur:
+            cur.execute(f"""
+                SELECT c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE,
+                       COALESCE(c.COLUMN_COMMENT, ''), COALESCE(t.TABLE_COMMENT, ''),
+                       c.COLUMN_TYPE
+                FROM information_schema.COLUMNS c
+                LEFT JOIN information_schema.TABLES t
+                       ON t.TABLE_SCHEMA = c.TABLE_SCHEMA
+                      AND t.TABLE_NAME = c.TABLE_NAME
+                WHERE c.TABLE_SCHEMA = DATABASE() AND c.TABLE_NAME IN ({holes})
+                ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION
+            """, tuple(names))
+            rows = cur.fetchall()
+        grouped = _group_columns([r[:5] for r in rows])
+        # InnoDB 的 TABLE_COMMENT 里会带上 "; InnoDB free: …" 之类的运维文本，
+        # 那不是表说明，进召回只会稀释语义
+        for cols in grouped.values():
+            for col in cols:
+                col["table_desc"] = re.sub(r"\s*;?\s*InnoDB free:.*$", "",
+                                           col.get("table_desc", "")).strip()
+        enums = {(r[0], r[1]): _mysql_enum_values(r[5]) for r in rows}
+        for table, cols in grouped.items():
+            for col in cols:
+                if vals := enums.get((table, col["name"])):
+                    col["enum"] = vals[:_ENUM_MAX_DISTINCT]
+        return grouped
+
+    def all_tables(self) -> set[str]:
+        with self.connect().cursor() as cur:
+            cur.execute("""SELECT TABLE_NAME FROM information_schema.TABLES
+                           WHERE TABLE_SCHEMA = DATABASE()""")
+            return {r[0] for r in cur.fetchall()}
+
+    def introspect(self) -> list[dict[str, Any]]:
+        """库里全部**基表**。行数是 InnoDB 的估算值，与 PG 的 reltuples 同性质
+        —— 用来给接入向导排序，不作为答案。"""
+        with self.connect().cursor() as cur:
+            cur.execute("""
+                SELECT t.TABLE_NAME,
+                       COALESCE(t.TABLE_ROWS, 0)                AS est_rows,
+                       COUNT(c.COLUMN_NAME)                     AS n_cols,
+                       MAX(c.COLUMN_NAME IN ('org_id','organization_id','tenant_id'))
+                FROM information_schema.TABLES t
+                JOIN information_schema.COLUMNS c
+                  ON c.TABLE_SCHEMA = t.TABLE_SCHEMA AND c.TABLE_NAME = t.TABLE_NAME
+                WHERE t.TABLE_SCHEMA = DATABASE() AND t.TABLE_TYPE = 'BASE TABLE'
+                GROUP BY t.TABLE_NAME, t.TABLE_ROWS
+                ORDER BY est_rows DESC
+            """)
+            return [{"name": r[0], "rows": int(r[1] or 0), "cols": int(r[2]),
+                     "tenant": bool(r[3])} for r in cur.fetchall()]
+
+    # ---------- R-11 干跑 ----------
+
+    def explain_rows(self, sql: str) -> tuple[int | None, str]:
+        """EXPLAIN 的行数估算。
+
+        取全计划的最大值，与 DuckDB / PostgreSQL 两条路径同一个口径：关心的是
+        **最宽的那一层扫了多少**，不是最终返回多少 —— R-11 拦的是扫描量。
+
+        FORMAT=JSON 优先（MySQL 5.6+ / MariaDB 10.1+），认不出就退回经典
+        EXPLAIN 的 rows 列。退回时计划文本照样带上，排查时看得见。
+        """
+        import json
+
+        with self.connect().cursor() as cur:
+            try:
+                cur.execute(f"EXPLAIN FORMAT=JSON {sql}")
+                raw = cur.fetchone()[0]
+            except Exception:
+                return self._explain_rows_classic(cur, sql)
+        plan = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+        best: int | None = None
+        stack: list[Any] = [plan]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for key, val in node.items():
+                    # MySQL 8 是 rows_examined_per_scan / rows_produced_per_join，
+                    # MariaDB 的 JSON 里就叫 rows。三个都认。
+                    if key in ("rows_examined_per_scan", "rows_produced_per_join",
+                               "rows") and isinstance(val, (int, float)):
+                        best = max(best or 0, int(val))
+                    else:
+                        stack.append(val)
+            elif isinstance(node, list):
+                stack.extend(node)
+        return best, json.dumps(plan, ensure_ascii=False)[:4000]
+
+    def _explain_rows_classic(self, cur: Any, sql: str) -> tuple[int | None, str]:
+        cur.execute(f"EXPLAIN {sql}")
+        cols = [d[0].lower() for d in (cur.description or [])]
+        rows = cur.fetchall()
+        plan = "\n".join(" | ".join("" if v is None else str(v) for v in r) for r in rows)
+        if "rows" not in cols:
+            return None, plan[:4000]
+        i = cols.index("rows")
+        nums = [int(r[i]) for r in rows if isinstance(r[i], (int, float))]
+        return (max(nums) if nums else None), plan[:4000]
+
+    # ---------- 执行 ----------
+
+    def fetch(self, sql: str, cap: int):
+        try:
+            with self.connect().cursor() as cur:
+                cur.execute(sql)
+                columns = [d[0] for d in (cur.description or [])]
+                rows = cur.fetchmany(cap + 1)
+                as_of = self._db_now(cur)
+        except Exception as e:
+            if _is_mysql_timeout(e):
+                ms = self.cfg.raw["guard"]["statement_timeout_ms"]
+                by = self._timeout_var or "驱动读超时"
+                # 连接可能已经被驱动侧的 read_timeout 打断，留着它只会让下一条
+                # 查询报一个看不懂的错。丢掉，下次 connect() 重建。
+                self.close()
+                raise DataSourceError(
+                    f"查询超时（超过 {ms} ms，已由 {by} 中断）",
+                    hint="缩小时间范围或增加筛选条件；这是 R-12 语句超时护栏。",
+                    retryable=True,
+                ) from e
+            raise
+        return columns, [list(r) for r in rows], as_of
+
+    @staticmethod
+    def _db_now(cur: Any) -> str:
+        """数据时间取**库上的**时钟，并带上库的时区偏移。
+
+        与 PostgreSQL 那条路径同一个理由：跨时区、跨主机的时钟偏移会让
+        "数据截至"标错，而这个标注是给人判断新鲜度用的。MySQL 的 NOW()
+        不带时区，所以另取一次与 UTC 的差值补上 —— 少了它，界面上那个时间
+        看着像本机时间，实际是库所在时区的时间，差几个小时无从发现。
+        """
+        from datetime import datetime, timedelta, timezone
+
+        cur.execute("SELECT NOW(), TIMEDIFF(NOW(), UTC_TIMESTAMP())")
+        now, offset = cur.fetchone()
+        if not isinstance(now, datetime):                  # pragma: no cover - 驱动兜底
+            return str(now)
+        if isinstance(offset, timedelta):
+            now = now.replace(tzinfo=timezone(offset))
+        return _fmt_ts(now)
+
+    # ---------- 自检 ----------
+
+    def env_checks(self):
+        out: list[tuple[str, bool, str]] = []
+        with self.connect().cursor() as cur:
+            grants = self._grants(cur)
+            writable = _mysql_write_grants(grants)
+
+            ro_var, ro_on = self._read_only_var(cur)
+            # 两个证据：会话开关证明这条连接写不了，授权证明这个账号本来就不该写。
+            # 会话开关读不出来（MariaDB 老版本没有这个变量）时，退到授权判断 ——
+            # 退不到就报红，而不是显示"已只读"。
+            if ro_var:
+                detail = f"{ro_var} = {'ON' if ro_on else 'OFF'}"
+                if ro_on and writable:
+                    detail += f"；但账号仍有写权限（{'、'.join(writable)}）"
+                out.append(("账号为只读", ro_on and not writable, detail))
+            elif grants:
+                out.append(("账号为只读", not writable,
+                            "服务端不报告只读会话变量，按授权判定："
+                            + ("仅读权限" if not writable else f"含写权限 {'、'.join(writable)}")))
+            else:
+                out.append(("账号为只读", False,
+                            "既读不到只读会话变量，也读不到 SHOW GRANTS，无法确认此连接不可写"))
+
+            var, val = self._timeout_setting(cur)
+            out.append(("语句超时已设置", bool(var) and val > 0,
+                        f"{var} = {val}" if var else
+                        "服务端不认 max_execution_time / max_statement_time，"
+                        "语句超时无处落地（仅剩驱动侧读超时兜底）"))
+
+            limit = self._user_conn_limit(cur)
+            who = self._current_user(cur)
+            out.append(("连接数上限已设置", limit > 0,
+                        f"{who} · max_user_connections = {limit}"
+                        + ("" if limit > 0 else
+                           "；请执行 ALTER USER … WITH MAX_USER_CONNECTIONS 5")))
+
+            out.append(("非超级账号且无写权限", bool(grants) and not writable,
+                        "SHOW GRANTS：" + (
+                            "仅 SELECT / USAGE" if grants and not writable else
+                            f"含 {'、'.join(writable)}" if writable else
+                            "读不到授权（账号可能通过角色授权）——"
+                            "请为 askdb 单独建一个只授 SELECT 的账号")))
+        return out
+
+    @staticmethod
+    def _grants(cur: Any) -> list[str]:
+        try:
+            cur.execute("SHOW GRANTS FOR CURRENT_USER()")
+            return [str(r[0]) for r in cur.fetchall()]
+        except Exception:                                  # pragma: no cover - 权限兜底
+            return []
+
+    @staticmethod
+    def _current_user(cur: Any) -> str:
+        try:
+            cur.execute("SELECT CURRENT_USER()")
+            return str(cur.fetchone()[0])
+        except Exception:                                  # pragma: no cover
+            return "?"
+
+    @staticmethod
+    def _read_only_var(cur: Any) -> tuple[str, bool]:
+        """只读会话变量。名字换过两次，按新到旧试。取不到返回空名。"""
+        for var in ("transaction_read_only", "tx_read_only"):
+            try:
+                cur.execute(f"SELECT @@session.{var}")
+                return var, bool(int(cur.fetchone()[0]))
+            except Exception:
+                continue
+        return "", False
+
+    @staticmethod
+    def _timeout_setting(cur: Any) -> tuple[str, float]:
+        """实际生效的超时。0 = 没设上（MySQL 里 0 就是"不限"）。"""
+        for var, scale in (("max_execution_time", 1), ("max_statement_time", 1000)):
+            try:
+                cur.execute(f"SELECT @@session.{var}")
+                return var, float(cur.fetchone()[0]) * scale
+            except Exception:
+                continue
+        return "", 0.0
+
+    @staticmethod
+    def _user_conn_limit(cur: Any) -> int:
+        """账号的并发连接上限。
+
+        MySQL 的 session 值就是这个账号的 MAX_USER_CONNECTIONS（账号没设时
+        取全局值），所以直接读 session 即可 —— 只读账号读不到 mysql.user 表。
+        """
+        try:
+            cur.execute("SELECT @@session.max_user_connections")
+            return int(cur.fetchone()[0] or 0)
+        except Exception:                                  # pragma: no cover
+            return 0
+
+
+def _mysql_write_grants(grants: list[str]) -> list[str]:
+    """SHOW GRANTS 里出现的写权限。空列表 = 这个账号只读。
+
+    只看 `GRANT … ON` 之间那一段（权限清单），不看后面的对象与账号名 ——
+    库名里带 "update" 的话，整串扫描会把一个只读账号判成可写。
+    """
+    hit: list[str] = []
+    for line in grants:
+        text = line.upper()
+        if not text.startswith("GRANT "):
+            continue
+        head = text[len("GRANT "):].split(" ON ")[0]
+        for priv in _MYSQL_WRITE_PRIVS:
+            if re.search(rf"(?:^|,\s*){re.escape(priv)}(?:\s*[,(]|$)", head) \
+                    and priv not in hit:
+                hit.append(priv)
+    return hit
+
+
+def _mysql_ssl_params(kv: dict[str, str]) -> dict[str, Any]:
+    """TLS 参数。写法沿用 PostgreSQL 的 sslmode / sslrootcert 两个键 ——
+    连接串在两种库上是同一套语法，界面与文档就只有一份。
+
+    require 只加密不验证；verify-ca / verify-full 才验证书，此时必须给
+    sslrootcert，缺了直接报，不静默降级成不验证。
+    """
+    mode = (kv.get("sslmode") or "").strip().lower()
+    if not mode or mode in ("disable", "disabled", "allow", "prefer"):
+        return {}
+    ca = (kv.get("sslrootcert") or "").strip()
+    if mode in ("verify-ca", "verify-full", "verify_identity"):
+        if not ca:
+            raise DataSourceError(
+                f"sslmode={mode} 要求验证服务端证书，但连接串里没有 sslrootcert=。",
+                hint="给出 CA 证书路径，或改用 sslmode=require（只加密、不验证）。",
+            )
+        return {"ssl": {"ca": ca, "check_hostname": mode == "verify-full"}}
+    # require：加密但不验证。写清楚是因为它**挡不住中间人**，
+    # 只是让明文口令与结果不再裸奔在网络上。
+    return {"ssl": {"check_hostname": False}}
+
+
+# ==========================================================================
 # 对外
 # ==========================================================================
 
@@ -542,10 +1046,12 @@ class Executor:
             self.backend: _Backend = _DuckBackend(cfg)
         elif t == "postgresql":
             self.backend = _PgBackend(cfg)
+        elif t == "mysql":
+            self.backend = _MySqlBackend(cfg)
         else:
             raise DataSourceError(
                 f"暂不支持的数据源类型：{t}",
-                hint="当前支持 duckdb 与 postgresql。",
+                hint="当前支持 duckdb、postgresql 与 mysql。",
             )
 
     # ---------- 生命周期 ----------
@@ -637,7 +1143,8 @@ class Executor:
         else:
             via = "" if probe in allow else f"（白名单为空，用可见表 {probe} 探测）"
             try:
-                self.backend.fetch(f"DELETE FROM {probe} WHERE 1=0", 1)
+                self.backend.fetch(
+                    f"DELETE FROM {self.backend.quote_ident(probe)} WHERE 1=0", 1)
                 add("写操作实探", False, f"写操作未被拒绝，连接并非只读{via}")
             except Exception:
                 add("写操作实探", True, f"写操作已被引擎拒绝 ✓ 符合预期{via}")
