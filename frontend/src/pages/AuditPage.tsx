@@ -6,6 +6,7 @@ import {
 } from '../api'
 import { KIND_NAMES, STEP_NAMES, stepFailed } from '../traceSteps'
 import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
+import { rolesLabel } from '../roles'
 
 
 function fmtTime(ts: string): string {
@@ -380,11 +381,11 @@ function AuditRow({ item, stats, textVisible, onReplay }: {
           一起把发起人抹掉（textVisible=false），而登录后仍为空的那些，是那次
           调用本来就没有登录发起 —— 都写成 — 会把"你看不到"读成"没有人"。 */}
       <td title={item.user
-        ? `发起人 ${item.user} · 生效角色 ${item.role || DASH}`
+        ? `发起人 ${item.user} · 生效角色 ${rolesLabel(item.role) || DASH}（${item.role || DASH}）`
         : textVisible ? '这次调用未登录发起，只记录了生效角色' : '登录后可见发起人'}>
         {item.user
           ? item.user
-          : <span className="audit-na">{textVisible ? '匿名' : DASH}</span>} / {item.role || DASH}
+          : <span className="audit-na">{textVisible ? '匿名' : DASH}</span>} / {rolesLabel(item.role) || DASH}
       </td>
       <td className="audit-question" title={item.question ?? ''}>
         {/* question 为 null 是"看不到"，不是"没问过" —— 空着会被读成后者 */}

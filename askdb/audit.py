@@ -56,6 +56,10 @@ TRACE_FIELDS = (
     "tok_in", "tok_out", "step_count", "multi_step", "attempts",
     "elapsed_ms", "cost_cny", "rejected_by", "source", "source_name",
     "cached", "cached_from",
+    # 结果可信度那枚角标要判的四条痕迹。全是布尔标志，不带任何内容 ——
+    # 它们出接口不构成新的泄露，而少了它们追踪页就只能空着那枚角标
+    # （工作台侧栏判的是同四条，两处必须同源，否则同一次查询两个分）。
+    "recall_blind", "scope_narrowed", "mask_degraded", "truncated",
 )
 
 # 步骤对象自身也走白名单 —— 记录里的 steps 由各节点自由追加，

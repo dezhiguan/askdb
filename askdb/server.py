@@ -2849,7 +2849,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                    rules_fired: list[str] | None = None,
                    explain_rows: int | None = None, rows_returned: int = 0,
                    masked_columns: list[str] | None = None,
-                   mask_degraded: bool = False) -> None:
+                   mask_degraded: bool = False,
+                   truncated: bool = False) -> None:
             write_audit(scoped, {
                 "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
                 "model": None,
@@ -2867,6 +2868,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 # 否则事后无从证明某一次结果到底脱没脱
                 "masked_columns": masked_columns or [],
                 "mask_degraded": mask_degraded,
+                # 直查同样会被 R-13 截断。ask 链路记了这一条而直查不记的话，
+                # 追踪页上同一枚可信度角标在两种模式下判的就不是同一件事。
+                "truncated": truncated,
+                # recall_blind / scope_narrowed 在直查上**不存在**（没有召回、
+                # 超阈值走审批而不是自行收窄），所以这里不写 False 顶上 ——
+                # 缺字段与"判过且通过"是两件事，可信度那边按不适用处理。
                 "elapsed_ms": int((time.perf_counter() - t0) * 1000),
                 "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": steps,
             })
@@ -2935,7 +2942,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,
                explain_rows=ep.est_rows, rows_returned=res.row_count,
                masked_columns=list(res.masked_columns),
-               mask_degraded=res.mask_degraded)
+               mask_degraded=res.mask_degraded, truncated=res.truncated)
         if scoped.scan_waiver:
             # **执行成功之后**才作废。执行失败就烧掉一次审批的话，
             # 用户得为一次数据源抖动重新走一遍人工流程。

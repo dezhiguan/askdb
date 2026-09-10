@@ -3,6 +3,7 @@ import type { Me } from '../api'
 import type { SourceCard } from '../api'
 import type { HealthState } from '../useHealth'
 import type { View } from '../types'
+import { roleLabel } from '../roles'
 
 interface AppShellProps {
   activeView: View
@@ -165,7 +166,7 @@ function Identity({ me, onOpenLogin, onSignOut }: {
     <>
       <span className="context-chip identity-chip" title={`可见表：${me.scope.tables.join('、')}`}>
         <b>{me.display_name || me.username}</b>
-        <em>{me.roles.join('+') || '无角色'}</em>
+        <em title={me.roles.join('+')}>{me.roles.map(roleLabel).join('+') || '无角色'}</em>
       </span>
       <button className="ghost" onClick={onSignOut}>退出</button>
     </>

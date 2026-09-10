@@ -137,6 +137,27 @@ def test_step_names_cover_every_traced_node():
     assert not missing, f"这些节点在复放里会显示成原始 id：{missing}"
 
 
+def test_role_names_cover_every_role():
+    """后端加了角色、前端这份显示名没跟上，页面上就会冒出一个英文码。
+
+    页面一律显示中文角色名（顶栏身份角标、审计流水的用户/角色列、追踪列表、
+    审批列表、任务中心）。这份表是静态的 —— 角色固定不开放自定义，不值得为
+    一个显示名让每一行都去等一个接口。代价就是它会漂，所以在这里钉住。
+    """
+    src = (ROOT / "askdb" / "identity.py").read_text(encoding="utf-8")
+    codes = set(re.findall(r'Role\("([A-Z_]+)"', src))
+    codes.add("ANONYMOUS")          # 匿名调用的角色码，不在 ROLES 元组里
+    assert len(codes) > 5, "没扫到角色定义，正则或 identity.py 的结构变了"
+
+    names = (FRONTEND_SRC / "roles.ts").read_text(encoding="utf-8")
+    block = re.search(r"export const ROLE_NAMES[^{]*\{(.*?)\n\}", names, re.S)
+    assert block, "roles.ts 里找不到 ROLE_NAMES"
+    known = set(re.findall(r"^\s*([A-Z_]+):", block.group(1), re.M))
+
+    missing = sorted(codes - known)
+    assert not missing, f"这些角色在页面上会显示成英文码：{missing}"
+
+
 SOURCES_PAGE = FRONTEND_SRC / "pages" / "DataSourcesPage.tsx"
 
 

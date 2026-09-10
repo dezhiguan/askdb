@@ -1029,6 +1029,9 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         "scope_narrowed": result.scope_narrowed,
         "masked_columns": result.masked_columns,
         "mask_degraded": result.mask_degraded,
+        # 结果被 R-13 截断。与上面两条同类：不进审计的话，事后在追踪页上
+        # "只看到前 N 行"和"一共就这么多行"长得一模一样。
+        "truncated": result.truncated,
         "sql_raw": result.sql_raw, "sql_final": result.sql_final,
         "rules_fired": result.rules_fired, "rejected_by": result.rejected_by,
         "attempts": result.attempts, "explain_rows": explain_rows,

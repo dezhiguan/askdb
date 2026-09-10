@@ -28,6 +28,7 @@ import {
 import type { View } from '../types'
 import { ruleTitle } from '../rules'
 import { writeGuard } from '../writeGuard'
+import { rolesLabel } from '../roles'
 
 /* 结构、类名与文案对齐原型 trusted-data-agent-prototype.html 的 #view-tasks。
    原型里的任务是写死的样例，这里的每一行都来自 /api/tasks；
@@ -674,7 +675,7 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
       node: '结果可信度',
       detail: (task.review_why ?? []).join('；')
         || '这次查询跑成了，但结果带着存疑痕迹。',
-      policy: `${task.kind} · ${task.role}`,
+      policy: `${task.kind} · ${rolesLabel(task.role)}`,
       nextStep: task.next_actor
         || '等系统管理员看一眼：采信这个数字，或打回并说明原因。',
       action: 'none' as const,
@@ -686,7 +687,7 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
       node: '结果可信度',
       detail: (task.review_why ?? []).join('；')
         || '这条结果经复核判定为不可采信。',
-      policy: `${task.kind} · ${task.role}`,
+      policy: `${task.kind} · ${rolesLabel(task.role)}`,
       nextStep: task.next_actor
         || '这个数字不采信。按复核意见换个问法重新发起 —— 原始记录与链路仍可查。',
       action: 'revise' as const,
@@ -698,7 +699,7 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
       node: task.rejected_by ?? '高成本查询',
       detail: replay?.snapshots?.find(item => item.error)?.error
         ?? '这次查询超过成本阈值，已挂起等待放行；SQL 没有在数据库上执行。',
-      policy: `${task.kind} · ${task.role}`,
+      policy: `${task.kind} · ${rolesLabel(task.role)}`,
       nextStep: task.next_actor
         || '审批通过后凭票重跑；审批是一次性的，用过即作废。',
       action: 'none' as const,
@@ -710,7 +711,7 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
       node: '数据源',
       detail: replay?.snapshots?.find(item => item.error)?.error
         ?? '这次调用在执行阶段失败：数据源连不上，或执行期出错。',
-      policy: `${task.kind} · ${task.role}`,
+      policy: `${task.kind} · ${rolesLabel(task.role)}`,
       nextStep: task.next_actor
         || '这不是权限问题，改写法也过不去。等数据源恢复后原样重试即可。',
       action: 'revise' as const,
@@ -722,7 +723,7 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
       node: '语义理解',
       detail: replay?.snapshots?.find(item => item.error)?.error
         ?? '模型没能从这个问题里确定要查什么，没有产出 SQL。',
-      policy: `${task.kind} · ${task.role}`,
+      policy: `${task.kind} · ${rolesLabel(task.role)}`,
       nextStep: task.next_actor
         || '把问题说具体些（指明表名、时间范围或指标口径）后重新发起。',
       action: 'revise' as const,
@@ -734,7 +735,7 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
       node: replay?.rejected_by ?? '安全护栏',
       detail: replay?.snapshots?.find(item => item.error)?.error
         ?? '这次调用被护栏拦下，SQL 没有在数据库上执行。',
-      policy: `${task.kind} · ${task.role}`,
+      policy: `${task.kind} · ${rolesLabel(task.role)}`,
       nextStep: task.next_actor
         || '这条触碰的是安全边界，改写法也过不去；换个能在开放范围内回答的问法。',
       action: 'revise' as const,
@@ -745,7 +746,7 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
       category: '执行中 · RUNNING',
       node: '执行图',
       detail: '这条线程已经发起、还没有收尾记录：要么正在跑，要么跑到一半进程没了。',
-      policy: `${task.kind} · ${task.role}`,
+      policy: `${task.kind} · ${rolesLabel(task.role)}`,
       nextStep: '稍后刷新；若长时间停在这里，到执行追踪看它停在哪个节点。',
       action: 'none' as const,
       actionLabel: '执行中',
@@ -755,7 +756,7 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
         category: '信息不足 · INPUT REQUIRED',
         node: replay?.snapshots?.map(item => (item.next ?? []).join(' / ')).filter(Boolean).slice(-1)[0] || 'INTERRUPT',
         detail: '任务在生成 SQL 前暂停等待补充条件，现场已经写进检查点。',
-        policy: `${task.kind} · ${task.role}`,
+        policy: `${task.kind} · ${rolesLabel(task.role)}`,
         nextStep: !task.resumable
           ? '这条线程已经收尾，没有可续的断点。'
           : mine

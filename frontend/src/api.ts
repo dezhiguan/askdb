@@ -311,6 +311,12 @@ export interface TraceChain {
   cached?: boolean | null
   /** 命中缓存时，答案是哪一次真跑留下的。空串表示旧格式缓存里没记 */
   cached_from?: string | null
+  /** 可信度那枚角标要判的四条痕迹（见 trust.ts）。老记录里没有这些字段，
+   *  一律 undefined —— 与 false 是两件事，别在这里补默认值。 */
+  recall_blind?: boolean | null
+  scope_narrowed?: boolean | null
+  mask_degraded?: boolean | null
+  truncated?: boolean | null
 }
 
 /** 节点链的三种结局。**取不到不能再collapse成 null**：

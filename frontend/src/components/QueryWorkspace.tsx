@@ -237,7 +237,7 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
             />}
       </div>
 
-      <TrustSidebar health={health} source={current} result={result} me={me} onResultTab={setTab} onNavigate={onNavigate} />
+      <TrustSidebar health={health} source={current} result={result} mode={mode} me={me} onResultTab={setTab} onNavigate={onNavigate} />
     </div>
   )
 }

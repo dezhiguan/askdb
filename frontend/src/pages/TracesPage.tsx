@@ -7,6 +7,8 @@ import {
 } from '../api'
 import type { ModalName, View } from '../types'
 import { writeGuard } from '../writeGuard'
+import { resultChecks, scoreOf, scoreTitle } from '../trust'
+import { rolesLabel } from '../roles'
 import { KIND_NAMES, STEP_NAMES, STEP_TYPE, stepFailed } from '../traceSteps'
 
 
@@ -257,7 +259,7 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
                 <span>
                   <strong>{item.question || `（${KIND_NAMES[item.kind] ?? item.kind}）`}</strong>
                   <small>
-                    {item.role || '未记录'} · {fmtTime(item.ts)} ·{' '}
+                    {rolesLabel(item.role) || '未记录'} · {fmtTime(item.ts)} ·{' '}
                     {!item.ok ? (item.rejected_by === 'INTERRUPTED' ? '已中断' : '已拦截')
                       : item.cached ? '命中缓存' : secs(item.elapsed_ms)}
                   </small>
@@ -364,8 +366,10 @@ function TraceDetail({ item, chain, result, onFocusTrace }: {
             {cached ? 'CACHED' : item.multi_step ? 'MULTI-STEP' : 'ONE-SHOT'}
           </p>
         </div>
-        {/* 原型这枚角标是「可信度 96」。askdb 不打可信度分，版位留着不编数。 */}
-        <span className={`status ${item.ok ? '' : 'wait'}`}>可信度 {NA}</span>
+        {/* 原型这枚角标是写死的「可信度 96」。这里判真值，且与工作台右栏那枚环
+            走同一份口径（trust.ts）—— 同一次查询在两页给出两个分，看的人第一件
+            要做的事就变成了复核这两个数字谁对。判不了的时候留 NA，不编数。 */}
+        <TrustBadge item={item} chain={chain} />
       </div>
 
       {/* 字段与顺序严格照原型的六格，一格不多。数据来自 /api/trace（节点链）
@@ -531,6 +535,48 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
         </div>
       </div>
     </>
+  )
+}
+
+/** 执行追踪页那枚可信度角标。
+ *
+ *  三种判不了的情形一律留 NA 并在 title 里说清为什么 —— 编一个数比空着糟：
+ *    · 这次被拦下（BLOCKED / INTERRUPTED）：根本没产出结果，无从谈可信
+ *    · 命中缓存：答案是首跑那次的，分要看首跑那条
+ *    · 老记录：痕迹字段是 2026-09-10 才落库的，之前的记录判据缺失，
+ *      按缺省值判会一律满分 —— 那是把"没记"读成"没发生"
+ */
+function TrustBadge({ item, chain }: { item: AuditItem; chain: TraceChain | null }) {
+  const na = (why: string) => (
+    <span className="status wait" title={why}>可信度 {NA}</span>
+  )
+  if (!item.ok) {
+    return na(item.rejected_by === 'INTERRUPTED'
+      ? '这次执行中断，没有产出结果，无从判可信度'
+      : `这次被 ${item.rejected_by ?? '护栏'} 拦下，没有产出结果，无从判可信度`)
+  }
+  if (item.cached ?? chain?.cached) {
+    return na('答案来自应答缓存，可信度看首跑那条链路（下方「命中缓存」一行可跳转）')
+  }
+  if (!chain) return na('节点链还没取到')
+  const traced = [chain.truncated, chain.scope_narrowed,
+                  chain.mask_degraded, chain.recall_blind].some(v => v != null)
+  if (!traced) return na('这条记录早于可信度痕迹落库，判据不全，不给分')
+
+  const mode = item.kind === 'sql' ? 'sql' : 'ask'
+  const checks = resultChecks({
+    mode, rowCount: item.rows_returned ?? 0,
+    truncated: chain.truncated, attempts: chain.attempts ?? item.attempts,
+    maskDegraded: chain.mask_degraded, recallBlind: chain.recall_blind,
+    scopeNarrowed: chain.scope_narrowed,
+  })
+  const score = scoreOf(checks)
+  const head = mode === 'sql' ? '本次执行可信度' : '本次结果可信度'
+  return (
+    <span className={`status ${score === 100 ? '' : 'wait'}`}
+          title={scoreTitle(head, checks, mode)}>
+      可信度 {score ?? NA}
+    </span>
   )
 }
 

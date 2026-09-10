@@ -1,6 +1,9 @@
 import type { AskResult, Health, Me } from '../api'
 import type { ResultTab, View } from '../types'
 import type { HealthState } from '../useHealth'
+import type { Check } from '../trust'
+import { resultChecks, scoreOf, scoreTitle } from '../trust'
+import { roleLabel } from '../roles'
 import { useSqlDigest } from './ResultTabs'
 
 /** 右栏三块：能不能执行、按什么策略执行、执行完拿什么复核。
@@ -21,13 +24,16 @@ import { useSqlDigest } from './ResultTabs'
  *      有无结果行，5 项
  *  执行被拒时不切 —— 那次根本没跑出结果，给它算一个"结果可信度"是无中生有。
  */
-export function TrustSidebar({ health, source, result, me, onResultTab, onNavigate }: {
+export function TrustSidebar({ health, source, result, mode, me, onResultTab, onNavigate }: {
   health: HealthState
   /** 工作台当前选中的数据源。切源时「本次执行策略」要跟着变 —— 护栏与
    *  租户是实例级、切源不变（原型亦如此），真正随源变的只有数据源身份这一项。 */
   /** 工作台的 SourceOption：`tables` 是这个源开放给模型的表数（内置源为配置里那份） */
   source?: { id?: string; name: string; dialect: string; env?: string; tables?: number }
   result: AskResult | null
+  /** 工作台当前在哪个模式。直查模式少判三项（见 trust.ts）—— 原来一律按
+   *  agent 模式判，缺省的 false 被当成"判过且通过"，直查恒 100 分。 */
+  mode?: 'ask' | 'sql'
   /** 「身份」一格要的当前登录态 */
   me?: Me | null
   onResultTab: (tab: ResultTab) => void
@@ -55,15 +61,21 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
   // 再取不到就给 null —— 这一项直接不进准入清单，不拿一个猜的数去判真假。
   const whitelist = source?.tables ?? (source?.id ? null : me?.scope.tables.length ?? null)
 
-  // 有结果且真的执行成功了才切到「本次结果」；被护栏拒掉的那次没有结果可评
-  const scored = result?.ok ? resultChecks(result) : admissionChecks(ready, !!source, whitelist)
-  const passed = scored.filter(c => c.ok).length
-  const score = scored.length ? Math.round(passed / scored.length * 100) : null
+  // 有结果且真的执行成功了才切到「本次结果」；被护栏拒掉的那次没有结果可评。
+  // 判据走 trust.ts —— 执行追踪页那枚角标调的是同一份，两处不能各算各的
+  const scored = result?.ok
+    ? resultChecks({
+        mode, rowCount: result.row_count ?? 0, truncated: result.truncated,
+        attempts: result.attempts, maskDegraded: result.mask_degraded,
+        recallBlind: result.recall_blind, recallNote: result.recall_note,
+        scopeNarrowed: result.scope_narrowed, scopeNote: result.scope_note,
+      })
+    : admissionChecks(ready, !!source, whitelist)
+  const score = scoreOf(scored)
   const failed = scored.filter(c => !c.ok)
-  // 悬停要能说清扣在哪一项。只报"96 分"而不说因为什么，与写死一个数没有区别
-  const scoreTitle = !scored.length ? '读取中'
-    : [`${result?.ok ? '本次结果可信度' : '安全准入'} ${passed}/${scored.length}`,
-       ...scored.map(c => `${c.ok ? '✓' : '✕'} ${c.label}${c.ok ? '' : `：${c.why}`}`)].join('\n')
+  const ringTitle = !scored.length ? '读取中'
+    : scoreTitle(result?.ok ? '本次结果可信度' : '安全准入', scored,
+                 result?.ok ? mode : undefined)
 
   return (
     // side-stack 是原型的类名；trust-sidebar 保留，窄屏断点按它排版
@@ -72,21 +84,23 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
         <div className="assurance-hero">
           {/* 环上的弧长跟着分数走。弧是假的而数字是真的，等于换了个地方写死 */}
           <div className={`score-ring ${score != null && score < 100 ? 'partial' : ''}`}
-               style={{ ['--pct' as string]: score ?? 0 }} title={scoreTitle}>
+               style={{ ['--pct' as string]: score ?? 0 }} title={ringTitle}>
             <span>{score ?? '—'}</span>
           </div>
           <div className="assurance-hero-copy">
             <strong>
-              {result?.ok ? '本次结果可信度'
+              {result?.ok ? (mode === 'sql' ? '本次执行可信度' : '本次结果可信度')
                 : canAsk ? '安全准入已通过'
                 : canExecute ? '只读执行可用' : '暂不可执行'}
             </strong>
-            <small title={scoreTitle}>
+            <small title={ringTitle}>
               {/* 失败项直接写在脸上。可信度掉了却要人去别处找原因，
                   等于把一个数字换成了另一个说不清的数字 */}
               {result?.ok
                 ? (failed.length ? failed.map(c => c.why).join(' · ')
-                   : `${scored.length} 项检查全部通过`)
+                   : mode === 'sql'
+                     ? `${scored.length} 项执行侧检查全部通过 · SQL 语义由你自己复核`
+                     : `${scored.length} 项检查全部通过`)
                 : canAsk ? (failed.length ? failed.map(c => c.why).join(' · ')
                             : '当前身份可在只读边界内执行查询')
                 : canExecute ? '未配模型密钥，自然语言提问不可用，直查 SQL 仍可用'
@@ -176,9 +190,6 @@ export function TrustSidebar({ health, source, result, me, onResultTab, onNaviga
   )
 }
 
-/** 可信度环里的一项。`why` 是这项不成立时要说给人听的那句话。 */
-type Check = { label: string; ok: boolean; why: string }
-
 /** 提问前的准入检查。**只取实例级、与选哪个源无关的事实** ——
  *  表白名单是按源走的（运行时源各有各的白名单），这里拿不到，
  *  与其报一个可能不对的数，不如不列这一项。 */
@@ -212,31 +223,12 @@ function admissionChecks(ready: Health | null, hasSource: boolean,
   ]
 }
 
-/** 出结果之后的可信度检查。六项**全部来自链路自己记下的事实**，
- *  不问模型、不做二次判断 —— 让模型给自己的答案打分，打出来的是作文分。 */
-function resultChecks(r: AskResult): Check[] {
-  const rows = r.row_count ?? 0
-  return [
-    { label: '结果范围未被收窄', ok: !r.scope_narrowed,
-      why: r.scope_note || '原查询被扫描阈值拦下，这个数来自收窄范围后的查询，不是全量' },
-    { label: '结果完整未截断', ok: !r.truncated,
-      why: `结果被 R-13 截断，只看到前 ${rows} 行` },
-    { label: '一次生成成功', ok: (r.attempts ?? 1) <= 1,
-      why: `SQL 重试了 ${(r.attempts ?? 1) - 1} 次才跑通` },
-    { label: '脱敏判定未降级', ok: !r.mask_degraded,
-      why: '脱敏判定退化为整行按敏感处理，列的归属没解析出来' },
-    { label: '召回不是盲选', ok: !r.recall_blind,
-      why: r.recall_note || '这次召回是盲选，给模型的表不是按相关度选的' },
-    { label: '有结果行', ok: rows > 0,
-      why: '查询成功但一行都没返回，先确认过滤条件是不是过窄' },
-  ]
-}
-
 /** 「身份」一格。原型写死 `SSO · PRODUCT`；这里报真实登录态与角色。 */
 function identityLabel(me?: Me | null): string {
   if (!me) return '—'
   if (!me.username) return '匿名 · GUEST'
-  const role = (me.roles[0] ?? 'USER').toUpperCase()
+  // 与顶栏那枚身份角标同一套显示名（roles.ts），两处不能一个中文一个英文码
+  const role = roleLabel(me.roles[0] ?? '') || '无角色'
   return `${me.display_name || me.username} · ${role}`
 }
 

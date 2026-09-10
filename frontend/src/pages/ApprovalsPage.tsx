@@ -1,6 +1,7 @@
 import { PageHeader } from '../components/AppShell'
 import { useCallback, useEffect, useState } from 'react'
 import { decideApproval, fetchApprovals, type Approval, type ApprovalsResult } from '../api'
+import { roleLabel } from '../roles'
 
 /* 高成本查询审批队列（设计文档 Q-08 / P07）。
  *
@@ -110,7 +111,7 @@ export function ApprovalsPage({ notify }: { notify: (message: string) => void })
               <small>
                 <span className="mono">{item.id}</span>
                 {' · '}{item.user || '—'}
-                {item.roles?.length ? `（${item.roles.join('+')}）` : ''}
+                {item.roles?.length ? `（${item.roles.map(roleLabel).join('+')}）` : ''}
                 {' · '}{fmt(item.ts)}
                 {' · 预估扫描 '}
                 <b>{item.est_rows?.toLocaleString() ?? '—'}</b>
