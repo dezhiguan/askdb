@@ -134,7 +134,9 @@ agent:
   enabled: true
   max_steps: 6                       # R-16 循环步数上限，超则收敛作答并标注
   cost_cap_tokens: 12000             # R-17 累计 token 上限
-  async_after_ms: 8000               # 墙钟软阈值：同步超时转后台异步→任务中心
+  async_after_ms: 20000              # 墙钟软阈值：同步超时转后台异步→任务中心
+                                     # 20s（<nginx /api/ask 的 30s 读超时）：多数单步/两步
+                                     # 查询同步直返，只有真·多步长任务才转异步
 
 # 2026-09-09 三处一起改。起因是一次实测：问「哪些商品缺货了」，召回给出
 # inventory_stats_daily / batch_stocks / batches 三张表，**一张明细表都没进来**，
