@@ -157,7 +157,7 @@ def _render_history(history: list[dict[str, Any]]) -> str:
 #: 说准口径（"这一列到底是 COUNT(*) 还是 COUNT(*) FILTER(...)"），截到 60 字
 #: 等于把 SELECT 列表整段切掉——2026-09-11 跑测里把 COUNT(*) 说成"已排除软删除
 #: 的条数"，就是看不见自己写了什么。
-_ARG_KEEP = {"sql": 1200}
+_ARG_KEEP = {"sql": 800}
 _ARG_KEEP_DEFAULT = 60
 
 

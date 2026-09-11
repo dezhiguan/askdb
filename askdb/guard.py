@@ -1129,13 +1129,27 @@ def _outside_aggregate(proj: exp.Expression) -> list[exp.Column]:
         node = col.parent
         aggregated = False
         while node is not None and node is not proj.parent:
-            if isinstance(node, exp.AggFunc):
+            if _aggregates(node):
                 aggregated = True
                 break
             node = node.parent
         if not aggregated:
             out.append(col)
     return out
+
+
+def _aggregates(node: exp.Expression) -> bool:
+    """这个节点是不是把多行折成一个值的聚合。
+
+    exp.Filter（`COUNT(*) FILTER (WHERE ...)`）在 sqlglot 里**不是** AggFunc
+    的子类，它包着 AggFunc。少认这一种的后果是实打实的：模型统计"总数与有效数"
+    最常写的就是 `COUNT(*) FILTER (WHERE is_active)`，2026-09-11 修复上线后
+    生产实测「一共有多少个客户」仍被 R-11 挡下，就是因为 FILTER 里的 is_active
+    被当成一列逃出去的明细。
+    """
+    if isinstance(node, exp.AggFunc):
+        return True
+    return isinstance(node, exp.Filter) and isinstance(node.this, exp.AggFunc)
 
 
 def is_bounded_aggregate(sql: str, dialect: str = "duckdb") -> bool:
