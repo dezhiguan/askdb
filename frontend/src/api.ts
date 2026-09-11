@@ -239,6 +239,10 @@ export interface ReplayStep {
   /** 失败后做了什么：切备选、就地重试、回落备用路径。没有它，一条 failed
    *  只说明"这里断过"，说不清链路是怎么活下来的。 */
   disposition?: string
+  /** agentic 链路里这一步调用的具体工具名（search_schema / get_table_schema /
+   *  execute_sql）。只有 tool_call 步骤带，用于在 Span 列直接显示是哪个工具。
+   *  不含内容，随 /api/trace 出接口。 */
+  tool?: string
 }
 
 export interface ReplaySnapshot {

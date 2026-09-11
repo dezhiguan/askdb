@@ -220,6 +220,14 @@
 /* 原型只有 good；失败态不能跟成功态一个颜色 */
 .span-table td.bad { color: var(--red); font-weight: 800; }
 .span-table td.span-note { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 输出摘要单行截断 + 点击放大看全文 */
+.span-table td.span-note.zoomable { cursor: pointer; }
+.span-table td.span-note.zoomable:hover { color: var(--green); }
+/* Span 列 / 链路条上的具体工具名（tool_call 才有） */
+.span-table .span-tool { color: var(--amber); font-weight: 700; }
+.trace-node .node-tool { display: block; font-size: 11px; font-weight: 600; color: var(--amber); margin-top: 2px; font-style: normal; }
+/* 摘要放大弹层：保留换行、SQL/长文本可读 */
+.span-zoom-modal .modal-body .span-zoom-body { white-space: pre-wrap; word-break: break-word; margin: 0; line-height: 1.7; font-size: 13.5px; }
 /* 一行都没有时那句状态。跟表体同一套字号，不做成提示条 ——
    它是这张表的内容，不是页面上另起的一段说明 */
 /* 「命中缓存」那一行通向首跑链路的入口。表格里唯一可点的东西，
