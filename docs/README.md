@@ -8,6 +8,7 @@
 | [`design-replay-api.html`](./design-replay-api.html) | 判定链路回放接口设计 | V1.1 · 2026-08-14 |
 | [`design-quota-multi-replica.html`](./design-quota-multi-replica.html) | 每日配额多副本设计 | V1.1 · 2026-08-18 |
 | [`prototype.html`](./prototype.html) | **产品原型** —— 四个产品阶段的完整控制台 | 2026-09-06 |
+| [`design-trusted-data-agent-v2.html`](./design-trusted-data-agent-v2.html) | **可信数据 Agent v2** —— Skill/Tool/LLM/Runtime 四层；可选 agentic 模式的端到端流程、长短任务自动异步、任务中心状态机、人工审批/复核、Checkpoint 恢复 | V2.0 · 2026-09-11 |
 | [`test-cases.md`](./test-cases.md) · [`test-report.md`](./test-report.md) | 用例清单与测试报告 | 2026-08-18 |
 
 HTML 都是单文件、无外部依赖，**下载后用浏览器直接打开**即可。

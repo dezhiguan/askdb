@@ -33,6 +33,18 @@ In one line: **a general-purpose agent is a probe; askdb is a production line.**
 | Ad-hoc lookups, exploring an unfamiliar database | A general agent — askdb loses here, and that's fine |
 | High-frequency repeated calls · non-SQL users · tenant isolation guarantees · a number you can quote for accuracy · audit trails | askdb |
 
+**Optional agentic mode (`agent.enabled`).** Since 2026-09-11 askdb can *also* run
+an LLM-orchestrated loop: the model picks among three read-only tools
+(`search_schema` / `get_table_schema` / `execute_sql`) turn by turn, so it explores
+and covers the long tail like a general agent — **without giving up the hard
+safety.** The autonomy lives in orchestration; the safety stays welded to the tool
+boundary: every `execute_sql` still passes the same code-decided gates
+(AST → EXPLAIN → read-only role → masking), the model never decides whether a
+statement may run, per-query steps/tokens are capped (R-16/R-17), and every call is
+still one audited, replayable record. It is off by default; when off, behaviour is
+byte-for-byte the deterministic pipeline below. See
+[`docs/design-trusted-data-agent-v2.html`](docs/design-trusted-data-agent-v2.html).
+
 ---
 
 ## Documentation
@@ -42,6 +54,7 @@ In one line: **a general-purpose agent is a probe; askdb is a production line.**
 | [`docs/tech-design.html`](docs/tech-design.html) | Technical design spec V1.1 — 11 chapters + 2 appendices: guardrail rules, evaluation plan, production boundaries |
 | [`docs/design-rbac.md`](docs/design-rbac.md) · [`.html`](docs/design-rbac.html) | Roles and permissions design V1.4 — 27 permission points across 8 screens; all four stages shipped. V1.4 flattened the visible surface: every role, including anonymous, sees the same thing, and approval is the only remaining role difference |
 | [`docs/prototype.html`](docs/prototype.html) | **Product prototype** — the console across all four product phases, including screens with no backend behind them yet |
+| [`docs/design-trusted-data-agent-v2.html`](docs/design-trusted-data-agent-v2.html) | **Trusted Data Agent v2** — the Skill / Tool / LLM / Runtime layering behind the optional agentic mode: end-to-end flow, short/long auto-async, task-centre state machine, human approval/review, checkpoint resume |
 | [`docs/design-resume.html`](docs/design-resume.html) | Task resume design V1.1 — continue from a checkpoint instead of restarting |
 | [`docs/design-replay-api.html`](docs/design-replay-api.html) | Decision-chain replay API design V1.1 — field allowlist and dual kill-switch |
 | [`docs/design-quota-multi-replica.html`](docs/design-quota-multi-replica.html) | Daily-quota multi-replica design V1.1 — counting moved to the model-call site with Redis storage |
@@ -77,6 +90,11 @@ question
 ```
 
 **Design principle: step 4 is always code, never the model.** Letting a model review its own output is the same as having no guardrail at all.
+
+This is the default. With `agent.enabled`, the fixed order above is replaced by an
+LLM loop that chooses the same steps as tools — but steps 4–6 stay exactly here,
+inside the `execute_sql` tool, code-decided and unskippable. Same guardrails, same
+audit; only the orchestration changes. See [How this differs](#how-this-differs-from-a-general-purpose-agent).
 
 ---
 
@@ -266,6 +284,23 @@ org_id:
   predicate: "status = 'PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR"
 ```
 
+**Agentic mode** is two config blocks (both optional; absent ⇒ the deterministic
+pipeline). `agent.enabled` turns on the LLM tool-selection loop; `max_steps`
+(R-16) and `cost_cap_tokens` (R-17) bound each query; `async_after_ms` is the
+wall-clock threshold past which a long query detaches to the task centre. `skill.rules`
+appends deployment-specific calibers to the built-in methodology injected into the loop:
+
+```yaml
+agent:
+  enabled: true
+  max_steps: 6            # R-16 tool-call cap per query
+  cost_cap_tokens: 20000  # R-17 accumulated-token cap; converge past it
+  async_after_ms: 20000   # sync up to this, then detach to the task centre
+skill:
+  rules:
+    - "JD document count is documents.chunk_type='JD', not file_type"
+```
+
 **Data sources are no longer configuration.** They live in the `askdb_sources`
 table and are added from the console at runtime, so changing one needs no restart
 and a source that breaks cannot stop the service from starting. Two replicas share
@@ -366,6 +401,10 @@ askdb/                one module per concern
   executor.py         read-only execution, EXPLAIN dry run, masking   R-11…R-13
   planner.py          multi-step planning and its caps          R-15…R-17
   graph.py            LangGraph state machine, checkpoints, retry routing   R-14
+  tools.py            three read-only atoms + tiered registry (agentic mode)
+  agent.py            LLM autonomous loop — intent preflight + ReAct (agent.enabled)
+  skill.py            domain methodology / calibers injected into the agent
+  async_runner.py     wall-clock threshold → detach long queries to the task centre
   schema_rag.py       schema retrieval — keyword or vector mode
   sources.py          runtime data-source registry (PostgreSQL-backed)
   identity.py         roles, members, the scope each role gets at query time
@@ -387,7 +426,7 @@ data/                 sample-database generator, audit logs, checkpoint stores
 evals/                golden sets, replay harness, ablation, chaos runner
 scripts/              database-side setup and rollback SQL, registry migration
 deploy/               k8s manifest, nginx server block, deployment runbook
-tests/                752 tests, coverage gate 81%
+tests/                1010 tests, coverage gate 81%
 docs/                 design documents and the product prototype
 ```
 
@@ -654,12 +693,14 @@ complete — measured numbers are in the section above.
 | P8 | **Public instance** — nginx + k3s, two replicas, Redis-backed quota, self-hosted Langfuse; standalone React console replacing the single-file page, with a CI gate on the committed build output | 2026-09-02 | ✅ |
 | P9 | **Roles and permissions per `design-rbac.md`, all four stages** — write middleware, environment scope, masking and the R-19 data-age window, approval loop. V1.4 then flattened the visible surface: all roles see the same thing, approval is the only role difference, anonymous can read but not write | 2026-09-06 | ✅ |
 | P10 | **Runtime data-source registry** — sources move from config and per-pod files into PostgreSQL, editable from the console; ragforge and careermate both registered as ordinary sources; result review added alongside approval; task center bucketed by outcome; quality centre wired to real judgements | 2026-09-07 | ✅ |
+| P11 | **Optional agentic mode** (`agent.enabled`) — read-only tool atoms + tiered registry, grounded intent preflight, LLM ReAct loop, Skill calibers, long-query auto-async to the task centre; safety welded to the tool boundary, reusing approval / review / checkpoint / audit | 2026-09-11 | ✅ |
 
 > **Not yet built:** binding members to real **auth-gateway** identities (JWKS /
 > token-exchange) — until then login uses fixed accounts and member writes fall back
 > to a shared admin token, which the public instance leaves unset. Data sources are
 > DuckDB, PostgreSQL and MySQL/MariaDB. Multi-step planning (P5) ships but is off by
-> default (ablation F). Runtime-registered sources carry no tenant isolation by
+> default (ablation F); the P11 agentic mode is a separate loop gated by
+`agent.enabled` — on for the public instance, off elsewhere. Runtime-registered sources carry no tenant isolation by
 > design (see [Guardrails](#guardrails)). The prototype's phase-three and
 > phase-four screens — connector nodes and developer tooling — are not implemented.
 

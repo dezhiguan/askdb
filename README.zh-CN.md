@@ -33,6 +33,15 @@
 | 自己临时查个数、探索不熟悉的库 | 用通用 Agent，askdb 打不过 |
 | 高频重复调用 / 给不写 SQL 的人用 / 要保证不跨租户 / 要能说出准确率 / 要留审计 | 用 askdb |
 
+**可选的 agentic 模式（`agent.enabled`）。** 2026-09-11 起 askdb 也能跑一条 LLM 编排
+的循环：模型逐轮在三个只读工具（`search_schema` / `get_table_schema` / `execute_sql`）
+里自选，从而像通用 Agent 那样探索、覆盖长尾 —— **但不放弃硬约束。** 自主性只在编排层，
+安全仍焊死在工具边界：每次 `execute_sql` 照走同一套代码判定的闸（AST → EXPLAIN →
+只读账号 → 脱敏），模型永远不决定一条语句能不能跑，每问的步数/token 有上限
+（R-16/R-17），每次调用仍是一条可审计、可回放的记录。默认关闭；关闭时行为与下方的
+确定性链路逐字节一致。详见
+[`docs/design-trusted-data-agent-v2.html`](docs/design-trusted-data-agent-v2.html)。
+
 ---
 
 ## 文档
@@ -42,6 +51,7 @@
 | [`docs/tech-design.html`](docs/tech-design.html) | 技术设计说明书 V1.1 —— 11 章 + 2 附录，含护栏规则、评测方案、生产使用边界 |
 | [`docs/design-rbac.md`](docs/design-rbac.md) · [`.html`](docs/design-rbac.html) | 角色与权限设计 V1.4 —— 8 个功能页上的 27 个权限点，四个阶段全部落地。V1.4 把可见面拍平：所有角色（含未登录）看到的完全相同，唯一的角色差别是审批 |
 | [`docs/prototype.html`](docs/prototype.html) | **产品原型** —— 四个产品阶段的完整控制台，含尚无后端支撑的页面 |
+| [`docs/design-trusted-data-agent-v2.html`](docs/design-trusted-data-agent-v2.html) | **可信数据 Agent v2** —— 可选 agentic 模式背后的 Skill/Tool/LLM/Runtime 四层：端到端流程、长短任务自动异步、任务中心状态机、人工审批/复核、Checkpoint 恢复 |
 | [`docs/design-resume.html`](docs/design-resume.html) | 任务中断恢复设计 V1.1 —— 失败后从检查点续跑而非从头再来 |
 | [`docs/design-replay-api.html`](docs/design-replay-api.html) | 判定链路回放接口设计 V1.1 —— 字段白名单与双开关 |
 | [`docs/design-quota-multi-replica.html`](docs/design-quota-multi-replica.html) | 每日配额多副本设计 V1.1 —— 计数下沉到模型调用处，改存 Redis |
@@ -75,6 +85,10 @@
 ```
 
 **设计原则：第 4 步永远是代码判定，不是模型判定。** 让模型审查自己的产出等同于没有护栏。
+
+这是默认路径。开启 `agent.enabled` 后，上面的固定顺序换成一条 LLM 循环——它把这些步骤
+当工具来选，但第 4～6 步原地不动、就长在 `execute_sql` 工具里，代码判定、不可跳过。
+护栏不变、审计不变，变的只是编排。见 [它和通用 Agent 的区别](#它和通用-agent-的区别)。
 
 ---
 
@@ -202,7 +216,7 @@ askdb serve                              # 控制台 http://127.0.0.1:8000
 ```bash
 uv pip install -e ".[dev]"     # dev 有意装齐全部可选能力 ——
                                # 少装一个就会有一批用例静默 skip，而报告还是绿的
-pytest                         # 752 个用例 · 覆盖率门槛 81%
+pytest                         # 1010 个用例 · 覆盖率门槛 81%
 python -m evals.replay --blind        # 盲测集（最终成绩）
 python -m evals.ablation --groups A,B,C,D,E,F
 python -m evals.chaos                 # 故障注入
@@ -251,6 +265,21 @@ org_id:
 - name: 卡住的文档
   aliases: [卡住, 处理中不动, 堆积的文档]
   predicate: "status = 'PROCESSING' AND updated_at < now() - INTERVAL 1 HOUR"
+```
+
+**agentic 模式**是两个配置块（都可选；不写即走确定性链路）。`agent.enabled` 打开 LLM
+选工具循环；`max_steps`（R-16）与 `cost_cap_tokens`（R-17）给每问封顶；`async_after_ms`
+是墙钟阈值，超过就把长查询转到任务中心。`skill.rules` 在内置方法论之外追加数据源特定口径：
+
+```yaml
+agent:
+  enabled: true
+  max_steps: 6            # R-16 每问工具调用次数上限
+  cost_cap_tokens: 20000  # R-17 累计 token 上限，超则收敛
+  async_after_ms: 20000   # 同步等到这个时长就转后台到任务中心
+skill:
+  rules:
+    - "JD 文档数按 documents.chunk_type='JD' 判定，不是 file_type"
 ```
 
 **数据源不再是配置。** 它们存在 `askdb_sources` 表里，在控制台上运行时添加 ——
@@ -340,6 +369,10 @@ askdb/                一个关注点一个模块
   executor.py         只读执行、EXPLAIN 干跑、脱敏        R-11～R-13
   planner.py          多步规划及其上限                    R-15～R-17
   graph.py            LangGraph 状态机、检查点、重试路由  R-14
+  tools.py            三个只读原子 + 分层注册表（agentic 模式）
+  agent.py            LLM 自主循环 —— 意图预检 + ReAct（agent.enabled）
+  skill.py            注入 agent 的领域方法论 / 口径
+  async_runner.py     墙钟阈值 → 长查询转后台到任务中心
   schema_rag.py       Schema 召回 —— keyword / vector 两种模式
   sources.py          运行时数据源注册表（存 PostgreSQL）
   identity.py         角色、成员、角色在查询时拿到的范围
@@ -361,7 +394,7 @@ data/                 样例库生成器、审计日志、检查点库
 evals/                黄金集、回放、消融、故障注入
 scripts/              库侧建权限与回滚 SQL、注册表迁移
 deploy/               k8s 清单、nginx server 块、部署手册
-tests/                752 个用例，覆盖率门槛 81%
+tests/                1010 个用例，覆盖率门槛 81%
 docs/                 设计文档与产品原型
 ```
 
@@ -600,10 +633,12 @@ plan/assess 两次额外模型调用上）。判据是消融脚本里预先写�
 | P8 | **对外实例上线** —— nginx + k3s 两副本、配额走 Redis、自托管 Langfuse；单文件页面换成独立的 React 控制台工程，并在 CI 上加一道构建产物关卡 | 2026-09-02 | ✅ |
 | P9 | **角色与权限按 `design-rbac.md` 四个阶段全部落地** —— 写入中间件、环境范围、脱敏与 R-19 数据期限、审批闭环。随后 V1.4 把可见面拍平：所有角色看到的一样，唯一差别是审批，未登录可读不可写 | 2026-09-06 | ✅ |
 | P10 | **运行时数据源注册表** —— 数据源从配置与各 Pod 的文件搬进 PostgreSQL，控制台上可改；ragforge 与 careermate 都作为普通数据源注册进来；结果复核与事前审批并行落地；任务态按收尾码分档；质量中心接上真实判定 | 2026-09-07 | ✅ |
+| P11 | **可选 agentic 模式**（`agent.enabled`）—— 只读工具原子 + 分层注册表、接地意图预检、LLM ReAct 循环、Skill 口径、长查询自动异步到任务中心；安全焊在工具边界，复用审批/复核/检查点/审计 | 2026-09-11 | ✅ |
 
 > **尚未建成：** 成员与真实 **auth-gateway** 身份的绑定（JWKS / 令牌交换）——
 > 在那之前登录用内置账号，成员写入退回共享管理员令牌，而对外实例有意不配这把令牌。
-> 数据源支持 DuckDB、PostgreSQL 与 MySQL / MariaDB。多步规划（P5）已上线但默认关闭（消融组 F）。
+> 数据源支持 DuckDB、PostgreSQL 与 MySQL / MariaDB。多步规划（P5）已上线但默认关闭（消融组 F）；
+> P11 的 agentic 模式是另一条循环，由 `agent.enabled` 门控 —— 对外实例已开、其余默认关。
 > 运行时注册的数据源按设计不做租户隔离（见[护栏规则](#护栏规则)）。原型上的
 > 阶段三 / 阶段四页面 —— Connector 节点与开发者工具 —— 未实现。
 

@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>可信数据 Agent v2</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#f6f8f9; --surface:#ffffff; --surface-2:#eef2f4;
+    --ink:#14191d; --muted:#586470; --line:#d7dde2;
+    --accent:#1f6f7d; --accent-soft:#dcedef;
+    --good:#2f7d55; --good-bg:#e5f2ea;
+    --warn:#8a5e0f; --warn-bg:#f6ecd6;
+    --bad:#a93a3a; --bad-bg:#f6e1e0;
+    --human:#6d5bb0; --human-bg:#ece8f7;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0f1417; --surface:#161d21; --surface-2:#1e272c;
+      --ink:#e7edf0; --muted:#93a1ab; --line:#2a343a;
+      --accent:#4fb6c6; --accent-soft:#123137;
+      --good:#5cc98a; --good-bg:#12271c;
+      --warn:#d9a748; --warn-bg:#2c2411;
+      --bad:#e2726e; --bad-bg:#2d1615;
+      --human:#a89be0; --human-bg:#211c33;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f1417; --surface:#161d21; --surface-2:#1e272c;
+    --ink:#e7edf0; --muted:#93a1ab; --line:#2a343a;
+    --accent:#4fb6c6; --accent-soft:#123137;
+    --good:#5cc98a; --good-bg:#12271c;
+    --warn:#d9a748; --warn-bg:#2c2411;
+    --bad:#e2726e; --bad-bg:#2d1615;
+    --human:#a89be0; --human-bg:#211c33;
+  }
+  *{box-sizing:border-box}
+  body{margin:0; background:var(--bg); color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+    line-height:1.6; -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px; margin:0 auto; padding:clamp(24px,5vw,64px) clamp(18px,4vw,40px)}
+  .mono{font-family:"IBM Plex Mono","SF Mono",ui-monospace,monospace}
+
+  header.head{border-bottom:2px solid var(--ink); padding-bottom:22px; margin-bottom:30px}
+  .eyebrow{font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--accent); font-weight:600}
+  h1{font-size:clamp(26px,4.4vw,40px); line-height:1.12; font-weight:700; margin:.35em 0 .3em; text-wrap:balance; letter-spacing:-.01em}
+  .sub{color:var(--muted); font-size:15.5px; max-width:66ch; margin:0}
+  .meta{display:flex; flex-wrap:wrap; gap:8px 20px; margin-top:18px; font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--muted)}
+  .meta b{color:var(--ink); font-weight:600}
+
+  h2{font-size:19px; font-weight:700; margin:44px 0 4px; letter-spacing:-.005em; display:flex; align-items:baseline; gap:11px}
+  h2 .n{font-family:"IBM Plex Mono",monospace; font-size:13px; color:var(--accent); font-weight:600}
+  .lede{color:var(--muted); font-size:15px; margin:.2em 0 16px; max-width:74ch}
+  p{margin:.7em 0} a{color:var(--accent)} strong{font-weight:600}
+
+  .thesis{background:var(--accent-soft); border:1px solid var(--accent); border-radius:12px; padding:18px 22px; margin:22px 0; font-size:15.5px}
+  .thesis b{font-weight:700}
+
+  figure{margin:24px 0; background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:22px}
+  .fig-scroll{overflow-x:auto}
+  figure svg{display:block; max-width:100%; height:auto; margin:0 auto; color:var(--ink)}
+  figcaption{margin-top:14px; font-size:13px; color:var(--muted); text-align:center; text-wrap:balance}
+
+  .layers{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; margin:18px 0}
+  .layer{background:var(--surface); border:1px solid var(--line); border-radius:11px; padding:16px 18px; border-top:3px solid var(--accent)}
+  .layer h3{margin:0 0 3px; font-size:15px; font-weight:700}
+  .layer .role{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--accent); font-weight:600}
+  .layer ul{margin:10px 0 0; padding-left:16px; font-size:13.5px; color:var(--ink)}
+  .layer li{margin:4px 0}
+  .layer .nono{color:var(--bad); font-size:12.5px; margin-top:9px}
+  .layer.gate{border-top-color:var(--bad)}
+  .layer.gate .role{color:var(--bad)}
+
+  ol.load{list-style:none; counter-reset:l; padding:0; margin:18px 0; display:grid; gap:12px}
+  ol.load li{counter-increment:l; position:relative; background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:14px 16px 14px 54px}
+  ol.load li::before{content:counter(l); position:absolute; left:14px; top:13px; width:26px; height:26px; border-radius:50%; background:var(--accent); color:#fff; font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:700; display:grid; place-items:center}
+  ol.load b{font-weight:700}
+
+  .evi{border:1px solid var(--line); border-left:4px solid var(--warn); background:var(--warn-bg); border-radius:0 10px 10px 0; padding:14px 18px; margin:16px 0; font-size:14px}
+  .evi b{font-weight:600}
+  .evi code{font-family:"IBM Plex Mono",monospace; font-size:12.5px; background:var(--surface); padding:1px 5px; border-radius:4px}
+  .note{border:1px solid var(--line); border-left:4px solid var(--human); background:var(--human-bg); border-radius:0 10px 10px 0; padding:15px 20px; margin:18px 0; font-size:14.5px}
+  .note h3{margin:0 0 6px; font-size:15px; font-weight:700}
+  .note p{margin:.3em 0}
+  .note code{font-family:"IBM Plex Mono",monospace; font-size:12.5px; background:var(--surface); padding:1px 5px; border-radius:4px}
+
+  .repos{display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--line); border-radius:12px; overflow:hidden; margin:18px 0}
+  .repos>div{padding:16px 18px}
+  .repos .from{background:var(--surface-2)}
+  .repos .to{background:var(--surface); border-left:1px solid var(--line)}
+  .repos h4{margin:0 0 8px; font-family:"IBM Plex Mono",monospace; font-size:11.5px; letter-spacing:.05em; text-transform:uppercase}
+  .repos .from h4{color:var(--muted)} .repos .to h4{color:var(--accent)}
+  .repos ul{margin:0; padding-left:16px; font-size:13.5px}
+  .repos li{margin:5px 0}
+  .repos .from li{color:var(--muted); text-decoration:line-through}
+  @media(max-width:620px){.repos{grid-template-columns:1fr}.repos .to{border-left:none;border-top:1px solid var(--line)}}
+
+  .foot{margin-top:46px; padding-top:18px; border-top:1px solid var(--line); font-size:12.5px; color:var(--muted); font-family:"IBM Plex Mono",monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="head">
+    <div class="eyebrow">askdb · v2 架构提案</div>
+    <h1>可信数据 Agent：让 LLM 自主决策，让 Runtime 强制安全</h1>
+    <p class="sub">把 askdb 从「受控 NL2SQL 管道」重定位为「可信数据 Agent」。四层各司其职：Skill 给方法论、Tool 给原子能力、LLM 负责自主决策、Runtime 负责权限/安全闸/人工介入/Checkpoint/预算。安全性不靠限制自主，而靠把闸门钉在 Tool 边界。</p>
+    <div class="meta"><span>拟制 <b>2026-09-11</b></span><span>版本 <b>v2.0 草案</b></span><span>承接 <b class="mono">tech-design §2.1 / §1.2</b></span><span>依据 <b>线上实测 150 账号 / 1370 ask</b></span></div>
+  </header>
+
+  <div class="thesis">
+    核心命题不变，仍是<b>「在模型不可靠的前提下让整条链路可靠」</b>——变的只是可靠性的落点。自主性放在<b>编排</b>（LLM 选工具），可靠性钉在<b>执行</b>（每次 execute_sql 独立过闸），越界处<b>人工介入</b>（审批 / 复核），全程<b>可中断可恢复</b>（Checkpoint）。这些正交，所以「更自主」与「更可信」可以同时成立。
+  </div>
+
+  <h2><span class="n">§1</span> 端到端全景：从自然语言到返回结果</h2>
+  <p class="lede">一次查询的完整走法，含四类此前没画全的机制：<strong>意图预检</strong>（接地判可答/越域/单步或多步）、<strong>复杂任务多步循环</strong>（决策→工具→执行→评估→回环）、<strong>人工介入</strong>（紫色：高成本/高风险动作挂起审批、结果人工复核）、<strong>中断恢复</strong>（左侧 Checkpoint 轨：任一挂起点持久化后可续跑）。</p>
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 1000 1320" role="img" aria-label="askdb 端到端全景流程：登录权限源校验、缓存、意图可答性预检、复杂任务多步循环（决策选工具、search_schema/get_table_schema、generate_sql、execute_sql安全原子guard/dry_run/只读执行、脱敏租户过滤、assess评估回环）、Reasoning归因、finalize、人工复核、返回；含人工审批挂起、Checkpoint中断恢复轨、反思重试与决策回环">
+      <defs>
+        <marker id="a-h" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="currentColor"/></marker>
+        <marker id="a-hA" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--accent)"/></marker>
+        <marker id="a-hW" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--warn)"/></marker>
+        <marker id="a-hH" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--human)"/></marker>
+      </defs>
+
+      <!-- legend -->
+      <g font-family="IBM Plex Mono, monospace" font-size="10.5">
+        <rect x="16" y="12" width="13" height="12" rx="3" fill="var(--surface)" stroke="var(--accent)"/><text x="34" y="22" fill="var(--muted)">Runtime</text>
+        <rect x="104" y="12" width="13" height="12" rx="3" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="122" y="22" fill="var(--muted)">LLM</text>
+        <rect x="168" y="12" width="13" height="12" rx="3" fill="var(--surface-2)" stroke="var(--line)"/><text x="186" y="22" fill="var(--muted)">Tool</text>
+        <rect x="232" y="12" width="13" height="12" rx="3" fill="var(--bad-bg)" stroke="var(--bad)"/><text x="250" y="22" fill="var(--muted)">安全闸</text>
+        <rect x="310" y="12" width="13" height="12" rx="3" fill="var(--good-bg)" stroke="var(--good)"/><text x="328" y="22" fill="var(--muted)">Skill</text>
+        <rect x="372" y="12" width="13" height="12" rx="3" fill="var(--human-bg)" stroke="var(--human)"/><text x="390" y="22" fill="var(--muted)">人工介入</text>
+        <line x1="452" y1="18" x2="476" y2="18" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3"/><text x="482" y="22" fill="var(--muted)">Checkpoint 轨</text>
+      </g>
+
+      <!-- 复杂任务循环 band -->
+      <rect x="150" y="322" width="520" height="590" rx="14" fill="none" stroke="var(--line)"/>
+      <text x="164" y="342" font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--muted)">复杂任务 · 多步循环</text>
+
+      <!-- Checkpoint rail (left) -->
+      <line x1="60" y1="360" x2="60" y2="1075" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3"/>
+      <text x="44" y="720" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--accent)" transform="rotate(-90 44 720)">Checkpoint 轨 · 每个节点边界快照，可中断可恢复</text>
+      <g fill="var(--accent)"><rect x="56" y="426" width="8" height="8"/><rect x="56" y="558" width="8" height="8"/><rect x="56" y="690" width="8" height="8"/><rect x="56" y="802" width="8" height="8"/><rect x="56" y="1000" width="8" height="8"/></g>
+      <!-- 恢复入口 -->
+      <rect x="18" y="300" width="118" height="40" rx="8" fill="var(--surface)" stroke="var(--accent)"/>
+      <text x="77" y="318" text-anchor="middle" font-size="10.5" font-weight="600" fill="var(--ink)" font-family="IBM Plex Mono, monospace">⏸ 中断 / 恢复</text>
+      <text x="77" y="332" text-anchor="middle" font-size="9.5" fill="var(--muted)" font-family="IBM Plex Mono, monospace">从最近 checkpoint 续跑</text>
+      <path d="M77,340 L77,406 L348,406" fill="none" stroke="var(--accent)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a-hA)"/>
+
+      <!-- spine nodes -->
+      <g font-family="IBM Plex Sans, sans-serif" text-anchor="middle">
+        <rect x="350" y="60" width="300" height="44" rx="22" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.6"/>
+        <text x="500" y="87" font-size="14" font-weight="700" fill="var(--ink)">用户自然语言查询</text>
+
+        <rect x="350" y="126" width="300" height="46" rx="9" fill="var(--surface)" stroke="var(--accent)"/>
+        <text x="500" y="145" font-size="12.5" font-weight="600" fill="var(--ink)">登录 · 权限 · 数据源校验</text>
+        <text x="500" y="162" font-size="10.5" fill="var(--muted)">query_requires_login / 选源 / 限流预检</text>
+
+        <rect x="350" y="192" width="300" height="46" rx="9" fill="var(--surface)" stroke="var(--accent)"/>
+        <text x="500" y="211" font-size="12.5" font-weight="600" fill="var(--ink)">应答缓存查询</text>
+        <text x="500" y="228" font-size="10.5" fill="var(--muted)">key = 问题 + 源 + 组织 + 角色</text>
+
+        <rect x="350" y="258" width="300" height="46" rx="9" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <text x="500" y="277" font-size="12.5" font-weight="700" fill="var(--ink)">意图 / 可答性预检（接地）</text>
+        <text x="500" y="294" font-size="10.5" fill="var(--muted)">便宜模型：可答? 越域? 单步/多步?</text>
+
+        <rect x="350" y="340" width="300" height="46" rx="9" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.6"/>
+        <text x="500" y="359" font-size="12.5" font-weight="700" fill="var(--ink)">LLM 决策 · 选下一个工具</text>
+        <text x="500" y="376" font-size="10.5" fill="var(--muted)">循环入口（恢复/回环/打回都回到这）</text>
+
+        <rect x="350" y="406" width="300" height="46" rx="9" fill="var(--surface-2)" stroke="var(--line)"/>
+        <text x="500" y="425" font-size="12" font-weight="600" fill="var(--ink)" font-family="IBM Plex Mono, monospace">search_schema / get_table_schema</text>
+        <text x="500" y="442" font-size="10.5" fill="var(--muted)">召回相关表·口径 / 取精确字段·枚举</text>
+
+        <rect x="350" y="472" width="300" height="46" rx="9" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <text x="500" y="491" font-size="12.5" font-weight="600" fill="var(--ink)">generate_sql · 生成一条 SQL</text>
+        <text x="500" y="508" font-size="10.5" fill="var(--muted)">结构化输出，强制 JSON schema</text>
+
+        <!-- execute_sql atom -->
+        <rect x="330" y="536" width="340" height="176" rx="12" fill="var(--bad-bg)" stroke="var(--bad)" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <text x="654" y="530" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--bad)">execute_sql · 安全原子（代码判定）</text>
+        <rect x="350" y="542" width="300" height="42" rx="8" fill="var(--surface)" stroke="var(--bad)"/>
+        <text x="500" y="560" font-size="12" font-weight="600" fill="var(--ink)">guard · AST R-01~10 + 强制改写</text>
+        <text x="500" y="576" font-size="10" fill="var(--muted)">注 LIMIT / 显式列 · 零 token</text>
+        <rect x="350" y="590" width="300" height="42" rx="8" fill="var(--surface)" stroke="var(--bad)"/>
+        <text x="500" y="608" font-size="12" font-weight="600" fill="var(--ink)">dry_run · EXPLAIN 估扫描行 R-11</text>
+        <text x="500" y="624" font-size="10" fill="var(--muted)">超阈值 → 人工审批</text>
+        <rect x="350" y="638" width="300" height="42" rx="8" fill="var(--surface)" stroke="var(--bad)"/>
+        <text x="500" y="656" font-size="12" font-weight="600" fill="var(--ink)">只读执行 · 独立账号 R-12/13</text>
+        <text x="500" y="672" font-size="10" fill="var(--muted)">超时 + 行数上限</text>
+        <text x="500" y="700" font-size="10" fill="var(--bad)" font-family="IBM Plex Mono, monospace">每次调用独立过闸 · 对 LLM 不可见不可绕</text>
+
+        <rect x="350" y="736" width="300" height="46" rx="9" fill="var(--surface)" stroke="var(--accent)"/>
+        <text x="500" y="755" font-size="12.5" font-weight="600" fill="var(--ink)">脱敏 + 租户过滤 → Tool Result</text>
+        <text x="500" y="772" font-size="10.5" fill="var(--muted)">每个结果都过；carry 仅标识列 R-15</text>
+
+        <rect x="350" y="802" width="300" height="46" rx="9" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <text x="500" y="821" font-size="12.5" font-weight="700" fill="var(--ink)">assess · 结果够了吗？</text>
+        <text x="500" y="838" font-size="10.5" fill="var(--muted)">不够 → 回决策；够 → 收敛</text>
+
+        <rect x="350" y="924" width="300" height="46" rx="9" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <text x="500" y="943" font-size="12.5" font-weight="600" fill="var(--ink)">Reasoning · 跨步归因综合</text>
+        <text x="500" y="960" font-size="10.5" fill="var(--muted)">合成证据 + scrub 假陈述</text>
+
+        <rect x="350" y="990" width="300" height="48" rx="9" fill="var(--surface)" stroke="var(--accent)"/>
+        <text x="500" y="1009" font-size="12.5" font-weight="600" fill="var(--ink)">finalize · 附 SQL/口径/数据时间/溯源</text>
+        <text x="500" y="1026" font-size="10.5" fill="var(--muted)">写审计 · 仅"干净成功"写缓存</text>
+
+        <!-- human review node -->
+        <rect x="350" y="1058" width="300" height="48" rx="9" fill="var(--human-bg)" stroke="var(--human)" stroke-width="1.5"/>
+        <text x="500" y="1077" font-size="12.5" font-weight="700" fill="var(--ink)">👤 人工复核 · 采信 / 打回</text>
+        <text x="500" y="1094" font-size="10.5" fill="var(--muted)">高敏结论可选复核；打回→回决策补查</text>
+
+        <rect x="350" y="1128" width="300" height="46" rx="23" fill="var(--surface)" stroke="var(--ink)" stroke-width="1.6"/>
+        <text x="500" y="1149" font-size="13.5" font-weight="700" fill="var(--ink)">返回用户</text>
+        <text x="500" y="1165" font-size="10" fill="var(--muted)">结果 + SQL + 可信信号（口径/脱敏/收敛标注）</text>
+      </g>
+
+      <!-- spine arrows -->
+      <g stroke="currentColor" stroke-width="1.6" fill="none">
+        <line x1="500" y1="104" x2="500" y2="124" marker-end="url(#a-h)"/>
+        <line x1="500" y1="172" x2="500" y2="190" marker-end="url(#a-h)"/>
+        <line x1="500" y1="238" x2="500" y2="256" marker-end="url(#a-h)"/>
+        <line x1="500" y1="304" x2="500" y2="338" marker-end="url(#a-h)"/>
+        <line x1="500" y1="386" x2="500" y2="404" marker-end="url(#a-h)"/>
+        <line x1="500" y1="452" x2="500" y2="470" marker-end="url(#a-h)"/>
+        <line x1="500" y1="518" x2="500" y2="540" marker-end="url(#a-h)"/>
+        <line x1="500" y1="584" x2="500" y2="588" marker-end="url(#a-h)"/>
+        <line x1="500" y1="632" x2="500" y2="636" marker-end="url(#a-h)"/>
+        <line x1="500" y1="712" x2="500" y2="734" marker-end="url(#a-h)"/>
+        <line x1="500" y1="782" x2="500" y2="800" marker-end="url(#a-h)"/>
+        <line x1="500" y1="848" x2="500" y2="922" marker-end="url(#a-hA)"/>
+        <line x1="500" y1="970" x2="500" y2="988" marker-end="url(#a-h)"/>
+        <line x1="500" y1="1038" x2="500" y2="1056" marker-end="url(#a-h)"/>
+        <line x1="500" y1="1106" x2="500" y2="1126" marker-end="url(#a-hH)"/>
+      </g>
+      <text x="512" y="890" font-size="10" fill="var(--accent)" font-family="IBM Plex Mono, monospace" text-anchor="start">够 → 收敛</text>
+      <text x="512" y="1120" font-size="10" fill="var(--human)" font-family="IBM Plex Mono, monospace" text-anchor="start">采信</text>
+
+      <!-- right branch chips (early return) -->
+      <g font-family="IBM Plex Mono, monospace" font-size="10.5" text-anchor="middle">
+        <line x1="650" y1="149" x2="712" y2="149" stroke="var(--bad)" stroke-width="1.4" marker-end="url(#a-hW)"/>
+        <rect x="714" y="131" width="262" height="34" rx="7" fill="var(--surface)" stroke="var(--bad)"/><text x="845" y="152" fill="var(--muted)">未登录 / 源无效 → 401 · 拒</text>
+
+        <line x1="650" y1="215" x2="712" y2="215" stroke="var(--accent)" stroke-width="1.6" marker-end="url(#a-hA)"/>
+        <rect x="714" y="197" width="262" height="34" rx="7" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="845" y="218" fill="var(--ink)">缓存命中 → 直接返回（零模型）</text>
+
+        <line x1="650" y1="273" x2="712" y2="273" stroke="var(--warn)" stroke-width="1.4" marker-end="url(#a-hW)"/>
+        <rect x="714" y="255" width="262" height="34" rx="7" fill="var(--surface)" stroke="var(--warn)"/><text x="845" y="276" fill="var(--muted)">越域 / 缺对象 → 拒答 · 澄清</text>
+
+        <line x1="650" y1="491" x2="712" y2="491" stroke="var(--warn)" stroke-width="1.4" marker-end="url(#a-hW)"/>
+        <rect x="714" y="473" width="262" height="34" rx="7" fill="var(--surface)" stroke="var(--warn)"/><text x="845" y="494" fill="var(--muted)">NO_SQL → 拒答（带原因）</text>
+
+        <line x1="650" y1="563" x2="712" y2="563" stroke="var(--bad)" stroke-width="1.4" marker-end="url(#a-hW)"/>
+        <rect x="714" y="545" width="262" height="34" rx="7" fill="var(--surface)" stroke="var(--bad)"/><text x="845" y="566" fill="var(--muted)">危险 / 越权 → 拒（rejected_by）</text>
+      </g>
+
+      <!-- HITL #1 : dry_run 超阈值/高风险 → 挂起+checkpoint → 人工审批 -->
+      <g font-family="IBM Plex Sans, sans-serif" text-anchor="middle">
+        <line x1="650" y1="611" x2="712" y2="611" stroke="var(--human)" stroke-width="1.6" marker-end="url(#a-hH)"/>
+        <text x="686" y="604" font-size="9.5" fill="var(--human)" font-family="IBM Plex Mono, monospace">挂起</text>
+        <rect x="714" y="595" width="262" height="86" rx="9" fill="var(--human-bg)" stroke="var(--human)" stroke-width="1.5"/>
+        <text x="845" y="617" font-size="12" font-weight="700" fill="var(--ink)">👤 人工审批（HITL）</text>
+        <text x="845" y="636" font-size="10.5" fill="var(--muted)">超扫描阈值 / 高风险动作</text>
+        <text x="845" y="653" font-size="10.5" fill="var(--muted)">先 checkpoint 持久化，异步等人</text>
+        <text x="845" y="672" font-size="10.5" fill="var(--human)" font-family="IBM Plex Mono, monospace">批准↺恢复续跑 · 驳回✕终止</text>
+      </g>
+      <!-- 批准恢复：审批 -> 只读执行 -->
+      <path d="M845,681 L845,710 L668,710 L668,659 L652,659" fill="none" stroke="var(--human)" stroke-width="1.4" stroke-dasharray="5 3" marker-end="url(#a-hH)"/>
+      <!-- 审批挂起落到 checkpoint 轨 -->
+      <path d="M714,638 L690,638" fill="none" stroke="var(--human)" stroke-width="1" stroke-dasharray="3 3"/>
+
+      <!-- reflect edge: guard/exec 失败 → generate_sql -->
+      <g stroke="var(--warn)" stroke-width="1.5" fill="none">
+        <path d="M350,659 L306,659 L306,495 L348,495" marker-end="url(#a-hW)"/>
+      </g>
+      <text x="298" y="580" text-anchor="middle" font-size="10" fill="var(--warn)" font-family="IBM Plex Mono, monospace" transform="rotate(-90 298 580)">校验/执行失败 → 反思重试 ≤R-14</text>
+
+      <!-- decision re-entry channel (loop-back + 打回) → 决策 -->
+      <g stroke="var(--accent)" stroke-width="1.8" fill="none">
+        <path d="M350,825 L200,825 L200,363 L348,363" marker-end="url(#a-hA)"/>
+      </g>
+      <text x="192" y="600" text-anchor="middle" font-size="10.5" fill="var(--accent)" font-family="IBM Plex Mono, monospace" transform="rotate(-90 192 600)">不够 → 决策回环（R-16 步数 / R-17 成本 封顶 → 收敛）</text>
+      <!-- 打回 merges into re-entry channel -->
+      <g stroke="var(--human)" stroke-width="1.5" fill="none">
+        <path d="M350,1082 L160,1082 L160,352 L348,352" stroke-dasharray="6 3" marker-end="url(#a-hH)"/>
+      </g>
+      <text x="152" y="700" text-anchor="middle" font-size="10" fill="var(--human)" font-family="IBM Plex Mono, monospace" transform="rotate(-90 152 700)">复核打回 → 回决策补查</text>
+    </svg>
+    </div>
+    <figcaption>图 1 · 端到端全景。竖线 happy path；右侧提前返回（缓存 / 越域·澄清 / NO_SQL / 护栏拒答）；橙线反思重试、蓝线决策回环（复杂任务多步）；紫色两处人工介入——dry_run 超阈值/高风险挂起后人工审批（批准则从 checkpoint 恢复续跑），finalize 后可选人工复核（打回则回决策补查）；左侧蓝虚线是 Checkpoint 轨，任一挂起点持久化后可中断可恢复。</figcaption>
+  </figure>
+
+  <div class="note">
+    <h3>关于「第一步要不要大模型做意图识别」</h3>
+    <p><strong>要，但不是盲分类，是"接地(grounded)预检"。</strong>askdb 只有一个意图域（把 NL 变成对选定源的 SQL），没有多意图要路由；而且没看 schema 之前根本判不了"供应商在不在这个库"——盲分类会重犯实测那个攀附 bug。</p>
+    <p>有价值的是一个<strong>便宜的预检节点</strong>，把三件事合成一次调用：① 可答性 / 澄清（缺对象、纯指代）② <strong>越域拒答</strong>（看过召回 schema 后判，省掉后面白跑一轮生成）③ 单步 / 多步初判。即把现有 <code>clarify</code> + <code>plan</code> 合并并接地，就是图中「意图 / 可答性预检」那一格。</p>
+  </div>
+
+  <div class="note" style="border-left-color:var(--accent);background:var(--surface)">
+    <h3>本轮新补进流程的四类机制</h3>
+    <p><strong>复杂任务</strong>：中部循环带——决策→工具→执行→评估→不够则回环，受 R-16/R-17 封顶。<strong>人工介入</strong>：dry_run 超阈值/高风险动作挂起后人工审批；finalize 后高敏结论可选人工复核。<strong>中断恢复</strong>：左侧 Checkpoint 轨，任一挂起点（审批等待、复核等待、主动暂停）都先持久化，可续跑。<strong>意图预检</strong>：见上。</p>
+  </div>
+
+  <h2><span class="n">§2</span> 长任务 → 自动异步：怎么判定短 / 长</h2>
+  <p class="lede">别指望一次预判准。两层：<strong>Tier 1 预判</strong>（跑重活前的便宜信号，命中即立即异步）+ <strong>Tier 2 运行时兜底</strong>（同步跑超墙钟阈值就地提升为异步）。两条都落到同一处——写 checkpoint、建任务、前端提示「耗时较长，请到任务中心查看」、后台续跑。异步与「中断恢复」是同一套 checkpoint 机制，人工审批等待只是它的一个特例（等人＝无界时间，必然异步）。</p>
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 900 470" role="img" aria-label="长短任务判定：Tier1 预判读三类信号（意图预检多步/as_task、dry_run估扫描行R-11、命中人工审批或副作用工具），任一为真判长立即异步；短则同步直接返回；Tier2 运行时兜底墙钟超阈值提升为异步；异步=写checkpoint建任务前端提示后台续跑，落任务中心">
+      <defs>
+        <marker id="t-h" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="currentColor"/></marker>
+        <marker id="t-hA" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--accent)"/></marker>
+        <marker id="t-hW" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--warn)"/></marker>
+        <marker id="t-hG" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--good)"/></marker>
+        <marker id="t-hH" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--human)"/></marker>
+      </defs>
+
+      <!-- Tier1 label -->
+      <text x="30" y="40" font-family="IBM Plex Mono, monospace" font-size="11" font-weight="600" fill="var(--accent)">Tier 1 · 预判（跑重活前）</text>
+      <!-- signal boxes -->
+      <g font-family="IBM Plex Sans, sans-serif" text-anchor="middle">
+        <rect x="24" y="58" width="240" height="50" rx="8" fill="var(--surface-2)" stroke="var(--line)"/>
+        <text x="144" y="78" font-size="12" font-weight="600" fill="var(--ink)">意图预检：多步 / as_task</text>
+        <text x="144" y="95" font-size="10.5" fill="var(--muted)">多步天然更长</text>
+        <rect x="24" y="120" width="240" height="50" rx="8" fill="var(--surface-2)" stroke="var(--line)"/>
+        <text x="144" y="140" font-size="12" font-weight="600" fill="var(--ink)">dry_run：估扫描行 / 耗时</text>
+        <text x="144" y="157" font-size="10.5" fill="var(--muted)">R-11 确定性信号，最好用</text>
+        <rect x="24" y="182" width="240" height="50" rx="8" fill="var(--surface-2)" stroke="var(--line)"/>
+        <text x="144" y="202" font-size="12" font-weight="600" fill="var(--ink)">命中人工审批 / 副作用工具</text>
+        <text x="144" y="219" font-size="10.5" fill="var(--muted)">等人＝无界时间，必异步</text>
+      </g>
+
+      <!-- 判定 node -->
+      <path d="M312,145 L392,110 L472,145 L392,180 Z" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.6"/>
+      <text x="392" y="141" text-anchor="middle" font-size="13" font-weight="700" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif">长任务？</text>
+      <text x="392" y="157" text-anchor="middle" font-size="10" fill="var(--muted)" font-family="IBM Plex Mono, monospace">任一信号真=长</text>
+      <!-- signals -> 判定 -->
+      <g stroke="currentColor" stroke-width="1.4" fill="none">
+        <path d="M264,83 C300,90 300,120 322,138" marker-end="url(#t-h)"/>
+        <path d="M264,145 L310,145" marker-end="url(#t-h)"/>
+        <path d="M264,207 C300,200 300,168 322,152" marker-end="url(#t-h)"/>
+      </g>
+
+      <!-- 短 -> 同步返回 -->
+      <line x1="472" y1="128" x2="556" y2="92" stroke="var(--good)" stroke-width="1.6" marker-end="url(#t-hG)"/>
+      <text x="505" y="98" font-size="11" fill="var(--good)" font-weight="600" font-family="IBM Plex Mono, monospace">短</text>
+      <rect x="560" y="60" width="300" height="52" rx="9" fill="var(--surface)" stroke="var(--good)"/>
+      <text x="710" y="82" text-anchor="middle" font-size="12.5" font-weight="600" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif">同步执行 → 直接返回结果</text>
+      <text x="710" y="99" text-anchor="middle" font-size="10.5" fill="var(--muted)" font-family="IBM Plex Sans, sans-serif">绝大多数单步查询走这里</text>
+
+      <!-- 长(预判) -> 转异步 -->
+      <path d="M440,168 C500,210 500,240 556,258" stroke="var(--accent)" stroke-width="1.8" fill="none" marker-end="url(#t-hA)"/>
+      <text x="486" y="228" font-size="11" fill="var(--accent)" font-weight="600" font-family="IBM Plex Mono, monospace">预判长</text>
+
+      <!-- Tier2 tripwire: 同步 -> 转异步 -->
+      <path d="M710,112 L710,180 L858,180 L858,252" stroke="var(--warn)" stroke-width="1.6" fill="none" marker-end="url(#t-hW)"/>
+      <text x="784" y="172" text-anchor="middle" font-size="10.5" fill="var(--warn)" font-family="IBM Plex Mono, monospace">Tier 2 · 墙钟 &gt; T 秒 → 提升异步</text>
+
+      <!-- 转异步 box -->
+      <rect x="490" y="252" width="390" height="94" rx="10" fill="var(--human-bg)" stroke="var(--human)" stroke-width="1.5"/>
+      <text x="685" y="276" text-anchor="middle" font-size="13" font-weight="700" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif">转异步</text>
+      <text x="685" y="296" text-anchor="middle" font-size="11" fill="var(--muted)" font-family="IBM Plex Sans, sans-serif">写 checkpoint · 建任务 · 后台续跑</text>
+      <text x="685" y="315" text-anchor="middle" font-size="11" fill="var(--muted)" font-family="IBM Plex Sans, sans-serif">前端提示「耗时较长，请到任务中心查看」</text>
+      <text x="685" y="334" text-anchor="middle" font-size="10" fill="var(--human)" font-family="IBM Plex Mono, monospace">= 中断恢复 / 人工审批等待 · 同一套 checkpoint</text>
+
+      <!-- 转异步 -> 任务中心 -->
+      <line x1="685" y1="346" x2="685" y2="388" stroke="var(--human)" stroke-width="1.6" marker-end="url(#t-hH)"/>
+      <rect x="490" y="390" width="390" height="52" rx="9" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.4"/>
+      <text x="685" y="412" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif">📋 任务中心（异步结果）</text>
+      <text x="685" y="429" text-anchor="middle" font-size="10.5" fill="var(--muted)" font-family="IBM Plex Sans, sans-serif">可续跑 · 可复现 · 有归属</text>
+    </svg>
+    </div>
+    <figcaption>图 2 · 短 / 长判定与异步分流。左侧三类预判信号任一命中即"长"（立即异步）；短任务同步直返；橙线是运行时兜底——同步跑超墙钟阈值就地提升为异步。异步落任务中心，用的就是主图那条 Checkpoint 轨；人工审批等待是它的特例。</figcaption>
+  </figure>
+
+  <h2><span class="n">§3</span> 任务中心：任务状态机</h2>
+  <p class="lede">异步任务的全生命周期。三个终态（完成 / 失败 / 取消）加两个人工挂起态（等审批 / 待复核）。每次状态迁移都落 checkpoint，所以崩溃可从最近状态恢复、活动态随时可取消。挂起态等的是人，时长无界——这正是它必须异步的原因。</p>
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 940 540" role="img" aria-label="任务状态机：开始→排队QUEUED→运行RUNNING；运行↔挂起等审批(批准恢复/驳回失败)；运行→待复核(采信→完成/打回→运行)；运行→完成(收敛免复核)；运行→失败(错误或预算耗尽)；活动态→取消；运行每步checkpoint、崩溃可恢复">
+      <defs>
+        <marker id="s-h" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="currentColor"/></marker>
+        <marker id="s-hA" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--accent)"/></marker>
+        <marker id="s-hH" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--human)"/></marker>
+        <marker id="s-hG" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--good)"/></marker>
+        <marker id="s-hB" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--bad)"/></marker>
+      </defs>
+
+      <!-- legend -->
+      <g font-family="IBM Plex Mono, monospace" font-size="10.5">
+        <rect x="20" y="12" width="13" height="12" rx="3" fill="var(--accent-soft)" stroke="var(--accent)"/><text x="38" y="22" fill="var(--muted)">活动态</text>
+        <rect x="110" y="12" width="13" height="12" rx="3" fill="var(--human-bg)" stroke="var(--human)"/><text x="128" y="22" fill="var(--muted)">人工挂起</text>
+        <rect x="206" y="12" width="13" height="12" rx="3" fill="var(--good-bg)" stroke="var(--good)"/><text x="224" y="22" fill="var(--muted)">成功终态</text>
+        <rect x="298" y="12" width="13" height="12" rx="3" fill="var(--bad-bg)" stroke="var(--bad)"/><text x="316" y="22" fill="var(--muted)">失败/取消终态</text>
+      </g>
+
+      <!-- start -->
+      <circle cx="34" cy="212" r="8" fill="var(--ink)"/>
+      <!-- states -->
+      <g font-family="IBM Plex Sans, sans-serif" text-anchor="middle">
+        <!-- 排队 -->
+        <rect x="66" y="186" width="128" height="52" rx="10" fill="var(--accent-soft)" stroke="var(--accent)"/>
+        <text x="130" y="210" font-size="13" font-weight="700" fill="var(--ink)">排队 QUEUED</text>
+        <text x="130" y="227" font-size="10.5" fill="var(--muted)">等 worker 空槽</text>
+        <!-- 运行 -->
+        <rect x="262" y="186" width="150" height="52" rx="10" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.8"/>
+        <text x="337" y="210" font-size="13" font-weight="700" fill="var(--ink)">运行 RUNNING</text>
+        <text x="337" y="227" font-size="10.5" fill="var(--muted)">多步循环执行</text>
+        <!-- 挂起·等审批 -->
+        <rect x="252" y="60" width="180" height="54" rx="10" fill="var(--human-bg)" stroke="var(--human)" stroke-width="1.5"/>
+        <text x="342" y="84" font-size="12.5" font-weight="700" fill="var(--ink)">挂起 · 等审批</text>
+        <text x="342" y="101" font-size="10.5" fill="var(--muted)">SUSPENDED_APPROVAL</text>
+        <!-- 待复核 -->
+        <rect x="500" y="186" width="150" height="52" rx="10" fill="var(--human-bg)" stroke="var(--human)" stroke-width="1.5"/>
+        <text x="575" y="210" font-size="12.5" font-weight="700" fill="var(--ink)">待复核 REVIEW</text>
+        <text x="575" y="227" font-size="10.5" fill="var(--muted)">结果待采信</text>
+        <!-- 完成 -->
+        <rect x="742" y="182" width="160" height="60" rx="10" fill="var(--good-bg)" stroke="var(--good)" stroke-width="1.8"/>
+        <rect x="748" y="188" width="148" height="48" rx="7" fill="none" stroke="var(--good)"/>
+        <text x="822" y="208" font-size="13" font-weight="700" fill="var(--ink)">完成 SUCCEEDED</text>
+        <text x="822" y="225" font-size="10.5" fill="var(--muted)">结果 + SQL + 可信信号</text>
+        <!-- 失败 -->
+        <rect x="500" y="326" width="150" height="54" rx="10" fill="var(--bad-bg)" stroke="var(--bad)" stroke-width="1.8"/>
+        <rect x="506" y="332" width="138" height="42" rx="7" fill="none" stroke="var(--bad)"/>
+        <text x="575" y="352" font-size="12.5" font-weight="700" fill="var(--ink)">失败 FAILED</text>
+        <text x="575" y="369" font-size="10.5" fill="var(--muted)">错误 / 预算耗尽 / 驳回</text>
+        <!-- 取消 -->
+        <rect x="262" y="410" width="150" height="52" rx="10" fill="var(--bad-bg)" stroke="var(--bad)" stroke-width="1.8"/>
+        <rect x="268" y="416" width="138" height="40" rx="7" fill="none" stroke="var(--bad)"/>
+        <text x="337" y="435" font-size="12.5" font-weight="700" fill="var(--ink)">取消 CANCELLED</text>
+        <text x="337" y="452" font-size="10.5" fill="var(--muted)">用户主动取消</text>
+      </g>
+
+      <!-- transitions -->
+      <!-- start->排队 -->
+      <line x1="42" y1="212" x2="64" y2="212" stroke="currentColor" stroke-width="1.5" marker-end="url(#s-h)"/>
+      <!-- 排队->运行 -->
+      <line x1="194" y1="212" x2="260" y2="212" stroke="var(--accent)" stroke-width="1.6" marker-end="url(#s-hA)"/>
+      <text x="227" y="204" text-anchor="middle" font-size="9.5" fill="var(--muted)" font-family="IBM Plex Mono, monospace">取任务</text>
+      <!-- 运行->挂起 (up) -->
+      <line x1="320" y1="186" x2="320" y2="116" stroke="var(--human)" stroke-width="1.6" marker-end="url(#s-hH)"/>
+      <text x="236" y="150" text-anchor="middle" font-size="9.5" fill="var(--human)" font-family="IBM Plex Mono, monospace">超阈值/高风险</text>
+      <!-- 挂起->运行 (down) -->
+      <line x1="360" y1="116" x2="360" y2="184" stroke="var(--human)" stroke-width="1.6" marker-end="url(#s-hH)"/>
+      <text x="404" y="150" text-anchor="middle" font-size="9.5" fill="var(--human)" font-family="IBM Plex Mono, monospace">批准·恢复</text>
+      <!-- 挂起->失败 (驳回) -->
+      <path d="M432,100 C560,120 575,180 575,324" fill="none" stroke="var(--bad)" stroke-width="1.4" marker-end="url(#s-hB)"/>
+      <text x="560" y="150" text-anchor="middle" font-size="9.5" fill="var(--bad)" font-family="IBM Plex Mono, monospace">驳回</text>
+      <!-- 运行->待复核 -->
+      <line x1="412" y1="216" x2="498" y2="216" stroke="var(--human)" stroke-width="1.6" marker-end="url(#s-hH)"/>
+      <text x="455" y="230" text-anchor="middle" font-size="9.5" fill="var(--muted)" font-family="IBM Plex Mono, monospace">需复核</text>
+      <!-- 待复核->运行 (打回) -->
+      <path d="M500,198 C455,182 455,182 414,198" fill="none" stroke="var(--human)" stroke-width="1.4" marker-end="url(#s-hH)"/>
+      <text x="456" y="176" text-anchor="middle" font-size="9.5" fill="var(--human)" font-family="IBM Plex Mono, monospace">打回·补查</text>
+      <!-- 待复核->完成 (采信) -->
+      <line x1="650" y1="212" x2="740" y2="212" stroke="var(--good)" stroke-width="1.6" marker-end="url(#s-hG)"/>
+      <text x="695" y="204" text-anchor="middle" font-size="9.5" fill="var(--good)" font-family="IBM Plex Mono, monospace">采信</text>
+      <!-- 运行->完成 (收敛免复核) -->
+      <path d="M412,196 C560,150 620,150 742,196" fill="none" stroke="var(--good)" stroke-width="1.5" marker-end="url(#s-hG)"/>
+      <text x="575" y="150" text-anchor="middle" font-size="9.5" fill="var(--good)" font-family="IBM Plex Mono, monospace">收敛（免复核）</text>
+      <!-- 运行->失败 -->
+      <path d="M360,238 C420,290 460,300 500,330" fill="none" stroke="var(--bad)" stroke-width="1.5" marker-end="url(#s-hB)"/>
+      <text x="470" y="288" text-anchor="middle" font-size="9.5" fill="var(--bad)" font-family="IBM Plex Mono, monospace">错误/预算耗尽未收敛</text>
+      <!-- 运行->取消 -->
+      <line x1="320" y1="238" x2="330" y2="408" stroke="var(--bad)" stroke-width="1.3" stroke-dasharray="5 3" marker-end="url(#s-hB)"/>
+      <text x="230" y="330" text-anchor="middle" font-size="9.5" fill="var(--bad)" font-family="IBM Plex Mono, monospace">用户取消</text>
+      <text x="150" y="360" text-anchor="middle" font-size="9" fill="var(--muted)" font-family="IBM Plex Mono, monospace">（任意活动态均可取消）</text>
+      <!-- 运行 self checkpoint -->
+      <path d="M262,200 C232,188 232,236 262,224" fill="none" stroke="var(--accent)" stroke-width="1.3" marker-end="url(#s-hA)"/>
+      <text x="204" y="256" text-anchor="middle" font-size="9" fill="var(--accent)" font-family="IBM Plex Mono, monospace">每步 checkpoint · 崩溃可恢复</text>
+    </svg>
+    </div>
+    <figcaption>图 3 · 任务状态机。蓝＝活动态，紫＝人工挂起（时长无界，故必异步），双框＝终态。审批驳回→失败，复核打回→回运行补查，收敛可免复核直达完成；活动态随时可取消，每步 checkpoint 使崩溃可恢复。</figcaption>
+  </figure>
+  <div class="layers">
+    <div class="layer" style="border-top-color:var(--accent)"><div class="role" style="color:var(--accent)">排队 / 运行</div><h3>前端：分析中…</h3>
+      <ul><li>「排队中…」/「分析中 · 第 k 步」进度</li><li>可「取消」</li></ul></div>
+    <div class="layer" style="border-top-color:var(--human)"><div class="role" style="color:var(--human)">挂起 · 等审批</div><h3>前端：等待放行</h3>
+      <ul><li>发起人：「预估扫描 X 行，待管理员放行」</li><li>审批人：批准 / 驳回（带说明）</li></ul></div>
+    <div class="layer" style="border-top-color:var(--human)"><div class="role" style="color:var(--human)">待复核</div><h3>前端：结果待复核</h3>
+      <ul><li>结果先不采信；复核人：采信 / 打回</li><li>打回带原因，回运行补查</li></ul></div>
+    <div class="layer" style="border-top-color:var(--good)"><div class="role" style="color:var(--good)">完成 / 失败 / 取消</div><h3>前端：终态</h3>
+      <ul><li>完成：结果卡 + SQL + 可信信号</li><li>失败：原因 + 可重试；取消：已取消</li></ul></div>
+  </div>
+
+  <h2><span class="n">§4</span> 四层架构（职责视图）</h2>
+  <p class="lede">LLM 在中间跑「我下一步需要什么 → 选工具 → 看结果 → 还需要什么」的循环；三个原子工具环绕；Skill 从旁注入领域口径；整个循环被 Runtime 包住，安全闸就长在 <span class="mono">execute_sql</span> 这个原子内部——无论 LLM 怎么决定发的，都走同一条代码判定的闸。</p>
+
+  <figure>
+    <div class="fig-scroll">
+    <svg viewBox="0 0 900 580" role="img" aria-label="四层架构：Runtime 包住整个循环；LLM 居中做自主决策循环；Skill 注入领域口径；三个工具 search_schema/get_table_schema/execute_sql 环绕；execute_sql 内含 guard→dry_run→只读执行→脱敏 的代码安全闸；Runtime 负责 checkpoint、每个结果脱敏、预算封顶">
+      <defs>
+        <marker id="v-ah" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="currentColor"/></marker>
+        <marker id="v-ahA" markerWidth="9" markerHeight="9" refX="7.5" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--accent)"/></marker>
+      </defs>
+      <rect x="18" y="46" width="864" height="502" rx="16" fill="none" stroke="var(--accent)" stroke-width="2"/>
+      <text x="36" y="38" font-family="IBM Plex Mono, monospace" font-size="13" font-weight="600" fill="var(--accent)">Runtime · 权限 / 安全强制 / 人工介入 / Checkpoint / 预算 / 审计</text>
+
+      <rect x="46" y="150" width="188" height="190" rx="11" fill="var(--surface-2)" stroke="var(--line)"/>
+      <text x="140" y="176" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="12.5" font-weight="600" fill="var(--ink)">Skill · 领域方法论</text>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="11.5" fill="var(--muted)" text-anchor="middle">
+        <text x="140" y="204">JD 口径 = chunk_type</text>
+        <text x="140" y="226">未知实体 → 拒答</text>
+        <text x="140" y="248">软删除统一口径</text>
+        <text x="140" y="270">指标归口 / 同义澄清</text>
+      </g>
+      <text x="140" y="312" text-anchor="middle" font-size="10.5" font-family="IBM Plex Mono, monospace" fill="var(--good)">可信的来源</text>
+
+      <rect x="356" y="150" width="210" height="104" rx="12" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.6"/>
+      <text x="461" y="186" text-anchor="middle" font-size="15" font-weight="700" fill="var(--ink)" font-family="IBM Plex Sans, sans-serif">LLM · 自主决策</text>
+      <text x="461" y="212" text-anchor="middle" font-size="12" fill="var(--muted)">「我下一步需要什么？」</text>
+      <text x="461" y="232" text-anchor="middle" font-size="12" fill="var(--muted)">「还需要查什么？」</text>
+      <path d="M540,150 C566,120 590,132 590,158 C590,184 566,196 540,180" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#v-ah)"/>
+      <text x="600" y="162" font-size="10.5" fill="var(--muted)" font-family="IBM Plex Mono, monospace">循环</text>
+
+      <line x1="234" y1="200" x2="354" y2="196" stroke="currentColor" stroke-width="1.5" marker-end="url(#v-ah)"/>
+      <text x="294" y="188" text-anchor="middle" font-size="10.5" fill="var(--muted)" font-family="IBM Plex Mono, monospace">注入口径</text>
+
+      <line x1="461" y1="254" x2="461" y2="300" stroke="var(--accent)" stroke-width="1.8" marker-end="url(#v-ahA)"/>
+      <text x="472" y="278" font-size="10.5" fill="var(--accent)" font-family="IBM Plex Mono, monospace">① 选择&调用</text>
+      <line x1="150" y1="300" x2="772" y2="300" stroke="var(--accent)" stroke-width="1.8"/>
+      <g stroke="var(--accent)" stroke-width="1.8" fill="none">
+        <line x1="150" y1="300" x2="150" y2="392" marker-end="url(#v-ahA)"/>
+        <line x1="410" y1="300" x2="410" y2="392" marker-end="url(#v-ahA)"/>
+        <line x1="700" y1="300" x2="700" y2="392" marker-end="url(#v-ahA)"/>
+      </g>
+      <g stroke="currentColor" stroke-width="1.4" fill="none" stroke-dasharray="5 3">
+        <line x1="250" y1="392" x2="250" y2="322"/>
+        <line x1="500" y1="392" x2="500" y2="322"/>
+        <line x1="790" y1="392" x2="790" y2="322"/>
+        <line x1="250" y1="322" x2="790" y2="322"/>
+        <line x1="500" y1="322" x2="500" y2="256" marker-end="url(#v-ah)"/>
+      </g>
+      <text x="628" y="316" font-size="10.5" fill="var(--muted)" font-family="IBM Plex Mono, monospace">② Tool Result（已脱敏 / 租户过滤）</text>
+
+      <g font-family="IBM Plex Sans, sans-serif" text-anchor="middle">
+        <rect x="70" y="392" width="200" height="66" rx="9" fill="var(--surface)" stroke="var(--line)"/>
+        <text x="170" y="420" font-size="13" font-weight="600" fill="var(--ink)" font-family="IBM Plex Mono, monospace">search_schema</text>
+        <text x="170" y="440" font-size="11" fill="var(--muted)">向量召回相关表/字段/口径</text>
+        <rect x="330" y="392" width="200" height="66" rx="9" fill="var(--surface)" stroke="var(--line)"/>
+        <text x="430" y="420" font-size="13" font-weight="600" fill="var(--ink)" font-family="IBM Plex Mono, monospace">get_table_schema</text>
+        <text x="430" y="440" font-size="11" fill="var(--muted)">取某表精确字段/枚举</text>
+        <rect x="590" y="392" width="222" height="132" rx="9" fill="var(--bad-bg)" stroke="var(--bad)" stroke-width="1.6"/>
+        <text x="701" y="414" font-size="13" font-weight="700" fill="var(--ink)" font-family="IBM Plex Mono, monospace">execute_sql · 安全原子</text>
+      </g>
+      <g font-family="IBM Plex Mono, monospace" text-anchor="middle" font-size="11">
+        <rect x="606" y="424" width="86" height="24" rx="5" fill="var(--surface)" stroke="var(--bad)"/><text x="649" y="440" fill="var(--ink)">guard(AST)</text>
+        <rect x="710" y="424" width="86" height="24" rx="5" fill="var(--surface)" stroke="var(--bad)"/><text x="753" y="440" fill="var(--ink)">dry_run</text>
+        <rect x="606" y="454" width="86" height="24" rx="5" fill="var(--surface)" stroke="var(--bad)"/><text x="649" y="470" fill="var(--ink)">只读执行</text>
+        <rect x="710" y="454" width="86" height="24" rx="5" fill="var(--surface)" stroke="var(--bad)"/><text x="753" y="470" fill="var(--ink)">脱敏</text>
+      </g>
+      <text x="701" y="502" text-anchor="middle" font-size="10.5" fill="var(--bad)" font-family="IBM Plex Mono, monospace">代码判定 · 每次调用独立过闸</text>
+
+      <text x="450" y="540" text-anchor="middle" font-size="11" fill="var(--accent)" font-family="IBM Plex Mono, monospace">Runtime 兜底：预算封顶 R-16/R-17 · Checkpoint 可复现 · 每个 Result 过脱敏+租户（挡 §10.1 累积泄露）</text>
+    </svg>
+    </div>
+    <figcaption>图 2 · 四层职责分离。蓝色是自主决策与工具调用回路；红色是钉在 execute_sql 内部、不受 LLM 左右的代码安全闸。LLM 决定"发哪条 SQL、何时停"，永远不决定"这条能不能执行"。</figcaption>
+  </figure>
+
+  <h2><span class="n">§5</span> 每层的职责 —— 与它绝不能做的事</h2>
+  <div class="layers">
+    <div class="layer"><div class="role">Skill</div><h3>领域方法论</h3>
+      <ul><li>口径固化：JD 按 chunk_type、文档数按 COMPLETED</li><li>拒答规则：库里没有的实体不许攀同名列</li><li>软删除 / 指标归口 / 同义问法统一</li></ul>
+      <div class="nono">✕ 不写死 SQL、不碰执行</div></div>
+    <div class="layer"><div class="role">Tool</div><h3>原子能力</h3>
+      <ul><li>search_schema / get_table_schema / execute_sql</li><li>每个都是自足、可独立审计的原子</li><li>execute_sql 自带安全闸（见下）</li></ul>
+      <div class="nono">✕ 不做编排、不跨工具记忆</div></div>
+    <div class="layer"><div class="role">LLM</div><h3>自主决策</h3>
+      <ul><li>判断下一步需要哪个工具、查什么</li><li>读 Tool Result 决定是否继续 / 收敛</li><li>综合证据产出归因结论</li></ul>
+      <div class="nono">✕ 不判断安全、不自证正确</div></div>
+    <div class="layer gate"><div class="role">Runtime</div><h3>权限 / 安全 / 人工 / 边界</h3>
+      <ul><li>execute 强制过 guard→dry_run→只读→脱敏</li><li>高成本/高风险 → 挂起人工审批；结果可人工复核</li><li>预算封顶 R-16/R-17 · Checkpoint 可复现 · 全量审计</li></ul>
+      <div class="nono">✕ 不信任 LLM 的任何安全判断</div></div>
+  </div>
+
+  <h2><span class="n">§6</span> 三个承重条件（缺一个就不"可信"）</h2>
+  <ol class="load">
+    <li><b>Skill 层才是"可信"的来源，不是 loop。</b>一个纯 ReAct loop 套这三个工具，会原样复现本轮实测查出的全部错误。把它们扳正的是 Skill 里的口径，不是更强的自主性。<div class="evi"><b>实测证据 · 更自主 ≠ 更对：</b>「JD 文档数」agent 用 <code>file_type</code> 得 0（正确 <code>chunk_type</code>=15669）；「供应商」攀到 <code>model_config.vendor</code> 答 3（应拒答）；「简历数」软删除时过滤时不过滤（9 vs 62）。这三个错，多给自主只会多几种错法。</div></li>
+    <li><b>安全闸钉在 Tool 边界，不随自主性松动。</b>沿用 §2.1 铁律「[4] 永远是代码判定」。LLM 决定发哪条 SQL，但每条都独立过 guard/dry_run/只读/脱敏——agent 无法用安全原子拼出不安全动作。</li>
+    <li><b>Runtime 挡住 loop 新引入的风险。</b>失控循环/成本爆炸 → 复用 R-16 步数上限 / R-17 累计成本上限 + 超时；多步累积泄露(§10.1) → 每个 Result 都过脱敏+租户、carry 只带标识列(R-15)；不可复现 → Checkpoint replay，把 run-to-run 变化的路径原样留档。</li>
+  </ol>
+
+  <h2><span class="n">§7</span> 这不是重写：原子已存在</h2>
+  <p class="lede">三个工具在 askdb 里都已有实现——只是从固定管道里拆出来暴露成工具，再用 LLM loop 替掉那个"永远单步"的薄壳。<span class="mono">mcp_server.py</span> 已把 askdb 作为工具暴露给外层 agent，因此「loop 跑在 askdb 内」与「跑在外层 agent」收敛成同一件事：<strong>Tool 就是那条统一接口</strong>，跑在里还是外只是部署选择。</p>
+  <ul>
+    <li><span class="mono">search_schema</span> ← 现 <span class="mono">schema_rag.py</span> 向量召回</li>
+    <li><span class="mono">get_table_schema</span> ← 现结构内省 / <span class="mono">/api/schema</span></li>
+    <li><span class="mono">execute_sql</span> ← 现 <span class="mono">guard → dry_run → 只读执行</span> 那条链，原样成为工具内部契约</li>
+    <li>人工审批 ← 现 <span class="mono">approval</span>（P07 高成本挂起）；人工复核 ← 现 <span class="mono">review</span>（结果采信）；中断恢复 ← 现 <span class="mono">checkpoint</span> + as_task 续跑线程</li>
+  </ul>
+
+  <h2><span class="n">§8</span> 一个必须走的手续：重定位</h2>
+  <p class="lede">这套等于把 askdb 的产品定位改了，要动 §1.1/§1.2 并出新版本号——是产品决定，不能当实现细节偷偷改。</p>
+  <div class="repos">
+    <div class="from"><h4>§1.2 旧非目标（需撤/改）</h4><ul>
+      <li>不做多轮对话上下文</li>
+      <li>不追求覆盖任意复杂分析型查询</li>
+    </ul></div>
+    <div class="to"><h4>v2 新定位</h4><ul>
+      <li>可信数据 Agent：LLM 自主编排、Runtime 强制安全</li>
+      <li>覆盖多步探索型 / 结果驱动 / 归因分析，且全程可审计可复现</li>
+      <li>核心命题不变：模型不可靠前提下链路可靠</li>
+    </ul></div>
+  </div>
+
+  <div class="foot">askdb · 可信数据 Agent v2.0 草案 · 2026-09-11 · 承接 tech-design §2.1/§1.2，依据线上实测（150 账号 / 1370 ask）</div>
+</div>
+
+</body>
+</html>
