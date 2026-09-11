@@ -123,6 +123,19 @@ planner:
   cost_cap_tokens: 12000
   on_cap_reached: converge
 
+# 可信数据 Agent —— LLM 自主决策链路（v2，见 docs/design-trusted-data-agent-v2.html）。
+# 2026-09-11 按 @guandezhi 决定在对外实例开启验收：/api/ask 走意图预检 + LLM
+# 每轮自选工具(search_schema/get_table_schema/execute_sql)的 ReAct 循环，替掉固定
+# 管道的编排。安全不变（execute_sql 仍过 guard/dry_run/只读/脱敏，每次独立过闸），
+# 口径由 skill.py + schema 注入；越域拒答、软删除口径统一见 skill 规则。
+# 成本比管道高（每问 = 意图预检 1 次 + 决策/工具若干次），受 R-16/R-17 封顶，
+# 并受 daily_quota 与 nginx /api/ask 限流兜底。要退回管道把 enabled 改回 false 即可。
+agent:
+  enabled: true
+  max_steps: 6                       # R-16 循环步数上限，超则收敛作答并标注
+  cost_cap_tokens: 12000             # R-17 累计 token 上限
+  async_after_ms: 8000               # 墙钟软阈值：同步超时转后台异步→任务中心
+
 # 2026-09-09 三处一起改。起因是一次实测：问「哪些商品缺货了」，召回给出
 # inventory_stats_daily / batch_stocks / batches 三张表，**一张明细表都没进来**，
 # 模型只能答「查不了」。而 stock_alerts 的注释里明写着「问『哪些商品要缺货』用这张表」。
