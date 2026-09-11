@@ -368,3 +368,14 @@
   .task-reason-row { grid-template-columns: 1fr; gap: 4px; }
   .clarify-modal .clarify-form { grid-template-columns: 1fr; }
 }
+
+/* 任务结果弹窗：最终答案 + 已脱敏结果表（/api/result） */
+.task-detail-modal .task-answer { font-size: 14px; line-height: 1.7; margin: 14px 0 0; white-space: pre-wrap; word-break: break-word; }
+.task-detail-modal .task-result-rows { margin-top: 14px; }
+.task-detail-modal .task-result-cap { font-size: 11.5px; color: var(--muted); margin-bottom: 7px; }
+.task-detail-modal .task-result-rows-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+.task-detail-modal .task-result-rows table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.task-detail-modal .task-result-rows th,
+.task-detail-modal .task-result-rows td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.task-detail-modal .task-result-rows th { color: var(--muted); font-weight: 600; background: var(--paper); }
+.task-detail-modal .task-result-rows tr:last-child td { border-bottom: none; }
