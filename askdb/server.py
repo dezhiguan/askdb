@@ -2084,7 +2084,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         字段走 audit.RESULT_FIELDS 白名单；被拦下的记录（rejected_by 非空）返回 null，
         不展示推测或伪造的结果。
         """
-        _require_login(request)
+        # **无条件要登录**：结果行含数据，绝不给访客。_require_login 只在
+        # auth.required=true 时挡，而对外实例是 auth.required=false（只 query_requires_login），
+        # 那条挡不住这里 —— 直接判当前用户。
+        if not _current_user(request):
+            raise HTTPException(status_code=401, detail="查看最终结果需要登录")
         _require_cap(request, _identity.AUDIT_READ, "查看最终结果")
         not_found = JSONResponse({"error": "not found"}, status_code=404)
         if not _TRACE_ID_RE.fullmatch(trace_id or ""):
