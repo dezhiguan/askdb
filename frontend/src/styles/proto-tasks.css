@@ -58,6 +58,13 @@
 .tasks-page .task-main small,
 .tasks-page .task-meta span { display: block; overflow: hidden; color: var(--muted); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
 .tasks-page .task-meta strong { display: block; margin-top: 3px; font: 8px var(--mono); }
+/* 数据源与风险一样没有行内小标签（列名由表头交代），行内偏移跟着风险走，
+   两列才对得齐。只补收口：库名比风险档长得多，不截断会把右边几列顶出轨道。 */
+.tasks-page .task-source strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tasks-page .task-row .status {
   display: inline-flex; padding: 4px 6px; border-radius: 99px;
   color: var(--green); background: var(--green-wash); font: 7px var(--mono);

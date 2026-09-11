@@ -579,6 +579,7 @@ export function TasksPage({ onNavigate, notify, me }: {
               <div className="task-head" role="row">
                 <span />
                 <span>任务 / 线程</span>
+                <span>数据源</span>
                 <span>风险</span>
                 <span>关键信息</span>
                 <span>状态</span>
@@ -597,12 +598,21 @@ export function TasksPage({ onNavigate, notify, me }: {
                       {' · 已执行 '}{task.attempts_on_thread} 次
                     </small>
                   </div>
-                  {/* 第三列**恒为风险**：后端对每一条线程都算了档（audit._risk，
+                  {/* 数据源恒为一列：这一页把所有数据源的线程列在一起，「这条跑在哪个库」
+                      原来只有点开弹窗才看得到，而筛选条上就摆着「全部数据源」——
+                      能筛却看不见。取列表自带的 source_name（审计 summary 字段），
+                      没记名字时退回源 id，两个都没有才是占位。 */}
+                  <div className="task-meta task-source">
+                    <strong title={task.source_name || task.source || ''}>
+                      {task.source_name || task.source || '—'}
+                    </strong>
+                  </div>
+                  {/* 第四列**恒为风险**：后端对每一条线程都算了档（audit._risk，
                       没有收尾码时兜底 LOW），所以这一列能被表头钉住。原来
                       running / interrupted 两档在这里放的是"阶段"和"现场：检查点在"
                       —— 一个表头之下三种含义，那样的表头是在骗人。 */}
                   <div className="task-meta"><strong title={task.risk_why ?? ''}>{task.risk ?? '—'}</strong></div>
-                  {/* 第四列是唯一随状态变的一列，所以只有它保留行内小标签 */}
+                  {/* 第五列是唯一随状态变的一列，所以只有它保留行内小标签 */}
                   {keyInfo(task)}
                   <div><span className={`status ${STATUS_WAIT[task.status] ? 'wait' : ''}`}
                              title={task.next_actor ?? ''}>{STATUS_LABEL[task.status]}</span></div>
@@ -746,7 +756,7 @@ export function TasksPage({ onNavigate, notify, me }: {
   )
 }
 
-/** 行上第四列：这条线程此刻唯一值得先看的那件事。
+/** 行上第五列：这条线程此刻唯一值得先看的那件事。
  *
  *  它按状态取不同的东西，所以**保留行内小标签**——表头只能说到"关键信息"，
  *  具体是耗时还是存疑理由得由行自己讲。其余各列的含义都固定，由表头交代。
