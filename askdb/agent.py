@@ -17,6 +17,7 @@ schema_recall→generate→execute。安全性不变 —— 每次 execute_sql �
 """
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from typing import Any
@@ -128,6 +129,18 @@ AGENT_USER = """{schema}
 
 
 # --------------------------------------------------------------------------
+def _io_json(obj: object) -> str:
+    """把工具的参数/返回折成一段可读 JSON，进 span 的输入/输出。
+
+    **取不到就退回 str()，绝不抛**：观测字段把主链路弄崩是最坏的结果。
+    截断由 tracer.add 统一做（见 trace.clip_io），这里不重复一套上限。
+    """
+    try:
+        return json.dumps(obj, ensure_ascii=False, default=str, indent=2)
+    except Exception:
+        return str(obj)
+
+
 def _brief(res: tools.ToolResult) -> str:
     """一条工具结果的简短摘要，进 trace。"""
     if not res.ok:
@@ -332,7 +345,11 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
     rec = tools.search_schema(question, cfg)
     tables_hit = rec.data.get("tables", [])
     schema_prompt = rec.data.get("prompt", "")
-    tracer.add("schema_recall", t, _brief(rec), tables=tables_hit)
+    # 输入是拿去做嵌入的问句本身，输出是**喂进提示词的表结构全文** ——
+    # 后者才是判「模型为什么没用那张表」的第一手材料：召回对了但结构没渲染
+    # 出某一列，与压根没召回那张表，在 note 的"召回 N 张表"上完全一样。
+    tracer.add("schema_recall", t, _brief(rec), tables=tables_hit,
+               input=question, output=schema_prompt)
 
     # 2) 意图 / 可答性预检
     t = tracer.start()
@@ -434,7 +451,14 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
         # 动态 step id 会显示成原始串（见 tests/test_frontend）。
         # 工具名进结构化 tool 字段（前端 Span 列直接显示），note 只留结果摘要，不再前缀工具名。
         tracer.add("tool_call", tt, _brief(res),
-                   status="ok" if res.ok else "blocked", tool=action.tool)
+                   status="ok" if res.ok else "blocked", tool=action.tool,
+                   # 工具的输入就是模型填的那组参数（execute_sql 的 sql、
+                   # get_table_schema 的 table），输出是工具返回的完整数据。
+                   # _brief 只给一句"返回 10 行"，看不出返回的是哪 10 行，
+                   # 也看不出模型到底把什么 SQL 递了进来。
+                   input=_io_json(action.args),
+                   output=_io_json(res.data) if res.ok
+                          else f"{res.rejected_by or ''} {res.error}".strip())
 
         # 数据源根本连不上：重试没有价值，继续循环只会把 R-17 预算烧光，
         # 而烧光之后返回的是一句"未完全收敛"，用户看不出真正原因是库挂了。

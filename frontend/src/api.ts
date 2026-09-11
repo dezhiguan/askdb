@@ -243,6 +243,17 @@ export interface ReplayStep {
    *  execute_sql）。只有 tool_call 步骤带，用于在 Span 列直接显示是哪个工具。
    *  不含内容，随 /api/trace 出接口。 */
   tool?: string
+  /** 这一步**收到了什么**与**产出了什么**的全文。2026-09-12 起随 /api/trace
+   *  免登录出接口（见后端 audit.STEP_FIELDS 上那段说明）。
+   *
+   *  与 note 的分工是硬的：note 是我们写的一句结果摘要（"返回 10 行"），
+   *  这两个是原始材料（哪 10 行、递进去的是哪条 SQL）。摘要判不了对错。
+   *
+   *  没有值的步骤不带这两个字段（后端省掉空串）—— 前端据此显示占位符，
+   *  「这一步没有输入」和「有但没记」在界面上必须是同一个占位符，
+   *  因为它们在数据上就是同一件事。 */
+  input?: string
+  output?: string
 }
 
 export interface ReplaySnapshot {

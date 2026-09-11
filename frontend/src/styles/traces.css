@@ -261,6 +261,53 @@
   background: var(--paper);
   font: inherit;
 }
+/* ---------- 输入 / 输出全文 ----------
+ *
+ * 2026-09-12 起这两列有真实内容了（此前除 token 数外全是占位符）。
+ * 列里只放一个入口，全文摊在下面那条整行里 —— 提示词三四千字，
+ * 塞回列里要么把表撑到横向滚动，要么被 ellipsis 截成没有信息量的半句。
+ */
+.span-table .span-io-btn {
+  /* **硬上限，不能写 max-width:100%**：表格是 auto 布局，td 会被内容撑开，
+     百分比于是永远等于"我有多宽就多宽"。按钮一长（结果行 JSON 能到 200px+），
+     整张表被顶出 .table-scroll，最右边的状态列直接看不见 —— 为了看输入输出
+     把「这一步成没成」挤出屏幕，是赔本的。收在 108px，超出的交给下面那条
+     ellipsis；要看全文本来就得点开。 */
+  display: inline-flex; align-items: center; gap: 3px; max-width: 108px;
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink-2);
+  background: var(--paper);
+  font: inherit;
+  cursor: pointer;
+}
+.span-table .span-io-btn:hover { border-color: var(--blue); color: var(--blue); }
+.span-table .span-io-btn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.span-table .span-io-btn > i { flex: none; font-style: normal; }
+/* 输出侧那颗跟在摘要后面，不能贴着字 */
+.span-table .span-note .span-io-btn { margin-left: 5px; }
+
+.span-table tr.span-io dl { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.span-table tr.span-io dl > div { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
+.span-table tr.span-io dt { color: var(--muted); font: 6px var(--mono); }
+.span-table tr.span-io dd { margin: 0; min-width: 0; }
+/* 全文按原样保留换行与缩进：提示词的分节标题、JSON 的层级，都是靠这个读的。
+   高度封顶自己滚，否则一段四千字的提示词会把下面所有 span 推到屏幕之外。 */
+.span-table tr.span-io pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--paper);
+  color: var(--ink-2);
+  font: 6px/1.65 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .span-type { display: inline-flex; padding: 2px 4px; border-radius: 3px; color: var(--green); background: var(--green-wash); }
 .span-type.model { color: var(--blue); background: var(--blue-wash); }
 .span-type.tool, .span-type.db { color: var(--amber); background: var(--amber-wash); }

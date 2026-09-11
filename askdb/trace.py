@@ -43,6 +43,27 @@ def step_failed(status: str) -> bool:
     return status not in OK_STATUSES and status not in SOFT_STATUSES
 
 
+#: 单个 span 的输入/输出上限（字符）。给得宽 —— 一次 SQL 生成的提示词约
+#: 3–4k token，中文大致同数量级的字符，20k 能完整装下绝大多数调用；真正
+#: 要挡的是结果行动辄上万行那种。改小不会丢功能，只会让截断更常出现。
+IO_CAP = 20_000
+
+
+def clip_io(text: object, cap: int = IO_CAP) -> str:
+    """把一段输入/输出收到上限内，并在截断处留痕。
+
+    **留痕是这个函数存在的理由**：静默截断出来的半截提示词和完整提示词
+    长得一模一样，看的人会照着它下结论 —— 「模型没看到 orders 表」可能
+    只是因为那段被切掉了。
+    """
+    if text is None:
+        return ""
+    s = text if isinstance(text, str) else str(text)
+    if len(s) <= cap:
+        return s
+    return s[:cap] + f"\n…（已截断，原文共 {len(s):,} 字符）"
+
+
 @dataclass
 class StepTrace:
     step: str
@@ -79,6 +100,24 @@ class StepTrace:
     #: 只能显示"工具调用"。结构化单列出来，前端流程条与 Span 列可直接显示是哪个工具。
     #: 不含内容，可随 /api/trace 出接口。
     tool: str = ""
+    #: 这一步**收到了什么**与**产出了什么**的全文。
+    #:
+    #: 2026-09-12 起按产品决定全量记录并随 /api/trace 免登录出接口 —— 在此之前
+    #: 追踪页「输入摘要」一列除了 token 数就是占位符，因为库里根本没有这个数据。
+    #: note 是我们自己写的一句结果摘要，说的是"这一步干了什么"；这两个字段是
+    #: 原始材料，说的是"模型/工具/数据库真正看到与吐出的东西"。两者不能互相替代：
+    #: note 判不了模型是不是被喂错了表结构。
+    #:
+    #: **内容边界**：与 error_message 不同，这两个字段**会**随 /api/trace 出接口，
+    #: 因此它们必然带出 SQL 全文、问题原文与结果行。这是明确的产品决定（见
+    #: audit.STEP_FIELDS 上那段），不是疏漏 —— 改回去要连那段注释一起改。
+    #:
+    #: 长度按 IO_CAP 截断且**截断处留痕**：一条链路七八个 span，每个 MODEL 步的
+    #: 提示词都有三四千 token，不设上限的话审计记录会从 KB 级涨到几十 KB 级，
+    #: 乘上生产的量不是小事。截断不留痕才是真问题 —— 那会让人把半截提示词
+    #: 当成全部，照着它去判"模型为什么没看到那张表"。
+    input: str = ""
+    output: str = ""
     #: 该步涉及的表名。目前只有 schema_recall 填：note 里的"命中 N 张表"是个
     #: 数字，而看的人真正要判断的是**哪 N 张** —— 召回偏了与召回对了，在那个
     #: 数字上完全一样。放结构化字段而不是拼进 note，是因为界面要能逐张列出，
@@ -100,7 +139,7 @@ class Tracer:
         tables: list[str] | None = None, ms: int | None = None,
         attempt: int = 0, attempts_total: int = 0, model: str = "",
         error_code: str = "", error_message: str = "", disposition: str = "",
-        tool: str = "",
+        tool: str = "", input: object = None, output: object = None,
     ) -> StepTrace:
         """ms 显式传入时不按 since 算 —— 一个节点落多条 span（每次尝试一条）
         时，since 是**整个节点**的起点，拿它算每一条就等于给每次尝试都记上
@@ -115,6 +154,10 @@ class Tracer:
             attempt=attempt, attempts_total=attempts_total, model=model,
             error_code=error_code, error_message=error_message,
             disposition=disposition, tool=tool,
+            # 截断在**入口**做，不在出接口时做：这里截一次，审计记录、
+            # /api/trace、/api/replay 三条路自动同口径。放到出口去截，
+            # 三个地方各截一次，迟早有一处漏掉或截出不同长度。
+            input=clip_io(input), output=clip_io(output),
         )
         self.steps.append(st)
         return st
@@ -154,7 +197,10 @@ class Tracer:
             # 同理，新增的五个字段绝大多数步骤都用不上（只跑一次、没失败），
             # 空值一律不落盘，免得每条审计凭空胖五个键。
             for k in ("tables", "attempt", "attempts_total", "model",
-                      "error_code", "error_message", "disposition", "tool"):
+                      "error_code", "error_message", "disposition", "tool",
+                      # 输入/输出同理：GUARD 之类的步骤两者都空，落盘会白胖两个键。
+                      # **空串与"没记"在这里是同一件事** —— 前端据此显示占位符。
+                      "input", "output"):
                 if not d.get(k):
                     d.pop(k, None)
             out.append(d)

@@ -13,6 +13,7 @@ P0 为单步链路；plan / assess 两个节点与重规划回边在 P5 补齐�
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import time
@@ -243,6 +244,19 @@ class AskResult:
         return d
 
 
+def _io_json(obj: object) -> str:
+    """把一个对象折成可读 JSON，进 span 的输入/输出。
+
+    与 agent._io_json 同一口径。**取不到就退回 str()，绝不抛**：
+    观测字段把主链路弄崩是最坏的结果。截断由 tracer.add 统一做
+    （见 trace.clip_io），这里不重复一套上限。
+    """
+    try:
+        return json.dumps(obj, ensure_ascii=False, default=str, indent=2)
+    except Exception:
+        return str(obj)
+
+
 def jsonable(v: Any) -> Any:
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
@@ -282,6 +296,12 @@ class _LlmSpan:
     tok_out: int = 0
     cached_in: int = 0
     cost_cny: float = 0.0
+    #: 这次调用的提示词全文与厂商原始响应，由 LlmClient 记在 LlmAttempt 上。
+    #: 从这里走一遍，所有过模型的节点（plan / generate_sql / assess / intent /
+    #: decide / reflect）**一处接线就全有了** —— 六个节点各自去拼提示词的话，
+    #: 漏一个不会报错，只会让追踪页上那一行永远是占位符。
+    prompt: str = ""
+    raw: str = ""
 
 
 def _llm_spans(d: Deps, step: str, usage: Any = None) -> _LlmSpan:
@@ -325,6 +345,7 @@ def _llm_spans(d: Deps, step: str, usage: Any = None) -> _LlmSpan:
                 attempt=i if total > 1 else 0, attempts_total=n_total,
                 tok_in=a.usage.input_tokens, tok_out=a.usage.output_tokens,
                 cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
+                prompt=a.prompt, raw=a.raw,
             )
             continue
         # note 写**我们自己的话**，厂商原文进 error_message —— 见 trace.py
@@ -337,6 +358,9 @@ def _llm_spans(d: Deps, step: str, usage: Any = None) -> _LlmSpan:
             error_message=a.error_message, disposition=a.disposition,
             tok_in=a.usage.input_tokens, tok_out=a.usage.output_tokens,
             cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
+            # 失败那次的提示词最该留：它就是"为什么会失败"的现场。
+            # raw 在调用直接抛异常时为空，格式失灵时不空 —— 后者正是要看的。
+            input=a.prompt, output=a.raw,
         )
     return final
 
@@ -349,6 +373,7 @@ def _sp_kw(sp: _LlmSpan, status: str = "") -> dict[str, Any]:
         "attempt": sp.attempt, "attempts_total": sp.attempts_total,
         "tok_in": sp.tok_in, "tok_out": sp.tok_out,
         "cached_in": sp.cached_in, "cost_cny": sp.cost_cny,
+        "input": sp.prompt, "output": sp.raw,
     }
     if status:
         kw["status"] = status
@@ -392,13 +417,15 @@ def _n_clarify(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     # 人给的那句话原样往下传，由 plan/generate 去用。
     extra = str(state.get("clarification") or "").strip()
     if extra:
-        d.tracer.add("clarify", t, f"发起人已补充条件：{extra[:60]}")
+        d.tracer.add("clarify", t, f"发起人已补充条件：{extra[:60]}",
+                     input=state["question"], output=extra)
         return {"clarification": extra}
     v = clarify.is_anaphoric(state["question"], d.cfg)
     if not v.anaphoric:
-        d.tracer.add("clarify", t, "问句主体明确")
+        d.tracer.add("clarify", t, "问句主体明确", input=state["question"])
         return {}
-    d.tracer.add("clarify", t, f"需要澄清：{v.reason}", status="blocked")
+    d.tracer.add("clarify", t, f"需要澄清：{v.reason}", status="blocked",
+                 input=state["question"], output=v.reason)
     return {
         "error": f"这个问题缺少查询对象：{v.reason}。",
         "error_hint": v.ask,
@@ -446,9 +473,12 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         node_ms = int((time.perf_counter() - t) * 1000)
         d.tracer.add("schema_recall", t, note, status="degraded",
                      ms=max(0, node_ms - r.degrade_ms), tables=r.table_names,
-                     **embed_kw)
+                     input=_asked(state), output=r.prompt, **embed_kw)
     else:
-        d.tracer.add("schema_recall", t, note, tables=r.table_names, **embed_kw)
+        # 输出放**渲染进提示词的表结构全文**，不是表名列表：表名 tables 那一列
+        # 已经有了，而"召回对了表、却没渲染出要用的那一列"只能从这里看出来。
+        d.tracer.add("schema_recall", t, note, tables=r.table_names,
+                     input=_asked(state), output=r.prompt, **embed_kw)
     return {
         "schema_prompt": r.prompt,
         "tables_hit": r.table_names,
@@ -683,7 +713,8 @@ def _n_guard(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     r = guard.check(state["sql_raw"], d.cfg, org_id=state["org_id"],
                     dialect=d.cfg.dialect, question=state["question"])
     if not r.ok:
-        d.tracer.add("guard", t, f"{r.rejected_by} {r.reason}", status="blocked")
+        d.tracer.add("guard", t, f"{r.rejected_by} {r.reason}", status="blocked",
+                     input=state["sql_raw"], output=f"{r.rejected_by} {r.reason}")
         return {"error": r.reason, "rejected_by": r.rejected_by,
                 # 被拒的那一版就是本轮生成的这条 —— 必须写进 sql_final。
                 # 不写的话它还停留在**上一轮**通过护栏的那条 SQL 上，接口于是
@@ -701,7 +732,10 @@ def _n_guard(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         # 放行了，但有话要说。挂在 guard 这一步的备注上 —— 判定链路本来就在
         # 页面上展示，比新开一处告警更省事，也不会漏在只看接口的调用方那里。
         note += "｜提醒：" + "；".join(r.notes)
-    d.tracer.add("guard", t, note)
+    # 输入是模型原样吐出来的 SQL，输出是**改写后真正要执行的那条**。
+    # note 里的"注入 LIMIT 200"说了做过什么，但没说改完长什么样 ——
+    # 而护栏改写改错了的时候，两者的差别只在那条 SQL 上看得见。
+    d.tracer.add("guard", t, note, input=state["sql_raw"], output=r.sql)
     return {
         "sql_final": r.sql, "rules_fired": r.rules_fired, "rewrites": r.rewrites,
         "guard_notes": r.notes,
@@ -716,10 +750,12 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         r = d.executor.explain(state["sql_final"])
     except DataSourceError as e:
         # 数据源在链路中途不可用 —— 不是模型的错，别重试
-        d.tracer.add("dry_run", t, str(e), status="failed")
+        d.tracer.add("dry_run", t, str(e), status="failed",
+                     input=state["sql_final"], output=str(e))
         return {"error": str(e), "error_hint": e.hint, "rejected_by": "EXEC"}
     if not r.ok and not d.cfg.scan_waiver:
-        d.tracer.add("dry_run", t, r.reason, status="blocked")
+        d.tracer.add("dry_run", t, r.reason, status="blocked",
+                     input=state["sql_final"], output=r.plan or r.reason)
         return {
             "error": r.reason,
             "error_hint": "缩小时间范围或加筛选条件，让扫描量降下来。"
@@ -742,7 +778,8 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     if not r.ok:
         # 已获批准。如实记下"这一步本该拦下但按审批放行"，
         # 审计里必须看得出这条查询是走审批过来的，否则阈值形同虚设。
-        d.tracer.add("dry_run", t, f"{r.reason}（已获审批放行）", status="ok")
+        d.tracer.add("dry_run", t, f"{r.reason}（已获审批放行）", status="ok",
+                     input=state["sql_final"], output=r.plan or r.reason)
         return {"error": None, "rejected_by": None, "explain_rows": r.est_rows,
                 "approved_over_threshold": True}
     est = f"预估扫描 {r.est_rows:,} 行" if r.est_rows is not None else "计划无基数估计"
@@ -766,6 +803,7 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         if arb:
             shown = "、".join(f"`{p}`" for p in arb[:3])
             d.tracer.add("dry_run", t, f"收窄范围是模型自行挑的（{shown}），不作为答案返回",
+                         input=state["sql_final"],
                          status="blocked")
             return {
                 "error": (f"这个问题需要全量扫描，超过了单次查询的扫描阈值。"
@@ -781,10 +819,14 @@ def _n_dry_run(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             }
         d.tracer.add("dry_run", t, f"{est}（原查询预估 {was:,} 行被 R-11 拦下，"
                                    f"本次是收窄范围后的查询）" if was else est,
-                     status="ok")
+                     status="ok", input=state["sql_final"],
+                     output=r.plan or r.reason or est)
         return {"error": None, "rejected_by": None, "explain_rows": r.est_rows,
                 "scope_narrowed": True}
-    d.tracer.add("dry_run", t, est)
+    # 输出放**执行计划原文** —— 把 est 再抄一遍等于在右边复读左边那句摘要。
+    # 计划是这一步唯一"数据库自己说的话"，预估行数只是从它里面读出来的一个数。
+    d.tracer.add("dry_run", t, est, input=state["sql_final"],
+                 output=r.plan or r.reason or est)
     return {"error": None, "rejected_by": None, "explain_rows": r.est_rows}
 
 
@@ -882,17 +924,20 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     except MaskUnresolved as e:
         # 脱敏判定不出投影来源 —— 库是好的，是我们不敢返回。记成 blocked 而不是
         # failed：工具健康度那张表要能把"数据源坏了"和"我们主动挡下"分开看。
-        d.tracer.add("execute", t, str(e), status="blocked")
+        d.tracer.add("execute", t, str(e), status="blocked",
+                     input=state["sql_final"], output=str(e))
         return {"error": str(e), "error_hint": e.hint, "rejected_by": "P03",
                 # 可重试：让模型把子查询/CTE 摊开，投影来源就解析得出来了
                 "exec_retryable": True}
     except DataSourceError as e:
-        d.tracer.add("execute", t, str(e), status="failed")
+        d.tracer.add("execute", t, str(e), status="failed",
+                     input=state["sql_final"], output=str(e))
         return {"error": str(e), "error_hint": e.hint, "rejected_by": "EXEC",
                 # 超时可重试（模型能缩小查询），连接不可达不可重试
                 "exec_retryable": bool(getattr(e, "retryable", False))}
     except Exception as e:
-        d.tracer.add("execute", t, f"执行失败：{e}", status="failed")
+        d.tracer.add("execute", t, f"执行失败：{e}", status="failed",
+                     input=state["sql_final"], output=str(e))
         return {"error": f"执行失败：{e}", "rejected_by": None}
 
     note = f"返回 {res.row_count} 行"
@@ -915,7 +960,16 @@ def _n_execute(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         # 上游降级过的零行尤其不能当成"没有数据"来读：召回回落之后，
         # 该查的表可能压根没进模型的视野。
         note += "；本次链路上游存在失败或降级，零行不可直接判定为无数据"
-    d.tracer.add("execute", t, note, status=status)
+    # 输出放**完整的列与已脱敏结果行**（脱敏在 executor 里已经做过，这里拿到的
+    # 就是 /api/result 返回的同一份）。note 的"返回 10 行"说不出返回的是哪 10 行，
+    # 而"答案对不对"从来只能对着行本身看。
+    d.tracer.add("execute", t, note, status=status,
+                 input=state["sql_final"],
+                 output=_io_json({"columns": [str(c) for c in res.columns],
+                                  "rows": [[jsonable(v) for v in row] for row in res.rows],
+                                  "row_count": res.row_count,
+                                  "truncated": res.truncated,
+                                  "masked_columns": list(res.masked_columns)}))
     return {
         "columns": [str(c) for c in res.columns],
         "rows": [[jsonable(v) for v in row] for row in res.rows],
@@ -1058,7 +1112,13 @@ def _n_finalize(state: AskState, config: RunnableConfig) -> dict[str, Any]:
         d.tracer.add("finalize", t, "本次用到缓存计数列：" + "、".join(derived),
                      status="blocked")
         t = d.tracer.start()
-    d.tracer.add("finalize", t, "已附最终 SQL 与判定链路")
+    # 收尾这一步的"输出"就是交付物本身：最终 SQL、命中规则与口径说明。
+    # note 那句"已附最终 SQL 与判定链路"说的是做了这件事，附的是什么得看这里。
+    d.tracer.add("finalize", t, "已附最终 SQL 与判定链路",
+                 output=_io_json({"sql_final": sql,
+                                  "rules_fired": state.get("rules_fired") or [],
+                                  "derived_columns": derived,
+                                  "caliber": caliber}))
     return {"derived_columns": derived, "caliber": caliber}
 
 

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass, field
@@ -223,6 +224,55 @@ def _err_code(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+def _prompt_text(system: str, human: str) -> str:
+    """把一次调用真正发出去的两段消息拼成可读的一份。
+
+    分节标注而不是直接首尾相接：system 与 human 在排查时是两件事 ——
+    「护栏说明写漏了」和「表结构没喂进去」看起来都是一大段文本，
+    不标节就得靠眼睛找分界。
+    """
+    return f"【system】\n{system}\n\n【human】\n{human}"
+
+
+def _raw_text(raw: object) -> str:
+    """把厂商原始响应折成一段文本。
+
+    include_raw=True 时 langchain 回的是 {"raw": AIMessage, "parsed": ..., "parsing_error": ...}。
+    三样都要：parsed 是结构化结果，raw.content 是模型原话（结构化失灵时它常常
+    不是空的，而那正是唯一能看出模型想说什么的东西），parsing_error 说明为什么没解析出来。
+    **取不到就返回空串，绝不抛** —— 观测字段不能反过来把主链路弄崩。
+    """
+    if raw is None:
+        return ""
+    try:
+        if isinstance(raw, dict):
+            parts: list[str] = []
+            msg = raw.get("raw")
+            content = getattr(msg, "content", None)
+            if content:
+                parts.append(f"【content】\n{content}")
+            calls = getattr(msg, "tool_calls", None)
+            if calls:
+                parts.append("【tool_calls】\n" + json.dumps(calls, ensure_ascii=False,
+                                                            default=str, indent=2))
+            parsed = raw.get("parsed")
+            if parsed is not None:
+                dump = getattr(parsed, "model_dump", None)
+                obj = dump() if callable(dump) else parsed
+                parts.append("【parsed】\n" + json.dumps(obj, ensure_ascii=False,
+                                                        default=str, indent=2))
+            err = raw.get("parsing_error")
+            if err:
+                parts.append(f"【parsing_error】\n{err}")
+            return "\n\n".join(parts)
+        dump = getattr(raw, "model_dump", None)
+        if callable(dump):
+            return json.dumps(dump(), ensure_ascii=False, default=str, indent=2)
+        return str(raw)
+    except Exception:
+        return ""
+
+
 @dataclass
 class LlmAttempt:
     """**一次真实的厂商调用**。
@@ -241,6 +291,14 @@ class LlmAttempt:
     disposition: str = ""           # 失败后做了什么
     is_fallback: bool = False       # 这次尝试是不是备选模型出的
     usage: LlmUsage = field(default_factory=LlmUsage)
+    #: 这次调用**实际发出去的提示词全文**（system + human 拼接）。
+    #: 与 error_message 不同，它不是出了事才有——每次调用都记，因为
+    #: 「模型看到了什么」正是判断一条链路对不对的第一手材料。
+    #: 内容边界见 audit.STEP_FIELDS 上那段说明：2026-09-12 起随 /api/trace 出接口。
+    prompt: str = ""
+    #: 厂商回的**原始响应**，结构化解析之前的那一份。解析后的对象只是它的
+    #: 一个投影，模型说了什么、为什么这么说，只有这里留得住。
+    raw: str = ""
 
 
 class LlmClient:
@@ -300,14 +358,17 @@ class LlmClient:
         self._journal.clear()
         return out
 
-    def _note_ok(self, t0: float, usage: LlmUsage) -> None:
+    def _note_ok(self, t0: float, usage: LlmUsage,
+                 prompt: str = "", raw: object = None) -> None:
         self._journal.append(LlmAttempt(
             model=self.model_name, status="ok", is_fallback=self.is_fallback,
             ms=int((time.perf_counter() - t0) * 1000), usage=usage,
+            prompt=prompt, raw=_raw_text(raw),
         ))
 
     def _note_fail(self, t0: float, exc: BaseException, disposition: str,
-                   usage: LlmUsage | None = None) -> None:
+                   usage: LlmUsage | None = None, prompt: str = "",
+                   raw: object = None) -> None:
         self._journal.append(LlmAttempt(
             model=self.model_name, status="failed", is_fallback=self.is_fallback,
             ms=int((time.perf_counter() - t0) * 1000),
@@ -316,6 +377,8 @@ class LlmClient:
             error_message=str(exc),
             disposition=disposition,
             usage=usage or LlmUsage(),
+            # 失败那次的提示词**尤其**要留：它正是"为什么会失败"的现场。
+            prompt=prompt, raw=_raw_text(raw),
         ))
 
     @property
@@ -377,13 +440,15 @@ class LlmClient:
         model = self._build().with_structured_output(
             schema, method="function_calling", include_raw=True
         )
+        prompt = _prompt_text(system, human)
         t0 = time.perf_counter()
         try:
             out = model.invoke([("system", system), ("human", human)])
         except Exception as primary_err:
             fb = self._fallback_client()
             self._note_fail(t0, primary_err,
-                            f"切备选模型 {fb.model_name} 重试" if fb else "无备选模型，链路终止")
+                            f"切备选模型 {fb.model_name} 重试" if fb else "无备选模型，链路终止",
+                            prompt=prompt)
             if fb is None:
                 raise
             try:
@@ -406,7 +471,8 @@ class LlmClient:
             fb = self._fallback_client()
             self._note_fail(t0, err,
                             f"格式失败，切备选模型 {fb.model_name} 重试" if fb
-                            else "格式失败，无备选模型，链路终止", usage=usage)
+                            else "格式失败，无备选模型，链路终止", usage=usage,
+                            prompt=prompt, raw=out)
             if fb is not None:
                 try:
                     return fb.structured(schema, system, human)
@@ -415,7 +481,7 @@ class LlmClient:
                         f"主模型 {self.model_name} 未按结构化格式返回；"
                         f"备选 {fb.model_name} 也失败：{fb_err}") from err
             raise RuntimeError("模型未按结构化格式返回，请重试或更换模型。")
-        self._note_ok(t0, usage)
+        self._note_ok(t0, usage, prompt=prompt, raw=out)
         return parsed, usage
 
     def generate_sql(
@@ -450,13 +516,15 @@ class LlmClient:
             human = USER.format(schema=schema_prompt, question=question,
                                 step=step, now=now)
 
+        prompt = _prompt_text(system, human)
         t0 = time.perf_counter()
         try:
             out = model.invoke([("system", system), ("human", human)])
         except Exception as primary_err:
             fb = self._fallback_client()
             self._note_fail(t0, primary_err,
-                            f"切备选模型 {fb.model_name} 重试" if fb else "无备选模型，链路终止")
+                            f"切备选模型 {fb.model_name} 重试" if fb else "无备选模型，链路终止",
+                            prompt=prompt)
             if fb is None:
                 raise
             # 主模型不可用时兜底一次。失败原因串在一起抛出，便于定位到底是谁挂了。
@@ -480,26 +548,27 @@ class LlmClient:
             # 重试是**又一次真实的厂商调用**，用量照记、配额照扣 ——
             # 与切备选模型同理，不扣就等于失败重试不要钱。
             self._note_fail(t0, RuntimeError("模型未按结构化格式返回"),
-                            "同模型就地重试一次", usage=usage)
+                            "同模型就地重试一次", usage=usage, prompt=prompt, raw=out)
             self._reserve()
             t1 = time.perf_counter()
             try:
                 retry_out = model.invoke([("system", system), ("human", human)])
             except Exception as retry_err:
-                self._note_fail(t1, retry_err, "就地重试也失败，链路终止")
+                self._note_fail(t1, retry_err, "就地重试也失败，链路终止", prompt=prompt)
                 raise
             draft = retry_out["parsed"] if isinstance(retry_out, dict) else retry_out
             retry_usage = _usage_of(retry_out, self.llm_cfg)
             usage.add(retry_usage)
             if draft is None:
                 self._note_fail(t1, RuntimeError("模型连续两次未按结构化格式返回"),
-                                "已重试一次仍失败，链路终止", usage=retry_usage)
+                                "已重试一次仍失败，链路终止", usage=retry_usage,
+                                prompt=prompt, raw=retry_out)
                 raise RuntimeError("模型连续两次未按结构化格式返回，请稍后重试或更换模型。")
             # 救回来了。**这一条只记重试那次的用量** —— 被废弃的那次已经由
             # 上面那条 failed 各自记着，成功这条再记一遍就是把返工的账算两遍。
-            self._note_ok(t1, retry_usage)
+            self._note_ok(t1, retry_usage, prompt=prompt, raw=retry_out)
             return draft, usage
-        self._note_ok(t0, usage)
+        self._note_ok(t0, usage, prompt=prompt, raw=out)
         return draft, usage
 
 

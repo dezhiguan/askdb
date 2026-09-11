@@ -628,6 +628,46 @@ function shortHash(hash: string | null | undefined): string {
  *
  *  正则匹配不上就不硬拆文案，退回在摘要末尾挂一颗按钮：措辞将来改了，
  *  这颗按钮不该跟着一起失灵。 */
+/** 输入/输出那两列里的「有全文，点开看」。
+ *
+ *  两侧共用一个组件，因为它们的判据完全一样：**有内容就给入口，没有就占位符**。
+ *  各写一套的结果必然是两侧的阈值、按钮文案、占位符慢慢分叉 —— 同一张表里
+ *  相邻两列长得不一样，看的人会以为那是语义差别。
+ *
+ *  输入侧还兼着原来那份 token 计量：有全文时它退成副标，没全文时它就是
+ *  这一列的全部内容（GUARD / DB 那几步不过模型，本来就只有这个）。
+ */
+function SpanIo({ step, side, open, onToggle }: {
+  step: ReplayStep
+  side: 'in' | 'out'
+  open: boolean
+  onToggle: () => void
+}) {
+  const text = side === 'in' ? (step.input ?? '') : (step.output ?? '')
+  /* Schema 召回那一步的 tok_in 是**嵌入的输入**，不是提示词 —— 自 2026-09-10
+     起它有真实用量了。照旧写成 "prompt" 会让人以为召回也在发提示词。 */
+  const tok = side === 'in' && step.tok_in
+    ? `${STEP_TYPE[step.step] === 'MODEL' ? 'prompt' : 'embed'} ${step.tok_in.toLocaleString()} tok`
+    : ''
+  if (!text) return <>{tok || (side === 'in' ? NA : null)}</>
+
+  /* 预览**把全文的空白压平再截**，不是取首行。
+     取首行看着更讲究，实际在这三类内容上全退化了：格式化过的 SQL 首行是
+     "SELECT"、JSON 首行是 "{"、多行提示词首行是 "【system】" —— 三个都
+     认不出这一步到底在处理什么。压平之后首屏那 36 个字符恰好落在有信息量
+     的地方（SELECT COUNT(*) AS … / { "columns": [ … / 【system】你是一个…）。 */
+  const flat = text.replace(/\s+/g, ' ').trim()
+  const preview = flat.length > 36 ? `${flat.slice(0, 36)}…` : flat
+  return (
+    <button type="button" className="span-io-btn" aria-expanded={open}
+            title={open ? '收起全文' : `展开全文（${text.length.toLocaleString()} 字符）`}
+            onClick={onToggle}>
+      <span>{tok || preview}</span>
+      <i aria-hidden="true">{open ? '▴' : '▾'}</i>
+    </button>
+  )
+}
+
 function SpanNote({ step, open, onToggle }: {
   step: ReplayStep
   open: boolean
@@ -664,6 +704,14 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
      多次，展开第二次不该把第一次收起来。 */
   const [openRows, setOpenRows] = useState<ReadonlySet<number>>(() => new Set())
   const toggleRow = (i: number) => setOpenRows(prev => {
+    const next = new Set(prev)
+    if (!next.delete(i)) next.add(i)
+    return next
+  })
+  /* 输入/输出全文的展开态**与命中表那个分开记**：同一行上两个互不相干的
+     折叠，共用一个 Set 的话，点开表名会把提示词也拽出来。 */
+  const [openIo, setOpenIo] = useState<ReadonlySet<number>>(() => new Set())
+  const toggleIo = (i: number) => setOpenIo(prev => {
     const next = new Set(prev)
     if (!next.delete(i)) next.add(i)
     return next
@@ -755,16 +803,15 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                             title={`答案出自 ${cachedFrom} 那次执行，点击查看它的完整链路`}
                             onClick={() => onFocusTrace?.(cachedFrom)}
                           >首跑 {cachedFrom.slice(0, 6)} ↗</button>
-                        : step.tok_in
-                          /* Schema 召回那一步的 tok_in 是**嵌入的输入**，
-                             不是提示词 —— 自 2026-09-10 起它有真实用量了。
-                             照旧写成 "prompt" 会让人以为召回也在发提示词。 */
-                          ? `${STEP_TYPE[step.step] === 'MODEL' ? 'prompt' : 'embed'} `
-                            + `${step.tok_in.toLocaleString()} tok`
-                          : NA}
+                        : <SpanIo step={step} side="in" open={openIo.has(i)}
+                                  onToggle={() => toggleIo(i)} />}
                     </td>
                     <td className="span-note" title={step.note ?? ''}>
                       <SpanNote step={step} open={openRows.has(i)} onToggle={() => toggleRow(i)} />
+                      {step.output && (
+                        <SpanIo step={step} side="out" open={openIo.has(i)}
+                                onToggle={() => toggleIo(i)} />
+                      )}
                     </td>
                     <td>{step.ms}ms</td>
                     <td className={stepFailed(step.status) ? 'bad' : stepSoft(step.status) ? 'warn' : 'good'}
@@ -800,6 +847,28 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                         <ol className="span-tables">
                           {(step.tables ?? []).map(t => <li key={t}><code>{t}</code></li>)}
                         </ol>
+                      </td>
+                    </tr>
+                  )}
+                  {/* 输入/输出全文。摊成整行而不是塞回那两列 —— 提示词动辄
+                      三四千字，挤在一列里既读不了，也会把表格撑到横向滚动。 */}
+                  {openIo.has(i) && (step.input || step.output) && (
+                    <tr className="span-detail span-io">
+                      <td colSpan={6}>
+                        <dl>
+                          {step.input && (
+                            <div>
+                              <dt>输入</dt>
+                              <dd><pre>{step.input}</pre></dd>
+                            </div>
+                          )}
+                          {step.output && (
+                            <div>
+                              <dt>输出</dt>
+                              <dd><pre>{step.output}</pre></dd>
+                            </div>
+                          )}
+                        </dl>
                       </td>
                     </tr>
                   )}
