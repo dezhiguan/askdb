@@ -2338,6 +2338,35 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             raise HTTPException(status_code=404, detail="成员不存在")
         return {"ok": True}
 
+    def _settle_stale(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """陈旧的「运行中」线程按检查点定档 —— **就地改，返回同一个列表。**
+
+        audit.stage 对超时未收尾的线程一律先判「可续跑」，因为审计本身不知道
+        现场有没有落盘。真正的分档要问检查点：核得过就是真可续跑，核不过说明
+        进程连检查点都没写成，那是执行期故障，该进运维队列。
+
+        **为什么必须是共用函数**：2026-09-12 线上实测发现，这段逻辑原来写在
+        /api/tasks 的端点体里，于是任务中心显示 9 条等待运维、而运维队列只有
+        1 条 —— 那 8 条僵尸线程在"该去处理它们的那一页"上根本看不见。
+        任务态的折算口径只能有一份，多一份就会漂，这正是本次改造要消灭的形态，
+        结果自己先犯了一次。新增任何一个按状态取任务的接口，都要经过这里。
+
+        逐条查检查点只发生在 stale 的那几条上（线上个位数），不是全量：
+        正在跑的线程不会陈旧，正常收尾的线程连 stale 都不会置位。
+        """
+        from .graph import is_resumable
+
+        for it in items:
+            if not it.get("stale"):
+                continue
+            state = is_resumable(str(it.get("thread_id") or ""), cfg)
+            it["resumable"] = bool(state)
+            if state:
+                continue
+            it["status"] = _audit.NEEDS_OPERATOR
+            it["next_actor"] = _audit._NEXT_ACTOR[_audit.NEEDS_OPERATOR]
+        return items
+
     def _task_context() -> dict[str, Any]:
         """任务态折算要用的三份结论 + 陈旧阈值，**一处组装，三处共用**。
 
@@ -2439,7 +2468,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
             **_task_context(),
         )
-        pending = [t for t in items if t.get("status") == _audit.WAITING_REVIEW]
+        pending = [t for t in _settle_stale(items)
+                   if t.get("status") == _audit.WAITING_REVIEW]
         return {
             "can_review": can_review,
             "items": _reviews.listing(cfg, pending),
@@ -2500,7 +2530,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
             **_task_context(),
         )
-        pending = [t for t in items if t.get("status") == _audit.NEEDS_OPERATOR]
+        # 与任务中心同一份折算（含陈旧线程定档）—— 两处各算一遍就会漂，
+        # 而漂的表现是任务中心说有 9 条待处置、这一页只列得出 1 条。
+        pending = [t for t in _settle_stale(items)
+                   if t.get("status") == _audit.NEEDS_OPERATOR]
         return {
             "can_resolve": can_resolve,
             "items": _ops.listing(cfg, pending),
@@ -2615,21 +2648,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 统计之前**按检查点核实一遍：核得过的是真可续，核不过说明现场压根
         # 没落盘 —— 那不是用户能补救的事，是执行期故障，改判等运维。
         #
-        # 必须在 paginate_tasks 之前做：那一步要算各档计数、还要按状态筛。
+        # **必须在 paginate_tasks 之前做**：那一步要算各档计数、还要按状态筛。
         # 放到后面改，会出现「等待运维」筛不出这几条、而计数把它们记在
-        # 「可续跑」名下 —— 状态与计数对不上，正是这次要消灭的那类矛盾。
-        #
-        # 逐条查检查点只发生在 stale 的那几条上（线上实测个位数），不是全量：
-        # 真正在跑的线程不会陈旧，正常收尾的线程连 stale 都不会置位。
-        for it in items:
-            if not it.get("stale"):
-                continue
-            state = is_resumable(str(it.get("thread_id") or ""), cfg)
-            it["resumable"] = bool(state)
-            if state:
-                continue
-            it["status"] = _audit.NEEDS_OPERATOR
-            it["next_actor"] = _audit._NEXT_ACTOR[_audit.NEEDS_OPERATOR]
+        # 「可续跑」名下 —— 状态与计数对不上。
+        _settle_stale(items)
         # 审计只知道这条线程上次以 INTERRUPTED 收尾（或只落了发起记录），
         # 不知道现场有没有真的落盘、也不知道后来是不是已被续跑跑完 ——
         # 只按审计标 resumable，会出现"这里说能续、点下去 404"。

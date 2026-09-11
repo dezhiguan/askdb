@@ -405,6 +405,36 @@ def test_a_long_running_thread_stops_claiming_to_be_running(hclient, hcfg):
     assert fresh["status"] == audit.RUNNING
 
 
+def test_the_ops_queue_lists_exactly_what_the_task_center_counts(hclient, hcfg):
+    """任务中心说有几条待处置，运维队列就得列得出几条。
+
+    **这条用例是一次线上实测抓出来的回归**（2026-09-12）：陈旧线程的定档原来
+    写在 /api/tasks 的端点体里，而 /api/ops 直接按状态筛 —— 于是任务中心显示
+    9 条等待运维、运维队列只列得出 1 条，那 8 条僵尸线程在"该去处理它们的
+    那一页"上根本看不见。
+
+    折算口径只能有一份（server._settle_stale）。新增任何一个按状态取任务的
+    接口都要经过它 —— 各算各的必然漂，而漂的表现就是这两个数字对不上。
+    """
+    _write(hcfg.audit_log, [
+        # 真正的执行期故障
+        _rec("ccccccccccc3", "111111111122", user="amy", rejected="EXEC"),
+        # 进程被杀留下的陈旧线程：审计先判可续跑，核不过检查点才落到等运维
+        {"trace_id": "fff555555555", "thread_id": "111111111123",
+         "ts": _now(-7200), "kind": "ask", "phase": audit.PHASE_STARTED,
+         "user": "amy", "question": "跑一半就没了", "source": "",
+         "rejected_by": None, "org_id": 65},
+    ])
+    _login(hclient, "sre1")
+
+    counted = hclient.get("/api/tasks?page_size=50").json()["stats"]["needs_operator"]
+    listed = hclient.get("/api/ops").json()
+    assert counted == 2
+    assert listed["pending"] == counted, "任务中心的计数与运维队列对不上"
+    assert {i["trace_id"] for i in listed["items"] if not i.get("ops_status")} == {
+        "ccccccccccc3", "fff555555555"}
+
+
 def test_stale_judgement_is_off_when_threshold_is_zero(hcfg):
     """阈值 0 = 关掉这项判定。部署形态不同，"多久算死了"也不同 ——
     本机跑一条复杂多步链路可以拖很久，而 k8s 上 pod 被杀是秒级的事。"""
