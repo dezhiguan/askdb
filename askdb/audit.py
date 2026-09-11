@@ -80,7 +80,8 @@ TRACE_FIELDS = (
 # 而提示词里带着表结构与用户的问题。它留在审计记录与 /api/replay 上，
 # 与 sql_raw / question 同一道边界。
 STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables",
-               "attempt", "attempts_total", "model", "error_code", "disposition")
+               "attempt", "attempts_total", "model", "error_code", "disposition",
+               "tool")
 
 # 真正过模型的图节点。与前端 traceSteps.ts 的 STEP_TYPE == 'MODEL' 是同一份口径，
 # 两边都写一次是因为一个算数、一个只做展示；漂了会让「模型调用成功率」这格

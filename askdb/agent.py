@@ -308,8 +308,9 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
         tt = tracer.start()
         # 静态 step 名（工具名进 note）：复放/追踪页的步骤映射是静态表，
         # 动态 step id 会显示成原始串（见 tests/test_frontend）。
-        tracer.add("tool_call", tt, f"{action.tool}·{_brief(res)}",
-                   status="ok" if res.ok else "blocked")
+        # 工具名进结构化 tool 字段（前端 Span 列直接显示），note 只留结果摘要，不再前缀工具名。
+        tracer.add("tool_call", tt, _brief(res),
+                   status="ok" if res.ok else "blocked", tool=action.tool)
 
         # 高成本查询 → 挂起人工审批（HITL）。把 R-11 顶到结果层，交由 server
         # 既有 _open_approval 建审批单：等审批 = 一次无界等待，正是任务/异步的

@@ -74,6 +74,11 @@ class StepTrace:
     #: 失败后做了什么 —— 切备选、就地重试、回落备用路径、放行。
     #: 没有它，一条 failed 的 span 只说明"这里断过"，说不清链路怎么活下来的。
     disposition: str = ""
+    #: agentic 链路里这一步调用的**具体工具名**（search_schema / get_table_schema /
+    #: execute_sql）。此前工具名只藏在 note 前缀里、靠 "·" 分割不稳，追踪页因此
+    #: 只能显示"工具调用"。结构化单列出来，前端流程条与 Span 列可直接显示是哪个工具。
+    #: 不含内容，可随 /api/trace 出接口。
+    tool: str = ""
     #: 该步涉及的表名。目前只有 schema_recall 填：note 里的"命中 N 张表"是个
     #: 数字，而看的人真正要判断的是**哪 N 张** —— 召回偏了与召回对了，在那个
     #: 数字上完全一样。放结构化字段而不是拼进 note，是因为界面要能逐张列出，
@@ -95,6 +100,7 @@ class Tracer:
         tables: list[str] | None = None, ms: int | None = None,
         attempt: int = 0, attempts_total: int = 0, model: str = "",
         error_code: str = "", error_message: str = "", disposition: str = "",
+        tool: str = "",
     ) -> StepTrace:
         """ms 显式传入时不按 since 算 —— 一个节点落多条 span（每次尝试一条）
         时，since 是**整个节点**的起点，拿它算每一条就等于给每次尝试都记上
@@ -108,7 +114,7 @@ class Tracer:
             tables=list(tables or []),
             attempt=attempt, attempts_total=attempts_total, model=model,
             error_code=error_code, error_message=error_message,
-            disposition=disposition,
+            disposition=disposition, tool=tool,
         )
         self.steps.append(st)
         return st
@@ -148,7 +154,7 @@ class Tracer:
             # 同理，新增的五个字段绝大多数步骤都用不上（只跑一次、没失败），
             # 空值一律不落盘，免得每条审计凭空胖五个键。
             for k in ("tables", "attempt", "attempts_total", "model",
-                      "error_code", "error_message", "disposition"):
+                      "error_code", "error_message", "disposition", "tool"):
                 if not d.get(k):
                     d.pop(k, None)
             out.append(d)
