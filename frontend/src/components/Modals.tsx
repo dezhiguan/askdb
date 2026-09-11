@@ -259,6 +259,13 @@ export interface TaskResultView {
   overview: [string, string][]
   rows: [string, string, string][]
   sql: string
+  /** 本次查询的最终答案（agent 链路有；直查为空）。来自 /api/result。 */
+  answer?: string
+  /** 已脱敏结果表：列名 + 结果行（前若干行）。来自 /api/result。 */
+  resultColumns?: string[]
+  resultRows?: unknown[][]
+  /** 结果表标注：共 N 行 / 仅前 N 行 / 已脱敏某列。 */
+  resultNote?: string
 }
 
 export interface TaskReasonView {
@@ -342,25 +349,47 @@ export function TaskResultModal({ detail, loading, onClose, onViewTrace }: {
               <strong>{detail.result.conclusion}</strong>
               <p>{detail.result.note}</p>
             </div>
-            <div className="task-result-overview">
-              {detail.result.overview.map(([label, value]) => (
-                <div className="task-result-metric" key={label}><span>{label}</span><strong>{value}</strong></div>
-              ))}
-            </div>
-            <div className="task-result-table">
-              <table>
-                <thead><tr><th>指标 / 维度</th><th>结果</th><th>说明</th></tr></thead>
-                <tbody>
-                  {detail.result.rows.map(row => (
-                    <tr key={row[0]}><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="task-sql-block">
-              <div className="task-sql-head"><span>原生 SQL · READ ONLY</span><button type="button" onClick={copy}>{copyLabel}</button></div>
-              <pre>{detail.result.sql}</pre>
-            </div>
+            {detail.result.answer && <p className="task-answer">{detail.result.answer}</p>}
+            {(detail.result.resultRows?.length ?? 0) > 0 && (
+              <div className="task-result-rows">
+                {detail.result.resultNote && <div className="task-result-cap">结果 · {detail.result.resultNote}</div>}
+                <div className="task-result-rows-scroll">
+                  <table>
+                    <thead><tr>{(detail.result.resultColumns ?? []).map((c, ci) => <th key={ci}>{c}</th>)}</tr></thead>
+                    <tbody>
+                      {(detail.result.resultRows ?? []).map((row, ri) => (
+                        <tr key={ri}>{row.map((v, vi) => <td key={vi}>{v === null || v === undefined ? '—' : String(v)}</td>)}</tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            {detail.result.overview.length > 0 && (
+              <div className="task-result-overview">
+                {detail.result.overview.map(([label, value]) => (
+                  <div className="task-result-metric" key={label}><span>{label}</span><strong>{value}</strong></div>
+                ))}
+              </div>
+            )}
+            {detail.result.rows.length > 0 && (
+              <div className="task-result-table">
+                <table>
+                  <thead><tr><th>指标 / 维度</th><th>结果</th><th>说明</th></tr></thead>
+                  <tbody>
+                    {detail.result.rows.map(row => (
+                      <tr key={row[0]}><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {detail.result.sql && (
+              <div className="task-sql-block">
+                <div className="task-sql-head"><span>原生 SQL · READ ONLY</span><button type="button" onClick={copy}>{copyLabel}</button></div>
+                <pre>{detail.result.sql}</pre>
+              </div>
+            )}
           </div>
         )}
         {!loading && !detail.result && (

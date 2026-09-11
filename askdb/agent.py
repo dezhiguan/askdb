@@ -17,12 +17,13 @@ schema_recall→generate→execute。安全性不变 —— 每次 execute_sql �
 """
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from . import planner, skill, tools
+from . import grounding, planner, skill, tools
 from .audit import PHASE_STARTED
 from .config import Config
 from .executor import Executor
@@ -62,7 +63,13 @@ INTENT_SYSTEM = """你是数据查询的意图预检。已给你「可用的表�
 1. answerable：用这些表能不能回答用户问题；
 2. out_of_scope：问题里的业务实体是否在库中根本不存在——若不存在，**必须**判 true，
    严禁把它攀附到某个名字相近的列上硬answer（例如库里没有「供应商」实体，就不能拿
-   model_config.vendor 之类同名列冒充）；
+   model_config.vendor 之类同名列冒充）。
+   判据是**有没有承载这个实体的表**，不是"有没有名字像的列"：一个属性列
+   （vendor / type / category / source / ref_type）哪怕名字完全对上，也不等于
+   那个实体存在。实测反复出现的错法是——先在口径里写明"表中没有独立的 X 实体表"，
+   然后照样拿同名列数出一个数交差；**写得出这句话就说明该判 true**。
+   同一个问题换个问法（"我们有多少 X"／"X 的数量是多少"／"统计一下 X 总数"）
+   判定必须一致，不能因为措辞不同就一会儿拒答一会儿攀附；
 3. multi_step：是否需要多步（先看取值分布、或第一步结果决定第二步查哪张表）。
 可答就 answerable=true；缺查询对象（纯指代、没主语）answerable=false 并在 clarify 写清缺什么。"""
 
@@ -83,7 +90,31 @@ AGENT_SYSTEM = """你是一个可信查数 Agent。你不能直接写库，只�
 - 一步只做一件事。看到工具结果后再决定下一步。
 - 证据已经足以回答用户问题时，finish=true 并在 answer 写出结论——**结论要说明口径**，
   并且只基于工具真正返回的数据，不得编造。
-- 若发现问题无法用现有表回答，也 finish=true，在 answer 如实说明无法回答及原因。"""
+- 若发现问题无法用现有表回答，也 finish=true，在 answer 如实说明无法回答及原因。
+
+结论里的数字，以下五条是硬约束（违反即为错答，且事后可核）：
+1. **没跑过就不许写。** 结论里出现的每一个数字，都必须是某次 execute_sql 真正返回过的值，
+   或由这些值直接算得。一次 execute_sql 都没成功时，不许写任何数字，也不许说"经查证"
+   "已用 DISTINCT 核实""三张表互相印证"这类话——没查就是没查。
+2. **结果集行数 ≠ 表的行数。** 一条带 WHERE / LIMIT 的 SQL 返回 N 行，只说明"符合这些条件的
+   有 N 行"。要陈述某张表一共多少行，必须单独跑一次不带过滤的 COUNT。
+3. **被截断的结果不能用来说总量。** 工具结果标注"已被 R-13 截断"时，那不是全部行；
+   此时禁止给出总数、总和、覆盖范围一类的总量性表述，只能描述已看到的部分并说明它被截断了。
+4. **列要按它在 SQL 里的真实含义命名。** 你写的是 COUNT(*) 就不能在结论里把它叫成
+   "已排除软删除的条数"；写的是 COUNT(*) FILTER (WHERE deleted_at IS NOT NULL) 就要叫
+   "已删除数"。要"排除软删除后的条数"，就在 SQL 里真的写 WHERE deleted_at IS NULL。
+5. **比率、百分比、差值一律在 SQL 里算成一列，不要在结论里心算。** 需要 a/b 就写
+   ROUND(100.0 * a / NULLIF(b, 0), 4) AS xxx_pct，让库算完再读。
+
+6. **看到的只是前几行，不代表整列都长这样。** 工具标注"仅前 N 行"时，禁止据此断言
+   "全部都是……""共有 N 家"。要判断整列的分布或总量，另跑一条 GROUP BY /
+   COUNT(*) FILTER，别拿可见的那几行外推。
+7. **合计也别自己加。** 需要总数就在同一条 SQL 里多选一列 COUNT(*) / SUM(...)，
+   或单独再查一次。手动把分项加起来实测会加错（把五个正确的分项加成了
+   1,008,010，真值 1,027,010），而分项全对会让这个错的合计显得很可信。
+
+另外：表名、列名、枚举取值一律**逐字照抄**工具返回的原值，不得改写成同义词或翻译
+（例如返回的是 ANSWER 就不能写成 CHAT）；需要解释时在括号里补中文说明。"""
 
 AGENT_USER = """{schema}
 
@@ -107,7 +138,15 @@ def _brief(res: tools.ToolResult) -> str:
     if res.tool == "get_table_schema":
         return f"{d.get('table')}：{len(d.get('columns', []))} 列"
     if res.tool == "execute_sql":
-        return f"返回 {d.get('row_count', 0)} 行" + ("（有脱敏）" if d.get("masked_columns") else "")
+        s = f"返回 {d.get('row_count', 0)} 行"
+        if d.get("truncated"):
+            # 截断这件事必须在模型看得见的地方说清楚。只在响应里置 truncated=true
+            # 而历史里只写"返回 200 行"，模型就会把 200 当成全量——2026-09-11 跑测
+            # 里的「全库共 200 条评分记录」正是这么来的。
+            s += "（**已被 R-13 截断，这不是全部行**，不得据此陈述总量）"
+        if d.get("masked_columns"):
+            s += "（有脱敏）"
+        return s
     return "ok"
 
 
@@ -119,20 +158,50 @@ def _render_history(history: list[dict[str, Any]]) -> str:
         line = f"第 {i} 步 · {h['tool']}({_fmt_args(h['args'])}) → {h['brief']}"
         if h.get("preview"):
             cols = "、".join(h["preview"]["columns"])
-            rows = "；".join(", ".join(str(v) for v in r) for r in h["preview"]["rows"])
-            line += f"\n    列：{cols}\n    前几行：{rows}"
+            pv = h["preview"]["rows"]
+            rows = "；".join(", ".join(str(v) for v in r) for r in pv)
+            total = h["preview"].get("row_count")
+            # 必须把"你只看到了几行、一共几行"写死在这里。只写"前几行"太轻，
+            # 模型会拿看得见的那几行去断言整列：2026-09-11 复测里它按
+            # is_active DESC 排序取回 18 行，看到开头全是 true 就说"18 家全部在用"
+            # （实际 13 家）。
+            head = (f"仅前 {len(pv)} 行（本次共返回 {total} 行，**其余未展示，"
+                    f"不得据此断言整列的分布**）"
+                    if isinstance(total, int) and total > len(pv) else "全部行")
+            line += f"\n    列：{cols}\n    {head}：{rows}"
         elif h.get("columns"):
             line += f"\n    列：{'、'.join(h['columns'])}"
         out.append(line)
     return "\n".join(out)
 
 
+#: 各参数在历史里保留多长。sql 单列一档：模型要靠回看自己发过的 SQL 才能
+#: 说准口径（"这一列到底是 COUNT(*) 还是 COUNT(*) FILTER(...)"），截到 60 字
+#: 等于把 SELECT 列表整段切掉——2026-09-11 跑测里把 COUNT(*) 说成"已排除软删除
+#: 的条数"，就是看不见自己写了什么。
+_ARG_KEEP = {"sql": 800}
+_ARG_KEEP_DEFAULT = 60
+
+
 def _fmt_args(args: dict[str, Any]) -> str:
     parts = []
     for k, v in (args or {}).items():
         s = str(v)
-        parts.append(f"{k}={s[:60]}")
+        keep = _ARG_KEEP.get(k, _ARG_KEEP_DEFAULT)
+        if len(s) > keep:
+            s = s[:keep] + " …（已截断）"
+        parts.append(f"{k}={s}")
     return ", ".join(parts)
+
+
+#: 阿拉伯数字。判"这句话有没有在陈述一个量"，全角数字一并算上。
+#: 只认数字、不认"五档"这类中文数词：宁可漏判，也不要把"无法回答"这类
+#: 纯文字说明误挡掉——漏判的那部分由提示词第 1 条兜。
+_NUM_RE = re.compile(r"[0-9\uff10-\uff19]")
+
+
+def _has_number(text: str) -> bool:
+    return bool(_NUM_RE.search(text or ""))
 
 
 def _render_specs() -> str:
@@ -150,6 +219,17 @@ def _sys(base: str, cfg: Config) -> str:
     return f"{base}\n\n{block}" if block else base
 
 
+def _grounding_mode(cfg: Config) -> str:
+    """接地校验的档位：off / shadow / enforce。
+
+    默认 shadow —— 只记不拦。这条判定的误判代价直接落在正确答案上，
+    而它的误判率只能在真实流量上量，不能在本机凭样例拍。先影子跑一轮，
+    拿到数再决定切不切 enforce。
+    """
+    mode = str((cfg.raw.get("agent", {}) or {}).get("grounding", "shadow")).lower()
+    return mode if mode in ("off", "shadow", "enforce") else "shadow"
+
+
 def _budget(cfg: Config) -> tuple[int, int]:
     a = cfg.raw.get("agent", {}) or {}
     pl = cfg.raw.get("planner", {}) or {}
@@ -162,7 +242,7 @@ def _result(cfg: Config, question: str, trace_id: str, thread_id: str, org: int,
             tracer: Tracer, *, ok: bool, reasoning: str = "", last_exec: dict | None = None,
             rejected_by: str | None = None, error: str = "", hint: str = "",
             tables_hit: list[str] | None = None, step_count: int = 1,
-            converged: str = "") -> AskResult:
+            converged: str = "", ungrounded: list[str] | None = None) -> AskResult:
     d = last_exec or {}
     return AskResult(
         ok=ok, question=question, trace_id=trace_id, org_id=org, thread_id=thread_id,
@@ -175,6 +255,7 @@ def _result(cfg: Config, question: str, trace_id: str, thread_id: str, org: int,
         mask_degraded=bool(d.get("mask_degraded", False)),
         rejected_by=rejected_by, error=error, hint=hint,
         tables_hit=list(tables_hit or []),
+        ungrounded_numbers=list(ungrounded or []),
         multi_step=step_count > 1, step_count=step_count, converged_early=converged,
         steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
         tok_in=tracer.tok_in, tok_out=tracer.tok_out, cost_cny=tracer.cost_cny,
@@ -274,9 +355,17 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
     agent_system = _sys(AGENT_SYSTEM.format(tools=_render_specs()), cfg)
     history: list[dict[str, Any]] = []
     last_exec: dict | None = None
+    #: 本轮**每一次**成功执行的结果。接地校验要看全部，不能只看最后一次 ——
+    #: 模型的结论经常引用更早几步的数（"全表 447,000 条，其中可售 398,082"）。
+    exec_results: list[dict[str, Any]] = []
+    scan_blocked: tools.ToolResult | None = None   # 最后一次被 R-11 拦下的执行
+    last_error = ""                                # 最后一次 execute_sql 的失败原因
     answer = ""
     converged = ""
     step_count = 0
+    gmode = _grounding_mode(cfg)
+    ungrounded: list[str] = []
+    grounding_retried = False
     for step in range(1, max_steps + 1):
         if tracer.tok_in + tracer.tok_out > cost_cap:                       # R-17
             converged = f"累计 token 超预算 {cost_cap}，收敛作答"
@@ -301,6 +390,28 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
 
         if action.finish:
             answer = action.answer
+            bad = (grounding.ungrounded(answer, exec_results)
+                   if gmode != "off" and answer else [])
+            if bad:
+                ungrounded = [grounding.fmt([x]) for x in bad]
+                tracer.add("grounding", tracer.start(),
+                           f"结论里 {len(bad)} 个数追溯不到查询结果：{grounding.fmt(bad)}",
+                           status="blocked" if gmode == "enforce" else "ok")
+                # enforce 档先给一次改正机会：把追不到的数点名回灌，让模型去查。
+                # 直接拒会把误判的代价全压在正确答案上，而多跑一轮只花一次调用。
+                if gmode == "enforce" and not grounding_retried and step < max_steps:
+                    grounding_retried = True
+                    history.append({
+                        "tool": "(接地校验)", "args": {},
+                        "brief": f"**你的结论里这些数字没有出现在任何一次查询结果里："
+                                 f"{grounding.fmt(bad)}**。它们既不等于某个返回值，也不是"
+                                 f"两个返回值做一次加减乘除得到的。请先用 execute_sql 把它们"
+                                 f"真正查出来，再重写结论；确实查不到就如实说查不到，不要保留"
+                                 f"这些数字。"})
+                    answer = ""
+                    continue
+            else:
+                ungrounded = []
             break
 
         step_count += 1
@@ -312,20 +423,45 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
         tracer.add("tool_call", tt, _brief(res),
                    status="ok" if res.ok else "blocked", tool=action.tool)
 
-        # 高成本查询 → 挂起人工审批（HITL）。把 R-11 顶到结果层，交由 server
-        # 既有 _open_approval 建审批单：等审批 = 一次无界等待，正是任务/异步的
-        # 落点（设计 §2/§3）。带上被拦的 SQL 与预估扫描量，审批人才看得到差在哪。
-        if res.rejected_by == "R-11":
+        # 数据源根本连不上：重试没有价值，继续循环只会把 R-17 预算烧光，
+        # 而烧光之后返回的是一句"未完全收敛"，用户看不出真正原因是库挂了。
+        # 2026-09-11 跑测里宠物医疗源 10 条里 3 条这么烧掉、1 条据此编了答案。
+        if res.data.get("fatal"):
             return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                           rejected_by="R-11", last_exec=res.data,
-                           error=res.error, tables_hit=tables_hit,
-                           step_count=max(1, step_count))
+                           rejected_by="DATASOURCE", error=res.error,
+                           hint=res.data.get("hint", "") or "请在「数据源」页检查该源的连通性。",
+                           tables_hit=tables_hit, step_count=max(1, step_count))
+
         item: dict[str, Any] = {"tool": action.tool, "args": action.args, "brief": _brief(res)}
+
+        # 高成本查询 → 先给模型一次换写法的机会，还是不行才挂人工审批（HITL）。
+        # 原来这里直接 return：模型连"可以改用预聚合汇总表"都来不及试，而 R-11
+        # 在生产数据规模下会挡掉大量最基本的问题（2026-09-11 跑测 26/130），
+        # 审批页当前又没有入口，用户看到的是一条死路。改为把拒绝连同可行的替代
+        # 写法回灌进历史，循环继续；到收尾仍无成功执行时才按 R-11 挂审批 ——
+        # 交由 server 既有 _open_approval 建单，带上被拦的 SQL 与预估扫描量。
+        if res.rejected_by == "R-11":
+            scan_blocked = res
+            item["brief"] = (
+                f"{res.error}。**这一版不能执行，换个更省的写法再试一次**："
+                "① 优先改查同源的预聚合汇总表（表名多为 *_stats_daily / *_daily_stats），"
+                "直接对汇总列求和；② 或加时间窗 / 主键区间过滤，分段统计后自行相加；"
+                "③ 严禁用抽样（TABLESAMPLE、LIMIT 取样）冒充全量。"
+                "若两条路都走不通，finish=true 并如实说明这个口径当前取不到。")
+            history.append(item)
+            continue
+
+        if action.tool == "execute_sql" and not res.ok:
+            last_error = res.error or (res.rejected_by or "")
+
         if res.ok and action.tool == "execute_sql":
             last_exec = res.data
+            exec_results.append({"columns": list(res.data.get("columns") or []),
+                                 "rows": list(res.data.get("rows") or [])})
             ctx.last_result = res.data          # 供 analyze_result / export_result 用
             item["preview"] = {"columns": res.data.get("columns", []),
-                               "rows": planner.preview_rows(res.data.get("rows", []))}
+                               "rows": planner.preview_rows(res.data.get("rows", [])),
+                               "row_count": res.data.get("row_count")}
         elif res.ok and action.tool == "get_table_schema":
             item["columns"] = [c["name"] for c in res.data.get("columns", [])]
         elif res.ok and action.tool == "search_schema":
@@ -335,13 +471,56 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
         converged = f"达步数上限 {max_steps}，收敛作答"
 
     # 4) 收尾
-    if not answer and converged:
-        answer = "（在预算内未完全收敛）" + converged
-    ok = bool(last_exec) or bool(answer)
-    if not ok:
+    #
+    # 这一段是"能不能把这个答案给用户"的最后一道判定，纯代码、不问模型。
+    # 原来只有一句 `ok = bool(last_exec) or bool(answer)` —— 只要模型吐了字就算成功，
+    # 于是"一次 SQL 都没发、直接写个整数再补一段口径说明"照样返回 ok=true。
+    # 2026-09-11 跑测里 130 条有 15 条是这么来的，数量级差 2~3 个（订单总数答 1 万、
+    # 实际 120 万），界面上无从分辨。下面三条都是确定性判定：
+    common = dict(tables_hit=tables_hit, step_count=max(1, step_count), converged=converged,
+                  ungrounded=ungrounded)
+
+    if last_exec is not None and ungrounded and gmode == "enforce":
+        # 给过一次改正机会了还是追溯不到 —— 这些数不是从库里来的，不能递出去。
+        # 与 NO_EVIDENCE 分开是因为两者的处置不同：那条是"一次都没跑"，
+        # 这条是"跑了，但答案没用上跑出来的东西"。
         return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="NO_RESULT", error="未能产出结果", tables_hit=tables_hit,
-                       step_count=max(1, step_count), converged=converged)
+                       rejected_by="UNGROUNDED", last_exec=last_exec,
+                       error=f"结论里这些数字追溯不到任何一次查询结果："
+                             f"{'、'.join(ungrounded)}，因此不给出这个答案。",
+                       hint="换个更具体的问法，或在「直查 SQL」里自己跑一条核对；"
+                            "结果表仍在下方，可直接看。",
+                       **common)
+
+    if last_exec is not None:
+        # 有数据。模型没来得及归因时，别用一句"未完全收敛"把已经查到的结果盖掉 ——
+        # 结果表就在 AskResult 里，直说"看表"比丢掉它诚实得多。
+        if not answer:
+            answer = (("（未在预算内完成归因）" + converged + "。") if converged else "") + \
+                     "以下为最后一次查询执行的原始结果，请直接看结果表。"
+        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=True,
+                       reasoning=answer, last_exec=last_exec, **common)
+
+    # 以下都是"本轮没有一次成功的 execute_sql"。
+    if scan_blocked is not None:
+        # 换过写法仍然过不去：按 R-11 挂审批，交由 server 建单。
+        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
+                       rejected_by="R-11", last_exec=scan_blocked.data,
+                       error=scan_blocked.error, **common)
+
+    tail = f"（最后一次查询执行失败：{last_error}）" if last_error else ""
+    if _has_number(answer):
+        # **本条是 P0 兜底**：没取到数据就不许出数字。这里刻意不把模型那段话
+        # 回显给用户 —— 它正是编造出来的内容，回显等于换个位置继续骗人。
+        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
+                       rejected_by="NO_EVIDENCE",
+                       error="本轮没有任何一次查询执行成功，因此不给出带数字的结论。" + tail,
+                       hint="换个更具体的问法，或先确认这个口径需要的表是否可查；"
+                            "也可在「直查 SQL」里自己跑一条核对。",
+                       **common)
+    if not answer:
+        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
+                       rejected_by="NO_RESULT", error="未能产出结果" + tail, **common)
+    # 不含任何数字的定性回答（例如"这个库里有哪些表"）没有可编造的量，放行。
     return _result(cfg, question, trace_id, thread_id, org, tracer, ok=True,
-                   reasoning=answer, last_exec=last_exec, tables_hit=tables_hit,
-                   step_count=max(1, step_count), converged=converged)
+                   reasoning=answer, **common)

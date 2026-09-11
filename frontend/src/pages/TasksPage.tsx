@@ -5,11 +5,13 @@ import {
   askQuestion,
   decideReview,
   fetchReplay,
+  fetchResult,
   fetchSources,
   fetchTasks,
   resolveOps,
   resumeTask,
   type Replay,
+  type TraceResult,
   type Task,
   type TaskStats,
   type TasksResult,
@@ -194,6 +196,8 @@ export function TasksPage({ onNavigate, notify, me }: {
   const [modal, setModal] = useState<ModalState>({ kind: 'none' })
   const [replay, setReplay] = useState<Replay | null>(null)
   const [replayLoading, setReplayLoading] = useState(false)
+  // 最终结果（/api/result）：答案 + 已脱敏结果行。与 replay 分开取，登录态才有。
+  const [taskResult, setTaskResult] = useState<TraceResult | null>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_TASK_FILTERS)
   /* 关键词是**提交后**的值，不是输入框里正在打的字：输入框自己防抖
@@ -302,17 +306,22 @@ export function TasksPage({ onNavigate, notify, me }: {
   const openDetail = (task: Task, kind: 'result' | 'reason') => {
     setModal({ kind, task })
     setReplay(null)
+    setTaskResult(null)
     setReplayLoading(true)
     fetchReplay(task.trace_id)
       .then(value => setReplay(value.status === 'ok' ? value.data : null))
       .catch(() => setReplay(null))
       .finally(() => setReplayLoading(false))
+    // 最终结果不受 replay_api 开关约束（走 /api/result）——回放关闭时也能拿到
+    fetchResult(task.trace_id).then(setTaskResult).catch(() => setTaskResult(null))
   }
 
   const detail = useMemo<TaskDetailView | null>(() => {
+    /* 白名单改黑名单：处置弹窗（review / ops）也要 detail，漏一个 kind
+       就是一个打不开的弹窗，而新增 kind 时没人会记得回来补这一行。 */
     if (modal.kind === 'none' || modal.kind === 'create') return null
-    return buildDetail(modal.task, replay, result?.user ?? '', me)
-  }, [modal, replay, result, me])
+    return buildDetail(modal.task, replay, result?.user ?? '', taskResult, me)
+  }, [modal, replay, result, taskResult, me])
 
   /** 补充条件后在同一条线程上继续。
    *
@@ -790,7 +799,8 @@ function hasRole(me: Me | null, allowed: string[]): boolean {
 
 /** 把 /api/tasks 的一行 + /api/replay 的回放拼成弹窗要的视图对象。 */
 function buildDetail(task: Task, replay: Replay | null, currentUser: string,
-                     me: Me | null = null): TaskDetailView {
+                    finalRes: TraceResult | null,
+                    me: Me | null = null): TaskDetailView {
   /* 列得出来 ≠ 动得了。这一页 2026-09-06 起列全部发起人的线程，但续跑仍然
      只有主人能做（服务端 /api/resume 校验归属）。不在这里判一次的话，别人的
      中断线程会挂着一个「补充信息并恢复」的按钮，点下去必然 404 —— 那正是
@@ -805,23 +815,38 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string,
   const list = (values: string[] | null | undefined) => (values && values.length ? values.join(', ') : '—')
 
   const sql = replay?.sql_final || replay?.sql_raw || ''
-  const result = task.status === 'done' && replay && sql
+  // 最终结果（/api/result）：已脱敏结果行 + 答案。登录态才有；被拦/旧记录为 null。
+  const hasFinal = Boolean(finalRes && ((finalRes.rows_preview?.length ?? 0) > 0 || finalRes.answer))
+  const rowCount = finalRes?.rows_returned ?? replay?.rows_returned
+  const result = (task.status === 'done' && (hasFinal || (replay && sql)))
     ? {
-      conclusion: `本次查询返回 ${replay.rows_returned ?? '—'} 行结果`,
-      note: '审计只保留执行事实与原生 SQL，不保存结果行；下表是这次执行可核对的信息。',
-      overview: [
+      conclusion: `本次查询返回 ${rowCount ?? '—'} 行结果`,
+      note: hasFinal
+        ? '下方为本次查询的结果（已脱敏、前若干行）与执行可核对信息。'
+        : '审计只保留执行事实与原生 SQL，不保存结果行；下表是这次执行可核对的信息。',
+      answer: finalRes?.answer || '',
+      resultColumns: finalRes?.columns ?? [],
+      resultRows: (finalRes?.rows_preview ?? []) as unknown[][],
+      resultNote: [
+        typeof rowCount === 'number' ? `共 ${rowCount} 行` : '',
+        (finalRes?.rows_returned ?? 0) > (finalRes?.rows_preview?.length ?? 0) ? `仅前 ${finalRes?.rows_preview?.length} 行` : '',
+        (finalRes?.masked_columns?.length ?? 0) > 0 ? `已脱敏 ${finalRes?.masked_columns?.join('、')}` : '',
+      ].filter(Boolean).join(' · '),
+      // 执行可核对信息来自 /api/replay（要 replay_api 开关）；关着时为空，
+      // 模态按长度决定渲不渲染 —— 结果行本身走 /api/result，不依赖它。
+      overview: (replay ? [
         ['返回行数', String(replay.rows_returned ?? '—')],
         ['耗时', fmtDuration(replay.elapsed_ms ?? task.elapsed_ms)],
         ['扫描估算', replay.explain_rows === null || replay.explain_rows === undefined ? '—' : String(replay.explain_rows)],
-      ] as [string, string][],
-      rows: [
+      ] : []) as [string, string][],
+      rows: (replay ? [
         ['命中表', list(replay.tables_hit), '来自审计记录'],
         ['命中指标', list(replay.metrics_hit), '认证口径'],
         ['护栏规则', list(replay.rules_fired), '生成后触发'],
         ['Token 用量', `${replay.tok_in ?? 0} / ${replay.tok_out ?? 0}`, '入 / 出'],
         ['调用成本', replay.cost_cny === null || replay.cost_cny === undefined ? '—' : `¥${replay.cost_cny.toFixed(4)}`, '按模型计价'],
-      ] as [string, string, string][],
-      sql,
+      ] : []) as [string, string, string][],
+      sql: sql || '',
     }
     : null
 

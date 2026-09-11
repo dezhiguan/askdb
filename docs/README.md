@@ -10,6 +10,7 @@
 | [`prototype.html`](./prototype.html) | **产品原型** —— 四个产品阶段的完整控制台 | 2026-09-06 |
 | [`design-trusted-data-agent-v2.html`](./design-trusted-data-agent-v2.html) | **可信数据 Agent v2** —— Skill/Tool/LLM/Runtime 四层；可选 agentic 模式的端到端流程、长短任务自动异步、任务中心状态机、人工审批/复核、Checkpoint 恢复 | V2.0 · 2026-09-11 |
 | [`test-cases.md`](./test-cases.md) · [`test-report.md`](./test-report.md) | 用例清单与测试报告 | 2026-08-18 |
+| [`test-report-agent-soak.md`](./test-report-agent-soak.md) | **查询 Agent 生产跑测报告** —— 13 源 × 10 条，基准值由直查 SQL 取得；10 条缺陷已修复并原样复测（错答 19→4，R-11 拦截 26→0） | V2.0 · 2026-09-11 |
 
 HTML 都是单文件、无外部依赖，**下载后用浏览器直接打开**即可。
 GitHub 网页上只会显示源码，不会渲染。

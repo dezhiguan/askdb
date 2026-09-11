@@ -1358,7 +1358,13 @@ class Executor:
 
     # ---------- R-11 干跑 ----------
 
-    def explain(self, sql: str) -> ExplainResult:
+    def explain(self, sql: str, cap: int | None = None) -> ExplainResult:
+        """R-11 干跑。
+
+        cap 由调用方传入时以它为准 —— 纯聚合查询有自己的一档（见
+        guard.is_bounded_aggregate 与配置 max_scan_rows_aggregate）。不传就退回
+        max_scan_rows，旧调用方行为不变。
+        """
         try:
             est, plan = self.backend.explain_rows(sql)
         except DataSourceError:
@@ -1367,7 +1373,7 @@ class Executor:
             return ExplainResult(est_rows=None, ok=False,
                                  reason=f"执行计划生成失败：{str(e).splitlines()[0]}")
 
-        cap = int(self.cfg.raw["guard"]["max_scan_rows"])
+        cap = int(self.cfg.raw["guard"]["max_scan_rows"]) if cap is None else int(cap)
         if est is not None and est > cap:
             return ExplainResult(
                 est_rows=est, plan=plan, ok=False,

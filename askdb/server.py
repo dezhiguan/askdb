@@ -35,6 +35,7 @@ from . import schema_rag as _schema_rag
 from . import sources as _sources
 from .config import Config, load
 from . import executor as _executor_mod
+from . import tools as _tools
 from .executor import DataSourceError, Executor, MaskUnresolved
 from . import async_runner as _async_runner
 from .agent import run_agent
@@ -42,6 +43,11 @@ from .graph import ask as run_ask, jsonable, resume as run_resume
 from .quota import build_quota
 from .qcache import build_answer_cache, make_key as _cache_key
 from .trace import now_iso as _now_iso, observability_status as _obs_status
+
+# 直查审计里最终结果预览的行数上限。取自 audit（与 ask 链路同一口径）。
+# 单列出来是因为直查端点内有个同名局部函数 _audit 会遮蔽模块别名 _audit，
+# 拿不到 _audit.RESULT_PREVIEW_ROWS —— 在模块级先取好。
+_RESULT_PREVIEW_ROWS = _audit.RESULT_PREVIEW_ROWS
 
 
 def _mask_pii(s: str) -> str:
@@ -2106,6 +2112,38 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         return JSONResponse(trace_chain(rec))
 
+    @app.get("/api/result")
+    def result_api(request: Request, trace_id: str = "") -> JSONResponse:
+        """一次查询的「最终结果」：答案文本 + 结果列 + **已脱敏**结果行前 N 行。
+        供执行追踪详情与任务中心展示结果，替掉此前那句"暂无结果"。
+
+        与 /api/trace（匿名可读、只放节点链、不给 SQL/结果）和 /api/replay
+        （login + replay_api 双门、返回 SQL 全文与快照）都不同，这是**单独一道门**：
+        - **要登录**（不像 /api/trace 匿名可读）—— 结果行含数据，不给访客；
+        - 仍按调用者当下可见表收窄（同 /api/trace 的 404 口径）；
+        - **不受 replay_api 开关约束、也不返回 sql_final/sql_raw/question** ——
+          SQL 全文仍只走 /api/replay 那道门，这里只放答案与已脱敏结果行。
+        字段走 audit.RESULT_FIELDS 白名单；被拦下的记录（rejected_by 非空）返回 null，
+        不展示推测或伪造的结果。
+        """
+        # **无条件要登录**：结果行含数据，绝不给访客。_require_login 只在
+        # auth.required=true 时挡，而对外实例是 auth.required=false（只 query_requires_login），
+        # 那条挡不住这里 —— 直接判当前用户。
+        if not _current_user(request):
+            raise HTTPException(status_code=401, detail="查看最终结果需要登录")
+        _require_cap(request, _identity.AUDIT_READ, "查看最终结果")
+        not_found = JSONResponse({"error": "not found"}, status_code=404)
+        if not _TRACE_ID_RE.fullmatch(trace_id or ""):
+            return not_found
+        rec = _audit.get_audit(cfg, trace_id)
+        if rec is None:
+            return not_found
+        scoped = _scoped(request, _cfg_of_record(rec, request))
+        hit = {str(t).lower() for t in (rec.get("tables_hit") or [])}
+        if hit and not hit <= {t.lower() for t in scoped.tables}:
+            return not_found
+        return JSONResponse({"result": _audit.result_block(rec)})
+
     @app.get("/api/replay")
     def replay_trace(request: Request, trace_id: str = "") -> JSONResponse:
         """判定链路回放（设计说明 V1.1）。
@@ -3200,7 +3238,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                    explain_rows: int | None = None, rows_returned: int = 0,
                    masked_columns: list[str] | None = None,
                    mask_degraded: bool = False,
-                   truncated: bool = False) -> None:
+                   truncated: bool = False,
+                   columns: list[str] | None = None,
+                   rows_preview: list[Any] | None = None) -> None:
             write_audit(scoped, {
                 "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
                 "model": None,
@@ -3214,6 +3254,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "attempts": 1, "explain_rows": explain_rows,
                 "step_count": 1, "multi_step": False, "converged_early": "",
                 "rows_returned": rows_returned,
+                # 最终结果（/api/result 用）：直查无答案文本，answer 留空；
+                # 结果列 + **已脱敏**结果行前 N 行。SQL 全文不进这里。
+                "answer": "",
+                "columns": columns or [],
+                "rows_preview": rows_preview or [],
                 # 与 ask 链路同一套字段：脱了哪几列必须进审计，
                 # 否则事后无从证明某一次结果到底脱没脱
                 "masked_columns": masked_columns or [],
@@ -3242,58 +3287,78 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         steps.append({"step": "guard", "ms": 0, "status": "ok",
                       "note": "；".join(g.rewrites) or "无需改写"})
 
-        with Executor(scoped) as ex:
-            ep = ex.explain(g.sql)
-            if not ep.ok and not scoped.scan_waiver:
-                steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
-                _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)
-                # 挂起而不是终结：登记一条待审批，把单号回给发起人（P07）
-                pending = _open_approval(scoped, request, trace_id=trace_id, kind="sql",
-                                         question="（直查模式）", sql=g.sql,
-                                         # 指纹绑用户提交的原文，不是改写后的
-                                         match_text=req.sql, est_rows=ep.est_rows)
-                return JSONResponse({
-                    "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
-                    "sql_final": g.sql, "rejected_by": "R-11", "error": ep.reason,
-                    "hint": "缩小时间范围或增加筛选条件把扫描量降下来；"
-                            "确有必要跑全量时，这条已登记为待审批，"
-                            "由系统管理员放行后可原样重跑一次。",
-                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
-                    "trace_id": trace_id, **pending,
-                })
-            if not ep.ok:
-                # 已获批准。审计里必须看得出这条是走审批过来的，
-                # 否则阈值形同虚设 —— 事后没人能分辨"没超"和"超了但批了"。
+        try:
+            with Executor(scoped) as ex:
+                # 与 agent 链路共用同一个 R-11 阈值判定：纯聚合查询走
+                # max_scan_rows_aggregate 那一档。两条路各算各的会出现
+                # 「问它能出数、自己写同一条 SQL 反而被挡」。
+                ep = ex.explain(g.sql, cap=_tools._scan_cap(scoped, g.sql))
+                if not ep.ok and not scoped.scan_waiver:
+                    steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
+                    _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)
+                    # 挂起而不是终结：登记一条待审批，把单号回给发起人（P07）
+                    pending = _open_approval(scoped, request, trace_id=trace_id, kind="sql",
+                                             question="（直查模式）", sql=g.sql,
+                                             # 指纹绑用户提交的原文，不是改写后的
+                                             match_text=req.sql, est_rows=ep.est_rows)
+                    return JSONResponse({
+                        "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
+                        "sql_final": g.sql, "rejected_by": "R-11", "error": ep.reason,
+                        "hint": "缩小时间范围或增加筛选条件把扫描量降下来；"
+                                "确有必要跑全量时，这条已登记为待审批，"
+                                "由系统管理员放行后可原样重跑一次。",
+                        "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                        "trace_id": trace_id, **pending,
+                    })
+                if not ep.ok:
+                    # 已获批准。审计里必须看得出这条是走审批过来的，
+                    # 否则阈值形同虚设 —— 事后没人能分辨"没超"和"超了但批了"。
+                    steps.append({"step": "dry_run", "ms": 0, "status": "ok",
+                                  "note": f"{ep.reason}（已获审批放行）"})
                 steps.append({"step": "dry_run", "ms": 0, "status": "ok",
-                              "note": f"{ep.reason}（已获审批放行）"})
-            steps.append({"step": "dry_run", "ms": 0, "status": "ok",
-                          "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
-            try:
-                ex.set_org(org)
-                res = ex.run(g.sql, limit_capped="R-09" in g.rules_fired)
-            except MaskUnresolved as e:
-                # 与 agent 模式同一条规矩：判不出投影来源就不返回，
-                # 而不是把整行涂成星号递出去（见 executor._mask 的注释）。
-                steps.append({"step": "execute", "ms": 0, "status": "blocked", "note": str(e)})
-                _audit(rejected_by="P03", sql_final=g.sql, rules_fired=g.rules_fired,
-                       explain_rows=ep.est_rows)
-                return JSONResponse({
-                    "ok": False, "question": "（直查模式）", "sql_final": g.sql,
-                    "rejected_by": "P03", "error": str(e), "hint": e.hint,
-                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
-                    "trace_id": trace_id,
-                })
-            except DataSourceError as e:
-                steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
-                _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,
-                       explain_rows=ep.est_rows)
-                return JSONResponse({
-                    "ok": False, "question": "（直查模式）", "sql_final": g.sql,
-                    "rejected_by": "EXEC", "error": str(e), "hint": e.hint,
-                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
-                    "trace_id": trace_id,
-                })
+                              "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
+                try:
+                    ex.set_org(org)
+                    res = ex.run(g.sql, limit_capped="R-09" in g.rules_fired)
+                except MaskUnresolved as e:
+                    # 与 agent 模式同一条规矩：判不出投影来源就不返回，
+                    # 而不是把整行涂成星号递出去（见 executor._mask 的注释）。
+                    steps.append({"step": "execute", "ms": 0, "status": "blocked", "note": str(e)})
+                    _audit(rejected_by="P03", sql_final=g.sql, rules_fired=g.rules_fired,
+                           explain_rows=ep.est_rows)
+                    return JSONResponse({
+                        "ok": False, "question": "（直查模式）", "sql_final": g.sql,
+                        "rejected_by": "P03", "error": str(e), "hint": e.hint,
+                        "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                        "trace_id": trace_id,
+                    })
+                except DataSourceError as e:
+                    steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
+                    _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,
+                           explain_rows=ep.est_rows)
+                    return JSONResponse({
+                        "ok": False, "question": "（直查模式）", "sql_final": g.sql,
+                        "rejected_by": "EXEC", "error": str(e), "hint": e.hint,
+                        "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                        "trace_id": trace_id,
+                    })
 
+        except DataSourceError as e:
+            # 数据源连不上时这里原来什么都不接：DataSourceError 由
+            # `with Executor(...)` 的 __enter__ 建连时抛出，一路冒到 ASGI 层，
+            # 直查返回的是一个裸 HTTP 500 Internal Server Error（非 JSON，
+            # 前端拿不到任何可展示的原因）；而同一时刻 /api/selfcheck 与
+            # 数据源扫描给的是 400 + 明确原因。三条链路对同一件事说三种话。
+            # 注意 try 必须包住整个 with —— 建连发生在进入块体之前。
+            steps.append({"step": "connect", "ms": 0, "status": "failed", "note": str(e)})
+            _audit(rejected_by="DATASOURCE", sql_final=g.sql, rules_fired=g.rules_fired)
+            return JSONResponse({
+                "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
+                "sql_final": g.sql, "rejected_by": "DATASOURCE", "error": str(e),
+                "hint": e.hint or "请在「数据源」页检查该源的连通性与账号授权。",
+                "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                "trace_id": trace_id,
+            })
         note = f"返回 {res.row_count} 行"
         if res.masked_columns:
             note += f"；已脱敏 {len(res.masked_columns)} 列（{'、'.join(res.masked_columns[:5])}）"
@@ -3302,7 +3367,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,
                explain_rows=ep.est_rows, rows_returned=res.row_count,
                masked_columns=list(res.masked_columns),
-               mask_degraded=res.mask_degraded, truncated=res.truncated)
+               mask_degraded=res.mask_degraded, truncated=res.truncated,
+               columns=[str(c) for c in res.columns],
+               rows_preview=[[jsonable(v) for v in r] for r in res.rows[:_RESULT_PREVIEW_ROWS]])
         if scoped.scan_waiver:
             # **执行成功之后**才作废。执行失败就烧掉一次审批的话，
             # 用户得为一次数据源抖动重新走一遍人工流程。

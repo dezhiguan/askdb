@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from . import guard, schema_rag
 from .config import Config
-from .executor import Executor, MaskUnresolved
+from .executor import DataSourceError, Executor, MaskUnresolved
 
 
 class Tier(str, Enum):
@@ -124,6 +124,31 @@ def get_table_schema(table: str, cfg: Config) -> ToolResult:
     )
 
 
+def _scan_cap(cfg: Config, sql: str) -> int:
+    """这条 SQL 适用的 R-11 扫描上限。
+
+    R-11 拦的是**扫描量**，防的是"一次把整张大表搬出库"。但一条
+    `SELECT COUNT(*) FROM orders` 扫得多、吐出来只有一行 —— 搬不走任何东西，
+    真正的成本上限是 R-12 语句超时（statement_timeout_ms），它已经在兜着。
+    用同一个阈值同时管这两类查询的结果是：生产数据规模下，每个源上最基本的
+    那个问题（"一共有多少条"）全部被挡死，而审批入口又不可达。
+    2026-09-11 跑测里 130 条挡掉 26 条，会员中心 10 条挡 7 条。
+
+    因此聚合查询单列一档 max_scan_rows_aggregate（缺省 = max_scan_rows）。
+    判定条件从严，三条全满足才算数：
+      · 单条 SELECT（含 CTE），不是 UNION / 多语句；
+      · 顶层投影**全部**是聚合函数或 GROUP BY 的分组键 —— 没有任何明细列逃出去；
+      · 结果行数已被外层 LIMIT 封顶（R-09 一定会注入，这里再确认一次）。
+    判不出来就退回 max_scan_rows，从严的方向不变。
+    """
+    g = cfg.raw.get("guard", {}) or {}
+    base = int(g.get("max_scan_rows", 200000))
+    agg_cap = int(g.get("max_scan_rows_aggregate", 0) or 0)
+    if agg_cap <= base:
+        return base
+    return agg_cap if guard.is_bounded_aggregate(sql, cfg.dialect) else base
+
+
 def execute_sql(sql: str, cfg: Config, org_id: int,
                 executor: Executor | None = None) -> ToolResult:
     """安全原子：护栏(AST) → 干跑(EXPLAIN) → 只读执行 → 脱敏。
@@ -146,9 +171,17 @@ def execute_sql(sql: str, cfg: Config, org_id: int,
     try:
         exp = ex.explain(final)
         explain_rows = exp.est_rows
+    except DataSourceError as e:
+        # 库连不上、认证失败这类不可重试的错，在干跑这一步就该说清楚。
+        # 原来这里被 `except Exception` 一并吞掉，链路继续往下走到 run()，
+        # 报出来的是一句看不出根因的执行错，Agent 于是反复重试直到烧光预算。
+        return ToolResult(
+            ok=False, tool="execute_sql", rejected_by="DATASOURCE", error=str(e),
+            data={"sql_final": final, "fatal": not e.retryable, "hint": e.hint},
+        )
     except Exception:
         exp = None
-    max_scan = int(cfg.raw.get("guard", {}).get("max_scan_rows", 200000))
+    max_scan = _scan_cap(cfg, final)
     # scan_waiver：审批通过后重投的查询带着放行标记，跳过 R-11（与管道 _n_dry_run 同口径）。
     if (explain_rows is not None and explain_rows > max_scan
             and not getattr(cfg, "scan_waiver", False)):
@@ -166,6 +199,11 @@ def execute_sql(sql: str, cfg: Config, org_id: int,
             ok=False, tool="execute_sql", rejected_by="P03",
             error="脱敏判定无法解析该 SQL，从严拒绝返回",
             data={"sql_final": final},
+        )
+    except DataSourceError as e:
+        return ToolResult(
+            ok=False, tool="execute_sql", rejected_by="DATASOURCE", error=str(e),
+            data={"sql_final": final, "fatal": not e.retryable, "hint": e.hint},
         )
     except Exception as e:
         return ToolResult(
