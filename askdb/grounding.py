@@ -30,8 +30,16 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-#: 千分位、小数点都认；不认中文数词（"五档"这类由提示词管，不在这一层猜）
-_NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
+#: 千分位、小数点都认；不认中文数词（"五档"这类由提示词管，不在这一层猜）。
+#:
+#: 前面那个 lookbehind 不是可选的：没有它，`E01746`（客服工号）会被抠出
+#: 1746、`WD0000000001`（提现单号）会被抠出 1。这些数根本不是在陈述一个量，
+#: 却照样要求"必须能追溯到返回值"，于是把完全正确的答案点名 —— 2026-09-12
+#: 影子跑测里 A5 一条就误报了四个工号。标识符里的数字一律不算数。
+_NUM = re.compile(r"(?<![0-9A-Za-z_.\-])\d[\d,]*(?:\.\d+)?")
+
+#: 带前导零的一律当标识符（订单号、工号、编码），不当数量。
+_LEADING_ZERO = re.compile(r"^0\d")
 
 #: 低于这个绝对值的数不查。占比、评分、天数、名次、步数几乎都落在这一档，
 #: 而它们恰恰是模型最常就地算的东西 —— 查它们等于制造误判。
@@ -49,7 +57,13 @@ def numbers_in(text: str) -> list[float]:
     每一段去掉逗号之后都一定能被 float() 吃下。这里因此不设 try/except：写一个
     永远不会走到的兜底分支，只会让读的人以为这里真有解析失败的可能。
     """
-    return [float(m.group(0).replace(",", "")) for m in _NUM.finditer(text or "")]
+    out: list[float] = []
+    for m in _NUM.finditer(text or ""):
+        raw = m.group(0)
+        if _LEADING_ZERO.match(raw):
+            continue
+        out.append(float(raw.replace(",", "")))
+    return out
 
 
 def _as_float(v: Any) -> float | None:
@@ -98,9 +112,65 @@ def values_of(results: Iterable[dict[str, Any]]) -> list[float]:
     return vals
 
 
+def _text_digit_keys(results: Iterable[dict[str, Any]]) -> set[float]:
+    """返回值里**文本单元格内嵌的数字**。
+
+    活动名「双112025第6期」、批次号「B2026080123」这类值本身就是从库里查出来的，
+    模型在结论里照抄它天经地义 —— 但正则会把里面的 112025 当成一个"陈述的量"，
+    于是点名一个完全正确的答案（2026-09-12 影子跑测 K5）。把这些数字一并算作
+    接地：它们确实来自返回值。
+    """
+    keys: set[float] = set()
+    for r in results or []:
+        for row in (r.get("rows") or []):
+            for cell in (row if isinstance(row, (list, tuple)) else [row]):
+                if not isinstance(cell, str):
+                    continue
+                for m in re.finditer(r"\d+", cell):
+                    try:
+                        keys.update(_keys(float(m.group(0))))
+                    except ValueError:                 # pragma: no cover - 理论不可达
+                        continue
+    return keys
+
+
 def _keys(x: float) -> tuple[float, float, float]:
     """一个数的三档取整。模型常把 2215.6134 写成 2215.61 或 2216。"""
     return (round(x, 4), round(x, 2), round(x, 0))
+
+
+#: 逐列枚举子集和时，列最多取这么多个值（2^12 = 4096 个组合，够用且不至于拖慢）。
+MAX_SUBSET_ITEMS = 12
+
+
+def _subset_sum_keys(results: Iterable[dict[str, Any]]) -> set[float]:
+    """每一列里**任意若干个**值相加得到的数。
+
+    整列合计已经在 values_of 里了，但模型经常只加其中几项：
+    「排除已解决/已关闭之后仍在流程中的 = 15,094 + 8,246 + 3,808 = 27,148」——
+    这是一个完全正确的派生值，而两两一次算术覆盖不到它。2026-09-12 影子跑测
+    里它是第一个误判，正是这条缺口。
+
+    列超过 MAX_SUBSET_ITEMS 个值就跳过：组合数是指数级的，而那种长列上模型
+    几乎只会用整列合计（已覆盖）。跳过换来的是漏判，不是误判 —— 方向对。
+    """
+    keys: set[float] = set()
+    for r in results or []:
+        rows = r.get("rows") or []
+        width = max((len(row) for row in rows
+                     if isinstance(row, (list, tuple))), default=0)
+        for i in range(width):
+            col = [_as_float(row[i]) for row in rows
+                   if isinstance(row, (list, tuple)) and i < len(row)]
+            col = [c for c in col if c is not None]
+            if not 2 <= len(col) <= MAX_SUBSET_ITEMS:
+                continue
+            sums = {0.0}
+            for v in col:
+                sums |= {x + v for x in sums}
+            for x in sums:
+                keys.update(_keys(x))
+    return keys
 
 
 def _derivable_keys(vals: list[float]) -> set[float]:
@@ -131,7 +201,8 @@ def _year_like(x: float) -> bool:
 
 
 def ungrounded(answer: str, results: list[dict[str, Any]],
-               *, min_abs: float = MIN_ABS) -> list[float]:
+               *, min_abs: float = MIN_ABS,
+               known: Iterable[float] = ()) -> list[float]:
     """结论里追溯不到任何返回值的大额数字。空列表 = 全部接地。
 
     results 是本轮**每一次成功 execute_sql** 的结果（含 columns/rows），
@@ -147,7 +218,13 @@ def ungrounded(answer: str, results: list[dict[str, Any]],
         # 一条结果都没有时不在这里判 —— 那是"没跑过"，由 agent 的 NO_EVIDENCE 管，
         # 两条判定各管各的，免得同一件事报两种原因。
         return []
-    keys = _derivable_keys(vals)
+    keys = (_derivable_keys(vals) | _subset_sum_keys(results)
+            | _text_digit_keys(results))
+    # 护栏与预算的配置值（3000ms 语句超时、20 万扫描上限……）是模型合法引用的
+    # 常量，不是从库里查来的数。它说"该查询扫描行数过大触发 3000ms
+    # statement_timeout 被取消"时，3000 既准确又该说 —— 点它的名毫无道理。
+    for k in known:
+        keys.update(_keys(float(k)))
     bad: list[float] = []
     for x in nums:
         if any(k in keys for k in _keys(x)):

@@ -581,6 +581,34 @@ def test_grounding_allows_column_total():
         [_r([["RESOLVED", 106303], ["CLOSED", 16549], ["PROCESSING", 15094]])]) == []
 
 
+def test_grounding_allows_a_partial_column_sum():
+    """只加其中几项也是派生值。
+
+    2026-09-12 影子跑测的第一个误判就是这条：模型答"排除已解决/已关闭之后
+    仍在流程中的 = 15,094 + 8,246 + 3,808 = 27,148"，完全正确，却因为
+    两两一次算术覆盖不到三项求和而被点名。
+    """
+    rows = [["RESOLVED", 106303], ["CLOSED", 16549], ["PROCESSING", 15094],
+            ["PENDING", 8246], ["ESCALATED", 3808]]
+    assert grounding.ungrounded(
+        "五项合计 150,000 条；仍在流程中的为 15,094 + 8,246 + 3,808 = 27,148 条。",
+        [_r(rows)]) == []
+
+
+def test_grounding_still_catches_fabrication_after_subset_sums():
+    """放宽到子集和之后，编造仍然要抓得住 —— 否则这层就白设了。"""
+    assert grounding.ungrounded(
+        "8 月 GMV 合计 1,347,590.05 元，181,164 行。",
+        [_r([["2026-06-10", "2026-09-08", 2012920]])]) == [1347590.05, 181164.0]
+
+
+def test_grounding_allows_digits_inside_returned_names():
+    """活动名「双112025第6期」是库里查出来的，照抄它不该被当成编造。"""
+    assert grounding.ungrounded(
+        "预算第 2 名是「双112025第6期」，799,645.15 元。",
+        [_r([[1, "开学季2025第8期", "799843.46"], [2, "双112025第6期", "799645.15"]])]) == []
+
+
 def test_grounding_allows_ratio_of_two_returned_values():
     assert grounding.ungrounded(
         "不良率 = 64,369 / 3,761,321 = 1.7113%。", [_r([[64369, 3761321]])]) == []

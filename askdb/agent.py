@@ -219,6 +219,18 @@ def _sys(base: str, cfg: Config) -> str:
     return f"{base}\n\n{block}" if block else base
 
 
+def _known_constants(cfg: Config) -> list[float]:
+    """护栏与预算的配置值。模型引用它们是对的，不该被当成"追溯不到的数"。"""
+    out: list[float] = []
+    for section in ("guard", "agent", "planner"):
+        for v in (cfg.raw.get(section) or {}).values():
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, (int, float)):
+                out.append(float(v))
+    return out
+
+
 def _grounding_mode(cfg: Config) -> str:
     """接地校验的档位：off / shadow / enforce。
 
@@ -390,7 +402,8 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
 
         if action.finish:
             answer = action.answer
-            bad = (grounding.ungrounded(answer, exec_results)
+            bad = (grounding.ungrounded(answer, exec_results,
+                                        known=_known_constants(cfg))
                    if gmode != "off" and answer else [])
             if bad:
                 ungrounded = [grounding.fmt([x]) for x in bad]
