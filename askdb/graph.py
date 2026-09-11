@@ -410,7 +410,14 @@ def _n_clarify(state: AskState, config: RunnableConfig) -> dict[str, Any]:
 def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     d = _deps(config)
     t = d.tracer.start()
-    r = schema_rag.recall(state["question"], d.cfg)
+    # 召回要连**发起人补充的条件**一起看，不能只看原问句。
+    #
+    # 「等待补充」的原问题往往很泛（"帮我看看数据"），只按它召回，命中的是一堆
+    # 不相干的表；用户补充「查 documents 表」之后，如果召回仍只读原问句，
+    # documents 永远进不了 schema_prompt，generate 只能如实说"给定表里没有它"
+    # —— 界面却明明写着「或直接写出表名」。用 _asked 把补充并进召回查询，
+    # 写出的表名才真的能被捞回来。首轮没有补充时 _asked == question，行为不变。
+    r = schema_rag.recall(_asked(state), d.cfg)
     note = f"命中 {len(r.tables)} 张表（白名单共 {len(d.cfg.tables)} 张）"
     if r.metrics:
         note += f"；命中口径 {'、'.join(m.name for m in r.metrics)}"

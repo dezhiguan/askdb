@@ -75,6 +75,25 @@ def test_clarify_resume_clears_stale_error_and_feeds_clarification(cfg, ex):
     assert "documents" in gen[0]["step"]                  # 补充条件确实喂进 generate
 
 
+def test_clarify_resume_feeds_clarification_into_recall(cfg, ex, monkeypatch):
+    """补充要连着进 schema 召回，不能只按原问句召回。
+
+    「等待补充」的原问句往往很泛，只按它召回命中的是一堆不相干的表；用户
+    「直接写出表名」后若召回仍只读原问句，那张表永远进不了 schema_prompt，
+    generate 只能说"给定表里没有它" —— 界面却写着「或直接写出表名」。
+    """
+    r1 = graph.ask("帮我看看", cfg, executor=ex, llm=FakeLlm())
+    assert not r1.ok and r1.rejected_by == "NO_SQL"
+
+    seen: list[str] = []
+    real = graph.schema_rag.recall
+    monkeypatch.setattr(graph.schema_rag, "recall",
+                        lambda q, c, *a, **k: (seen.append(q), real(q, c, *a, **k))[1])
+    graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL),
+                 clarification="查 documents 表，按 status 分组", question=r1.question)
+    assert any("documents" in q for q in seen), seen     # 补充条件确实进了召回查询
+
+
 def test_resume_endpoint_uniform_404_and_success(cfg, ex, monkeypatch):
     monkeypatch.setattr(server, "load", lambda _p: cfg)
     client = TestClient(server.create_app("ignored.yaml"))
