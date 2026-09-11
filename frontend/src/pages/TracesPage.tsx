@@ -1,5 +1,4 @@
 import { PageHeader } from '../components/AppShell'
-import { ModalShell } from '../components/Modals'
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchAudit, fetchAuditStats, fetchTraceChain, tracingLink,
@@ -583,8 +582,7 @@ function SpanNote({ step, open, onToggle }: {
   const hit = /^(命中 )(\d+)( 张表)/.exec(note)
   const btn = (
     <button type="button" className="span-count" aria-expanded={open}
-            title={open ? '收起命中的表' : '展开命中的表'}
-            onClick={(e) => { e.stopPropagation(); onToggle() }}>
+            title={open ? '收起命中的表' : '展开命中的表'} onClick={onToggle}>
       {hit ? hit[2] : tables.length}{caret}
     </button>
   )
@@ -610,8 +608,6 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
     if (!next.delete(i)) next.add(i)
     return next
   })
-  /* 输入/输出摘要点击放大：列表里单行截断，点开看全文（长 note 尤其需要）。 */
-  const [zoom, setZoom] = useState<{ title: string; body: string } | null>(null)
 
   /* 一行都没有时，那一行说的是**为什么**没有。
    *
@@ -647,7 +643,6 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                   </i>
                 )}
                 <strong>{STEP_NAMES[step.step] ?? step.step}</strong>
-                {step.tool && <em className="node-tool">{step.tool}</em>}
                 <small>{step.ms}ms</small>
               </div>
               {i < steps.length - 1 && <i className="trace-arrow">→</i>}
@@ -675,7 +670,9 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                     <td><span className={`span-type ${(STEP_TYPE[step.step] ?? 'sys').toLowerCase()}`}>{STEP_TYPE[step.step] ?? 'SYS'}</span></td>
                     <td>
                       {STEP_NAMES[step.step] ?? step.step}
-                      {step.tool && <span className="span-tool"> · {step.tool}</span>}
+                      {/* 工具调用这一步调的具体工具名，换行成子行显示，样式与下面
+                          「尝试/模型」子行一致，不另起颜色。 */}
+                      {step.tool && <em className="span-attempt">{step.tool}</em>}
                       {/* 第几次尝试、谁出的活 —— 同一个节点名会连着出现两三行，
                           不写清楚就分不出哪行是失败的那次。 */}
                       {((step.attempts_total ?? 0) > 1 || step.model) && (
@@ -706,9 +703,7 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                             + `${step.tok_in.toLocaleString()} tok`
                           : NA}
                     </td>
-                    <td className={`span-note${step.note ? ' zoomable' : ''}`}
-                        title={step.note ? '点击查看完整输出摘要' : ''}
-                        onClick={step.note ? () => setZoom({ title: '输出摘要', body: step.note ?? '' }) : undefined}>
+                    <td className="span-note" title={step.note ?? ''}>
                       <SpanNote step={step} open={openRows.has(i)} onToggle={() => toggleRow(i)} />
                     </td>
                     <td>{step.ms}ms</td>
@@ -754,17 +749,6 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
           </table>
         </div>
       </div>
-      {zoom && (
-        <ModalShell onClose={() => setZoom(null)}>
-          <div className="modal span-zoom-modal" role="dialog" aria-modal="true">
-            <div className="modal-head">
-              <div><h3>{zoom.title}</h3></div>
-              <button className="modal-close" type="button" onClick={() => setZoom(null)} aria-label="关闭">×</button>
-            </div>
-            <div className="modal-body"><p className="span-zoom-body">{zoom.body}</p></div>
-          </div>
-        </ModalShell>
-      )}
     </>
   )
 }
