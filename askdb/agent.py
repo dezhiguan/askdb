@@ -256,7 +256,7 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
         return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
                        rejected_by="LLM", error=f"意图预检失败：{e}",
                        hint="检查网络与密钥；也可关闭 agent.enabled 退回管道。")
-    tracer.add("intent", t, intent.reason, model=client.model_name(),
+    tracer.add("intent", t, intent.reason, model=client.model_name,
                tok_in=u.input_tokens, tok_out=u.output_tokens, cost_cny=u.cost_cny)
 
     if intent.out_of_scope:
@@ -296,7 +296,7 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
             return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
                            rejected_by="LLM", error=f"决策失败：{e}", tables_hit=tables_hit,
                            step_count=max(1, step_count))
-        tracer.add("decide", t, (action.thought or "")[:80], model=client.model_name(),
+        tracer.add("decide", t, (action.thought or "")[:80], model=client.model_name,
                    tok_in=u.input_tokens, tok_out=u.output_tokens, cost_cny=u.cost_cny)
 
         if action.finish:

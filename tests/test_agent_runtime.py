@@ -69,6 +69,7 @@ class _FakeLLM:
         self._actions = list(actions)
         self._i = 0
 
+    @property
     def model_name(self):
         return "fake"
 
