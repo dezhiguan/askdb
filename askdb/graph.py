@@ -209,6 +209,9 @@ class AskResult:
     scrubbed_claims: list[str] = field(default_factory=list)
     #: 用到的缓存/派生计数列。这类列与真实计数会漂移，出现即降可信度。
     derived_columns: list[str] = field(default_factory=list)
+    #: 结论里追溯不到任何查询返回值的大额数字（BUG-A5）。非空 = 这些数不是从
+    #: 库里来的。出接口而不只进审计：事后查得出来，救不了正在看这个数字的人。
+    ungrounded_numbers: list[str] = field(default_factory=list)
     #: 本次口径声明，必出。
     caliber: str = ""
     attempts: int = 1

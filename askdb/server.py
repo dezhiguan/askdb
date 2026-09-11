@@ -34,6 +34,7 @@ from . import schema_rag as _schema_rag
 from . import sources as _sources
 from .config import Config, load
 from . import executor as _executor_mod
+from . import tools as _tools
 from .executor import DataSourceError, Executor, MaskUnresolved
 from . import async_runner as _async_runner
 from .agent import run_agent
@@ -3103,7 +3104,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         try:
             with Executor(scoped) as ex:
-                ep = ex.explain(g.sql)
+                # 与 agent 链路共用同一个 R-11 阈值判定：纯聚合查询走
+                # max_scan_rows_aggregate 那一档。两条路各算各的会出现
+                # 「问它能出数、自己写同一条 SQL 反而被挡」。
+                ep = ex.explain(g.sql, cap=_tools._scan_cap(scoped, g.sql))
                 if not ep.ok and not scoped.scan_waiver:
                     steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
                     _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)

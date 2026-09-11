@@ -18,6 +18,7 @@ export const STEP_NAMES: Record<string, string> = {
   generate_sql: 'SQL 生成',
   guard: '静态校验',
   scrub: '推理文案核对',
+  grounding: '数字接地校验',
   hedge: '不确定性标记',
   dry_run: 'EXPLAIN 干跑',
   execute: '只读执行',
