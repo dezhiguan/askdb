@@ -167,6 +167,65 @@ def test_execute_sql_ok(tmp_path, monkeypatch):
     assert r.ok and r.data["row_count"] == 1
 
 
+def test_execute_sql_datasource_error_on_explain(tmp_path, monkeypatch):
+    """干跑阶段库连不上（不可重试）→ DATASOURCE + fatal，不继续往下跑。"""
+    from askdb.executor import DataSourceError
+    _stub_guard(monkeypatch)
+
+    class ExplainDead(_FakeExec):
+        def explain(self, sql):
+            raise DataSourceError("连接被拒", hint="查连通性", retryable=False)
+
+    r = tools.execute_sql("SELECT 1", _cfg(tmp_path), 0, executor=ExplainDead())
+    assert not r.ok and r.rejected_by == "DATASOURCE"
+    assert r.data["fatal"] is True and r.data["hint"] == "查连通性"
+
+
+def test_execute_sql_explain_soft_error_continues(tmp_path, monkeypatch):
+    """explain 抛普通异常（非 DataSourceError）→ 吞掉，照常执行。"""
+    _stub_guard(monkeypatch)
+
+    class ExplainFlaky(_FakeExec):
+        def explain(self, sql):
+            raise RuntimeError("explain 不支持")
+
+    r = tools.execute_sql("SELECT 1", _cfg(tmp_path), 0, executor=ExplainFlaky())
+    assert r.ok and r.data["explain_rows"] is None
+
+
+def test_execute_sql_mask_unresolved_rejected(tmp_path, monkeypatch):
+    """run 阶段脱敏判定不出来源 → P03 从严拒绝。"""
+    from askdb.executor import MaskUnresolved
+    _stub_guard(monkeypatch)
+
+    class MaskDead(_FakeExec):
+        def run(self, sql, limit_capped=None):
+            raise MaskUnresolved("解析不出投影")
+
+    r = tools.execute_sql("SELECT 1", _cfg(tmp_path), 0, executor=MaskDead())
+    assert not r.ok and r.rejected_by == "P03"
+
+
+def test_execute_sql_run_datasource_and_generic_error(tmp_path, monkeypatch):
+    """run 阶段可重试超时 → DATASOURCE 非 fatal；未知异常 → 兜底错。"""
+    from askdb.executor import DataSourceError
+    _stub_guard(monkeypatch)
+
+    class TimeoutRun(_FakeExec):
+        def run(self, sql, limit_capped=None):
+            raise DataSourceError("语句超时", hint="缩小范围", retryable=True)
+
+    r = tools.execute_sql("SELECT 1", _cfg(tmp_path), 0, executor=TimeoutRun())
+    assert not r.ok and r.rejected_by == "DATASOURCE" and r.data["fatal"] is False
+
+    class BoomRun(_FakeExec):
+        def run(self, sql, limit_capped=None):
+            raise ValueError("未知")
+
+    r2 = tools.execute_sql("SELECT 1", _cfg(tmp_path), 0, executor=BoomRun())
+    assert not r2.ok and r2.rejected_by is None and "未知" in r2.error
+
+
 # --------------------------------------------------------------------------
 # tools：analyze / export（第 2/3 层）
 # --------------------------------------------------------------------------
@@ -316,6 +375,147 @@ def test_agent_writes_audit(tmp_path, monkeypatch):
     recs = [json.loads(x) for x in open(tmp_path / "audit.jsonl")]
     phases = {r.get("phase", "final") for r in recs}
     assert "started" in phases and "final" in phases
+
+
+def test_agent_intent_quota_and_llm_error(tmp_path, monkeypatch):
+    """意图预检阶段：配额耗尽 → QUOTA；其他异常 → LLM。"""
+    from askdb.quota import QuotaExceeded
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+
+    class Boom(_FakeLLM):
+        def __init__(self, exc):
+            super().__init__([])
+            self._exc = exc
+
+        def structured(self, schema, system, human):
+            raise self._exc
+
+    r = A.run_agent("x", _cfg(tmp_path), 316, executor=_FakeExec(),
+                    llm=Boom(QuotaExceeded(10, 10, "今日额度已用尽")))
+    assert not r.ok and r.rejected_by == "QUOTA"
+    r2 = A.run_agent("x", _cfg(tmp_path), 316, executor=_FakeExec(),
+                     llm=Boom(RuntimeError("网络断了")))
+    assert not r2.ok and r2.rejected_by == "LLM"
+
+
+def test_agent_decide_quota_and_llm_error(tmp_path, monkeypatch):
+    """自主循环里决策调用失败：配额 → 收敛作答；其他异常 → LLM。"""
+    from askdb.quota import QuotaExceeded
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+
+    class DecideBoom(_FakeLLM):
+        def __init__(self, exc):
+            super().__init__([])
+            self._exc = exc
+
+        def structured(self, schema, system, human):
+            if schema is A.IntentCheck:
+                return schema(answerable=True, out_of_scope=False, reason="可答"), \
+                    LlmUsage(input_tokens=1, output_tokens=1, cost_cny=0.0)
+            raise self._exc
+
+    r = A.run_agent("x", _cfg(tmp_path), 316, executor=_FakeExec(),
+                    llm=DecideBoom(QuotaExceeded(10, 10, "额度用尽")))
+    assert r.converged_early and "配额" in r.converged_early
+    r2 = A.run_agent("x", _cfg(tmp_path), 316, executor=_FakeExec(),
+                     llm=DecideBoom(RuntimeError("挂了")))
+    assert not r2.ok and r2.rejected_by == "LLM"
+
+
+def test_agent_datasource_fatal_stops(tmp_path, monkeypatch):
+    """execute_sql 报不可重试的数据源错 → 直接 DATASOURCE，不烧预算。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+
+    def fake(name, args, ctx):
+        return tools.ToolResult(ok=False, tool="execute_sql", rejected_by="DATASOURCE",
+                                error="连接被拒", data={"fatal": True, "hint": "查连通性"})
+    monkeypatch.setattr(tools, "invoke", fake)
+    llm = _FakeLLM([{"finish": False, "tool": "execute_sql", "args": {"sql": "SELECT 1"}}])
+    r = A.run_agent("x", _cfg(tmp_path), 316, executor=_FakeExec(), llm=llm)
+    assert not r.ok and r.rejected_by == "DATASOURCE" and "查连通性" in (r.hint or "")
+
+
+def test_agent_schema_tools_recorded_in_history(tmp_path, monkeypatch):
+    """search_schema / get_table_schema 命中后把命中表/列写进历史（非 execute_sql 分支）。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+
+    def fake(name, args, ctx):
+        if name == "get_table_schema":
+            return tools.ToolResult(ok=True, tool="get_table_schema",
+                                    data={"table": "documents",
+                                          "columns": [{"name": "chunk_type"}, {"name": "id"}]})
+        if name == "search_schema":
+            return tools.ToolResult(ok=True, tool="search_schema",
+                                    data={"tables": ["documents"], "prompt": "p"})
+        return tools.ToolResult(ok=True, tool="execute_sql", data={
+            "sql_final": "SELECT 1", "columns": ["n"], "rows": [[7]], "row_count": 1,
+            "masked_columns": [], "rules_fired": [], "rewrites": [], "explain_rows": 1})
+    monkeypatch.setattr(tools, "invoke", fake)
+    llm = _FakeLLM([
+        {"finish": False, "tool": "search_schema", "args": {"question": "q"}},
+        {"finish": False, "tool": "get_table_schema", "args": {"table": "documents"}},
+        {"finish": False, "tool": "execute_sql", "args": {"sql": "SELECT 1"}},
+        {"finish": True, "answer": "共 7 条"},
+    ])
+    r = A.run_agent("多少", _cfg(tmp_path, agent={"max_steps": 6}), 316,
+                    executor=_FakeExec(), llm=llm)
+    assert r.ok and r.rows == [[7]]
+
+
+def test_agent_no_evidence_blocks_fabricated_number(tmp_path, monkeypatch):
+    """一次成功查询都没有、答案却带数字 → NO_EVIDENCE，且不回显编造内容。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    llm = _FakeLLM([{"finish": True, "answer": "大约有 120 万条订单"}])
+    r = A.run_agent("订单总数", _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                    executor=_FakeExec(), llm=llm)
+    assert not r.ok and r.rejected_by == "NO_EVIDENCE"
+    assert "120" not in (r.reasoning or "") and "120" not in (r.error or "")
+
+
+def test_agent_no_result_when_empty(tmp_path, monkeypatch):
+    """没查询也没答案 → NO_RESULT。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    llm = _FakeLLM([{"finish": True, "answer": ""}])
+    r = A.run_agent("x", _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                    executor=_FakeExec(), llm=llm)
+    assert not r.ok and r.rejected_by == "NO_RESULT"
+
+
+def test_agent_qualitative_answer_without_number_passes(tmp_path, monkeypatch):
+    """无数字的定性回答（没可编造的量）即使没跑 SQL 也放行。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    llm = _FakeLLM([{"finish": True, "answer": "本库主要围绕文档与切片，没有订单相关的表。"}])
+    r = A.run_agent("有订单表吗", _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                    executor=_FakeExec(), llm=llm)
+    assert r.ok and "文档" in r.reasoning
+
+
+def test_agent_grounding_enforce_retries_then_grounds(tmp_path, monkeypatch):
+    """enforce 档：结论数字追溯不到 → 回灌重查一轮；查到后放行。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    _patch_exec_invoke(monkeypatch, result={
+        "sql_final": "SELECT COUNT(*)", "columns": ["n"], "rows": [[15669]],
+        "row_count": 1, "masked_columns": [], "rules_fired": [], "rewrites": [],
+        "explain_rows": 1})
+    # 先查一次（拿到 15669）再 finish 报一个对不上的数 → 触发接地重试；重查后用真实数收尾。
+    llm = _FakeLLM([
+        {"finish": False, "tool": "execute_sql", "args": {"sql": "SELECT 1"}},
+        {"finish": True, "answer": "JD 有 99999 条"},
+        {"finish": False, "tool": "execute_sql", "args": {"sql": "SELECT 1"}},
+        {"finish": True, "answer": "JD 共 15669 条"},
+    ])
+    r = A.run_agent("JD 多少", _cfg(tmp_path, agent={"max_steps": 5, "grounding": "enforce"}),
+                    316, executor=_FakeExec(), llm=llm)
+    assert r.ok and "15669" in r.reasoning
+    assert any(s["step"] == "grounding" for s in r.steps)
 
 
 # --------------------------------------------------------------------------
