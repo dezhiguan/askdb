@@ -446,7 +446,7 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
         <div className="trace-badges">
           {/* 最终结果：默认收起，点击弹出。只在拿到结果（登录+可见+非拦截）时出现。 */}
           {(finalResult && ((finalResult.rows_preview?.length ?? 0) > 0 || finalResult.answer)) && (
-            <button type="button" className="result-open-btn" onClick={() => setShowResult(true)}>▸ 查看结果</button>
+            <button type="button" className="result-open-btn" onClick={() => setShowResult(true)}>查看结果</button>
           )}
           {/* 原型这枚角标是写死的「可信度 96」。这里判真值，且与工作台右栏那枚环
               走同一份口径（trust.ts）—— 同一次查询在两页给出两个分，看的人第一件
@@ -505,22 +505,34 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
 
       {showResult && finalResult && (
         <ModalShell onClose={() => setShowResult(false)}>
-          <div className="modal trace-result-modal" role="dialog" aria-modal="true">
+          {/* 结构与类名跟任务中心的结果弹窗是同一套（modal-sheet + result-*）：
+              两页展示的本来就是同一条 /api/result，各写一套的结果是这里的头部
+              没有任何样式、正文字号也开始分叉。 */}
+          <div className="modal modal-sheet trace-result-modal" role="dialog" aria-modal="true" aria-labelledby="traceResultTitle">
             <div className="modal-head">
-              <div><h3>最终结果</h3><p>{item.trace_id} · {item.source_name || ''}</p></div>
+              <div>
+                <div className="eyebrow">{item.trace_id.toUpperCase()} · {outcome}</div>
+                <h3 id="traceResultTitle">最终结果</h3>
+                <p>结果来自这次执行的审计记录，未脱敏字段不会在这里补齐。</p>
+              </div>
               <button className="modal-close" type="button" onClick={() => setShowResult(false)} aria-label="关闭">×</button>
             </div>
             <div className="modal-body">
+              <div className="trace-result-meta">
+                <span>数据源 · {item.source_name || NA}</span>
+                <span>耗时 · {secs(item.elapsed_ms)}</span>
+                {model && <span>模型 · {model}</span>}
+              </div>
               {finalResult.answer && <p className="result-answer">{finalResult.answer}</p>}
               {(finalResult.rows_preview?.length ?? 0) > 0 && (
-                <div className="result-table-wrap">
-                  <div className="result-table-cap">
+                <div className="result-rows">
+                  <div className="result-cap">
                     结果{typeof finalResult.rows_returned === 'number' ? ` · 共 ${finalResult.rows_returned} 行` : ''}
                     {(finalResult.rows_returned ?? 0) > (finalResult.rows_preview?.length ?? 0) ? `（仅前 ${finalResult.rows_preview?.length} 行）` : ''}
                     {(finalResult.masked_columns?.length ?? 0) > 0 ? ` · 已脱敏 ${finalResult.masked_columns?.join('、')}` : ''}
                   </div>
-                  <div className="table-scroll">
-                    <table className="result-table">
+                  <div className="result-rows-scroll">
+                    <table>
                       <thead><tr>{(finalResult.columns ?? []).map((c, ci) => <th key={ci}>{c}</th>)}</tr></thead>
                       <tbody>
                         {(finalResult.rows_preview ?? []).map((row, ri) => (
@@ -531,6 +543,9 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
                   </div>
                 </div>
               )}
+              <div className="modal-actions">
+                <button className="ghost" type="button" onClick={() => setShowResult(false)}>关闭</button>
+              </div>
             </div>
           </div>
         </ModalShell>

@@ -358,16 +358,33 @@
 .span-table tr.span-error dd { margin: 0; font: 6px var(--mono); color: var(--ink-2); word-break: break-word; }
 .span-table tr.span-error code { color: var(--red); background: var(--red-wash); border-radius: 3px; padding: 1px 4px; }
 
-/* 最终结果：标题区「查看结果」按钮 + 弹窗内的答案与已脱敏结果表 */
+/* 最终结果：标题区「查看结果」按钮 + 弹窗。
+ *
+ * 按钮和它右边的可信度、链路降级两枚角标站在同一行里，所以尺度必须是角标的
+ * 尺度（.status：3px 6px / 6px mono），而不是正文按钮的。上一版写了 12.5px、
+ * 20px 圆角，在那一行里比旁边所有东西大一倍 —— 它只是个"展开看看"的入口，
+ * 不该比这条链路是否可信更抢眼。留一个绿色描边区分"可点"。 */
 .trace-badges .result-open-btn {
-  font: inherit; font-size: 12.5px; font-weight: 600; color: var(--green);
-  background: var(--green-wash); border: 1px solid var(--line); border-radius: 20px;
-  padding: 5px 13px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px; border: 1px solid #a6c3af; border-radius: 99px;
+  color: var(--green); background: var(--green-wash);
+  font: 6px var(--mono); white-space: nowrap; cursor: pointer;
 }
-.trace-badges .result-open-btn:hover { background: var(--paper); }
-.trace-result-modal .result-answer { font-size: 14.5px; line-height: 1.7; margin: 0 0 14px; white-space: pre-wrap; word-break: break-word; }
-.trace-result-modal .result-table-cap { font-size: 11.5px; color: var(--muted); margin-bottom: 7px; }
-.trace-result-modal table.result-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.trace-result-modal table.result-table th,
-.trace-result-modal table.result-table td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.trace-result-modal table.result-table th { color: var(--muted); font-weight: 600; background: var(--paper); }
+.trace-badges .result-open-btn::before { content: "▸"; }
+.trace-badges .result-open-btn:hover { border-color: var(--green); background: #cfe8da; }
+
+/* 弹窗正文结构复用 .modal-sheet 那一套（pages.css / proto-tasks.css），
+   这里只补执行追踪特有的那行执行事实。 */
+.trace-result-modal { width: min(720px, calc(100vw - 32px)); }
+.trace-result-modal .modal-body { max-height: calc(86vh - 78px); overflow-y: auto; }
+.trace-result-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.trace-result-meta span {
+  padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px;
+  color: var(--ink-2); background: rgba(255,255,255,.52); font: 6px var(--mono);
+}
+
+/* 与任务中心的结果弹窗同一个断点：同一份结果在窄屏上一个占满、一个还卡在
+   720px，看起来像两个不同的东西。 */
+@media (max-width: 1180px) {
+  .trace-result-modal { width: calc(100vw - 18px); }
+}

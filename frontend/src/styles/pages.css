@@ -165,6 +165,35 @@
 .modal input, .modal select { width: 100%; margin-top: 4px; padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: white; font-size: 8px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+
+/* 弹窗基座：深色标题条 + 关闭 + 正文。
+ *
+ * 凡是用 `.modal-head / .modal-close / .modal-body` 这套结构的弹窗都挂上
+ * `modal-sheet`，样式就齐了。这一条以前按弹窗类名枚举写在 proto-tasks.css 里
+ * （task-create / task-detail / clarify / task-filter 四个），于是"新加的弹窗
+ * 忘了登记"没有任何报错，只有一个标题裸奔、关闭键长得像默认按钮的弹窗 ——
+ * 执行追踪页的结果弹窗就是这么上线的。改成一个公共类，漏不掉。 */
+.modal-sheet {
+  max-height: 88vh;
+  border: 1px solid #a6afa9;
+  border-radius: 11px;
+  background: var(--paper);
+  box-shadow: 0 28px 80px rgba(0,0,0,.24);
+  overflow: hidden;
+  animation: modalSheetIn .25s ease both;
+}
+@keyframes modalSheetIn { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+
+.modal-sheet .modal-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 16px; color: white; background: var(--dark);
+}
+.modal-sheet .modal-head h3 { margin: 0; font-family: var(--serif); font-size: 16px; }
+.modal-sheet .modal-head p { margin: 4px 0 0; color: #9eafa5; font-size: 7px; line-height: 1.5; }
+.modal-sheet .modal-head .eyebrow { color: #7edda8; }
+.modal-sheet .modal-head .eyebrow::before { background: #7edda8; }
+.modal-sheet .modal-close { border: 0; color: white; background: transparent; font-size: 16px; cursor: pointer; }
+.modal-sheet .modal-body { padding: 15px 16px 17px; }
 .clarification-modal { width: min(760px, calc(100vw - 24px)); }
 .clarify-alert { display: flex; justify-content: space-between; padding: 10px; border-radius: 6px; background: var(--amber-wash); font-size: 8px; }
 .clarify-progress { display: grid; grid-template-columns: repeat(5,1fr); margin: 12px 0; }

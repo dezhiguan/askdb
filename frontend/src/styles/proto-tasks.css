@@ -70,59 +70,12 @@
 .tasks-page .task-empty strong { display: block; font-size: 9px; }
 .tasks-page .task-empty span { display: block; margin: 6px auto 0; max-width: 46ch; color: var(--muted); font-size: 7.5px; line-height: 1.7; }
 
-/* ---------------- 弹窗基座（原型 .modal-head / .form-row 一族） ---------------- */
+/* ---------------- 弹窗表单行（原型 .form-row 一族） ----------------
+   弹窗基座（深色头 + 关闭 + 正文）已迁到 pages.css 的 .modal-sheet：原来那四个
+   类名枚举意味着每加一个弹窗都要回来登记一次，漏登记的表现不是报错而是**整个
+   头部裸奔**（执行追踪页的结果弹窗就是这么丑了一版）。 */
 
-.task-create-modal,
-.task-detail-modal,
-.clarify-modal {
-  max-height: 88vh;
-  border: 1px solid #a6afa9;
-  border-radius: 11px;
-  background: var(--paper);
-  box-shadow: 0 28px 80px rgba(0,0,0,.24);
-  overflow: hidden;
-  animation: taskModalIn .25s ease both;
-}
-
-@keyframes taskModalIn { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
-
-.task-create-modal .modal-head,
-.task-detail-modal .modal-head,
-.clarify-modal .modal-head,
-.task-filter-modal .modal-head {
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
-  padding: 16px; color: white; background: var(--dark);
-}
-.task-create-modal .modal-head h3,
-.task-detail-modal .modal-head h3,
-.clarify-modal .modal-head h3,
-.task-filter-modal .modal-head h3 { margin: 0; font-family: var(--serif); font-size: 16px; }
-.task-create-modal .modal-head p,
-.task-detail-modal .modal-head p,
-.clarify-modal .modal-head p,
-.task-filter-modal .modal-head p { margin: 4px 0 0; color: #9eafa5; font-size: 7px; line-height: 1.5; }
-.task-create-modal .modal-head .eyebrow,
-.task-detail-modal .modal-head .eyebrow,
-.clarify-modal .modal-head .eyebrow,
-.task-filter-modal .modal-head .eyebrow { color: #7edda8; }
-.task-create-modal .modal-head .eyebrow::before,
-.task-detail-modal .modal-head .eyebrow::before,
-.clarify-modal .modal-head .eyebrow::before,
-.task-filter-modal .modal-head .eyebrow::before { background: #7edda8; }
-.task-create-modal .modal-close,
-.task-detail-modal .modal-close,
-.clarify-modal .modal-close,
-.task-filter-modal .modal-close { border: 0; color: white; background: transparent; font-size: 16px; cursor: pointer; }
-
-.task-create-modal .modal-body,
-.task-detail-modal .modal-body,
-.clarify-modal .modal-body,
-.task-filter-modal .modal-body { padding: 15px 16px 17px; }
-
-.task-create-modal .form-row,
-.task-detail-modal .form-row,
-.clarify-modal .form-row,
-.task-filter-modal .form-row { margin-top: 10px; }
+.modal-sheet .form-row { margin-top: 10px; }
 .task-create-modal .form-row label { display: block; margin-bottom: 4px; color: var(--ink-2); font-size: 8px; }
 .task-create-modal .form-row input,
 .task-create-modal .form-row select,
@@ -140,14 +93,8 @@
 .task-create-modal .field-error { display: none; margin-top: 4px; color: var(--red); font-size: 7px; }
 .task-create-modal .field-error.show { display: block; }
 .task-create-modal .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.task-create-modal .modal-actions,
-.task-detail-modal .modal-actions,
-.clarify-modal .modal-actions,
-.task-filter-modal .modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin-top: 14px; }
-.task-create-modal .modal-actions button:disabled,
-.task-detail-modal .modal-actions button:disabled,
-.clarify-modal .modal-actions button:disabled,
-.task-filter-modal .modal-actions button:disabled { opacity: .55; cursor: default; transform: none; }
+.modal-sheet .modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+.modal-sheet .modal-actions button:disabled { opacity: .55; cursor: default; transform: none; }
 
 /* ---------------- 筛选查询任务 ---------------- */
 
@@ -409,13 +356,14 @@
   .clarify-modal .clarify-form { grid-template-columns: 1fr; }
 }
 
-/* 任务结果弹窗：最终答案 + 已脱敏结果表（/api/result） */
-.task-detail-modal .task-answer { font-size: 14px; line-height: 1.7; margin: 14px 0 0; white-space: pre-wrap; word-break: break-word; }
-.task-detail-modal .task-result-rows { margin-top: 14px; }
-.task-detail-modal .task-result-cap { font-size: 11.5px; color: var(--muted); margin-bottom: 7px; }
-.task-detail-modal .task-result-rows-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
-.task-detail-modal .task-result-rows table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.task-detail-modal .task-result-rows th,
-.task-detail-modal .task-result-rows td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.task-detail-modal .task-result-rows th { color: var(--muted); font-weight: 600; background: var(--paper); }
-.task-detail-modal .task-result-rows tr:last-child td { border-bottom: none; }
+/* 最终答案 + 已脱敏结果表（/api/result）——任务中心与执行追踪是同一份结果，
+   样式也就只能有一份：两边各写一套的那一版，行高、字号、表格圆角已经开始分叉。 */
+.modal-sheet .result-answer { font-size: 14px; line-height: 1.7; margin: 14px 0 0; white-space: pre-wrap; word-break: break-word; }
+.modal-sheet .result-rows { margin-top: 14px; }
+.modal-sheet .result-cap { font-size: 11.5px; color: var(--muted); margin-bottom: 7px; }
+.modal-sheet .result-rows-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+.modal-sheet .result-rows table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.modal-sheet .result-rows th,
+.modal-sheet .result-rows td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.modal-sheet .result-rows th { color: var(--muted); font-weight: 600; background: var(--paper); }
+.modal-sheet .result-rows tr:last-child td { border-bottom: none; }

@@ -122,7 +122,7 @@ export function CreateTaskModal({ sources, defaultSourceId, busy, onClose, onSub
   }
 
   return (
-    <div className="modal task-create-modal" role="dialog" aria-modal="true" aria-labelledby="createTaskTitle">
+    <div className="modal modal-sheet task-create-modal" role="dialog" aria-modal="true" aria-labelledby="createTaskTitle">
       <div className="modal-head">
         <div>
           <div className="eyebrow">NEW GOVERNED QUERY TASK</div>
@@ -322,7 +322,7 @@ export function TaskResultModal({ detail, loading, onClose, onViewTrace }: {
     window.setTimeout(() => setCopyLabel('复制 SQL'), 1200)
   }
   return (
-    <div className="modal task-detail-modal" role="dialog" aria-modal="true" aria-labelledby="taskResultTitle">
+    <div className="modal modal-sheet task-detail-modal" role="dialog" aria-modal="true" aria-labelledby="taskResultTitle">
       <div className="modal-head">
         <div>
           <div className="eyebrow">{detail.id} · {detail.statusLabel.toUpperCase()}</div>
@@ -349,11 +349,11 @@ export function TaskResultModal({ detail, loading, onClose, onViewTrace }: {
               <strong>{detail.result.conclusion}</strong>
               <p>{detail.result.note}</p>
             </div>
-            {detail.result.answer && <p className="task-answer">{detail.result.answer}</p>}
+            {detail.result.answer && <p className="result-answer">{detail.result.answer}</p>}
             {(detail.result.resultRows?.length ?? 0) > 0 && (
-              <div className="task-result-rows">
-                {detail.result.resultNote && <div className="task-result-cap">结果 · {detail.result.resultNote}</div>}
-                <div className="task-result-rows-scroll">
+              <div className="result-rows">
+                {detail.result.resultNote && <div className="result-cap">结果 · {detail.result.resultNote}</div>}
+                <div className="result-rows-scroll">
                   <table>
                     <thead><tr>{(detail.result.resultColumns ?? []).map((c, ci) => <th key={ci}>{c}</th>)}</tr></thead>
                     <tbody>
@@ -417,7 +417,7 @@ export function TaskReasonModal({ detail, busy, onClose, onViewTrace, onAction }
 }) {
   const reason = detail.reason
   return (
-    <div className="modal task-detail-modal" role="dialog" aria-modal="true" aria-labelledby="taskReasonTitle">
+    <div className="modal modal-sheet task-detail-modal" role="dialog" aria-modal="true" aria-labelledby="taskReasonTitle">
       <div className="modal-head">
         <div>
           <div className="eyebrow">{detail.id} · {detail.statusLabel.toUpperCase()}</div>
@@ -492,7 +492,7 @@ export function ClarificationModal({ taskId, question, hints = [], busy, onClose
   // None → 404），按钮却是亮的，点下去只会得到一句"任务不存在"。
   const ready = trimmed.length > 0 && trimmed.length <= CLARIFY_MAX
   return (
-    <div className="modal clarify-modal" role="dialog" aria-modal="true">
+    <div className="modal modal-sheet clarify-modal" role="dialog" aria-modal="true">
       <div className="modal-head">
         <div>
           <div className="eyebrow">{taskId} · CLARIFY</div>

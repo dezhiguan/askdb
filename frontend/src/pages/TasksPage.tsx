@@ -198,6 +198,7 @@ export function TasksPage({ onNavigate, notify, me }: {
   const [replayLoading, setReplayLoading] = useState(false)
   // 最终结果（/api/result）：答案 + 已脱敏结果行。与 replay 分开取，登录态才有。
   const [taskResult, setTaskResult] = useState<TraceResult | null>(null)
+  const [resultLoading, setResultLoading] = useState(false)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
   const [filters, setFilters] = useState<TaskFilters>(EMPTY_TASK_FILTERS)
   /* 关键词是**提交后**的值，不是输入框里正在打的字：输入框自己防抖
@@ -312,8 +313,16 @@ export function TasksPage({ onNavigate, notify, me }: {
       .then(value => setReplay(value.status === 'ok' ? value.data : null))
       .catch(() => setReplay(null))
       .finally(() => setReplayLoading(false))
-    // 最终结果不受 replay_api 开关约束（走 /api/result）——回放关闭时也能拿到
-    fetchResult(task.trace_id).then(setTaskResult).catch(() => setTaskResult(null))
+    /* 最终结果不受 replay_api 开关约束（走 /api/result）——回放关闭时也能拿到。
+       它自己的加载态必须单独记：两个请求各跑各的，回放先回来（关着开关时几乎是
+       立刻）就把 loading 放掉的话，结果还在路上的那几百毫秒会先渲染出一句
+       「当前状态暂无结果 · 审计回放不可读」，紧接着又被结果顶掉 —— 一次成功的
+       查询在自己的结果弹窗里先被宣告没有结果，比转圈久一点糟得多。 */
+    setResultLoading(true)
+    fetchResult(task.trace_id)
+      .then(setTaskResult)
+      .catch(() => setTaskResult(null))
+      .finally(() => setResultLoading(false))
   }
 
   const detail = useMemo<TaskDetailView | null>(() => {
@@ -659,7 +668,7 @@ export function TasksPage({ onNavigate, notify, me }: {
         <ModalShell onClose={() => setModal({ kind: 'none' })}>
           <TaskResultModal
             detail={detail}
-            loading={replayLoading}
+            loading={replayLoading || resultLoading}
             onClose={() => setModal({ kind: 'none' })}
             onViewTrace={viewTrace}
           />
@@ -809,9 +818,11 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string,
   const statusLabel = STATUS_LABEL[task.status]
   const wait = STATUS_WAIT[task.status]
   const duration = fmtDuration(task.elapsed_ms)
-  const source = replay && replay.org_id !== null && replay.org_id !== undefined
-    ? `org ${replay.org_id} · 只读`
-    : '只读数据源'
+  /* 数据源名列表自己就有（审计 summary 字段），不必等回放：回放关着的时候
+     这一格原来恒显示「只读数据源」——旁边一行明明写着 ragforge 生产库，弹窗里
+     却像是不知道跑在哪。org 号只有回放给得出，有就补在后面。 */
+  const org = replay && replay.org_id !== null && replay.org_id !== undefined ? `org ${replay.org_id}` : ''
+  const source = [task.source_name || '', org, '只读'].filter(Boolean).join(' · ')
   const list = (values: string[] | null | undefined) => (values && values.length ? values.join(', ') : '—')
 
   const sql = replay?.sql_final || replay?.sql_raw || ''
