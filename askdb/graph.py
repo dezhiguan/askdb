@@ -1757,6 +1757,22 @@ def _rerun_with_clarification(
         "cost_cap_tokens": int(pl.get("cost_cap_tokens", 0)),
         "tok_used": 0,
         "clarification": clarification,
+        # **清掉上一轮"信息不足"留在检查点里的失败痕迹。**
+        #
+        # thread_id 是复用的，_execute 用它 invoke 图时 LangGraph 会把上一次
+        # 收尾时的整份状态载回来，再把这里的 init 合并上去 —— 只覆盖出现的键。
+        # 上一轮 NO_SQL 留下的 error（那句"信息不足，需用户补充"）不在 init 里，
+        # 于是原样留存；generate 节点据 `error` 非空落到 RETRY 模板，而 RETRY
+        # 模板里**没有补充条件的位置**（step 只进 USER 模板），用户刚给的澄清
+        # 整条被丢掉。结果是补充多少次、写得多具体，generate 拿到的永远是
+        # 「原问题 + 上次那句拒绝」，逐字复读同一个"信息不足"——「等待补充」
+        # 这条出口形同虚设（线上 waiting_input 积压即源于此）。
+        #
+        # 补充是一次**带新信息的重跑**，不是"修上一条 SQL"：显式把失败痕迹清零，
+        # generate 才会走 USER 模板、把 clarification 喂进去。
+        "error": None, "error_hint": "", "rejected_by": None,
+        "sql_raw": "", "sql_final": "",
+        "scan_blocked_sql": "", "scan_blocked_rows": None, "scope_narrowed": False,
     }
     return _execute(cfg, question=question, org=org,
                     trace_id=trace_id, thread_id=thread_id, kind="clarify",

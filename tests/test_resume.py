@@ -49,6 +49,32 @@ def test_resume_missing_or_finished_returns_none(cfg, ex):
     assert graph.resume(done.thread_id, cfg, executor=ex) is None      # 已跑完
 
 
+def test_clarify_resume_clears_stale_error_and_feeds_clarification(cfg, ex):
+    """「等待补充」补充后必须真正闭环：清掉上一轮 NO_SQL 的失败痕迹，
+    并把补充条件喂进 generate。
+
+    回归的是这样一个 bug：thread_id 复用会把上次收尾时的 error 一并载回，
+    generate 据此落到 RETRY 模板（没有补充条件的位置），把用户刚给的澄清
+    整条丢掉 —— 补充多少次都还是同一句「信息不足」，出口形同虚设。
+    """
+    # generate 一次都产不出 SQL → 停在「等待补充」，检查点里留着 NO_SQL 的 error
+    r1 = graph.ask("帮我分析一下", cfg, executor=ex, llm=FakeLlm())
+    assert not r1.ok and r1.rejected_by == "NO_SQL"
+
+    # 补充后在同一条线程续跑；这次 generate 给得出 SQL
+    resume_llm = FakeLlm(OK_SQL)
+    r2 = graph.resume(r1.thread_id, cfg, executor=ex, llm=resume_llm,
+                      clarification="查 documents 表，按 status 分组，COUNT(*)",
+                      question=r1.question)
+    assert r2 is not None and r2.ok                      # 真正闭环，不再是 NO_SQL
+    assert r2.thread_id == r1.thread_id and r2.trace_id != r1.trace_id
+
+    gen = [c for c in resume_llm.calls if "step" in c]
+    assert gen, "续跑应当再次调用 generate_sql"
+    assert gen[0]["error"] == ""                          # 上一轮失败痕迹已清零
+    assert "documents" in gen[0]["step"]                  # 补充条件确实喂进 generate
+
+
 def test_resume_endpoint_uniform_404_and_success(cfg, ex, monkeypatch):
     monkeypatch.setattr(server, "load", lambda _p: cfg)
     client = TestClient(server.create_app("ignored.yaml"))
