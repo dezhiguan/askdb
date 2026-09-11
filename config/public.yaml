@@ -133,7 +133,10 @@ planner:
 agent:
   enabled: true
   max_steps: 6                       # R-16 循环步数上限，超则收敛作答并标注
-  cost_cap_tokens: 12000             # R-17 累计 token 上限
+  cost_cap_tokens: 20000             # R-17 累计 token 上限。20000 而非 12000：
+                                     # "先 SELECT DISTINCT 查证枚举再统计"这类探索式
+                                     # 多步要多跑一两轮，12000 会让它撞顶提前收敛(数字对
+                                     # 但收不干净)。仍受 R-16 步数与 daily_quota 兜底
   async_after_ms: 20000              # 墙钟软阈值：同步超时转后台异步→任务中心
                                      # 20s（<nginx /api/ask 的 30s 读超时）：多数单步/两步
                                      # 查询同步直返，只有真·多步长任务才转异步
