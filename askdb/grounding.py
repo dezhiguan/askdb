@@ -43,17 +43,13 @@ MAX_PAIRS_SOURCE = 80
 
 
 def numbers_in(text: str) -> list[float]:
-    """文本里的数值。千分位逗号去掉，解析不了的原样跳过。"""
-    out: list[float] = []
-    for m in _NUM.finditer(text or ""):
-        raw = m.group(0).replace(",", "")
-        if raw.endswith("."):
-            raw = raw[:-1]
-        try:
-            out.append(float(raw))
-        except ValueError:
-            continue
-    return out
+    """文本里的数值。千分位逗号去掉。
+
+    正则只匹配 `数字[数字,]*(.数字+)?`，小数点后必须有数字 —— 也就是说匹配到的
+    每一段去掉逗号之后都一定能被 float() 吃下。这里因此不设 try/except：写一个
+    永远不会走到的兜底分支，只会让读的人以为这里真有解析失败的可能。
+    """
+    return [float(m.group(0).replace(",", "")) for m in _NUM.finditer(text or "")]
 
 
 def _as_float(v: Any) -> float | None:

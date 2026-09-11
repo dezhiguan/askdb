@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from askdb import agent as A
+from askdb import grounding
 from askdb import async_runner, skill, tools
 from askdb.config import Column, Config, Table
 from askdb.llm import LlmUsage
@@ -336,3 +337,168 @@ def test_async_slow_detaches():
 def test_async_immediate():
     r, notice = async_runner.run_or_detach(lambda: "R", 0, "tid3")
     assert r is None and notice["async"]
+
+
+# --------------------------------------------------------------------------
+# grounding —— 结论里的数字接不接地（BUG-A5）
+#
+# 这一层的两类错代价完全不对称：漏判一个编造只是回到现状，误判一个正确答案是
+# 直接毁掉一个对的回答。所以下面的用例里「该放行」的比「该抓住」的多得多 ——
+# 它们钉的是**不许误伤**，那才是这层最容易出事的方向。
+# --------------------------------------------------------------------------
+def _r(rows, columns=None):
+    return {"columns": columns or [], "rows": rows}
+
+
+def test_grounding_flags_fabricated_numbers():
+    """跑的是探查查询，答的是另一回事 —— 正是 2026-09-11 复测抓到的那两条。"""
+    bad = grounding.ungrounded(
+        "2026年8月 GMV 合计 1,347,590.05 元，该月 181,164 行明细；表整体 2,012,920 行。",
+        [_r([["2026-06-10", "2026-09-08", 2012920]], ["min_d", "max_d", "n"])])
+    assert bad == [1347590.05, 181164.0]
+    # 2,012,920 确实在返回行里，不该被点名
+    assert 2012920.0 not in bad
+
+
+def test_grounding_allows_values_straight_from_rows():
+    assert grounding.ungrounded("订单总数 1,200,000 笔。", [_r([[1200000]])]) == []
+
+
+def test_grounding_allows_one_step_arithmetic():
+    """"全表 447,000、可售 398,082、停售 48,918" —— 最后一个是模型自己减的。
+
+    禁掉一次算术会把这类完全正确的答案判成编造，那正是这层最该避免的失败。
+    """
+    assert grounding.ungrounded(
+        "全表 447,000 条，可售 398,082 条，停售 48,918 条。",
+        [_r([[447000, 398082]])]) == []
+
+
+def test_grounding_allows_column_total():
+    """分项相加出来的合计，库里没有单独一行，但它确实来自返回值。"""
+    assert grounding.ungrounded(
+        "RESOLVED 106,303、CLOSED 16,549、PROCESSING 15,094，合计 137,946 条。",
+        [_r([["RESOLVED", 106303], ["CLOSED", 16549], ["PROCESSING", 15094]])]) == []
+
+
+def test_grounding_allows_ratio_of_two_returned_values():
+    assert grounding.ungrounded(
+        "不良率 = 64,369 / 3,761,321 = 1.7113%。", [_r([[64369, 3761321]])]) == []
+
+
+def test_grounding_skips_years_and_small_numbers():
+    """年份、占比、天数一律不查 —— 它们几乎总是就地算的，查了只会制造误判。"""
+    assert grounding.ungrounded(
+        "2026年8月共 31 天，占比 77.84%，平均 4.29 星，排名第 2。", [_r([[31]])]) == []
+
+
+def test_grounding_tolerates_rounding():
+    assert grounding.ungrounded("平均 2215.61 元。", [_r([[2215.6134]])]) == []
+
+
+def test_grounding_stays_out_when_nothing_ran():
+    """一条结果都没有时不归这层管 —— 那是 NO_EVIDENCE 的事，免得一件事两种说法。"""
+    assert grounding.ungrounded("一共 10,000 个。", []) == []
+    assert grounding.ungrounded("一共 10,000 个。", [_r([])]) == []
+
+
+def test_grounding_parses_awkward_number_text():
+    assert grounding.numbers_in("共 1,200,000 笔，占 3.5%，尾号 12.") == [1200000.0, 3.5, 12.0]
+    assert grounding.numbers_in("") == []
+
+
+def test_grounding_reads_decimal_and_blank_cells():
+    """PG 的 numeric 经驱动回来是 Decimal，空串是"这一格没有值"而不是 0。"""
+    from decimal import Decimal
+    vals = grounding.values_of([_r([[Decimal("189730349.49"), "", object()]])])
+    assert 189730349.49 in vals and len(vals) == 1
+
+
+def test_grounding_ignores_non_numeric_cells():
+    """布尔、None、文本列都不该被当成数值来源。"""
+    vals = grounding.values_of([_r([["ONLINE", None, True, "86,990"], ["APP", None, False, "abc"]])])
+    assert 86990.0 in vals and True not in [v for v in vals if isinstance(v, bool)]
+
+
+def test_grounding_fmt_reads_like_a_number():
+    assert grounding.fmt([1347590.05, 181164.0]) == "1,347,590.05、181,164"
+    assert grounding.fmt([]) == ""
+
+
+# --------------------------------------------------------------------------
+# grounding 在 agent 循环里的三档行为
+# --------------------------------------------------------------------------
+_PROBE = {"sql_final": "SELECT MIN(a), MAX(a), COUNT(*) FROM documents",
+          "columns": ["min_a", "max_a", "n"], "rows": [["x", "y", 2012920]],
+          "row_count": 1, "masked_columns": [], "rules_fired": [], "rewrites": [],
+          "explain_rows": 15, "truncated": False}
+_REAL = dict(_PROBE, columns=["gmv"], rows=[[7693056921.16]])
+_FAKE_ANSWER = {"finish": True, "answer": "8 月 GMV 合计 1,347,590.05 元，181,164 行。"}
+_GOOD_ANSWER = {"finish": True, "answer": "8 月 GMV 合计 7,693,056,921.16 元。"}
+_DO_EXEC = {"finish": False, "tool": "execute_sql", "args": {"sql": "SELECT 1 FROM documents"}}
+
+
+def _patch_exec_script(monkeypatch, script):
+    """按顺序返回每次 execute_sql 的结果，其余工具一律成功。"""
+    seen = {"i": 0}
+
+    def fake(name, args, ctx):
+        if name != "execute_sql":
+            return tools.ToolResult(ok=True, tool=name, data={"table": "documents", "columns": []})
+        data = script[min(seen["i"], len(script) - 1)]
+        seen["i"] += 1
+        return tools.ToolResult(ok=True, tool="execute_sql", data=dict(data))
+
+    monkeypatch.setattr(tools, "invoke", fake)
+
+
+def _run_grounding(tmp_path, monkeypatch, actions, script, mode):
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    _patch_exec_script(monkeypatch, script)
+    cfg = _cfg(tmp_path, agent={"grounding": mode, "max_steps": 6, "cost_cap_tokens": 99999})
+    return A.run_agent("8 月 GMV 是多少", cfg, 316, executor=_FakeExec(), llm=_FakeLLM(actions))
+
+
+def test_grounding_shadow_records_but_does_not_block(tmp_path, monkeypatch):
+    r = _run_grounding(tmp_path, monkeypatch, [_DO_EXEC, _FAKE_ANSWER], [_PROBE], "shadow")
+    assert r.ok and r.ungrounded_numbers            # 记下了，但答案照出
+    assert any(s["step"] == "grounding" for s in r.steps)
+
+
+def test_grounding_enforce_gives_one_chance_to_fix(tmp_path, monkeypatch):
+    """先点名回灌让模型去查，补上了就放行 —— 误判的代价只是多跑一轮。"""
+    r = _run_grounding(tmp_path, monkeypatch,
+                       [_DO_EXEC, _FAKE_ANSWER, _DO_EXEC, _GOOD_ANSWER],
+                       [_PROBE, _REAL], "enforce")
+    assert r.ok and not r.ungrounded_numbers
+    assert "7,693,056,921.16" in r.reasoning
+
+
+def test_grounding_enforce_refuses_when_still_fabricated(tmp_path, monkeypatch):
+    r = _run_grounding(tmp_path, monkeypatch,
+                       [_DO_EXEC, _FAKE_ANSWER, _FAKE_ANSWER, _FAKE_ANSWER],
+                       [_PROBE], "enforce")
+    assert not r.ok and r.rejected_by == "UNGROUNDED"
+    assert r.rows                                    # 结果表仍要给出来
+
+
+def test_grounding_never_hurts_a_grounded_answer(tmp_path, monkeypatch):
+    r = _run_grounding(tmp_path, monkeypatch, [_DO_EXEC, _GOOD_ANSWER], [_REAL], "enforce")
+    assert r.ok and not r.ungrounded_numbers and not r.rejected_by
+
+
+def test_grounding_off_switch(tmp_path, monkeypatch):
+    r = _run_grounding(tmp_path, monkeypatch, [_DO_EXEC, _FAKE_ANSWER], [_PROBE], "off")
+    assert r.ok and not r.ungrounded_numbers
+
+
+def test_history_preview_says_how_many_rows_are_hidden(tmp_path):
+    """只写"前几行"太轻，模型会拿看得见的那几行断言整列（L2：18 行里 13 家在用，
+    它按 is_active DESC 排序看到开头全 true 就说"18 家全部在用"）。"""
+    text = A._render_history([{
+        "tool": "execute_sql", "args": {"sql": "SELECT carrier_code, is_active FROM carriers"},
+        "brief": "返回 18 行",
+        "preview": {"columns": ["carrier_code", "is_active"],
+                    "rows": [["AN", True], ["CNSD", True]], "row_count": 18}}])
+    assert "仅前 2 行" in text and "共返回 18 行" in text and "不得据此断言整列" in text
