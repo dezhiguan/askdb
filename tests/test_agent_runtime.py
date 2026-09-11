@@ -602,6 +602,16 @@ def test_grounding_still_catches_fabrication_after_subset_sums():
         [_r([["2026-06-10", "2026-09-08", 2012920]])]) == [1347590.05, 181164.0]
 
 
+def test_grounding_does_not_read_sql_commas_as_thousands():
+    """`NULLIF(782738,0)` 里的逗号是参数分隔符，不是千分位。
+
+    读成 782738,0 → 7,827,380 会把一个完全正确的答案点名（第四轮 R4）。
+    """
+    assert grounding.numbers_in("ROUND(100.0 * 242754 / NULLIF(782738,0), 4)") == [
+        100.0, 242754.0, 782738.0, 0.0, 4.0]
+    assert grounding.numbers_in("共 1,200,000 笔") == [1200000.0]
+
+
 def test_grounding_allows_digits_inside_returned_names():
     """活动名「双112025第6期」是库里查出来的，照抄它不该被当成编造。"""
     assert grounding.ungrounded(
