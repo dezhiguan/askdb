@@ -267,7 +267,20 @@ export interface TaskReasonView {
   detail: string
   policy: string
   nextStep: string
-  action: 'clarify' | 'revise' | 'none'
+  /** 这一档**当前这个人**能做的那一个动作。
+   *
+   *  它是按「状态 × 权限 × 归属」三者算出来的，不只看状态：同一条等待复核的
+   *  任务，系统管理员看到的是「采信 / 打回」，发起人看到的是「等待复核」。
+   *  算在一处（TasksPage.buildDetail），这里只负责显示 —— 判定散到弹窗里，
+   *  就会出现按钮亮着、点下去 403。
+   *
+   *    clarify  补充条件后在同一条线程重跑（等待补充 / 可续跑，仅发起人）
+   *    redeem   凭已批准的票重跑（等待审批且已批准，仅发起人）
+   *    review   采信或打回这个数字（等待复核，仅系统管理员）
+   *    ops      标记执行期故障已处置（等待运维，仅运维/系统管理员）
+   *    revise   回查询页换个问法（终态：护栏拦下、复核打回）
+   *    none     此刻没有这个人能做的事 */
+  action: 'clarify' | 'redeem' | 'review' | 'ops' | 'revise' | 'none'
   actionLabel: string
 }
 
@@ -408,77 +421,54 @@ export function TaskReasonModal({ detail, busy, onClose, onViewTrace, onAction }
   )
 }
 
-/* ---------------- 补充信息（LangGraph INTERRUPT） ---------------- */
+/* ---------------- 补充信息（clarify 节点的出口） ---------------- */
 
-const CLARIFY_FIELDS = [
-  {
-    key: 'period' as const,
-    label: '时间范围',
-    tag: 'REQUIRED',
-    cols: 'three',
-    options: [
-      { value: '今天', note: '00:00 至今' },
-      { value: '昨天', note: '完整自然日' },
-      { value: '最近 7 天', note: '包含今天' },
-    ],
-  },
-  {
-    key: 'metric' as const,
-    label: '退款口径',
-    tag: 'AFFECTS RESULT',
-    cols: 'two',
-    options: [
-      { value: '成功退款金额', note: '认证口径 v3.2' },
-      { value: '退款申请金额', note: '包含处理中申请' },
-    ],
-  },
-  {
-    key: 'group' as const,
-    label: '统计维度',
-    tag: 'REQUIRED',
-    cols: 'three',
-    options: [
-      { value: '仅汇总', note: '返回一个总数' },
-      { value: '按支付渠道', note: '支付宝 / 微信等' },
-      { value: '按退款原因', note: '查看原因分布' },
-    ],
-  },
-  {
-    key: 'source' as const,
-    label: '数据源',
-    tag: 'AUTHORIZED',
-    cols: 'two',
-    options: [
-      { value: '财务只读库', note: '推荐 · 认证退款口径' },
-      { value: '订单中心只读镜像', note: '仅订单侧退款状态' },
-    ],
-  },
-]
+/** 补充条件的长度上限，与服务端 ResumeRequest.clarification 的 max_length 对齐。
+ *
+ *  两处都要有：这里管的是"打字时就知道超了"，那边管的是"绕过界面也超不了"。
+ *  数值写死在两边而不是由接口下发 —— 一个 500 不值得多一次往返，但**改的时候
+ *  必须一起改**，所以两边注释互相点名。
+ *
+ *  为什么是 500 而不是几千：这是一句补充条件，不是第二个问题。放大了它就会被
+ *  当成对话框用，而这套系统没有多轮上下文 —— 那条路的终点是模型假装"沿用上一轮
+ *  口径"再编一个答案出来。 */
+const CLARIFY_MAX = 500
 
-export function ClarificationModal({ taskId, question, busy, onClose, onConfirm }: {
+/** 任务需要补充信息时的弹窗。
+ *
+ *  **2026-09-11 之前这一页是假的**，值得写下来免得有人照着它再做一个：四个
+ *  选项组（时间范围/退款口径/统计维度/数据源）是从原型里抄来的写死样例，与
+ *  用户手上那条任务毫无关系；更要命的是 onConfirm(preview) 传出去的内容在
+ *  TasksPage 里被丢掉，resumeTask 只发 thread_id —— 人填的东西 100% 蒸发。
+ *
+ *  现在它是一个自由文本框，理由是**这里没有"可选项"这种东西**：agent 停下来
+ *  的原因各不相同（指代不明、缺时间范围、口径有歧义、根本没产出 SQL），
+ *  能穷举的选项集合不存在。给几个猜的选项，只会让人在里面挑一个最不错的，
+ *  而他真正想说的那句话没地方写。
+ *
+ *  `hints` 是 agent 自己给出的那几句（error_hint / review_why / next_actor）——
+ *  它们是这个框里唯一有信息量的引导，让人自己猜"要补什么"，这个框就没人填。 */
+export function ClarificationModal({ taskId, question, hints = [], busy, onClose, onConfirm }: {
   taskId: string
   question: string
+  /** agent 停下来时给出的原因/建议。空数组时不渲染这一块，不编一句占位的话。 */
+  hints?: string[]
   busy?: boolean
   onClose: () => void
-  onConfirm: (spec: string) => void
+  onConfirm: (clarification: string) => void
 }) {
-  const [values, setValues] = useState({
-    period: '最近 7 天',
-    metric: '成功退款金额',
-    group: '按支付渠道',
-    source: '财务只读库',
-  })
-  const preview = useMemo(
-    () => [values.period, values.metric, values.group, values.source].join(' · '),
-    [values],
-  )
+  const [text, setText] = useState('')
+  const trimmed = text.trim()
+  // 空补充**不允许提交**：服务端拿不到补充就不会重跑（graph.resume 直接返回
+  // None → 404），按钮却是亮的，点下去只会得到一句"任务不存在"。
+  const ready = trimmed.length > 0 && trimmed.length <= CLARIFY_MAX
   return (
     <div className="modal clarify-modal" role="dialog" aria-modal="true">
       <div className="modal-head">
         <div>
-          <div className="eyebrow">{taskId} · LANGGRAPH INTERRUPT</div>
-          <h3>任务需要补充信息</h3>
-          <p>这不是对话。补充内容将写入当前任务状态，然后从暂停节点继续执行。</p>
+          <div className="eyebrow">{taskId} · CLARIFY</div>
+          <h3>补充条件后继续</h3>
+          <p>补充内容会写进这条任务的执行状态，在同一条线程上重跑，不是新开一次提问。</p>
         </div>
         <button className="modal-close" type="button" onClick={onClose} aria-label="关闭补充信息">×</button>
       </div>
@@ -487,49 +477,112 @@ export function ClarificationModal({ taskId, question, busy, onClose, onConfirm 
           <div>
             <i>?</i>
             <span>
-              <strong>问题“{question}”存在关键歧义</strong>
-              <small>Agent 已暂停，尚未生成或执行任何 SQL。</small>
+              <strong>{question}</strong>
+              <small>Agent 在这条上停住了，尚未产出可执行的 SQL。</small>
             </span>
           </div>
           <span className="status wait">WAITING FOR INPUT</span>
         </div>
-        <div className="clarify-progress">
-          <div className="clarify-step done">01 理解问题</div>
-          <div className="clarify-step done">02 检查完整性</div>
-          <div className="clarify-step active">03 等待补充</div>
-          <div className="clarify-step">04 生成 SQL</div>
-          <div className="clarify-step">05 安全执行</div>
-        </div>
+        {hints.length > 0 && (
+          <ul className="clarify-hints">
+            {hints.map((h, i) => <li key={i}>{h}</li>)}
+          </ul>
+        )}
         <div className="clarify-form">
-          {CLARIFY_FIELDS.map(field => (
-            <div className="clarify-field" key={field.key}>
-              <span>{field.label} <code>{field.tag}</code></span>
-              <div className={`clarify-options ${field.cols}`}>
-                {field.options.map(option => (
-                  <label className="clarify-choice" key={option.value}>
-                    <input
-                      type="radio"
-                      name={`clarify-${field.key}`}
-                      checked={values[field.key] === option.value}
-                      onChange={() => setValues(current => ({ ...current, [field.key]: option.value } as typeof current))}
-                    />
-                    <div><strong>{option.value}</strong><small>{option.note}</small></div>
-                  </label>
-                ))}
-              </div>
-            </div>
-          ))}
+          <label className="clarify-field">
+            <span>补充条件 <code>REQUIRED</code></span>
+            <textarea
+              rows={4}
+              value={text}
+              maxLength={CLARIFY_MAX}
+              autoFocus
+              placeholder="例如：统计 2026 年 8 月，按数据源分组，只算解析完成的文档"
+              onChange={e => setText(e.target.value)}
+            />
+          </label>
         </div>
         <div className="clarify-spec">
-          <span>RESUME SPEC · 结构化任务参数</span>
-          <strong>{preview}</strong>
-          <small>补充参数会进入任务状态，不保存为对话历史，也不会影响其他任务。</small>
+          <span>RESUME SPEC · 将写入任务状态</span>
+          <strong>{trimmed || '—'}</strong>
+          <small>{trimmed.length} / {CLARIFY_MAX}</small>
         </div>
         <div className="modal-actions">
           <button className="ghost" type="button" onClick={onClose}>稍后处理</button>
-          <button className="primary" type="button" disabled={busy} onClick={() => onConfirm(preview)}>
-            {busy ? '恢复中…' : '确认并继续执行'}
+          <button className="primary" type="button" disabled={busy || !ready}
+                  onClick={() => onConfirm(trimmed)}>
+            {busy ? '执行中…' : '补充并继续执行'}
           </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ---------------- 处置：复核 / 运维 ---------------- */
+
+/** 复核与运维处置共用的弹窗。
+ *
+ *  **两件事共用一个组件，但语义不共用**：文案、按钮、结论取值全部由调用方给。
+ *  合并的只是"一个判定 + 一句备注 + 两个出口"这个形状 —— 那确实是同一个形状，
+ *  各写一遍必然在其中一处漏掉备注的长度上限或禁用态。
+ *
+ *  备注在**否定那一侧是必填**：打回一个数字、或判一条故障没救，发起人拿到的
+ *  唯一解释就是这句话。不强制的话它就会空着，而队列里那条记录从此说不清
+ *  为什么被否掉。 */
+export function DispositionModal({
+  eyebrow, title, subject, facts, affirmLabel, denyLabel, denyNeedsNote,
+  busy, onClose, onDecide,
+}: {
+  eyebrow: string
+  title: string
+  subject: string
+  /** 判定所依据的事实，逐条列出。空数组不渲染 —— 不编占位的话。 */
+  facts?: string[]
+  affirmLabel: string
+  denyLabel: string
+  /** 否定一侧是否强制填备注。复核打回、运维判 WONTFIX 都要。 */
+  denyNeedsNote?: boolean
+  busy?: boolean
+  onClose: () => void
+  onDecide: (affirm: boolean, note: string) => void
+}) {
+  const [note, setNote] = useState('')
+  const trimmed = note.trim()
+  const denyReady = !denyNeedsNote || trimmed.length > 0
+  return (
+    <div className="modal" role="dialog" aria-modal="true">
+      <div className="modal-head">
+        <div>
+          <div className="eyebrow">{eyebrow}</div>
+          <h3>{title}</h3>
+          <p>{subject}</p>
+        </div>
+        <button className="modal-close" type="button" onClick={onClose} aria-label="关闭">×</button>
+      </div>
+      <div className="modal-body">
+        {(facts ?? []).length > 0 && (
+          <ul className="clarify-hints">
+            {(facts ?? []).map((f, i) => <li key={i}>{f}</li>)}
+          </ul>
+        )}
+        <div className="clarify-form">
+          <label className="clarify-field">
+            <span>备注 <code>{denyNeedsNote ? 'REQUIRED ON DENY' : 'OPTIONAL'}</code></span>
+            <textarea
+              rows={3}
+              value={note}
+              maxLength={200}
+              placeholder="写清判定依据 —— 这是发起人能拿到的唯一解释"
+              onChange={e => setNote(e.target.value)}
+            />
+          </label>
+        </div>
+        <div className="modal-actions">
+          <button className="ghost" type="button" onClick={onClose}>稍后处理</button>
+          <button className="ghost" type="button" disabled={busy || !denyReady}
+                  onClick={() => onDecide(false, trimmed)}>{denyLabel}</button>
+          <button className="primary" type="button" disabled={busy}
+                  onClick={() => onDecide(true, trimmed)}>{affirmLabel}</button>
         </div>
       </div>
     </div>

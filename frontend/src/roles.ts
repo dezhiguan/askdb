@@ -24,6 +24,9 @@ export const ROLE_NAMES: Record<string, string> = {
   LEGAL: '法务合规',
   MANAGEMENT: '管理',
   OTHER: '其他',
+  // 与 OPERATIONS（运营）只差一个字，但不是一回事：那个看经营数据，
+  // 这个管系统本身跑不跑得起来（执行期故障处置）。
+  SRE: '运维',
   SYS_ADMIN: '系统管理员',
   ANONYMOUS: '匿名',
 }

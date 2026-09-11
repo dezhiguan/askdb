@@ -98,10 +98,16 @@ function App() {
   const needsIdentity = !!me && me.enabled && !me.username
   const gated = needsIdentity && (me.required || !skipped)
 
-  /** 统一的换页入口。第二个参数只在目标页认得它时有意义（当前只有追踪页）；
-   *  不带就清掉 —— 否则从导航栏点进追踪页还会停在上一次定位的那条上。 */
+  /** 统一的换页入口。第二个参数是**带去目标页的一小段内容**，含义由目标页定：
+   *    · 执行追踪 —— 要定位的 trace_id
+   *    · 查询页   —— 预填进输入框的问题原文（任务中心「换个问法」带过来的）
+   *  不带就清掉 —— 否则从导航栏点进去还会停在上一次那条上。
+   *
+   *  查询页要**重挂**才吃得到预填（question 是它的初始状态），所以这里顺带
+   *  推一下 queryEpoch。不推的话第二次带不同的问题过来，输入框纹丝不动。 */
   const navigate = (next: View, focus?: string) => {
     setFocusTrace(focus ?? null)
+    if (next === 'query' && focus) setQueryEpoch(n => n + 1)
     setView(next)
   }
 
@@ -122,7 +128,8 @@ function App() {
             onClick={() => navigate('tasks')}>创建复杂任务</button>}
         />
         {/* key 变化即整块重挂 —— 侧栏「发起快捷查询」照原型要回到空态 */}
-        <QueryWorkspace key={queryEpoch} health={health} sources={sources} onNavigate={navigate} notify={notify} me={me} />
+        <QueryWorkspace key={queryEpoch} health={health} sources={sources} onNavigate={navigate}
+                        notify={notify} me={me} prefill={focusTrace ?? ''} />
       </div>
     )
     if (view === 'tasks') return <TasksPage onNavigate={navigate} notify={notify} me={me} />

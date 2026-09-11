@@ -15,7 +15,7 @@ import { TrustSidebar } from './TrustSidebar'
  */
 type Mode = 'ask' | 'sql'
 
-export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
+export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefill }: {
   health: HealthState
   /** 数据源选择与顶栏共用同一份状态 —— 各存一份必然漂移，
    *  而漂移的表现是"正在查 A 库、顶栏说你在 B 库" */
@@ -27,11 +27,17 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me }: {
   notify?: (message: string) => void
   /** 右栏「身份」一格用 */
   me?: Me | null
+  /** 预填进输入框的问题。任务中心终态那几档（护栏拦下、复核打回、运维已恢复）
+   *  的「换个问法」带着原问题跳过来 —— 原来只是跳转，人得自己回去抄一遍。
+   *
+   *  只作为**初始值**：进来之后随便改，不受这个 prop 后续变化影响。
+   *  组件由 App 侧的 key 控制重挂，所以"再带一条新的过来"靠重挂生效。 */
+  prefill?: string
 }) {
   // 用户没显式选过时按能力推导：模型没接就落到直查 ——
   // 让人对着一个永远点不动的按钮发呆没有意义。
   const [modeChoice, setModeChoice] = useState<Mode | null>(null)
-  const [question, setQuestion] = useState('')
+  const [question, setQuestion] = useState(prefill ?? '')
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<AskResult | null>(null)
   const [error, setError] = useState('')

@@ -3,9 +3,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
 import {
   askQuestion,
+  decideReview,
   fetchReplay,
   fetchSources,
   fetchTasks,
+  resolveOps,
   resumeTask,
   type Replay,
   type Task,
@@ -16,6 +18,7 @@ import {
 import {
   ClarificationModal,
   CreateTaskModal,
+  DispositionModal,
   EMPTY_TASK_FILTERS,
   ModalShell,
   TaskReasonModal,
@@ -170,9 +173,16 @@ type ModalState =
   | { kind: 'result'; task: Task }
   | { kind: 'reason'; task: Task }
   | { kind: 'clarify'; task: Task }
+  /* 复核与运维处置共用 DispositionModal，但**分成两个 kind**：
+     两者的结论写进不同的存储、打不同的接口，合成一个再靠状态去分支，
+     就会在某个分支上把复核的判定发到运维接口上。 */
+  | { kind: 'review'; task: Task }
+  | { kind: 'ops'; task: Task }
 
 export function TasksPage({ onNavigate, notify, me }: {
-  onNavigate: (view: View) => void
+  /** 第二个参数是**带去目标页的内容**。查询页拿它做预填 —— 终态那几档的
+   *  「换个问法」原来只是跳转，人得自己回来抄一遍原问题。 */
+  onNavigate: (view: View, focus?: string) => void
   notify: (message: string) => void
   me: Me | null
 }) {
@@ -300,21 +310,79 @@ export function TasksPage({ onNavigate, notify, me }: {
   }
 
   const detail = useMemo<TaskDetailView | null>(() => {
-    if (modal.kind !== 'result' && modal.kind !== 'reason' && modal.kind !== 'clarify') return null
-    return buildDetail(modal.task, replay, result?.user ?? '')
-  }, [modal, replay, result])
+    if (modal.kind === 'none' || modal.kind === 'create') return null
+    return buildDetail(modal.task, replay, result?.user ?? '', me)
+  }, [modal, replay, result, me])
 
-  const resume = async (task: Task) => {
+  /** 补充条件后在同一条线程上继续。
+   *
+   *  两种情形走同一个接口，由服务端按"现场在不在检查点里"分流：
+   *    · 真中断（进程被杀）→ 从断点继续，已完成的节点不重跑
+   *    · 等待补充（NO_SQL）→ 带着补充条件重跑整条链路
+   *  前端不判这个 —— 判据在 graph.resume，前端再写一份必然漂。 */
+  const resume = async (task: Task, clarification = '') => {
     setBusy(task.thread_id)
     try {
-      const response = await resumeTask(task.thread_id)
+      const response = await resumeTask(task.thread_id, clarification)
       if (!response) {
         notify('这个任务已经跑完，或不属于当前账号')
       } else if (response.ok) {
-        notify(`已从断点续跑完成 · 新 trace ${response.trace_id}`)
+        notify(`已继续执行完成 · 新 trace ${response.trace_id}`)
       } else {
-        notify(`续跑仍未完成：${response.rejected_by ?? ''} ${response.error ?? ''}`.trim())
+        notify(`仍未跑通：${response.rejected_by ?? ''} ${response.error ?? ''}`.trim())
       }
+      setModal({ kind: 'none' })
+      load()
+    } catch (e) {
+      notify(String((e as Error).message || e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  /** 凭已批准的审批票原样重跑。
+   *
+   *  **必须用问题原文**：票绑在原文的指纹上（approvals.fingerprint），
+   *  改一个字就 403。所以这里不给编辑入口 —— 要改问法就是另一次提问，
+   *  也该另外走一次审批。 */
+  const redeem = async (task: Task) => {
+    setBusy(task.thread_id)
+    try {
+      const response = await askQuestion(
+        task.question || '', task.source || '', undefined, false, task.trace_id)
+      if (response.ok) {
+        notify(`已凭票重跑 · 新 trace ${response.trace_id}`)
+      } else {
+        notify(`重跑未通过：${response.rejected_by ?? ''} ${response.error ?? ''}`.trim())
+      }
+      setModal({ kind: 'none' })
+      load()
+    } catch (e) {
+      notify(String((e as Error).message || e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const submitReview = async (task: Task, accepted: boolean, note: string) => {
+    setBusy(task.thread_id)
+    try {
+      await decideReview(task.trace_id, accepted, note)
+      notify(accepted ? '已采信这条结果' : '已打回，发起人会看到你的意见')
+      setModal({ kind: 'none' })
+      load()
+    } catch (e) {
+      notify(String((e as Error).message || e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const submitOps = async (task: Task, resolved: boolean, note: string) => {
+    setBusy(task.thread_id)
+    try {
+      await resolveOps(task.trace_id, resolved ? 'RESOLVED' : 'WONTFIX', note)
+      notify(resolved ? '已标记为故障已排除，发起人可重试' : '已标记为无法恢复')
       setModal({ kind: 'none' })
       load()
     } catch (e) {
@@ -344,8 +412,21 @@ export function TasksPage({ onNavigate, notify, me }: {
 
   const reasonAction = () => {
     if (modal.kind !== 'reason' || !detail?.reason) return
-    if (detail.reason.action === 'clarify') { setModal({ kind: 'clarify', task: modal.task }); return }
-    if (detail.reason.action === 'revise') { setModal({ kind: 'none' }); onNavigate('query') }
+    const task = modal.task
+    switch (detail.reason.action) {
+      case 'clarify': setModal({ kind: 'clarify', task }); return
+      case 'review': setModal({ kind: 'review', task }); return
+      case 'ops': setModal({ kind: 'ops', task }); return
+      case 'redeem': void redeem(task); return
+      case 'revise':
+        setModal({ kind: 'none' })
+        /* **带上问题原文**。这里原来只是 onNavigate('query')，查询页是空白的
+           —— 点「调整后重新提问」的人得自己回来抄一遍原问题。终态那几档
+           （护栏拦下、复核打回、运维已恢复）走的都是这一条。 */
+        onNavigate('query', task.question || '')
+        return
+      default: return
+    }
   }
 
   const viewTrace = () => { setModal({ kind: 'none' }); onNavigate('traces') }
@@ -593,9 +674,53 @@ export function TasksPage({ onNavigate, notify, me }: {
           <ClarificationModal
             taskId={modal.task.thread_id}
             question={modal.task.question || '（无问题文本）'}
+            /* agent 自己给出的那几句 —— 这个框里唯一有信息量的引导。
+               来源按可信度排：回放里的具体报错 > 后端折算的下一步 > 存疑理由。 */
+            hints={[
+              replay?.snapshots?.find(item => item.error)?.error ?? '',
+              modal.task.next_actor ?? '',
+              ...(modal.task.review_why ?? []),
+            ].filter(Boolean)}
             busy={busy === modal.task.thread_id}
             onClose={() => setModal({ kind: 'none' })}
-            onConfirm={() => resume(modal.task)}
+            onConfirm={text => resume(modal.task, text)}
+          />
+        </ModalShell>
+      )}
+
+      {modal.kind === 'review' && (
+        <ModalShell onClose={() => setModal({ kind: 'none' })}>
+          <DispositionModal
+            eyebrow={`${modal.task.trace_id} · REVIEW`}
+            title="这个数字算不算数"
+            subject={modal.task.question || '（无问题文本）'}
+            facts={modal.task.review_why ?? []}
+            affirmLabel="采信"
+            denyLabel="打回"
+            denyNeedsNote
+            busy={busy === modal.task.thread_id}
+            onClose={() => setModal({ kind: 'none' })}
+            onDecide={(affirm, note) => submitReview(modal.task, affirm, note)}
+          />
+        </ModalShell>
+      )}
+
+      {modal.kind === 'ops' && (
+        <ModalShell onClose={() => setModal({ kind: 'none' })}>
+          <DispositionModal
+            eyebrow={`${modal.task.trace_id} · OPS`}
+            title="这次故障处理完了吗"
+            subject={modal.task.question || '（无问题文本）'}
+            facts={[
+              replay?.snapshots?.find(item => item.error)?.error ?? '',
+              modal.task.source_name || modal.task.source || '',
+            ].filter(Boolean)}
+            affirmLabel="已恢复"
+            denyLabel="无法恢复"
+            denyNeedsNote
+            busy={busy === modal.task.thread_id}
+            onClose={() => setModal({ kind: 'none' })}
+            onDecide={(affirm, note) => submitOps(modal.task, affirm, note)}
           />
         </ModalShell>
       )}
@@ -644,8 +769,28 @@ function keyInfo(task: Task) {
   return <div className="task-meta"><span>耗时</span><strong>{fmtDuration(task.elapsed_ms)}</strong></div>
 }
 
+/** 当前这个人能对这条任务做什么。
+ *
+ *  **三个维度一起判，缺一个就会出现"按钮亮着、点下去 403"**：
+ *    · 状态   —— 这一档有没有待办
+ *    · 权限   —— 复核要 APPROVE，处置要 OPS_RESOLVE（服务端同一套判定）
+ *    · 归属   —— 补充与凭票重跑只有发起人能做（服务端 /api/resume 校验一行没改）
+ *
+ *  角色码在这里判而不是等服务端回结论：队列接口各自给了 can_review /
+ *  can_resolve，但任务中心一次要判几十行，不可能每行问一次。**判据必须与
+ *  identity.CAPABILITIES 一致** —— 那边加位、这里漏加，症状是按钮不出现，
+ *  没有任何报错。
+ */
+const APPROVE_ROLES = ['SYS_ADMIN']
+const OPS_ROLES = ['SRE', 'SYS_ADMIN']
+
+function hasRole(me: Me | null, allowed: string[]): boolean {
+  return (me?.roles ?? []).some(r => allowed.includes(r))
+}
+
 /** 把 /api/tasks 的一行 + /api/replay 的回放拼成弹窗要的视图对象。 */
-function buildDetail(task: Task, replay: Replay | null, currentUser: string): TaskDetailView {
+function buildDetail(task: Task, replay: Replay | null, currentUser: string,
+                     me: Me | null = null): TaskDetailView {
   /* 列得出来 ≠ 动得了。这一页 2026-09-06 起列全部发起人的线程，但续跑仍然
      只有主人能做（服务端 /api/resume 校验归属）。不在这里判一次的话，别人的
      中断线程会挂着一个「补充信息并恢复」的按钮，点下去必然 404 —— 那正是
@@ -684,6 +829,13 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
      「改写问题后重新发起」—— 对等审批的人是错的（该去找负责人），对库连不上
      的人更是错的（改写法一万遍也连不上）。nextStep 是这个弹窗唯一有用的一句话，
      不能对三种人说同一句。 */
+  const canReview = hasRole(me, APPROVE_ROLES)
+  const canOps = hasRole(me, OPS_ROLES)
+  /* 自己不能复核自己的结果（服务端 reviews.SelfReview 会 403）。
+     不在这里判一次的话，管理员看自己那条会看到一个必然失败的「采信」按钮 ——
+     与"列得出来不等于动得了"是同一条轴，只是换了一个维度。 */
+  const reviewable = canReview && !mine
+
   const reason = task.status === 'waiting_review'
     ? {
       category: '结果待复核 · REVIEW',
@@ -691,10 +843,14 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
       detail: (task.review_why ?? []).join('；')
         || '这次查询跑成了，但结果带着存疑痕迹。',
       policy: `${task.kind} · ${rolesLabel(task.role)}`,
-      nextStep: task.next_actor
-        || '等系统管理员看一眼：采信这个数字，或打回并说明原因。',
-      action: 'none' as const,
-      actionLabel: '等待复核',
+      nextStep: reviewable
+        ? '采信这个数字，或打回并说明原因 —— 打回不撤销已经返回的结果，改变的是它此后的可信标记。'
+        : canReview
+          ? '这是你自己发起的结果，需要另一位系统管理员复核。'
+          : (task.next_actor || '等系统管理员看一眼：采信这个数字，或打回并说明原因。'),
+      action: reviewable ? ('review' as const) : ('none' as const),
+      actionLabel: reviewable ? '采信 / 打回'
+        : canReview ? '不能复核自己的结果' : '等待复核',
     }
     : task.status === 'review_returned'
     ? {
@@ -710,27 +866,40 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
     }
     : task.status === 'waiting_approval'
     ? {
-      category: `等待审批 · ${task.rejected_by ?? 'R-11'}`,
+      category: task.approval_status === 'APPROVED'
+        ? `已批准待重跑 · ${task.rejected_by ?? 'R-11'}`
+        : `等待审批 · ${task.rejected_by ?? 'R-11'}`,
       node: task.rejected_by ?? '高成本查询',
       detail: replay?.snapshots?.find(item => item.error)?.error
         ?? '这次查询超过成本阈值，已挂起等待放行；SQL 没有在数据库上执行。',
       policy: `${task.kind} · ${rolesLabel(task.role)}`,
+      /* 批准与待批是同一个状态码下的两句话，等的人正好相反（见 audit.stage）。
+         服务端把差别写进 next_actor，这里照着显示，不在前端再判一遍。 */
       nextStep: task.next_actor
         || '审批通过后凭票重跑；审批是一次性的，用过即作废。',
-      action: 'none' as const,
-      actionLabel: '等待负责人放行',
+      /* **放行票只能由发起人用**：服务端 approvals.waiver 校验"是本人的"，
+         别人点下去必然 403。所以按钮只对主人出现。 */
+      action: (task.approval_status === 'APPROVED' && mine)
+        ? ('redeem' as const) : ('none' as const),
+      actionLabel: task.approval_status === 'APPROVED'
+        ? (mine ? '凭票重跑' : '已批准，待发起人重跑')
+        : '等待系统管理员放行',
     }
     : task.status === 'needs_operator'
     ? {
-      category: '执行期故障 · EXEC',
+      category: task.stale ? '执行中断 · 无现场' : '执行期故障 · EXEC',
       node: '数据源',
-      detail: replay?.snapshots?.find(item => item.error)?.error
-        ?? '这次调用在执行阶段失败：数据源连不上，或执行期出错。',
+      detail: task.stale
+        ? '这条线程只落了发起记录就再没有下文（进程中途退出），检查点里也没有可续的现场。'
+        : (replay?.snapshots?.find(item => item.error)?.error
+           ?? '这次调用在执行阶段失败：数据源连不上，或执行期出错。'),
       policy: `${task.kind} · ${rolesLabel(task.role)}`,
-      nextStep: task.next_actor
-        || '这不是权限问题，改写法也过不去。等数据源恢复后原样重试即可。',
-      action: 'revise' as const,
-      actionLabel: '恢复后重试',
+      nextStep: canOps
+        ? '排除故障后标记处置结论：已恢复（发起人可原样重试）或无法恢复。'
+        : (task.next_actor
+           || '这不是权限问题，改写法也过不去。等数据源恢复后原样重试即可。'),
+      action: canOps ? ('ops' as const) : ('revise' as const),
+      actionLabel: canOps ? '标记处置结论' : '恢复后重试',
     }
     : task.status === 'waiting_input'
     ? {
@@ -739,10 +908,34 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string): Ta
       detail: replay?.snapshots?.find(item => item.error)?.error
         ?? '模型没能从这个问题里确定要查什么，没有产出 SQL。',
       policy: `${task.kind} · ${rolesLabel(task.role)}`,
-      nextStep: task.next_actor
-        || '把问题说具体些（指明表名、时间范围或指标口径）后重新发起。',
+      /* **补充回到同一条线程**，不是重新提问。
+         2026-09-11 之前这里的动作是 revise（跳回查询页，还不带问题原文），
+         于是补充等于开一条新线程，原来那条永远停在等待补充 —— 线上积压 294 条
+         就是这么来的。现在走 /api/resume 带补充条件，审计里看得出这是第 2 次执行。 */
+      nextStep: mine
+        ? '补充缺的那个条件（时间范围、口径或统计维度），在同一条线程上继续。'
+        : `这条线程由${task.owner ? ` ${task.owner} ` : '匿名访客'}发起，只有发起人能补充。`
+          + '执行轨迹与审计记录仍然可以查看。',
+      action: mine ? ('clarify' as const) : ('none' as const),
+      actionLabel: mine ? '补充条件并继续' : '仅发起人可补充',
+    }
+    : (task.status === 'rejected' && task.ops_status)
+    ? {
+      /* 运维处置过的执行期故障也落在 rejected 上（见 audit.stage 那段说明），
+         但它**不是护栏拒绝** —— 说成"触碰了安全边界"会把人指向完全错误的
+         下一步：一个该重试，一个改写法也没用。 */
+      category: task.ops_status === 'RESOLVED'
+        ? '执行期故障 · 已恢复' : '执行期故障 · 无法恢复',
+      node: '数据源',
+      detail: task.ops_status === 'RESOLVED'
+        ? '运维已确认故障排除。这条查询本身没有问题，原样重试即可。'
+        : '运维判定这条恢复不了（数据源已下线，或表已不存在）。',
+      policy: `${task.kind} · ${rolesLabel(task.role)}`,
+      nextStep: task.ops_status === 'RESOLVED'
+        ? '回查询页原样再问一次 —— 系统不替你重试，那会花掉一次你没在等的配额。'
+        : '换一个能在现有数据源上回答的问法。',
       action: 'revise' as const,
-      actionLabel: '补充后重新提问',
+      actionLabel: task.ops_status === 'RESOLVED' ? '原样重试' : '换个问法',
     }
     : task.status === 'rejected'
     ? {

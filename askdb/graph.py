@@ -98,6 +98,15 @@ class AskState(TypedDict, total=False):
     #: 问句是纯指代追问（clarify 节点判定）。产品上没有多轮上下文，
     #: 这类问题只能澄清，不能猜一个主体把答案编出来。
     anaphoric: bool
+    #: 发起人事后补上的条件（clarify 节点的出口）。
+    #:
+    #: **它不是对话历史，是这一次执行的一个输入。** 产品上没有多轮上下文，
+    #: 这条也不会变成"上一轮"—— 它随检查点走，只作用于这条线程，续跑时仍在。
+    #: clarify 判指代追问、generate 判信息不足，两处此前都只能终止链路并让人
+    #: "换个问法重来"；换个问法就是换一条线程，原来那条永远停在等待补充。
+    #: 有了这个字段，补充就回到**同一条线程**上：审计里看得出这是第 2 次执行，
+    #: 而不是一条无关的新提问。
+    clarification: str
     #: 推理里出现的猜测措辞。**必须一路出到接口并进可信度分母** ——
     #: 模型自认不确定却照样给结果，是这套系统里最难被发现的一类错。
     hedge_terms: list[str]
@@ -371,6 +380,17 @@ def _n_clarify(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     if state.get("goal") or state.get("carry"):
         return {}
     t = d.tracer.start()
+    # 发起人已经把缺的那半句补上了，就不该再拦一次。
+    #
+    # **这是这个节点的出口。** 在此之前它只有一条出路：判定成立就终止链路，
+    # 让人"换个问法重新发起"—— 而换个问法等于换一条线程，原来那条永远停在
+    # 等待补充。判定本身没错（1030 次跑测证明模型自己判不稳），错在判完之后
+    # 没有回来的路。补充**不放宽判定**：它不去猜问句里的指代指向谁，只是把
+    # 人给的那句话原样往下传，由 plan/generate 去用。
+    extra = str(state.get("clarification") or "").strip()
+    if extra:
+        d.tracer.add("clarify", t, f"发起人已补充条件：{extra[:60]}")
+        return {"clarification": extra}
     v = clarify.is_anaphoric(state["question"], d.cfg)
     if not v.anaphoric:
         d.tracer.add("clarify", t, "问句主体明确")
@@ -430,6 +450,19 @@ def _n_retrieve(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     }
 
 
+def _asked(state: AskState) -> str:
+    """送进提示词的问题文本 —— 原问题 + 发起人事后补上的条件。
+
+    **绝不改写 state["question"] 本身。** 审计、任务标题、复核队列、指纹比对
+    全都读那个字段；就地改掉的话，同一条线程在界面上会变成另一个问题，而
+    审批指纹也会对不上（approvals.request 拿原文算指纹，见那里的说明）。
+    补充只影响这一次怎么问模型，不影响这条线程是关于什么的。
+    """
+    q = state["question"]
+    extra = str(state.get("clarification") or "").strip()
+    return f"{q}\n\n【发起人补充的条件】\n{extra}" if extra else q
+
+
 def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
     """判定单步还是多步；多步时给出本步目标。
 
@@ -447,12 +480,12 @@ def _n_plan(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             plan, usage = d.llm.structured(
                 planner.Plan, planner.PLAN_SYSTEM,
                 planner.PLAN_USER.format(schema=state["schema_prompt"],
-                                         question=state["question"]))
+                                         question=_asked(state)))
         else:
             plan, usage = d.llm.structured(
                 planner.Plan, planner.REPLAN_SYSTEM,
                 planner.REPLAN_USER.format(
-                    schema=state["schema_prompt"], question=state["question"],
+                    schema=state["schema_prompt"], question=_asked(state),
                     history=planner.render_history(state.get("steps_done") or []),
                     carry=planner.render_carry(state.get("carry") or {})))
     except QuotaExceeded as e:
@@ -540,6 +573,13 @@ def _n_generate(state: AskState, config: RunnableConfig) -> dict[str, Any]:
             if state.get("carry"):
                 step_ctx += ("\n\n【可直接引用的中间结果，按字面量写进 SQL】\n"
                              + planner.render_carry(state["carry"]))
+        # 发起人补充的条件走这个槽，而不是拼进 question：question 那个参数
+        # 同时是"上次错在哪"的比对基准（last_sql/error 都以它为前提），
+        # 混进去会让重试时的提示前后不一致。
+        extra = str(state.get("clarification") or "").strip()
+        if extra:
+            step_ctx += ("\n\n【发起人补充的条件 —— 优先按它确定时间范围、"
+                         "口径与统计维度】\n" + extra)
         schema_prompt = state["schema_prompt"]
         # 上一轮是被扫描阈值拦下的 —— 把本库的预聚合汇总表显式补进来。
         # 不补的话模型手上只有明细表，"降低扫描量"就只剩"加个过滤条件"这一条路，
@@ -1601,22 +1641,61 @@ def resume(
     cfg: Config,
     executor: Executor | None = None,
     llm: LlmClient | None = None,
+    *,
+    clarification: str = "",
+    question: str = "",
+    org_id: int | None = None,
 ) -> AskResult | None:
-    """从最后一个完成的检查点继续一次中断的提问（中断恢复设计 V1.1）。
+    """把一条停下来的线程继续往前推（中断恢复设计 V1.1 + 2026-09-11 扩展）。
 
-    - 只接受调用方自己持有的 thread_id；不存在或已跑完返回 None，
-      由接口层与"不存在"同样处理 —— 不提供任何枚举入口（§4.2）；
-    - 检查点线程保持不变，审计写**新的 trace_id**，两条经 thread_id
-      关联，审计里能看出"这是第 2 次执行"；
-    - 另计一次每日配额；R-17 累计计数在状态里回种，不会归零。
+    **两条路，判据是现场还在不在检查点里：**
+
+    1. ``snap.next`` 非空 —— 真正的中断（进程被杀、递归超限）。从最后一个
+       完成的检查点接着跑，节点粒度恢复，已完成的节点不重跑。这是原有语义。
+    2. 没有活检查点，但调用方给了 ``question`` —— 这条线程是**正常收尾**的，
+       只是收在了"等待补充"上（NO_SQL / NEED_CONTEXT）。重跑整条链路，
+       带上补充的条件。
+
+    第 2 条是 2026-09-11 加的，加它是因为「等待补充」此前根本没有出口：
+    clarify 与 generate 判完信息不足就终止，界面只能说"换个问法重新发起"，
+    而换个问法就是开一条新线程 —— 原来那条永远停在等待补充，线上积压 294 条。
+    现在补充回到**同一条线程**：审计里看得出这是第 2 次执行，任务态跟着变。
+
+    两条路的共同点，也是不能动的部分：
+    - 只接受调用方自己持有的 thread_id；不存在返回 None，由接口层与"不存在"
+      同样处理 —— 不提供任何枚举入口（§4.2）；
+    - 检查点线程保持不变，审计写**新的 trace_id**，两条经 thread_id 关联；
+    - 另计一次每日配额；补充一次就是一次真实的模型消费，不能白送。
     """
     g = _ensure_graph(cfg)
     snap = g.get_state({"configurable": {"thread_id": thread_id}})
+    extra = (clarification or "").strip()
     if not snap.values or not snap.next:
-        return None
+        # 没有活现场。**必须同时有补充条件和问题原文**才走重跑那条路。
+        #
+        # 缺补充就返回 None（接口层照旧 404）—— 这是有意的，不是漏判：
+        # 没有活检查点意味着这条线程已经正常收尾了，不带任何新信息再跑一遍，
+        # 拿到的必然还是同一个"信息不足"，只是白花一次配额。原有语义
+        # 「没有断点 → 404」也因此一行没变，现存用例照旧成立。
+        if not extra or not question.strip():
+            return None
+        return _rerun_with_clarification(
+            cfg, thread_id=thread_id, question=question.strip(),
+            clarification=extra, executor=executor, llm=llm,
+            org=cfg.default_org if org_id is None else org_id)
     question = str(snap.values.get("question", ""))
     org = int(snap.values.get("org_id", cfg.default_org))
     trace_id = uuid.uuid4().hex[:12]
+
+    # 补充的条件写回检查点，**在续跑之前**。写进状态而不是当参数传下去：
+    # 恢复是从图内部继续的，中间节点拿不到 resume() 的入参，只看得到状态。
+    # 写失败不拦续跑 —— 没有补充照样能续，那是原有语义。
+    if extra:
+        try:
+            g.update_state({"configurable": {"thread_id": thread_id}},
+                           {"clarification": extra})
+        except Exception:             # noqa: BLE001
+            pass
 
     # 恢复前重新校验（§恢复原则 02）。中断与续跑之间隔着任意长的时间，
     # 检查点里存的是**中断那一刻**的前提；不重验就是拿旧前提接着跑，
@@ -1642,3 +1721,33 @@ def resume(
     return _execute(cfg, question=question, org=org, trace_id=trace_id,
                     thread_id=thread_id, kind="resume",
                     executor=executor, llm=llm, init=None)
+
+
+def _rerun_with_clarification(
+    cfg: Config, *, thread_id: str, question: str, clarification: str,
+    executor: Executor | None, llm: LlmClient | None, org: int,
+) -> AskResult:
+    """带着补充的条件，在**同一条线程**上把这次提问重跑一遍。
+
+    与 ask() 的唯一差别是 thread_id 沿用、init 里多一条 clarification ——
+    刻意不复用 ask()：那个函数的语义是"开一条新线程"，给它加一个
+    "其实不开新线程"的开关，会让每个读到它的人都得先搞清楚这次是哪种。
+
+    走的是完整链路（召回 → 规划 → 生成 → 护栏 → 试算 → 执行），一道护栏都
+    不少。补充**不是**豁免：人给的是查询条件，不是放行票。
+    """
+    pl = cfg.raw.get("planner", {}) or {}
+    trace_id = uuid.uuid4().hex[:12]
+    init: AskState = {
+        "question": question, "org_id": org, "trace_id": trace_id,
+        "attempt": 0, "max_retry": cfg.max_retry, "out_of_scope": False,
+        "exec_retryable": False, "next_goal": "",
+        "step_no": 0, "steps_done": [], "carry": {}, "multi_step": False,
+        "max_steps": int(pl.get("max_steps", 3)),
+        "cost_cap_tokens": int(pl.get("cost_cap_tokens", 0)),
+        "tok_used": 0,
+        "clarification": clarification,
+    }
+    return _execute(cfg, question=question, org=org,
+                    trace_id=trace_id, thread_id=thread_id, kind="clarify",
+                    executor=executor, llm=llm, init=init)

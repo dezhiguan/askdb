@@ -306,7 +306,47 @@
 .clarify-modal .clarify-step.done { border-color: var(--green); color: var(--green); }
 .clarify-modal .clarify-step.active { border-color: var(--amber); color: var(--amber); font-weight: 800; }
 
-.clarify-modal .clarify-form { display: grid; grid-template-columns: 1fr 1fr; gap: 11px 13px; }
+/* 补充表单从四组单选（写死的原型样例）换成一个自由文本框之后，两列栅格
+   就没有意义了 —— 一个 textarea 占半幅会让人以为还有另一半没加载出来。 */
+.clarify-modal .clarify-form { display: grid; grid-template-columns: 1fr; gap: 11px 13px; }
+
+/* agent 停下来时给出的那几句。它们是这个框里唯一的引导，所以摆在输入框
+   之前而不是之后 —— 人是先读原因再决定写什么。 */
+.clarify-hints {
+  margin: 11px 0 0;
+  padding: 9px 11px 9px 24px;
+  border: 2px solid var(--line);
+  color: var(--ink-2);
+  font-size: 8px;
+  line-height: 1.7;
+}
+.clarify-hints li + li { margin-top: 4px; }
+
+.clarify-modal .clarify-field textarea,
+.modal .clarify-field textarea {
+  width: 100%;
+  padding: 8px 9px;
+  border: 2px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font: 8px/1.7 var(--mono);
+  resize: vertical;
+}
+.clarify-modal .clarify-field textarea:focus,
+.modal .clarify-field textarea:focus { outline: 0; border-color: var(--green); }
+
+/* 处置弹窗（复核 / 运维）复用补充弹窗的表单版式，但它不是 .clarify-modal，
+   所以这几条要单独给一份 —— 选择器跟着组件走，别指望继承。 */
+.modal .clarify-field > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  color: var(--ink-2);
+  font-size: 8px;
+  font-weight: 800;
+}
+.modal .clarify-field > span code { color: var(--amber); font: 6px var(--mono); }
 .clarify-modal .clarify-field { margin-top: 0; }
 .clarify-modal .clarify-field > span {
   display: flex;

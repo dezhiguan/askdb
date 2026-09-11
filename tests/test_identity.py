@@ -81,6 +81,9 @@ def test_roles_are_fixed_and_cover_the_agreed_set():
                      # 见 identity.ROLES 那两段说明。
                      "OPERATIONS", "SALES", "MARKETING", "SUPPORT",
                      "FINANCE", "HR", "LEGAL", "MANAGEMENT", "OTHER",
+                     # 2026-09-11 新增。**与 OPERATIONS（运营）不是一回事**：
+                     # 那个看经营数据，这个管系统本身跑不跑得起来。
+                     "SRE",
                      "SYS_ADMIN"]
     assert len(set(codes)) == len(codes)
 
@@ -113,7 +116,7 @@ def test_roles_endpoint_answers_even_when_disabled(client):
     assert r.status_code == 200
     body = r.json()
     assert body["enabled"] is False
-    assert len(body["roles"]) == len(identity.ROLES) == 15
+    assert len(body["roles"]) == len(identity.ROLES) == 16
 
 
 def test_member_endpoints_404_when_disabled(client):
@@ -198,21 +201,35 @@ def test_writable_flag_reflects_token_presence(enabled_client, monkeypatch):
 
 # ---------- 配置边界 ----------
 
-def test_public_instance_may_read_identity_but_can_never_write_it():
-    """对外实例的身份功能：**读可以开，写必须不可能。**
+#: 对外实例上**允许**持有系统管理员角色的账号。这张表是白名单，不是记录 ——
+#: 往 public.yaml 里加系统管理员而不加到这里，下面那条用例会红。
+#:
+#: 为什么只有两个人，以及为什么必须是两个：审批链路唯一一道门是
+#: approvals.decide 的「发起人不得自批」。只放一个人进来，他自己触发 R-11 的
+#: 查询就永远批不了 —— 一个人的审批等于没有审批。两个人互批，
+#: 「提出与放行分属两人」才重新成立。加第三个之前先想清楚为什么需要。
+_PUBLIC_SYS_ADMINS = {"guandezhi", "chenjiawei"}
 
-    这条用例原来钉的是「对外实例不得启用身份与权限」，理由是"写接口就只剩
-    一把共享令牌挡着"。2026-09-08 该实例需要把角色成员名单显示出来，
-    于是读被打开了 —— 但它防的那件事一步没让：
 
-      · 写接口要 MEMBERS_WRITE，而该能力位只属于 SYS_ADMIN；
-      · public.yaml 的内置账号里**没有一个是 SYS_ADMIN**，
-        因此这个实例上不存在任何能通过判定的调用方；
-      · 未登录的写请求另有 server._gate_writes 按 HTTP 方法拦下。
+def test_public_instance_grants_admin_only_to_the_named_owners():
+    """对外实例的身份功能：读可以开，**写只能落在指名的那几个人身上。**
 
-    所以真正要钉住的不是"别开这个功能"，而是"开了之后没有人写得动"。
-    往 public.yaml 的 accounts 里加一个系统管理员账号，这条会立刻红 ——
-    那正是它存在的意义。
+    这条用例的前身钉的是"这个实例上一个系统管理员都没有"，理由成立：写接口要
+    MEMBERS_WRITE，那一位只属于 SYS_ADMIN，没有 SYS_ADMIN 账号就没有人写得动。
+
+    2026-09-11 它被有意打破了：那个性质的代价是「等待审批」「等待复核」两档
+    **只进不出** —— 线上积压 61 + 25 条，没有任何人有权处理。空着的审批人
+    不是一道安全边界，只是一个没人能用的队列。
+
+    但绊线的价值要留住，所以判据从"一个都不许有"改成"只许名单里的那几个"：
+
+      · 意外多出一个系统管理员（复制粘贴账号、仿真账号写错角色），照旧立刻红；
+      · 真要加人，必须同时改 _PUBLIC_SYS_ADMINS —— 那是一次显式决定，
+        会在代码评审里被看见，而不是混在一行 roles 里溜过去。
+
+    **仍然成立的两件事**（别因为这条放宽了就以为门全开了）：
+      · 未登录的写请求由 server._gate_writes 按 HTTP 方法拦下，与角色无关；
+      · 成员增删要么走这几个账号的口令登录，要么走 ASKDB_ADMIN_TOKEN。
     """
     from pathlib import Path
 
@@ -222,10 +239,17 @@ def test_public_instance_may_read_identity_but_can_never_write_it():
     root = Path(__file__).resolve().parent.parent
     c = load(root / "config" / "public.yaml")
 
-    for acc in auth.accounts(c).values():
-        assert not identity.can(list(acc.roles), identity.MEMBERS_WRITE), (
-            f"对外实例的内置账号 {acc.username} 持有成员写权限")
-        assert "SYS_ADMIN" not in acc.roles
+    holders = {acc.username for acc in auth.accounts(c).values()
+               if identity.can(list(acc.roles), identity.MEMBERS_WRITE)}
+    assert holders == _PUBLIC_SYS_ADMINS, (
+        f"对外实例持有成员写权限的账号变了：{sorted(holders)}。"
+        f"这是一次安全边界变更，改它就要同时改 _PUBLIC_SYS_ADMINS 并说明理由")
+
+    admins = {acc.username for acc in auth.accounts(c).values()
+              if "SYS_ADMIN" in acc.roles}
+    assert admins == _PUBLIC_SYS_ADMINS
+    # 两个人是审批能成立的**下限**，不是凑数：见上面那段说明
+    assert len(admins) >= 2, "只有一个系统管理员时，他自己的审批单永远批不了"
 
 
 def test_add_member_rejects_unknown_role(cfg, monkeypatch):

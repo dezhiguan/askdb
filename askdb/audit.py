@@ -511,6 +511,29 @@ def _redact(item: dict[str, Any], with_text: bool) -> dict[str, Any]:
 _OPEN_CODES = frozenset({"INTERRUPTED", "RESUME_BLOCKED"})
 
 
+def _now_epoch() -> float:
+    """现在（epoch 秒）。**单独一个函数是为了测试能换掉它** ——
+    陈旧判定是这个模块里唯一依赖时钟的地方，不抽出来就得在测试里改系统时间。"""
+    return datetime.now(timezone.utc).timestamp()
+
+
+def _age_s(rec: dict[str, Any], now_s: float) -> float:
+    """这条记录写下来多久了（秒）。**时间戳读不出来一律当 0** ——
+    那等于"刚刚写的"，也就是不判它陈旧。方向是有意选的：宁可让一条真死掉的
+    线程多挂一会儿，也不能因为 ts 缺失或格式怪就把正在跑的判成中断
+    （那会给出一个「可续跑」入口，点下去续的是一条还在跑的线程）。"""
+    ts = rec.get("ts")
+    if not ts:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, now_s - dt.timestamp())
+
+
 def _record_status(rec: dict[str, Any]) -> str:
     """单条记录怎么收尾的 —— ok / rejected / interrupted。
 
@@ -545,7 +568,7 @@ WAITING_REVIEW = "waiting_review"         # 跑完了，但结果可信度存疑
 REVIEW_RETURNED = "review_returned"       # 复核打回：这个数字不采信
 REJECTED = "rejected"                     # 安全红线：护栏拦下
 WAITING_INPUT = "waiting_input"           # 等用户补充/换个问法
-WAITING_APPROVAL = "waiting_approval"     # 等负责人放行
+WAITING_APPROVAL = "waiting_approval"     # 等系统管理员放行（批准后仍需发起人凭票重跑）
 NEEDS_OPERATOR = "needs_operator"         # 等运维：库连不上、执行期故障
 INTERRUPTED = "interrupted"               # 断点在，可续跑
 
@@ -578,15 +601,27 @@ def needs_review(rec: dict[str, Any]) -> bool:
     return not rec.get("rejected_by") and bool(review_reasons(rec))
 
 
-def stage(rec: dict[str, Any], *, has_open_approval: bool = False,
-          review_status: str = "") -> str:
+def stage(rec: dict[str, Any], *, approval_status: str = "",
+          review_status: str = "", ops_status: str = "",
+          stale: bool = False) -> str:
     """一条记录**当前处在哪一档**，以及言下之意是"下一步该谁动手"。
 
-    review_status 由调用方从复核存储取（审计不认识那套存储，理由同审批）：
-    空串 = 还没结论。
+    三个 *_status 都由调用方从各自的存储取（审计不认识那三套存储，也不该认识
+    —— 耦合进来这里就没法单测了）。空串一律表示"还没有结论"。
+
+    ``stale`` 由调用方按时钟判定（见 is_stale_run）：只落了发起记录、而且已经
+    过了很久。审计自己不看表 —— 纯函数才好测，时钟一进来就得在测试里冻结它。
     """
     if rec.get("phase") == PHASE_STARTED:
-        return RUNNING
+        # 只有发起记录的线程有两种可能：真在跑，或者进程被杀了。审计上分不开，
+        # 但**时间能分开** —— 没有哪条查询会跑一刻钟还不收尾（R-17 的 token
+        # 上限与执行超时都远在那之前）。超了就不再叫"运行中"：现场要么在检查点
+        # 里（可续跑），要么连检查点都没写成（那是执行期故障，该找运维）。
+        # 调用方按 graph.is_resumable 核实之后再二选一，见 server 的 /api/tasks。
+        #
+        # 不做这一步的后果实测过：2026-09-11 线上 8 条线程停在「运行中」，
+        # 全部是一个多小时前被杀的进程，没有任何机制会再看它们一眼。
+        return INTERRUPTED if stale else RUNNING
     code = rec.get("rejected_by")
     if code in _OPEN_CODES:
         return INTERRUPTED
@@ -598,25 +633,42 @@ def stage(rec: dict[str, Any], *, has_open_approval: bool = False,
             return DONE          # 已采信，回到普通的"已完成"
         return WAITING_REVIEW if needs_review(rec) else DONE
     if code == "EXEC":
-        return NEEDS_OPERATOR
+        # 运维给过结论就不再挂在队列上。两种结论都是终局，都落回"已拦截"：
+        # RESOLVED 的下一步在发起人手上（原样重试），WONTFIX 是真的没有下一步。
+        # 界面靠 ops_status 把这两种和"护栏拦下"分开讲，别在这里再多开一档 ——
+        # 状态档每多一个，前端就要多一处 if，而它们的下一步动作是同一个。
+        return REJECTED if ops_status else NEEDS_OPERATOR
     if code == "NO_SQL":
         return WAITING_INPUT
-    if has_open_approval:
+    if approval_status == "REQUESTED":
         # 目前只有 R-11 会开审批单；判据用"有没有未决审批"而不是硬编码规则号，
         # 将来哪条规则接上审批，这里不用改。
+        return WAITING_APPROVAL
+    if approval_status == "APPROVED":
+        # **已批准但还没用掉的票，仍然算"等待审批"这一档。**
+        #
+        # 2026-09-11 之前这里只认"有没有未决单"，于是批准的那一刻任务就从
+        # 「等待审批」掉进「已拦截」—— 发起人刚被通知批下来了，回到界面看到的
+        # 却是一个终结态，而那张票还在 approvals 里躺着等人用。闭环就断在这里。
+        #
+        # 不为它新开一档：对发起人来说这仍然是同一件事的同一个阶段（"我在等这条
+        # 查询能跑"），变的只是下一步该谁动手 —— 那句话由 next_actor 讲，
+        # 由 approval_status 区分，不需要状态码跟着分裂。
         return WAITING_APPROVAL
     return REJECTED
 
 
-def _thread_status(last: dict[str, Any], *, has_open_approval: bool = False,
-                   review_status: str = "") -> str:
+def _thread_status(last: dict[str, Any], *, approval_status: str = "",
+                   review_status: str = "", ops_status: str = "",
+                   stale: bool = False) -> str:
     """一条线程现在处于什么状态 —— 看它**最后一条**记录。
 
     续跑写新 trace 但 thread 不变，所以线程的当前状态永远由最后一条决定；
     归属才看第一条（见 tasks 的说明）。
     """
-    return stage(last, has_open_approval=has_open_approval,
-                 review_status=review_status)
+    return stage(last, approval_status=approval_status,
+                 review_status=review_status, ops_status=ops_status,
+                 stale=stale)
 
 
 # ---- 风险分档 ----------------------------------------------------------------
@@ -684,10 +736,16 @@ _NEXT_ACTOR = {
     REVIEW_RETURNED: "复核未通过：这个数字不采信，换个问法重新发起",
     REJECTED: "不可放行：这条触碰的是安全边界，改写法也过不去",
     WAITING_INPUT: "等你补充：把问题说具体些，或直接写出表名",
-    WAITING_APPROVAL: "等负责人放行：审批通过后凭票重跑",
+    WAITING_APPROVAL: "等系统管理员放行：批准后由你自己凭票重跑",
     NEEDS_OPERATOR: "等运维：数据源连不上或执行期故障，恢复后可重试",
     INTERRUPTED: "可续跑：现场还在检查点里",
 }
+
+#: 审批已批准、票还没用掉时的那一句。**与 _NEXT_ACTOR[WAITING_APPROVAL] 是
+#: 两句话，不能合并**：两者状态码相同（见 stage 里那段注释），而下一步该谁
+#: 动手正好相反 —— 一个在等管理员，一个在等发起人自己。这一列存在的全部
+#: 意义就是把这种差别讲清楚。
+NEXT_ACTOR_APPROVED = "已批准：回到这条任务点「凭票重跑」，票是一次性的"
 
 
 def _recent_threads(path: Any, f: AuditFilter, max_threads: int, *,
@@ -755,9 +813,11 @@ TASKS_MAX_THREADS = 2000
 
 def tasks(path: Any, only_user: str | None = None, *,
           max_rows: int = 0, max_scan_rows: int = 0,
-          open_approval_ids: Any = None,
+          approval_status: dict[str, str] | None = None,
           max_threads: int = TASKS_MAX_THREADS,
-          review_status: dict[str, str] | None = None) -> list[dict[str, Any]]:
+          review_status: dict[str, str] | None = None,
+          ops_status: dict[str, str] | None = None,
+          stale_after_s: int = 0) -> list[dict[str, Any]]:
     """执行线程，新的在前。``only_user=None`` 给全部，字符串只给这个人发起的。
 
     askdb 没有任务表，任务这个概念完全落在审计流水与检查点上：
@@ -787,7 +847,13 @@ def tasks(path: Any, only_user: str | None = None, *,
     f = AuditFilter(include_started=True)
     threads = _recent_threads(path, f, max_threads, owned_by=only_user)
 
-    open_approvals = {str(a) for a in (open_approval_ids or ())}
+    approvals = dict(approval_status or {})
+    reviews = dict(review_status or {})
+    ops = dict(ops_status or {})
+    # 「运行中」的陈旧线判定在这里取一次**当前时刻**，不是每条记录各取一次：
+    # 一次列表里的几千条必须按同一个"现在"判，否则翻页时同一条线程会在
+    # 两次请求之间横跳。
+    now_s = _now_epoch() if stale_after_s > 0 else 0.0
     out: list[dict[str, Any]] = []
     for tid, recs in threads.items():
         # 同一次调用的发起记录与收尾记录共用 trace_id：收尾一到，发起就该退场，
@@ -811,9 +877,17 @@ def tasks(path: Any, only_user: str | None = None, *,
         item["first_ts"] = recs[0].get("ts", "")
         item["question"] = recs[0].get("question") or last.get("question") or ""
         trace = str(last.get("trace_id") or tid)
+        item["approval_status"] = approvals.get(trace, "")
+        item["ops_status"] = ops.get(trace, "")
+        item["stale"] = bool(
+            stale_after_s > 0
+            and last.get("phase") == PHASE_STARTED
+            and _age_s(last, now_s) > stale_after_s
+        )
         item["status"] = _thread_status(
-            last, has_open_approval=trace in open_approvals,
-            review_status=(review_status or {}).get(trace, ""))
+            last, approval_status=item["approval_status"],
+            review_status=reviews.get(trace, ""),
+            ops_status=item["ops_status"], stale=item["stale"])
         # 为什么值得复核，逐条给出去 —— 复核人要判断的正是这几句，
         # 让他自己去猜"这条为什么进了队列"，这个队列就没人会用。
         item["review_why"] = review_reasons(last) if not last.get("rejected_by") else []
@@ -824,7 +898,15 @@ def tasks(path: Any, only_user: str | None = None, *,
         item["resumable"] = item["status"] in (INTERRUPTED, RUNNING)
         # 「下一步该谁动手」直接给出去，页面不用再照着状态码写一遍 if/else ——
         # 写两遍就会漂，而这句话是这一页存在的理由。
-        item["next_actor"] = _NEXT_ACTOR.get(item["status"], "")
+        #
+        # 已批准的审批单是同一个状态码下的另一句话（见 NEXT_ACTOR_APPROVED）：
+        # 状态没变，但等的人从管理员换成了发起人自己。
+        item["next_actor"] = (
+            NEXT_ACTOR_APPROVED
+            if (item["status"] == WAITING_APPROVAL
+                and item["approval_status"] == "APPROVED")
+            else _NEXT_ACTOR.get(item["status"], "")
+        )
         # 归属如实给出去。空串 = 匿名发起，不是"丢了" —— 页面要能说清这一点。
         item["owner"] = owner
         # 风险档是折算出来的，不是记录里的字段 —— 理由一并给出，页面可解释

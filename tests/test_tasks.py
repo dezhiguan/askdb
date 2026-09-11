@@ -201,19 +201,61 @@ def test_pending_approval_is_not_a_rejection(acfg):
     """R-11 挂起是**等人放行**，不是终局 —— 与"碰了红线"必须分得开。"""
     rec = {"rejected_by": "R-11", "trace_id": "t1"}
     assert audit.stage(rec) == audit.REJECTED
-    assert audit.stage(rec, has_open_approval=True) == audit.WAITING_APPROVAL
+    assert audit.stage(rec, approval_status="REQUESTED") == audit.WAITING_APPROVAL
+
+
+def test_approved_ticket_still_waits_on_the_requester(acfg):
+    """**批准之后那条任务不能掉进「已拦截」。**
+
+    2026-09-11 之前折算只看"有没有未决单"，于是批准的那一刻状态就从等待审批
+    变成已拦截 —— 发起人刚被通知批下来了，界面上却是个终结态，而那张票还在
+    审批存储里躺着没人用。闭环就断在这一格。
+
+    批准与待批共用一个状态码（对发起人来说是同一件事的同一个阶段），差别由
+    next_actor 讲清楚：一个在等管理员，一个在等他自己。
+    """
+    rec = {"rejected_by": "R-11", "trace_id": "t1"}
+    assert audit.stage(rec, approval_status="APPROVED") == audit.WAITING_APPROVAL
+    # 用掉之后才是终局
+    assert audit.stage(rec, approval_status="CONSUMED") == audit.REJECTED
 
 
 def test_tasks_marks_thread_waiting_approval(acfg):
-    """未决审批要联查进任务列表，否则页面上它与"已拦截"长得一模一样。"""
+    """审批状态要联查进任务列表，否则页面上它与"已拦截"长得一模一样。"""
     _write(acfg.audit_log, [{**_rec("a1", "t1", user="alice", rejected="R-11",
                                     ts=_now()), "trace_id": "a1"}])
     plain = audit.tasks(acfg.audit_log)
     assert plain[0]["status"] == audit.REJECTED
 
-    joined = audit.tasks(acfg.audit_log, open_approval_ids={"a1"})
+    joined = audit.tasks(acfg.audit_log, approval_status={"a1": "REQUESTED"})
     assert joined[0]["status"] == audit.WAITING_APPROVAL
     assert "放行" in joined[0]["next_actor"]
+
+    # 已批准：状态不变，但等的人换成了发起人自己
+    approved = audit.tasks(acfg.audit_log, approval_status={"a1": "APPROVED"})
+    assert approved[0]["status"] == audit.WAITING_APPROVAL
+    assert approved[0]["approval_status"] == "APPROVED"
+    assert "凭票重跑" in approved[0]["next_actor"]
+
+
+def test_resolved_exec_failure_leaves_the_ops_queue(acfg):
+    """运维给过结论的执行期故障不再挂在队列上 —— 否则那一档只进不出。"""
+    rec = {"rejected_by": "EXEC", "trace_id": "t1"}
+    assert audit.stage(rec) == audit.NEEDS_OPERATOR
+    assert audit.stage(rec, ops_status="RESOLVED") == audit.REJECTED
+    assert audit.stage(rec, ops_status="WONTFIX") == audit.REJECTED
+
+
+def test_a_stale_running_thread_stops_being_running(acfg):
+    """只落了发起记录、又过了阈值的线程，不再叫"运行中"。
+
+    审计上"正在跑"与"进程被杀了"分不开，但时间能分开：没有哪条查询会跑一刻钟
+    还不收尾。不判这一下的后果实测过 —— 2026-09-11 线上 8 条一小时前被杀的
+    线程永远停在运行中，没有任何机制会再看它们一眼。
+    """
+    rec = {"phase": audit.PHASE_STARTED, "trace_id": "t1"}
+    assert audit.stage(rec) == audit.RUNNING
+    assert audit.stage(rec, stale=True) == audit.INTERRUPTED
 
 
 def test_started_record_makes_a_crashed_thread_visible(acfg):

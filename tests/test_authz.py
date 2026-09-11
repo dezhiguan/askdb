@@ -74,15 +74,26 @@ def test_all_roles_have_exactly_the_same_capabilities():
     assert base                                    # 不是"都为空"这种退化的相等
 
 
-def test_system_admin_differs_only_by_approve_and_member_writes():
-    """唯一的角色差别。多出来的两位各有各的理由，别再多第三位。
+def test_role_differences_are_only_about_handling_stuck_work():
+    """角色之间的全部差别。**每一位都要能说出它为什么不能并进上一位。**
 
-    · APPROVE      —— 提出与放行分属两人（V1.1 决定）
+    · APPROVE      —— 事前放行与事后复核。提出与放行分属两人（V1.1 决定）
     · MEMBERS_WRITE —— 它是上一条的前提：谁能改成员名单，谁就能把自己加进
       系统管理员，于是"只有系统管理员能审批"变成一次点击的距离
+    · OPS_RESOLVE  —— 执行期故障处置（2026-09-11）。**不能并进 APPROVE**：
+      审批判的是"该不该让它去跑"（要能担成本），处置判的是"库通了没有"
+      （要能看连接池）。合成一位就等于说运维=审批，而这两件事的判据、
+      证据来源、该找的人没有一处重合。
+
+    可见面仍然**完全相同** —— 这三位都只决定"能不能把一条卡住的任务往前推"，
+    一行数据也不会因此多看到。往这里加第四位之前，先问它是不是同一性质。
     """
-    extra = identity.caps_of(["SYS_ADMIN"]) - identity.caps_of(["PRODUCT"])
-    assert extra == {identity.APPROVE, identity.MEMBERS_WRITE}
+    everyone = identity.caps_of(["PRODUCT"])
+    assert identity.caps_of(["SYS_ADMIN"]) - everyone == {
+        identity.APPROVE, identity.MEMBERS_WRITE, identity.OPS_RESOLVE}
+    # 运维只多故障处置这一位：能重启库不等于能放行一次全表扫描
+    assert identity.caps_of(["SRE"]) - everyone == {identity.OPS_RESOLVE}
+    assert identity.APPROVE not in identity.caps_of(["SRE"])
 
 
 def test_system_admin_can_query_like_everyone_else():

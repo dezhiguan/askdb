@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 
 from . import approvals as _approvals
 from . import audit as _audit
+from . import ops as _ops
 from . import reviews as _reviews
 from . import auth as _auth
 from . import evalrun as _evalrun
@@ -126,7 +127,28 @@ _WRITE_ACTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("DELETE", ("api", "identity", "members", "*"), "移除成员"),
     ("POST", ("api", "approvals", "*", "decide"), "审批这条申请"),
     ("POST", ("api", "reviews", "*", "decide"), "提交复核判定"),
+    ("POST", ("api", "ops", "*", "resolve"), "处置执行期故障"),
 )
+
+
+#: 「运行中」多久没收尾就不再算运行中（秒）。默认一刻钟 —— 远在任何一条正常
+#: 查询之上（R-17 的 token 上限与执行超时都在几十秒量级），又远短于"没人再看
+#: 它一眼"的那种永久滞留。
+_STALE_RUN_AFTER_S = 900
+
+
+def _stale_after_s(cfg: Config) -> int:
+    """陈旧判定阈值。0 或负数 = 关掉这项判定（线程照旧一直显示运行中）。
+
+    放在配置里而不是写死：部署形态不同，"多久算死了"也不同 —— 本机跑一条
+    复杂多步链路可以拖很久，而 k8s 上的 pod 被杀是秒级的事。
+    """
+    try:
+        v = int((cfg.raw.get("observability", {}) or {}).get(
+            "stale_run_after_s", _STALE_RUN_AFTER_S))
+    except (TypeError, ValueError):
+        return _STALE_RUN_AFTER_S     # 配歪了退回默认，不要因此关掉这项判定
+    return v
 
 
 def _write_action_name(method: str, path: str) -> str:
@@ -477,6 +499,19 @@ class ReviewRequest(BaseModel):
     note: str = Field(default="", max_length=200)
 
 
+class OpsRequest(BaseModel):
+    """执行期故障的处置结论。字段名同样与前两者**不同**：这里既不是
+    "要不要放行"也不是"数字算不算数"，而是"这次故障处理完了没有"。
+
+    status 用枚举字符串而不是布尔：RESOLVED 与 WONTFIX 不是一件事的正反面
+    —— 前者的下一步是发起人重试，后者压根没有下一步。压成 bool 的话，
+    界面就只能靠备注去猜该不该提示"可以重试了"。
+    """
+    status: str = Field(max_length=16)
+    # WONTFIX 时尤其要写：发起人拿到的唯一解释就是这句话
+    note: str = Field(default="", max_length=200)
+
+
 class SourceRequest(BaseModel):
     """新增/测试数据源。**口令二选一**：password_env 给环境变量名（推荐，
     口令不落盘），password 给明文（用主密钥加密后落盘）。"""
@@ -496,6 +531,12 @@ class SourceTablesRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=64)
+    #: 发起人事后补上的条件（时间范围、口径、统计维度……）。
+    #:
+    #: 上限 500 字是有意的：这是一句**补充条件**，不是第二个问题。放到几千字，
+    #: 它就会被当成对话框用，而这套系统没有多轮上下文 —— 那条路的终点是
+    #: 模型假装"沿用上一轮口径"再编一个答案出来（2026-09-09 实测过）。
+    clarification: str = Field(default="", max_length=500)
 
 
 def _friendly_validation_message(errors: list[dict]) -> str:
@@ -2119,7 +2160,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 检查点快照只有走图的调用（ask）才有；直查/配额拦截没有线程，
         # 如实给空列表而不是省略字段 —— 前端不用猜字段存不存在。
         snapshots: list[dict[str, Any]] = []
-        if rec.get("kind", "ask") in ("ask", "resume") and rec.get("attempts"):
+        # clarify = 带补充条件的重跑，它同样走图、同样落检查点（见
+        # graph._rerun_with_clarification），漏掉它这一类记录就点不开快照。
+        if rec.get("kind", "ask") in ("ask", "resume", "clarify") and rec.get("attempts"):
             from .graph import replay as _snap
 
             try:
@@ -2257,6 +2300,36 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             raise HTTPException(status_code=404, detail="成员不存在")
         return {"ok": True}
 
+    def _task_context() -> dict[str, Any]:
+        """任务态折算要用的三份结论 + 陈旧阈值，**一处组装，三处共用**。
+
+        任务中心、复核队列、运维队列都要把审计记录折算成任务态，而折算依赖
+        三套独立存储（审批/复核/运维）。各自现取的话，同一条线程在三个页面
+        上会显示成三种状态 —— 那是这套系统里最容易发生、也最难发现的一类
+        漂移：每一页单看都自洽。
+
+        任何一套取不到都退回空表而不是抛：一个队列的存储挂了，不该让另外两个
+        页面也打不开。代价是那一档的结论暂时看不到（任务退回"还没处理"），
+        而不是整页 500。
+        """
+        out: dict[str, Any] = {"approval_status": {}, "review_status": {},
+                               "ops_status": {}, "stale_after_s": _stale_after_s(cfg)}
+        try:
+            out["approval_status"] = {
+                str(a.get("id")): str(a.get("status") or "")
+                for a in _approvals.state(cfg).values()}
+        except Exception:
+            pass
+        try:
+            out["review_status"] = _reviews.decided(cfg)
+        except Exception:
+            pass
+        try:
+            out["ops_status"] = _ops.decided(cfg)
+        except Exception:
+            pass
+        return out
+
     @app.get("/api/approvals")
     def approvals_list(request: Request) -> dict[str, Any]:
         """待审批队列。
@@ -2326,7 +2399,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             None if can_review else me,
             max_rows=cfg.max_rows,
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
-            review_status=_reviews.decided(cfg),
+            **_task_context(),
         )
         pending = [t for t in items if t.get("status") == _audit.WAITING_REVIEW]
         return {
@@ -2365,6 +2438,73 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         except _reviews.SelfReview as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
         return out
+
+    @app.get("/api/ops")
+    def ops_list(request: Request) -> dict[str, Any]:
+        """待处置队列 —— 执行期故障（rejected_by == "EXEC"）那些。
+
+        **与审批、复核是第三件事**：那两条判的都是**这次提问**（该不该跑、
+        答得对不对），这一条判的是**系统**（库通了没有）。判据、决策人、
+        证据来源没有一处重合，所以是第三条队列、第三套存储。
+
+        可见范围与前两条同一条口径：有 OPS_RESOLVE 的看全部，没有的只看自己
+        发起的 —— 发起人必须知道自己那条卡在哪、有没有人在管。
+        """
+        _require_login(request)
+        from .audit import tasks as _tasks
+
+        can_resolve = _can(request, _identity.OPS_RESOLVE)
+        me = _current_user(request) or ""
+        items = _tasks(
+            cfg,
+            None if can_resolve else me,
+            max_rows=cfg.max_rows,
+            max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
+            **_task_context(),
+        )
+        pending = [t for t in items if t.get("status") == _audit.NEEDS_OPERATOR]
+        return {
+            "can_resolve": can_resolve,
+            "items": _ops.listing(cfg, pending),
+            "pending": len(pending),
+        }
+
+    @app.post("/api/ops/{trace_id}/resolve")
+    def ops_resolve(trace_id: str, req: OpsRequest,
+                    request: Request) -> dict[str, Any]:
+        """把一条执行期故障标为已处理。**运维或系统管理员**。
+
+        这里**不替发起人重试**：重试是一次真实的模型消费与库访问，得由要这个
+        数字的人自己发起。运维的职责到"库好了"为止 —— 越过这条线，就会出现
+        运维在不知情的情况下花掉别人的配额、跑出别人没在等的结果。
+
+        也**没有"不得自处置"那道门**（与审批、复核有意不同）：那两处判的是
+        自己的请求该不该放行，自批是实打实的利益冲突；而这里判的是"库通了没有"
+        —— 一句任何人都能复验的系统事实。运维修好自己撞上的故障再标记一下，
+        那是正常流程，挡掉只会逼人换个账号点一次。留痕照旧完整。
+        """
+        _require_login(request)
+        _require_cap(request, _identity.OPS_RESOLVE, "处置执行期故障")
+        if not _TRACE_ID_RE.fullmatch(trace_id or ""):
+            raise HTTPException(status_code=404, detail="记录不存在")
+        status = (req.status or "").strip().upper()
+        if status not in _ops.STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail="处置结论只能是 " + " / ".join(_ops.STATUSES))
+
+        from .audit import get_audit
+
+        rec = get_audit(cfg, trace_id)
+        if rec is None or rec.get("rejected_by") != "EXEC":
+            # 不存在、或本就不是执行期故障 —— 合并成同一句，理由同复核：
+            # 这个入口不是用来试探"某条记录存不存在"的。
+            raise HTTPException(status_code=404,
+                                detail="该记录不存在，或不在待处置范围内。")
+        return _ops.resolve(cfg, trace_id,
+                            operator=_current_user(request) or "",
+                            status=status, note=req.note,
+                            owner=str(rec.get("user") or ""))
 
     @app.get("/api/tasks")
     def tasks(request: Request, page: int = 1, page_size: int = 10,
@@ -2413,35 +2553,45 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         from .audit import tasks as _tasks
         from .graph import is_resumable
 
-        # 未决审批要联查进来：R-11 被拦下的那条**在等人放行**，不是终局。
+        # 审批状态要联查进来：R-11 被拦下的那条**在等人放行**，不是终局。
         # 只看审计的话它与"碰了安全红线"长得一模一样，页面上都是「已拦截」，
-        # 而两者的下一步一个是"找负责人点一下"、一个是"这条永远过不去"。
+        # 而两者的下一步一个是"找管理员点一下"、一个是"这条永远过不去"。
         # 审计不认识 approvals 存储（两套存储，耦合进去就没法单测），
-        # 所以在这里取、按 id 传进去。
-        open_ids: set[str] = set()
-        try:
-            open_ids = {str(a.get("id")) for a in _approvals.state(cfg).values()
-                        if a.get("status") == _approvals.REQUESTED}
-        except Exception:
-            open_ids = set()          # 审批存储不可用不该让任务中心整页打不开
-
-        # 复核结论同理：待复核是从审计痕迹推导的，**已决的那些**要从复核
-        # 存储取回来，否则采信过的结果会永远挂在队列里。
-        reviewed: dict[str, str] = {}
-        try:
-            reviewed = _reviews.decided(cfg)
-        except Exception:
-            reviewed = {}
-
+        # 所以在这里取、按状态传进去。
+        #
+        # 2026-09-11：从"未决单 id 集合"改成"trace → 状态"。只传未决的话，
+        # 批准的那一刻任务会从「等待审批」掉进「已拦截」，而那张票还没被用掉
+        # —— 发起人刚被通知批下来了，界面上却是个终结态。闭环断在这里。
+        # 复核与运维的结论同理：待办由审计痕迹推导，**已决的那些**要从各自
+        # 存储取回来，否则两档都只进不出。三份一起由 _task_context 取。
+        #
         # 阈值传进去做风险折算（审计里没有风险字段，见 audit._risk 的说明）
         items = _tasks(
             cfg,
             None if _can(request, _identity.TASKS_ALL) else username,
             max_rows=cfg.max_rows,
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
-            open_approval_ids=open_ids,
-            review_status=reviewed,
+            **_task_context(),
         )
+        # 陈旧的「运行中」线程（进程被杀）在审计里先判成可续跑，**在分页与
+        # 统计之前**按检查点核实一遍：核得过的是真可续，核不过说明现场压根
+        # 没落盘 —— 那不是用户能补救的事，是执行期故障，改判等运维。
+        #
+        # 必须在 paginate_tasks 之前做：那一步要算各档计数、还要按状态筛。
+        # 放到后面改，会出现「等待运维」筛不出这几条、而计数把它们记在
+        # 「可续跑」名下 —— 状态与计数对不上，正是这次要消灭的那类矛盾。
+        #
+        # 逐条查检查点只发生在 stale 的那几条上（线上实测个位数），不是全量：
+        # 真正在跑的线程不会陈旧，正常收尾的线程连 stale 都不会置位。
+        for it in items:
+            if not it.get("stale"):
+                continue
+            state = is_resumable(str(it.get("thread_id") or ""), cfg)
+            it["resumable"] = bool(state)
+            if state:
+                continue
+            it["status"] = _audit.NEEDS_OPERATOR
+            it["next_actor"] = _audit._NEXT_ACTOR[_audit.NEEDS_OPERATOR]
         # 审计只知道这条线程上次以 INTERRUPTED 收尾（或只落了发起记录），
         # 不知道现场有没有真的落盘、也不知道后来是不是已被续跑跑完 ——
         # 只按审计标 resumable，会出现"这里说能续、点下去 404"。
@@ -2454,7 +2604,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 会到北京时间早上八点才翻页
             tz=_audit.day_tz(cfg))
         for it in result["items"]:
-            if it.get("resumable"):
+            # stale 的那批在分页前已经核过一遍，别再查一次库
+            if it.get("resumable") and not it.get("stale"):
                 state = is_resumable(str(it.get("thread_id") or ""), cfg)
                 if state is not None:
                     it["resumable"] = state
@@ -2491,6 +2642,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         not_found = JSONResponse({"error": "not found"}, status_code=404)
         if not _TRACE_ID_RE.fullmatch(req.thread_id or ""):
             return not_found
+        clarification = (req.clarification or "").strip()
         # 归属校验：有主的任务只能由发起人续跑。
         # 匿名发起的任务保持原语义（凭 thread_id 续跑）—— 那是登录之前的行为，
         # 不因为加了账号就把老任务锁死。
@@ -2498,6 +2650,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         owner = ""
         origin_source = ""
+        # 问题原文与 org 也从这里取。**没有活检查点的那条路要靠它们**：
+        # 「等待补充」的线程是正常收尾的（NO_SQL），检查点里没有可续的断点，
+        # 重跑要的问题原文只在审计里。取法与 owner / source 完全同源，
+        # 不额外多读一遍流水。
+        origin_question = ""
+        origin_org: int | None = None
         # **带上发起记录**（include_started）：进程被杀那种线程只剩这一条，
         # 而归属与数据源正是从它取。滤掉它就等于"任务中心说能续跑、这里说
         # 你当初跑在 builtin 上" —— 实测过一次，就是这条 400。
@@ -2508,18 +2666,44 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # closing 是必需的，不是讲究：只取第一条就 break，而生成器一旦提前
         # 离开，库后端那条服务端游标就还占着池子里的一条连接（池子只有 6 条）。
         # 靠垃圾回收顺手关掉能work，但那是在赌 CPython 的引用计数时机。
+        # **第一条与最后一条都要**：归属、数据源、问题原文取自第一条（续跑写
+        # 新 trace 但发起人不变）；而"这条线程现在停在哪一档"只有最后一条说了算。
+        # 一条线程的记录是个位数（attempts_on_thread），整条读完不是负担。
+        last_rec: dict[str, Any] | None = None
         stream = iter_records(cfg, AuditFilter(include_started=True,
                                                thread_ids=(req.thread_id,)))
         with closing(stream):
             for rec in stream:
-                owner = rec.get("user") or ""
-                # 续跑必须回到**当初那个数据源**。审计里存了它（_audit_of 的
-                # source 字段），所以不需要调用方再传一次 —— 传参既多一处
-                # 契约，又给了"在 A 源发起、拿 B 源续跑"的可乘之机。
-                origin_source = str(rec.get("source") or "")
-                break
+                if last_rec is None:
+                    owner = rec.get("user") or ""
+                    # 续跑必须回到**当初那个数据源**。审计里存了它（_audit_of 的
+                    # source 字段），所以不需要调用方再传一次 —— 传参既多一处
+                    # 契约，又给了"在 A 源发起、拿 B 源续跑"的可乘之机。
+                    origin_source = str(rec.get("source") or "")
+                    origin_question = str(rec.get("question") or "")
+                    org_val = rec.get("org_id")
+                    origin_org = int(org_val) if isinstance(org_val, int) else None
+                last_rec = rec
         if owner and owner != (_current_user(request) or ""):
             return not_found          # 与"不存在"同一响应，不暴露任务是否存在
+
+        # **只有还在等人动手的线程可以被推一把。**
+        #
+        # 带补充条件的重跑（graph.resume 的第二条路）不需要活检查点，于是
+        # 光有 thread_id 就能让**任何**一条线程再跑一遍 —— 包括早就正常收尾的。
+        # 那等于给了一条绕过配额语义的重放入口：同一条线程可以被无限次重跑，
+        # 每次都记成"第 N 次执行"，而任务中心会显示成这个人反复在补充同一个问题。
+        #
+        # 判据用任务态而不是 rejected_by 白名单：档位的折算口径只此一份
+        # （audit.stage），两处各写一份必然漂。
+        if last_rec is not None and clarification:
+            stage_now = _audit.stage(last_rec)
+            if stage_now not in (_audit.WAITING_INPUT, _audit.INTERRUPTED,
+                                 _audit.RUNNING):
+                raise HTTPException(
+                    status_code=409,
+                    detail="这条任务当前不在等待补充，无法补充后重跑。"
+                           "若要换个问法，请在查询页重新发起。")
 
         try:
             # 传 request：续跑同样要过环境校验。任务是历史，权限是现在 ——
@@ -2535,7 +2719,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             ) from e
 
         scoped = _scoped(request, base)
-        r = run_resume(req.thread_id, scoped)
+        r = run_resume(req.thread_id, scoped, clarification=clarification,
+                       question=origin_question, org_id=origin_org)
         if r is None:
             return not_found
         return JSONResponse(r.to_dict())

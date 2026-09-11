@@ -157,12 +157,18 @@ def test_import_approvals_is_idempotent(store):
     assert auditstore.import_records(auditstore.APPROVALS, recs)["skipped"] == 1
 
 
-def test_counts_reconciles_all_three_streams(store):
-    """迁移前后对账用 —— 三条流水各自数各自的。"""
+def test_counts_reconciles_all_four_streams(store):
+    """迁移前后对账用 —— 四条流水各自数各自的。
+
+    ops 是 2026-09-11 加的第四条（执行期故障处置）。**各自一张表**：
+    三条队列都以 trace_id 为主键，挤在一起会互相覆盖 —— 同一条 trace 完全
+    可能先被审批放行、执行时又撞上库故障、跑出来的数还要复核。
+    """
     auditstore.append_audit(_rec("c1"))
     auditstore.append_approval({"id": "ap1", "status": "PENDING"})
+    auditstore.append_ops({"id": "op1", "status": "RESOLVED"})
     assert auditstore.counts() == {auditstore.AUDIT: 1, auditstore.APPROVALS: 1,
-                                   auditstore.REVIEWS: 0}
+                                   auditstore.REVIEWS: 0, auditstore.OPS: 1}
 
 
 def test_ensure_schema_is_idempotent(store):

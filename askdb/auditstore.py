@@ -41,7 +41,7 @@ from .config import Config
 
 log = logging.getLogger("askdb.auditstore")
 
-AUDIT, APPROVALS, REVIEWS = "audit", "approvals", "reviews"
+AUDIT, APPROVALS, REVIEWS, OPS = "audit", "approvals", "reviews", "ops"
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS askdb_audit (
@@ -89,6 +89,16 @@ CREATE TABLE IF NOT EXISTS askdb_reviews (
     written_at  timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS askdb_reviews_rid_idx ON askdb_reviews (review_id);
+
+CREATE TABLE IF NOT EXISTS askdb_ops (
+    id          bigserial PRIMARY KEY,
+    ops_id      text NOT NULL,
+    trace_id    text NOT NULL DEFAULT '',
+    ts          timestamptz,
+    record      jsonb NOT NULL,
+    written_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS askdb_ops_oid_idx ON askdb_ops (ops_id);
 """
 
 _ready: set[tuple[str, str]] = set()
@@ -416,6 +426,14 @@ def read_reviews() -> list[dict[str, Any]]:
     return _read_events("askdb_reviews")
 
 
+def append_ops(rec: dict[str, Any]) -> None:
+    _append_event("askdb_ops", "ops_id", rec)
+
+
+def read_ops() -> list[dict[str, Any]]:
+    return _read_events("askdb_ops")
+
+
 def _append_event(table: str, id_col: str, rec: dict[str, Any]) -> None:
     """审批与复核的事件写入。
 
@@ -475,8 +493,11 @@ def import_records(stream: str, records: list[dict[str, Any]]) -> dict[str, int]
         return {"total": len(records), "imported": len(fresh),
                 "skipped": len(records) - len(fresh)}
 
-    table, id_col = (("askdb_approvals", "approval_id") if stream == APPROVALS
-                     else ("askdb_reviews", "review_id"))
+    table, id_col = {
+        APPROVALS: ("askdb_approvals", "approval_id"),
+        REVIEWS: ("askdb_reviews", "review_id"),
+        OPS: ("askdb_ops", "ops_id"),
+    }[stream]
     seen = {(i, ts, st) for i, ts, st in pgstore.rows(
         f"SELECT {id_col}, coalesce(record->>'ts',''),"
         f" coalesce(record->>'status','') FROM {table}")}
@@ -490,11 +511,11 @@ def import_records(stream: str, records: list[dict[str, Any]]) -> dict[str, int]
 
 
 def counts() -> dict[str, int]:
-    """三张表各有多少行 —— 迁移前后对账用。"""
+    """四张表各有多少行 —— 迁移前后对账用。"""
     ensure_schema()
     out = {}
     for stream, table in ((AUDIT, "askdb_audit"), (APPROVALS, "askdb_approvals"),
-                          (REVIEWS, "askdb_reviews")):
+                          (REVIEWS, "askdb_reviews"), (OPS, "askdb_ops")):
         rows = pgstore.rows(f"SELECT count(*) FROM {table}")
         out[stream] = int(rows[0][0]) if rows else 0
     return out

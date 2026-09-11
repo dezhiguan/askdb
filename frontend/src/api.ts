@@ -547,7 +547,11 @@ export interface Introspect {
 }
 
 export interface ReviewItem {
-  trace_id?: string
+  /** 必有：待复核那些来自任务行（审计 summary 一定带 trace_id），已决那些由
+   *  复核存储按 trace_id 建行（reviews.listing）。两条来路都保证它在，
+   *  所以这里**不写成可选** —— 写成可选就得在每个用点加一次 ?? ''，
+   *  而那个空串会被当成一个真的 trace_id 发到接口上。 */
+  trace_id: string
   thread_id?: string
   question?: string | null
   review_status: 'REQUESTED' | 'ACCEPTED' | 'RETURNED'
@@ -585,6 +589,46 @@ export async function decideReview(
   if (!response.ok) {
     const detail = await response.json().catch(() => null)
     throw new Error(detail?.detail || `/api/reviews/decide ${response.status}`)
+  }
+}
+
+/** 执行期故障的处置结论。**与复核、审批都是两件事**：那两条判的是这次提问
+ *  （该不该跑、答得对不对），这一条判的是系统（库通了没有）。 */
+export type OpsStatus = 'RESOLVED' | 'WONTFIX'
+
+export interface OpsItem extends Partial<Task> {
+  trace_id: string
+  thread_id: string
+  /** 空串 = 还没处理。有值即结论已落，任务态也已离开 needs_operator。 */
+  ops_status: OpsStatus | ''
+  operator?: string
+  note?: string
+  decided_ts?: string
+}
+
+export interface OpsQueue {
+  can_resolve: boolean
+  items: OpsItem[]
+  pending: number
+}
+
+export async function fetchOps(): Promise<OpsQueue> {
+  const response = await fetch('/api/ops')
+  if (!response.ok) throw new Error(`/api/ops ${response.status}`)
+  return response.json()
+}
+
+export async function resolveOps(
+  traceId: string, status: OpsStatus, note: string,
+): Promise<void> {
+  const response = await fetch(`/api/ops/${encodeURIComponent(traceId)}/resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status, note }),
+  })
+  if (!response.ok) {
+    const detail = await response.json().catch(() => null)
+    throw new Error(detail?.detail || `/api/ops/resolve ${response.status}`)
   }
 }
 
@@ -845,19 +889,31 @@ export interface AskResult {
  *
  *  asTask=true 表示这次提问来自「创建任务」。后端据此要求登录 —— 任务与普通
  *  提问走同一条链路，后端分辨不出来，只能由调用方声明。 */
-export const askQuestion = (question: string, source = '', orgId?: number, asTask = false) =>
-  post<AskResult>('/api/ask', { question, source, org_id: orgId ?? null, as_task: asTask })
+/** 发起一次提问。
+ *
+ *  approvalId 是**审批放行票**：R-11 拦下的高成本查询批准之后，发起人带着它
+ *  原样重发一次，服务端只放行 R-11 那一道（见 askdb/server.py 的 _apply_waiver）。
+ *  服务端不替任何人执行 —— 所以这个参数必须从这里传，没有第二条路。
+ *  票是一次性的、绑在**问题原文**上：question 改一个字指纹就对不上，403。 */
+export const askQuestion = (question: string, source = '', orgId?: number,
+                            asTask = false, approvalId = '') =>
+  post<AskResult>('/api/ask', {
+    question, source, org_id: orgId ?? null, as_task: asTask,
+    approval_id: approvalId,
+  })
 
 export const runSql = (sql: string, source = '', orgId?: number) =>
   post<AskResult>('/api/sql', { sql, source, org_id: orgId ?? null })
 
 /** 从断点续跑。thread_id 非法/不存在/已跑完/不属于当前账号，一律 404 且响应一致。
  *  枚举入口只对**已登录用户**开放，且只列自己的（见 /api/tasks）。 */
-export async function resumeTask(threadId: string): Promise<AskResult | null> {
+export async function resumeTask(
+  threadId: string, clarification = '',
+): Promise<AskResult | null> {
   const response = await request('/api/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ thread_id: threadId }),
+    body: JSON.stringify({ thread_id: threadId, clarification }),
   })
   if (response.status === 404) return null
   const data = await response.json().catch(() => null)
@@ -1070,7 +1126,7 @@ export interface Task {
    *    done             正常收尾
    *    rejected         安全红线：护栏拦下，改写法也过不去
    *    waiting_input    等用户补充：模型没产出 SQL，把问题说具体些
-   *    waiting_approval 等负责人放行：审批通过后凭票重跑
+   *    waiting_approval 等系统管理员放行；批准后由发起人凭票重跑
    *    needs_operator   等运维：数据源连不上或执行期故障，恢复后可重试
    *    interrupted      断点在，可续跑 */
   status: 'running' | 'done' | 'rejected' | 'waiting_input'
@@ -1094,6 +1150,19 @@ export interface Task {
    *  续跑只有主人能做（服务端校验），页面据此置灰入口 —— 列表列全部线程，
    *  能不能动是另一回事。 */
   owner: string
+  /** 审批单当前状态。**status 为 waiting_approval 时这一列才有意义，
+   *  而且这一档下它有两个取值，对应两种完全相反的下一步**：
+   *    REQUESTED 等系统管理员放行
+   *    APPROVED  已批准，等**发起人自己**凭票重跑（票是一次性的）
+   *  空串 = 这条没开过审批单。别用 status 去猜，两者不是一回事。 */
+  approval_status?: string
+  /** 运维处置结论（RESOLVED / WONTFIX）。有值即已处理过，此时 status 已经
+   *  离开 needs_operator 落到 rejected —— 页面靠这一列把"运维处理过的执行期
+   *  故障"与"护栏拦下"分开讲，两者的下一步完全不同。 */
+  ops_status?: string
+  /** 这条「运行中」是不是已经陈旧（只落了发起记录且过了阈值）。
+   *  服务端据此改判可续跑或等运维，页面拿它解释"为什么它不再显示运行中"。 */
+  stale?: boolean
 }
 
 /** 任务中心的统计卡。**算在筛选之前**（服务端 audit.paginate_tasks）——

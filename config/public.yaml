@@ -343,6 +343,14 @@ observability:
   # -------------------------------------------------------------------------
   daily_quota: 12000
 
+  # 「运行中」多久没收尾就不再算运行中（秒）。0 = 关掉这项判定。
+  #
+  # 一条线程只落了发起记录、没落收尾，在审计上与"正在跑"分不开 —— 但时间能
+  # 分开：没有哪条查询会跑一刻钟还不收尾。超了就按现场在不在检查点里，改判
+  # 「可续跑」或「等待运维」，由人接手。2026-09-11 之前没有这项判定，线上 8 条
+  # 一小时前被杀的线程永远停在「运行中」，没有任何机制会再看它们一眼。
+  stale_run_after_s: 900
+
   quota:
     # 配了这个环境变量就用 Redis 计数，没配就退回本地文件。
     # **多副本部署必须配**：本地文件是每个副本各数各的，
@@ -498,15 +506,23 @@ auth:
     # 2026-09-08 加。列多个角色是为了让「身份与权限」页那几份成员名单里都有本人 ——
     # 名册的口径是"配置内置 ∪ 库表登记"（identity.builtin_members），写在这里的人
     # 就是实打实的角色持有者，不必再去库表登记一遍。
+    # 2026-09-11 加 SYS_ADMIN 与 SRE：此前线上**一个**能审批的账号都没有
+    # （身份库里那 8 条 SYS_ADMIN 全是名册生成的名字，没有口令、登不进来），
+    # 于是「等待审批」「等待复核」两档只进不出，积压 61 + 25 条。
+    # SRE 是同日新增的运维角色，一并兼任，否则「等待运维」照样没人能动。
     - username: guandezhi
       display_name: 官德志
-      roles: [PRODUCT, DEV, QA, DESIGN]
+      roles: [PRODUCT, DEV, QA, DESIGN, SYS_ADMIN, SRE]
       note: 平台负责人
       password_hash: "scrypt$16384$8$1$/KvNKD5fh4sCZ4f0dVywTw==$elUkPBeIHNa+F25GjPl07qYCtYA+/cz+It9DNkCa0xE="
     # 2026-09-10 加。
+    # 第二个系统管理员。**这不是冗余**：approvals.decide 里「发起人不得自批」
+    # 是审批链路唯一一道门，只有一个管理员的话，他自己触发 R-11 的查询就永远
+    # 批不了 —— 一个人的审批等于没有审批。两个人互批，「提出与放行分属两人」
+    # 才重新成立。删掉任何一个之前先读 approvals.decide 那段注释。
     - username: chenjiawei
       display_name: 陈嘉伟
-      roles: [DEV]
+      roles: [DEV, SYS_ADMIN]
       note: 开发
       password_hash: "scrypt$16384$8$1$XLoQr1kl3fXZlUm5EA2EPg==$VkbXmB3NQSwMF4SNkRHAf6TGpZzmYUKgJtnyva/KSlI="
     # 2026-09-10 加，仿真测试账号（sim_accounts_200 首个，先落一个验证链路）。
