@@ -397,8 +397,23 @@ class LlmClient:
         parsed = out["parsed"] if isinstance(out, dict) else out
         if parsed is None:
             err = RuntimeError("模型未按结构化格式返回")
-            # 没产出也照记 token：这次调用真的花了钱，抛异常不是不计费的理由
-            self._note_fail(t0, err, "无重试，链路终止", usage=usage)
+            # 没产出也照记 token：这次调用真的花了钱，抛异常不是不计费的理由。
+            #
+            # 原来这里"无重试，链路终止"。2026-09-11 跑测里它把两条最普通的
+            # GROUP BY 问句直接判死（rejected_by=LLM），而这只是一次偶发的
+            # 格式抖动 —— 与调用抛异常在性质上没有区别，而那条路径是切备选
+            # 模型重试的。两条路走同一套处置，不再厚此薄彼。
+            fb = self._fallback_client()
+            self._note_fail(t0, err,
+                            f"格式失败，切备选模型 {fb.model_name} 重试" if fb
+                            else "格式失败，无备选模型，链路终止", usage=usage)
+            if fb is not None:
+                try:
+                    return fb.structured(schema, system, human)
+                except Exception as fb_err:
+                    raise RuntimeError(
+                        f"主模型 {self.model_name} 未按结构化格式返回；"
+                        f"备选 {fb.model_name} 也失败：{fb_err}") from err
             raise RuntimeError("模型未按结构化格式返回，请重试或更换模型。")
         self._note_ok(t0, usage)
         return parsed, usage

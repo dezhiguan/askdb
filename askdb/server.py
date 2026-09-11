@@ -3102,7 +3102,23 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                       "note": "；".join(g.rewrites) or "无需改写"})
 
         with Executor(scoped) as ex:
-            ep = ex.explain(g.sql)
+            try:
+                ep = ex.explain(g.sql)
+            except DataSourceError as e:
+                # 数据源连不上时这里原来什么都不接，DataSourceError 一路冒到
+                # ASGI 层，直查返回的是一个裸 HTTP 500 Internal Server Error
+                # （非 JSON，前端拿不到任何可展示的原因），而同一时刻
+                # /api/selfcheck 与数据源扫描给的是 400 + 明确原因。
+                # 三条链路对同一件事说三种话，这里对齐到结构化错误。
+                steps.append({"step": "dry_run", "ms": 0, "status": "failed", "note": str(e)})
+                _audit(rejected_by="DATASOURCE", sql_final=g.sql, rules_fired=g.rules_fired)
+                return JSONResponse({
+                    "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
+                    "sql_final": g.sql, "rejected_by": "DATASOURCE", "error": str(e),
+                    "hint": e.hint or "请在「数据源」页检查该源的连通性。",
+                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                    "trace_id": trace_id,
+                })
             if not ep.ok and not scoped.scan_waiver:
                 steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
                 _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)

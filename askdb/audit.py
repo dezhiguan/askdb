@@ -655,7 +655,7 @@ def _thread_status(last: dict[str, Any], *, has_open_approval: bool = False,
 #   LOW    其余：写法问题（多语句、字段名错、SELECT *）、环境故障，
 #          以及正常的小查询 —— 它们没有碰到任何数据边界
 _RISK_HIGH = {"R-02", "R-03", "R-06", "R-07", "R-10", "R-19"}
-_RISK_MEDIUM = {"R-08", "R-11", "R-17", "R-20", "QUOTA"}
+_RISK_MEDIUM = {"R-08", "R-11", "R-17", "R-20", "QUOTA", "NO_EVIDENCE"}
 
 _RISK_WHY = {
     "R-02": "含写入意图，被只读护栏拦下",
@@ -669,6 +669,8 @@ _RISK_WHY = {
     "R-20": "SQL 文本过长或嵌套过深，解析成本超预算",
     "R-17": "累计成本达上限",
     "QUOTA": "调用配额已用完",
+    "NO_EVIDENCE": "没有任何一次查询执行成功，拒绝给出带数字的结论",
+    "DATASOURCE": "数据源不可达",
 }
 
 

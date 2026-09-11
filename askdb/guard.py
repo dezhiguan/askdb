@@ -981,6 +981,36 @@ def _is_email_domain(node: exp.Expression) -> bool:
             and str(part.this) == "2")
 
 
+def _nested_selects(root: exp.Expression) -> list[exp.Select]:
+    """root 里**最外一层**的 SELECT 节点（不含更深层嵌套的）。"""
+    out: list[exp.Select] = []
+
+    def walk(node: exp.Expression) -> None:
+        for val in node.args.values():
+            for child in (val if isinstance(val, list) else [val]):
+                if not isinstance(child, exp.Expression):
+                    continue
+                if isinstance(child, exp.Select):
+                    out.append(child)
+                else:
+                    walk(child)
+
+    walk(root)
+    return out
+
+
+def _inside_any(node: exp.Expression, roots: list[exp.Select]) -> bool:
+    if not roots:
+        return False
+    ids = {id(r) for r in roots}
+    cur = node.parent
+    while cur is not None:
+        if id(cur) in ids:
+            return True
+        cur = cur.parent
+    return False
+
+
 def _select_flags(select: exp.Select, cfg: Config,
                   outer: dict[str, dict[str, bool]] | None = None,
                   ) -> list[tuple[str, bool]] | None:
@@ -1048,8 +1078,27 @@ def _select_flags(select: exp.Select, cfg: Config,
             # 输出列集合未知，无法逐列判定。
             return None
         inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
-        cols = list(inner.find_all(exp.Column))
-        if isinstance(inner, exp.Count):
+
+        # 投影里嵌的 SELECT（标量子查询）**自己判自己**，它的内部列不该被
+        # 当成本层的列。原来这里直接 find_all(exp.Column) 把子查询里的列一起
+        # 收上来，遇到 `SELECT (SELECT COUNT(*) FROM t WHERE status<>'X') AS n`
+        # 这种没有顶层 FROM 的写法，本层 sources 为空 → _col_sensitive 的兜底
+        # 判"未限定列一律敏感"→ 一个 COUNT 结果被打成 3***7。
+        # 2026-09-11 生产跑测里"采购订单一共多少张"就是这么被涂掉的。
+        nested = _nested_selects(inner)
+        nested_flag = False
+        for sub in nested:
+            sf = _select_flags(sub, cfg, scope)
+            if sf is None or any(flag for _, flag in sf):
+                # 判不出这一段就只脱这一列，不拖垮整条查询：从严的方向没变，
+                # 而"整条拒答"该留给真正判不出输出列集合的情形。
+                nested_flag = True
+                break
+        cols = [c for c in inner.find_all(exp.Column) if not _inside_any(c, nested)]
+
+        if nested_flag:
+            flag = True
+        elif isinstance(inner, exp.Count):
             # COUNT 只暴露"有多少个"，不暴露值本身；把它脱敏等于把数字毁掉。
             # MIN/MAX 不在此列 —— 它们原样吐出某一行的真值。
             flag = False
@@ -1063,10 +1112,80 @@ def _select_flags(select: exp.Select, cfg: Config,
         elif cols:
             flag = any(_col_sensitive(c) for c in cols)
         else:
-            flag = False                       # 常量、CURRENT_DATE 之类
+            flag = False                       # 常量、CURRENT_DATE、纯聚合子查询
         name = proj.alias_or_name or (cols[0].name if cols else f"col{i}")
         out.append((str(name), flag))
     return out
+
+
+def _outside_aggregate(proj: exp.Expression) -> list[exp.Column]:
+    """这个投影里**没有被聚合函数包住**的列。
+
+    `ROUND(AVG(rating), 4)` 的 rating 在 AVG 里，不算；`status` 裸在外面，算。
+    判定靠向上走父链找 AggFunc，因此外层套多少层标量函数都不影响。
+    """
+    out: list[exp.Column] = []
+    for col in proj.find_all(exp.Column):
+        node = col.parent
+        aggregated = False
+        while node is not None and node is not proj.parent:
+            if isinstance(node, exp.AggFunc):
+                aggregated = True
+                break
+            node = node.parent
+        if not aggregated:
+            out.append(col)
+    return out
+
+
+def is_bounded_aggregate(sql: str, dialect: str = "duckdb") -> bool:
+    """这条 SQL 是不是"扫得多、吐得少"的纯聚合查询。
+
+    用途见 tools._scan_cap：R-11 的扫描阈值对这类查询单列一档。判定从严 ——
+    只要有一列明细能逃出去，或者行数没被 LIMIT 封顶，就返回 False。
+    解析失败一律 False（阈值不放宽），与本模块其余判定同一个失败方向。
+    """
+    try:
+        stmts = [x for x in sqlglot.parse(sql, dialect=dialect) if x is not None]
+    except Exception:
+        return False
+    if len(stmts) != 1 or not isinstance(stmts[0], exp.Select):
+        return False
+    root = stmts[0]
+    if root.args.get("limit") is None:      # 行数没有上界，不放宽
+        return False
+    if list(_iter_samples(root)):           # 抽样让扫描估算失真，一律不放宽
+        return False
+
+    def _key(node: exp.Expression) -> str:
+        try:
+            return re.sub(r"\s+", " ", node.sql(dialect=dialect)).strip().lower()
+        except Exception:
+            return ""
+
+    group = root.args.get("group")
+    keys = {_key(e) for e in (group.expressions if group else [])}
+    keys.discard("")
+
+    for i, proj in enumerate(root.expressions, 1):
+        inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
+        if isinstance(inner, exp.Star) or (
+                isinstance(inner, exp.Column) and isinstance(inner.this, exp.Star)):
+            return False
+        # 标量子查询按它自己再判一次：它本来就只返回一行。
+        if isinstance(inner, exp.Subquery) and isinstance(inner.this, exp.Select):
+            sub = inner.this
+            if sub.expressions and all(not _outside_aggregate(p) for p in sub.expressions):
+                continue
+            return False
+        loose = _outside_aggregate(inner)
+        if not loose:
+            continue                        # 全在聚合里，或是常量
+        # 剩下的必须整段就是 GROUP BY 的分组键（`GROUP BY 1` 这种序号写法也认）
+        if _key(inner) in keys or str(i) in keys:
+            continue
+        return False
+    return True
 
 
 def sensitive_output_columns(sql: str, cfg: Config,
