@@ -42,6 +42,11 @@ from .quota import build_quota
 from .qcache import build_answer_cache, make_key as _cache_key
 from .trace import now_iso as _now_iso, observability_status as _obs_status
 
+# 直查审计里最终结果预览的行数上限。取自 audit（与 ask 链路同一口径）。
+# 单列出来是因为直查端点内有个同名局部函数 _audit 会遮蔽模块别名 _audit，
+# 拿不到 _audit.RESULT_PREVIEW_ROWS —— 在模块级先取好。
+_RESULT_PREVIEW_ROWS = _audit.RESULT_PREVIEW_ROWS
+
 
 def _mask_pii(s: str) -> str:
     """把 PII 文本脱敏成"看得出形状、读不出内容"：字母数字与 CJK 等字符一律换成
@@ -2065,6 +2070,34 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         return JSONResponse(trace_chain(rec))
 
+    @app.get("/api/result")
+    def result_api(request: Request, trace_id: str = "") -> JSONResponse:
+        """一次查询的「最终结果」：答案文本 + 结果列 + **已脱敏**结果行前 N 行。
+        供执行追踪详情与任务中心展示结果，替掉此前那句"暂无结果"。
+
+        与 /api/trace（匿名可读、只放节点链、不给 SQL/结果）和 /api/replay
+        （login + replay_api 双门、返回 SQL 全文与快照）都不同，这是**单独一道门**：
+        - **要登录**（不像 /api/trace 匿名可读）—— 结果行含数据，不给访客；
+        - 仍按调用者当下可见表收窄（同 /api/trace 的 404 口径）；
+        - **不受 replay_api 开关约束、也不返回 sql_final/sql_raw/question** ——
+          SQL 全文仍只走 /api/replay 那道门，这里只放答案与已脱敏结果行。
+        字段走 audit.RESULT_FIELDS 白名单；被拦下的记录（rejected_by 非空）返回 null，
+        不展示推测或伪造的结果。
+        """
+        _require_login(request)
+        _require_cap(request, _identity.AUDIT_READ, "查看最终结果")
+        not_found = JSONResponse({"error": "not found"}, status_code=404)
+        if not _TRACE_ID_RE.fullmatch(trace_id or ""):
+            return not_found
+        rec = _audit.get_audit(cfg, trace_id)
+        if rec is None:
+            return not_found
+        scoped = _scoped(request, _cfg_of_record(rec, request))
+        hit = {str(t).lower() for t in (rec.get("tables_hit") or [])}
+        if hit and not hit <= {t.lower() for t in scoped.tables}:
+            return not_found
+        return JSONResponse({"result": _audit.result_block(rec)})
+
     @app.get("/api/replay")
     def replay_trace(request: Request, trace_id: str = "") -> JSONResponse:
         """判定链路回放（设计说明 V1.1）。
@@ -3015,7 +3048,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                    explain_rows: int | None = None, rows_returned: int = 0,
                    masked_columns: list[str] | None = None,
                    mask_degraded: bool = False,
-                   truncated: bool = False) -> None:
+                   truncated: bool = False,
+                   columns: list[str] | None = None,
+                   rows_preview: list[Any] | None = None) -> None:
             write_audit(scoped, {
                 "trace_id": trace_id, "ts": now_iso(), "kind": "sql",
                 "model": None,
@@ -3029,6 +3064,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "attempts": 1, "explain_rows": explain_rows,
                 "step_count": 1, "multi_step": False, "converged_early": "",
                 "rows_returned": rows_returned,
+                # 最终结果（/api/result 用）：直查无答案文本，answer 留空；
+                # 结果列 + **已脱敏**结果行前 N 行。SQL 全文不进这里。
+                "answer": "",
+                "columns": columns or [],
+                "rows_preview": rows_preview or [],
                 # 与 ask 链路同一套字段：脱了哪几列必须进审计，
                 # 否则事后无从证明某一次结果到底脱没脱
                 "masked_columns": masked_columns or [],
@@ -3117,7 +3157,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,
                explain_rows=ep.est_rows, rows_returned=res.row_count,
                masked_columns=list(res.masked_columns),
-               mask_degraded=res.mask_degraded, truncated=res.truncated)
+               mask_degraded=res.mask_degraded, truncated=res.truncated,
+               columns=[str(c) for c in res.columns],
+               rows_preview=[[jsonable(v) for v in r] for r in res.rows[:_RESULT_PREVIEW_ROWS]])
         if scoped.scan_waiver:
             # **执行成功之后**才作废。执行失败就烧掉一次审批的话，
             # 用户得为一次数据源抖动重新走一遍人工流程。

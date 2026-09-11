@@ -32,7 +32,7 @@ from .config import Config
 from .executor import DataSourceError, Executor, MaskUnresolved
 from .llm import LlmClient, LlmNotConfigured
 from .quota import QuotaExceeded, build_quota
-from .audit import MODEL_STEPS, PHASE_STARTED, day_tz
+from .audit import MODEL_STEPS, PHASE_STARTED, RESULT_PREVIEW_ROWS, day_tz
 from .trace import Tracer, now_iso, write_audit
 
 
@@ -1417,6 +1417,13 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         "step_count": result.step_count, "multi_step": result.multi_step,
         "converged_early": result.converged_early,
         "rows_returned": result.row_count,
+        # 最终结果：答案文本 + 结果列 + **已脱敏**结果行前 N 行。用于登录态的
+        # /api/result（追踪详情与任务中心展示"最终结果"）。行来自 result.rows，
+        # 已经过 executor 脱敏；这里只截前 N 行、并 jsonable 化（Decimal/时间转字符串）
+        # 免得写审计时 json 序列化失败。SQL 全文不进这里 —— 它仍走 replay 那道门。
+        "answer": result.reasoning,
+        "columns": list(result.columns),
+        "rows_preview": [[jsonable(v) for v in r] for r in (result.rows or [])[:RESULT_PREVIEW_ROWS]],
         "elapsed_ms": result.elapsed_ms,
         "tok_in": result.tok_in, "tok_out": result.tok_out,
         "cost_cny": result.cost_cny, "steps": result.steps,

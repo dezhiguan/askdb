@@ -1,9 +1,10 @@
 import { PageHeader } from '../components/AppShell'
+import { ModalShell } from '../components/Modals'
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
-  fetchAudit, fetchAuditStats, fetchTraceChain, tracingLink,
+  fetchAudit, fetchAuditStats, fetchTraceChain, fetchResult, tracingLink,
   type AuditItem, type AuditStats, type ReplayStep, type TraceChain,
-  type TraceChainResult, type Me,
+  type TraceChainResult, type TraceResult, type Me,
 } from '../api'
 import type { ModalName, View } from '../types'
 import { writeGuard } from '../writeGuard'
@@ -131,6 +132,8 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
   // 存成 {key, result}，切换 trace 时靠 key 不匹配自然回到「读取中」，
   // 不需要在 effect 里先同步 setChain(null) —— 那会多触发一轮渲染
   const [chain, setChain] = useState<{ key: string; result: TraceChainResult } | null>(null)
+  // 最终结果（/api/result）：与节点链分开取，登录态才有；旧记录/看不到为 null。
+  const [finalResult, setFinalResult] = useState<{ key: string; data: TraceResult | null } | null>(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -191,6 +194,7 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
     if (!selected) return
     let alive = true
     fetchTraceChain(selected).then(result => { if (alive) setChain({ key: selected, result }) })
+    fetchResult(selected).then(data => { if (alive) setFinalResult({ key: selected, data }) })
     return () => { alive = false }
   }, [selected])
 
@@ -349,6 +353,7 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
 
         <div className="card trace-detail">
           <TraceDetail item={currentItem} chain={currentChain} result={currentResult}
+                       finalResult={finalResult && finalResult.key === selected ? finalResult.data : null}
                        onFocusTrace={focusOn} />
         </div>
       </div>
@@ -401,7 +406,7 @@ function StatTiles({ stats, today }: { stats: AuditStats | null; today: AuditSta
   )
 }
 
-function TraceDetail({ item, chain, result, onFocusTrace }: {
+function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
   item: AuditItem | null
   chain: TraceChain | null
   /** 从"命中缓存"那一行跳到首跑链路。见 TracesPage 里的 focusOn */
@@ -409,7 +414,10 @@ function TraceDetail({ item, chain, result, onFocusTrace }: {
   /** 节点链这一次取的结果。chain 是它的 ok 分支，两个都要传：
    *  上面六格只需要值，下面的 Span 表还要说清"为什么没有值"。 */
   result: TraceChainResult | { status: 'loading' }
+  /** 最终结果（/api/result）：答案 + 已脱敏结果行。null = 未登录/看不到/被拦/旧记录。 */
+  finalResult?: TraceResult | null
 }) {
+  const [showResult, setShowResult] = useState(false)
   if (!item) return <p className="trace-empty">左侧选一条调用查看节点明细。</p>
 
   const steps = chain?.steps ?? []
@@ -436,6 +444,10 @@ function TraceDetail({ item, chain, result, onFocusTrace }: {
           </p>
         </div>
         <div className="trace-badges">
+          {/* 最终结果：默认收起，点击弹出。只在拿到结果（登录+可见+非拦截）时出现。 */}
+          {(finalResult && ((finalResult.rows_preview?.length ?? 0) > 0 || finalResult.answer)) && (
+            <button type="button" className="result-open-btn" onClick={() => setShowResult(true)}>▸ 查看结果</button>
+          )}
           {/* 原型这枚角标是写死的「可信度 96」。这里判真值，且与工作台右栏那枚环
               走同一份口径（trust.ts）—— 同一次查询在两页给出两个分，看的人第一件
               要做的事就变成了复核这两个数字谁对。判不了的时候留 NA，不编数。 */}
@@ -490,6 +502,39 @@ function TraceDetail({ item, chain, result, onFocusTrace }: {
 
       <TraceNodes steps={steps} result={result}
                   cachedFrom={chain?.cached_from} onFocusTrace={onFocusTrace} />
+
+      {showResult && finalResult && (
+        <ModalShell onClose={() => setShowResult(false)}>
+          <div className="modal trace-result-modal" role="dialog" aria-modal="true">
+            <div className="modal-head">
+              <div><h3>最终结果</h3><p>{item.trace_id} · {item.source_name || ''}</p></div>
+              <button className="modal-close" type="button" onClick={() => setShowResult(false)} aria-label="关闭">×</button>
+            </div>
+            <div className="modal-body">
+              {finalResult.answer && <p className="result-answer">{finalResult.answer}</p>}
+              {(finalResult.rows_preview?.length ?? 0) > 0 && (
+                <div className="result-table-wrap">
+                  <div className="result-table-cap">
+                    结果{typeof finalResult.rows_returned === 'number' ? ` · 共 ${finalResult.rows_returned} 行` : ''}
+                    {(finalResult.rows_returned ?? 0) > (finalResult.rows_preview?.length ?? 0) ? `（仅前 ${finalResult.rows_preview?.length} 行）` : ''}
+                    {(finalResult.masked_columns?.length ?? 0) > 0 ? ` · 已脱敏 ${finalResult.masked_columns?.join('、')}` : ''}
+                  </div>
+                  <div className="table-scroll">
+                    <table className="result-table">
+                      <thead><tr>{(finalResult.columns ?? []).map((c, ci) => <th key={ci}>{c}</th>)}</tr></thead>
+                      <tbody>
+                        {(finalResult.rows_preview ?? []).map((row, ri) => (
+                          <tr key={ri}>{row.map((v, vi) => <td key={vi}>{v === null || v === undefined ? '—' : String(v)}</td>)}</tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </ModalShell>
+      )}
     </>
   )
 }

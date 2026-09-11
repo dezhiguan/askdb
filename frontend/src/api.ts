@@ -398,6 +398,31 @@ export async function fetchReplay(traceId: string): Promise<ReplayResult> {
   return { status: 'ok', data: await response.json() }
 }
 
+/** 一次查询的「最终结果」：答案 + 结果列 + 已脱敏结果行前 N 行。
+ *  来自 /api/result（要登录、按可见表收窄；不含 SQL 全文）。被拦下/旧记录为 null。 */
+export interface TraceResult {
+  answer?: string
+  columns?: string[]
+  rows_preview?: unknown[][]
+  rows_returned?: number
+  masked_columns?: string[]
+  mask_degraded?: boolean
+  truncated?: boolean
+}
+
+/** 取最终结果。未登录/看不到/旧记录都回 null —— 前端据此显示"暂无结果"，不伪造。 */
+export async function fetchResult(traceId: string): Promise<TraceResult | null> {
+  let response: Response
+  try {
+    response = await request(`/api/result?trace_id=${encodeURIComponent(traceId)}`)
+  } catch {
+    return null
+  }
+  if (!response.ok) return null
+  const body = await response.json()
+  return (body?.result as TraceResult) ?? null
+}
+
 /**
  * 观测后端的地址是否对**当前访问者**可达。
  *

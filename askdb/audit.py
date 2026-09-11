@@ -101,6 +101,28 @@ REPLAY_FIELDS = (
     "source", "source_name", "cached", "cached_from",
 )
 
+# 「最终结果」字段（/api/result 用）。与上面两份白名单**分开**、单独一道门：
+# 追踪详情与任务中心要展示"最终结果"（答案 + 已脱敏结果行），这些字段既不在
+# 匿名可读的 TRACE_FIELDS 里，也不随 replay 那道 SQL 全文的开关走。
+#
+# 边界：只放答案文本、结果列名、**已脱敏**的前 N 行与行数/脱敏列。**不含 sql_final /
+# sql_raw / question**（SQL 全文仍只走 /api/replay 的 login+replay_api 双门）。
+# rows_preview 在写入侧就已经是 executor 脱敏后的行、且截到前 N 行。
+RESULT_PREVIEW_ROWS = 20
+RESULT_FIELDS = ("answer", "columns", "rows_preview", "rows_returned",
+                 "masked_columns", "mask_degraded", "truncated")
+
+
+def result_block(rec: dict[str, Any]) -> dict[str, Any] | None:
+    """从审计记录取「最终结果」块（present-only）。被拦下的记录（rejected_by 非空）
+    没有可采信的结果，返回 None —— 与"不展示推测/伪造结果"一致。旧记录没存
+    rows_preview/answer 时也返回 None（回退到"暂无结果"，不伪造）。"""
+    if rec.get("rejected_by"):
+        return None
+    if not rec.get("rows_preview") and not rec.get("answer"):
+        return None
+    return {k: rec[k] for k in RESULT_FIELDS if k in rec}
+
 
 #: 发起时先落的那条记录的标记。**它不是一次调用的结果，只是一个占位**：
 #: 说明"这条线程存在、归谁、打哪个库"，收尾时另有一条带结果的记录。
