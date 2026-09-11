@@ -2363,9 +2363,43 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             it["resumable"] = bool(state)
             if state:
                 continue
+            if it.get("ops_status"):
+                # **已经处置过的不再回到队列。**
+                #
+                # 与 audit.stage 的 EXEC 分支是同一条规则，只是那边判得到、
+                # 这边判不到：stage 看不见检查点，分不出"陈旧但可续跑"与
+                # "陈旧且没现场"，所以这一步只能在这里补。漏掉它的表现是
+                # 运维标了「无法恢复」、刷新之后那条原样又回到待处置
+                # —— 队列永远清不空。
+                it["status"] = _audit.REJECTED
+                it["next_actor"] = ""
+                continue
             it["status"] = _audit.NEEDS_OPERATOR
             it["next_actor"] = _audit._NEXT_ACTOR[_audit.NEEDS_OPERATOR]
         return items
+
+    def _pending_ops(request: Request) -> list[dict[str, Any]]:
+        """当前调用方可见的**待处置**执行期故障。
+
+        队列页与处置接口共用它 —— 两处各判一遍的后果实测过两次：先是队列漏列
+        了陈旧线程（折算写在别处），修好之后处置接口又拒收它们（准入写死
+        rejected_by=="EXEC"，而陈旧线程的 rejected_by 是 None）。同一个问题
+        换了个位置又犯一次，所以判据只留这一份。
+
+        可见范围顺带也统一了：有 OPS_RESOLVE 的看全部，没有的只看自己发起的
+        —— 处置接口因此天然挡住"处置别人那条自己看不到的任务"。
+        """
+        from .audit import tasks as _tasks
+
+        items = _tasks(
+            cfg,
+            None if _can(request, _identity.OPS_RESOLVE) else (_current_user(request) or ""),
+            max_rows=cfg.max_rows,
+            max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
+            **_task_context(),
+        )
+        return [t for t in _settle_stale(items)
+                if t.get("status") == _audit.NEEDS_OPERATOR]
 
     def _task_context() -> dict[str, Any]:
         """任务态折算要用的三份结论 + 陈旧阈值，**一处组装，三处共用**。
@@ -2519,21 +2553,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         发起的 —— 发起人必须知道自己那条卡在哪、有没有人在管。
         """
         _require_login(request)
-        from .audit import tasks as _tasks
-
         can_resolve = _can(request, _identity.OPS_RESOLVE)
-        me = _current_user(request) or ""
-        items = _tasks(
-            cfg,
-            None if can_resolve else me,
-            max_rows=cfg.max_rows,
-            max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
-            **_task_context(),
-        )
-        # 与任务中心同一份折算（含陈旧线程定档）—— 两处各算一遍就会漂，
-        # 而漂的表现是任务中心说有 9 条待处置、这一页只列得出 1 条。
-        pending = [t for t in _settle_stale(items)
-                   if t.get("status") == _audit.NEEDS_OPERATOR]
+        pending = _pending_ops(request)
         return {
             "can_resolve": can_resolve,
             "items": _ops.listing(cfg, pending),
@@ -2564,14 +2585,24 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 status_code=400,
                 detail="处置结论只能是 " + " / ".join(_ops.STATUSES))
 
-        from .audit import get_audit
-
-        rec = get_audit(cfg, trace_id)
-        if rec is None or rec.get("rejected_by") != "EXEC":
-            # 不存在、或本就不是执行期故障 —— 合并成同一句，理由同复核：
-            # 这个入口不是用来试探"某条记录存不存在"的。
+        # **准入判据必须与队列同源。**
+        #
+        # 这里原来写的是 `rejected_by == "EXEC"`，于是 2026-09-12 线上出现
+        # 「队列列得出、点下去 404」：僵尸线程（进程中途退出、只落了发起记录）
+        # 的 rejected_by 是 None，它是靠陈旧改判才进的这一档，那条硬编码判据
+        # 根本认不出它 —— 而队列里它明明在。
+        #
+        # 改成直接问队列："这条现在是不是待处置"。慢一点（要折算一遍任务态），
+        # 但处置是人点出来的，一次几十毫秒换掉一整类「列得出来、动不了」。
+        row = next((t for t in _ops.listing(cfg, _pending_ops(request))
+                    if t.get("trace_id") == trace_id and not t.get("ops_status")),
+                   None)
+        if row is None:
+            # 不存在、不在待处置范围内、或不在你可见范围内 —— 合并成同一句，
+            # 理由同复核：这个入口不是用来试探"某条记录存不存在"的。
             raise HTTPException(status_code=404,
                                 detail="该记录不存在，或不在待处置范围内。")
+        rec = {"user": row.get("owner") or row.get("user") or ""}
         return _ops.resolve(cfg, trace_id,
                             operator=_current_user(request) or "",
                             status=status, note=req.note,

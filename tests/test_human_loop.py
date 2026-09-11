@@ -231,6 +231,32 @@ def test_exec_failure_can_finally_leave_the_queue(hclient, hcfg):
     assert row["ops_status"] == "RESOLVED"
 
 
+def test_a_zombie_thread_can_actually_be_disposed(hclient, hcfg):
+    """队列列得出的，处置接口就必须收 —— **第二次线上实测抓出来的回归**。
+
+    2026-09-12：修好队列漏列之后，点下去仍然 404。准入判据当时写死的是
+    `rejected_by == "EXEC"`，而僵尸线程（进程中途退出、只落了发起记录）的
+    rejected_by 是 None —— 它靠陈旧改判才进的这一档，那条硬编码认不出它。
+
+    同一个「列得出来、动不了」换了个位置又犯一次，所以队列与准入现在共用
+    server._pending_ops，判据只此一份。
+    """
+    _write(hcfg.audit_log, [{
+        "trace_id": "fff666666666", "thread_id": "111111111124",
+        "ts": _now(-7200), "kind": "ask", "phase": audit.PHASE_STARTED,
+        "user": "amy", "question": "跑一半就没了", "source": "",
+        "rejected_by": None, "org_id": 65,
+    }])
+    _login(hclient, "sre1")
+    assert [i["trace_id"] for i in hclient.get("/api/ops").json()["items"]] \
+        == ["fff666666666"]
+
+    r = hclient.post("/api/ops/fff666666666/resolve",
+                     json={"status": "WONTFIX", "note": "无现场可恢复"})
+    assert r.status_code == 200, r.text
+    assert hclient.get("/api/ops").json()["pending"] == 0
+
+
 def test_ops_resolve_refuses_records_that_are_not_exec_failures(hclient, hcfg):
     """不是执行期故障的记录不能被标成"已处置" —— 与"不存在"同一响应，
     这个端点不是用来试探某条记录存不存在的。"""
