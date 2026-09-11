@@ -3101,74 +3101,75 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         steps.append({"step": "guard", "ms": 0, "status": "ok",
                       "note": "；".join(g.rewrites) or "无需改写"})
 
-        with Executor(scoped) as ex:
-            try:
+        try:
+            with Executor(scoped) as ex:
                 ep = ex.explain(g.sql)
-            except DataSourceError as e:
-                # 数据源连不上时这里原来什么都不接，DataSourceError 一路冒到
-                # ASGI 层，直查返回的是一个裸 HTTP 500 Internal Server Error
-                # （非 JSON，前端拿不到任何可展示的原因），而同一时刻
-                # /api/selfcheck 与数据源扫描给的是 400 + 明确原因。
-                # 三条链路对同一件事说三种话，这里对齐到结构化错误。
-                steps.append({"step": "dry_run", "ms": 0, "status": "failed", "note": str(e)})
-                _audit(rejected_by="DATASOURCE", sql_final=g.sql, rules_fired=g.rules_fired)
-                return JSONResponse({
-                    "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
-                    "sql_final": g.sql, "rejected_by": "DATASOURCE", "error": str(e),
-                    "hint": e.hint or "请在「数据源」页检查该源的连通性。",
-                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
-                    "trace_id": trace_id,
-                })
-            if not ep.ok and not scoped.scan_waiver:
-                steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
-                _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)
-                # 挂起而不是终结：登记一条待审批，把单号回给发起人（P07）
-                pending = _open_approval(scoped, request, trace_id=trace_id, kind="sql",
-                                         question="（直查模式）", sql=g.sql,
-                                         # 指纹绑用户提交的原文，不是改写后的
-                                         match_text=req.sql, est_rows=ep.est_rows)
-                return JSONResponse({
-                    "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
-                    "sql_final": g.sql, "rejected_by": "R-11", "error": ep.reason,
-                    "hint": "缩小时间范围或增加筛选条件把扫描量降下来；"
-                            "确有必要跑全量时，这条已登记为待审批，"
-                            "由系统管理员放行后可原样重跑一次。",
-                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
-                    "trace_id": trace_id, **pending,
-                })
-            if not ep.ok:
-                # 已获批准。审计里必须看得出这条是走审批过来的，
-                # 否则阈值形同虚设 —— 事后没人能分辨"没超"和"超了但批了"。
+                if not ep.ok and not scoped.scan_waiver:
+                    steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
+                    _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)
+                    # 挂起而不是终结：登记一条待审批，把单号回给发起人（P07）
+                    pending = _open_approval(scoped, request, trace_id=trace_id, kind="sql",
+                                             question="（直查模式）", sql=g.sql,
+                                             # 指纹绑用户提交的原文，不是改写后的
+                                             match_text=req.sql, est_rows=ep.est_rows)
+                    return JSONResponse({
+                        "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
+                        "sql_final": g.sql, "rejected_by": "R-11", "error": ep.reason,
+                        "hint": "缩小时间范围或增加筛选条件把扫描量降下来；"
+                                "确有必要跑全量时，这条已登记为待审批，"
+                                "由系统管理员放行后可原样重跑一次。",
+                        "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                        "trace_id": trace_id, **pending,
+                    })
+                if not ep.ok:
+                    # 已获批准。审计里必须看得出这条是走审批过来的，
+                    # 否则阈值形同虚设 —— 事后没人能分辨"没超"和"超了但批了"。
+                    steps.append({"step": "dry_run", "ms": 0, "status": "ok",
+                                  "note": f"{ep.reason}（已获审批放行）"})
                 steps.append({"step": "dry_run", "ms": 0, "status": "ok",
-                              "note": f"{ep.reason}（已获审批放行）"})
-            steps.append({"step": "dry_run", "ms": 0, "status": "ok",
-                          "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
-            try:
-                ex.set_org(org)
-                res = ex.run(g.sql, limit_capped="R-09" in g.rules_fired)
-            except MaskUnresolved as e:
-                # 与 agent 模式同一条规矩：判不出投影来源就不返回，
-                # 而不是把整行涂成星号递出去（见 executor._mask 的注释）。
-                steps.append({"step": "execute", "ms": 0, "status": "blocked", "note": str(e)})
-                _audit(rejected_by="P03", sql_final=g.sql, rules_fired=g.rules_fired,
-                       explain_rows=ep.est_rows)
-                return JSONResponse({
-                    "ok": False, "question": "（直查模式）", "sql_final": g.sql,
-                    "rejected_by": "P03", "error": str(e), "hint": e.hint,
-                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
-                    "trace_id": trace_id,
-                })
-            except DataSourceError as e:
-                steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
-                _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,
-                       explain_rows=ep.est_rows)
-                return JSONResponse({
-                    "ok": False, "question": "（直查模式）", "sql_final": g.sql,
-                    "rejected_by": "EXEC", "error": str(e), "hint": e.hint,
-                    "rewrites": g.rewrites, "steps": steps, "org_id": org,
-                    "trace_id": trace_id,
-                })
+                              "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
+                try:
+                    ex.set_org(org)
+                    res = ex.run(g.sql, limit_capped="R-09" in g.rules_fired)
+                except MaskUnresolved as e:
+                    # 与 agent 模式同一条规矩：判不出投影来源就不返回，
+                    # 而不是把整行涂成星号递出去（见 executor._mask 的注释）。
+                    steps.append({"step": "execute", "ms": 0, "status": "blocked", "note": str(e)})
+                    _audit(rejected_by="P03", sql_final=g.sql, rules_fired=g.rules_fired,
+                           explain_rows=ep.est_rows)
+                    return JSONResponse({
+                        "ok": False, "question": "（直查模式）", "sql_final": g.sql,
+                        "rejected_by": "P03", "error": str(e), "hint": e.hint,
+                        "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                        "trace_id": trace_id,
+                    })
+                except DataSourceError as e:
+                    steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
+                    _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,
+                           explain_rows=ep.est_rows)
+                    return JSONResponse({
+                        "ok": False, "question": "（直查模式）", "sql_final": g.sql,
+                        "rejected_by": "EXEC", "error": str(e), "hint": e.hint,
+                        "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                        "trace_id": trace_id,
+                    })
 
+        except DataSourceError as e:
+            # 数据源连不上时这里原来什么都不接：DataSourceError 由
+            # `with Executor(...)` 的 __enter__ 建连时抛出，一路冒到 ASGI 层，
+            # 直查返回的是一个裸 HTTP 500 Internal Server Error（非 JSON，
+            # 前端拿不到任何可展示的原因）；而同一时刻 /api/selfcheck 与
+            # 数据源扫描给的是 400 + 明确原因。三条链路对同一件事说三种话。
+            # 注意 try 必须包住整个 with —— 建连发生在进入块体之前。
+            steps.append({"step": "connect", "ms": 0, "status": "failed", "note": str(e)})
+            _audit(rejected_by="DATASOURCE", sql_final=g.sql, rules_fired=g.rules_fired)
+            return JSONResponse({
+                "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
+                "sql_final": g.sql, "rejected_by": "DATASOURCE", "error": str(e),
+                "hint": e.hint or "请在「数据源」页检查该源的连通性与账号授权。",
+                "rewrites": g.rewrites, "steps": steps, "org_id": org,
+                "trace_id": trace_id,
+            })
         note = f"返回 {res.row_count} 行"
         if res.masked_columns:
             note += f"；已脱敏 {len(res.masked_columns)} 列（{'、'.join(res.masked_columns[:5])}）"
