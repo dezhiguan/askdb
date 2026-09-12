@@ -637,41 +637,27 @@ function shortHash(hash: string | null | undefined): string {
  *
  *  正则匹配不上就不硬拆文案，退回在摘要末尾挂一颗按钮：措辞将来改了，
  *  这颗按钮不该跟着一起失灵。 */
-/** 输入/输出那两列里的「有全文，点开看」。
+/** 「详情」列的开关：这一步记到的输入/输出全文，点开才铺。
  *
- *  两侧共用一个组件，因为它们的判据完全一样：**有内容就给入口，没有就占位符**。
- *  各写一套的结果必然是两侧的阈值、按钮文案、占位符慢慢分叉 —— 同一张表里
- *  相邻两列长得不一样，看的人会以为那是语义差别。
+ *  全文入口单独占一列，不挂回「输入摘要 / 输出摘要」里。那两列是**一眼扫**
+ *  的：token 计量与一句话结果，宽度固定、不换行，扫八行只需要两秒。把预览
+ *  胶囊塞进去之后，两列变成了两颗长度不定的按钮 —— 表格被内容撑开、最右的
+ *  状态列被挤出可视区，而且同一行上出现两个互不相干的展开入口。
  *
- *  输入侧还兼着原来那份 token 计量：有全文时它退成副标，没全文时它就是
- *  这一列的全部内容（GUARD / DB 那几步不过模型，本来就只有这个）。
+ *  两侧都没记到东西时给占位符而不是一颗禁用按钮：点了没反应的按钮，看的人
+ *  第一反应是页面坏了，不是"这一步本来就没有输入输出"。
  */
-function SpanIo({ step, side, open, onToggle }: {
+function SpanIoToggle({ step, open, onToggle }: {
   step: ReplayStep
-  side: 'in' | 'out'
   open: boolean
   onToggle: () => void
 }) {
-  const text = side === 'in' ? (step.input ?? '') : (step.output ?? '')
-  /* Schema 召回那一步的 tok_in 是**嵌入的输入**，不是提示词 —— 自 2026-09-10
-     起它有真实用量了。照旧写成 "prompt" 会让人以为召回也在发提示词。 */
-  const tok = side === 'in' && step.tok_in
-    ? `${STEP_TYPE[step.step] === 'MODEL' ? 'prompt' : 'embed'} ${step.tok_in.toLocaleString()} tok`
-    : ''
-  if (!text) return <>{tok || (side === 'in' ? NA : null)}</>
-
-  /* 预览**把全文的空白压平再截**，不是取首行。
-     取首行看着更讲究，实际在这三类内容上全退化了：格式化过的 SQL 首行是
-     "SELECT"、JSON 首行是 "{"、多行提示词首行是 "【system】" —— 三个都
-     认不出这一步到底在处理什么。压平之后首屏那 36 个字符恰好落在有信息量
-     的地方（SELECT COUNT(*) AS … / { "columns": [ … / 【system】你是一个…）。 */
-  const flat = text.replace(/\s+/g, ' ').trim()
-  const preview = flat.length > 36 ? `${flat.slice(0, 36)}…` : flat
+  const chars = (step.input?.length ?? 0) + (step.output?.length ?? 0)
+  if (!chars) return <>{NA}</>
   return (
     <button type="button" className="span-io-btn" aria-expanded={open}
-            title={open ? '收起全文' : `展开全文（${text.length.toLocaleString()} 字符）`}
+            title={open ? '收起输入输出详情' : `展开输入输出详情（${chars.toLocaleString()} 字符）`}
             onClick={onToggle}>
-      <span>{tok || preview}</span>
       <i aria-hidden="true">{open ? '▴' : '▾'}</i>
     </button>
   )
@@ -775,11 +761,12 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
         <div className="table-scroll">
           <table>
             <thead>
-              <tr><th>类型</th><th>Span</th><th>输入摘要</th><th>输出摘要</th><th>耗时</th><th>状态</th></tr>
+              <tr><th>类型</th><th>Span</th><th>输入摘要</th><th>输出摘要</th>
+                  <th className="span-io-col">详情</th><th>耗时</th><th>状态</th></tr>
             </thead>
             <tbody>
               {steps.length === 0 && (
-                <tr className="span-empty"><td colSpan={6}>{empty}</td></tr>
+                <tr className="span-empty"><td colSpan={7}>{empty}</td></tr>
               )}
               {steps.map((step, i) => (
                 <Fragment key={`${step.step}-${i}`}>
@@ -812,15 +799,19 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                             title={`答案出自 ${cachedFrom} 那次执行，点击查看它的完整链路`}
                             onClick={() => onFocusTrace?.(cachedFrom)}
                           >首跑 {cachedFrom.slice(0, 6)} ↗</button>
-                        : <SpanIo step={step} side="in" open={openIo.has(i)}
-                                  onToggle={() => toggleIo(i)} />}
+                        /* Schema 召回那一步的 tok_in 是**嵌入的输入**，不是提示词
+                           —— 自 2026-09-10 起它有真实用量了。照旧写成 "prompt"
+                           会让人以为召回也在发提示词。 */
+                        : step.tok_in
+                          ? `${STEP_TYPE[step.step] === 'MODEL' ? 'prompt' : 'embed'} `
+                            + `${step.tok_in.toLocaleString()} tok`
+                          : NA}
                     </td>
                     <td className="span-note" title={step.note ?? ''}>
                       <SpanNote step={step} open={openRows.has(i)} onToggle={() => toggleRow(i)} />
-                      {step.output && (
-                        <SpanIo step={step} side="out" open={openIo.has(i)}
-                                onToggle={() => toggleIo(i)} />
-                      )}
+                    </td>
+                    <td className="span-io-col">
+                      <SpanIoToggle step={step} open={openIo.has(i)} onToggle={() => toggleIo(i)} />
                     </td>
                     <td>{step.ms}ms</td>
                     <td className={stepFailed(step.status) ? 'bad' : stepSoft(step.status) ? 'warn' : 'good'}
@@ -833,7 +824,7 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                       再折一层就等于没记。 */}
                   {stepFailed(step.status) && (step.error_code || step.disposition) && (
                     <tr className="span-detail span-error">
-                      <td colSpan={6}>
+                      <td colSpan={7}>
                         <dl>
                           {step.error_code && (
                             <div><dt>错误码</dt><dd><code>{step.error_code}</code></dd></div>
@@ -852,7 +843,7 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                   )}
                   {openRows.has(i) && (step.tables ?? []).length > 0 && (
                     <tr className="span-detail">
-                      <td colSpan={6}>
+                      <td colSpan={7}>
                         <ol className="span-tables">
                           {(step.tables ?? []).map(t => <li key={t}><code>{t}</code></li>)}
                         </ol>
@@ -863,7 +854,7 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                       三四千字，挤在一列里既读不了，也会把表格撑到横向滚动。 */}
                   {openIo.has(i) && (step.input || step.output) && (
                     <tr className="span-detail span-io">
-                      <td colSpan={6}>
+                      <td colSpan={7}>
                         <dl>
                           {step.input && (
                             <div>

@@ -267,14 +267,17 @@
  * 列里只放一个入口，全文摊在下面那条整行里 —— 提示词三四千字，
  * 塞回列里要么把表撑到横向滚动，要么被 ellipsis 截成没有信息量的半句。
  */
+/* 「详情」列：一颗只有箭头的开关。
+   列本身要窄且不参与撑宽 —— 这张表是 auto 布局，任何一列变宽都是从最右边的
+   「状态」那里借的；上一版把带预览文字的按钮放进输入/输出两列，正是这么把
+   状态列挤出可视区的。 */
+.span-table th.span-io-col, .span-table td.span-io-col {
+  width: 34px; text-align: center; white-space: nowrap;
+}
 .span-table .span-io-btn {
-  /* **硬上限，不能写 max-width:100%**：表格是 auto 布局，td 会被内容撑开，
-     百分比于是永远等于"我有多宽就多宽"。按钮一长（结果行 JSON 能到 200px+），
-     整张表被顶出 .table-scroll，最右边的状态列直接看不见 —— 为了看输入输出
-     把「这一步成没成」挤出屏幕，是赔本的。收在 108px，超出的交给下面那条
-     ellipsis；要看全文本来就得点开。 */
-  display: inline-flex; align-items: center; gap: 3px; max-width: 108px;
-  padding: 1px 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 16px;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 3px;
   color: var(--ink-2);
@@ -283,10 +286,8 @@
   cursor: pointer;
 }
 .span-table .span-io-btn:hover { border-color: var(--blue); color: var(--blue); }
-.span-table .span-io-btn > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.span-table .span-io-btn > i { flex: none; font-style: normal; }
-/* 输出侧那颗跟在摘要后面，不能贴着字 */
-.span-table .span-note .span-io-btn { margin-left: 5px; }
+.span-table .span-io-btn[aria-expanded="true"] { border-color: var(--blue); color: var(--blue); background: var(--blue-wash); }
+.span-table .span-io-btn > i { font-style: normal; line-height: 1; }
 
 .span-table tr.span-io dl { margin: 0; display: flex; flex-direction: column; gap: 8px; }
 .span-table tr.span-io dl > div { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
