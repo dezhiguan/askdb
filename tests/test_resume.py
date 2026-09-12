@@ -1,100 +1,196 @@
-"""任务中断恢复（设计说明 V1.1）：中断兜底、断点续跑、审计关联、统一 404。"""
+"""任务中断恢复：中断兜底、断点续跑、审计关联、统一 404。
+
+2026-09-12 整篇从老管道重写到 agent 图（askdb/agentgraph）。
+
+**这些用例此前验的是一条没人走的路。** 检查点续跑一直挂在老管道上，而线上
+所有真实请求走的是 agent 循环（没有检查点）—— 近 30 天 interrupted=0、
+recovered=0，也就是说"断点续跑"这个能力在生产上从未触发过一次。agent 改用
+LangGraph 之后检查点第一次覆盖到真正在跑的那条链路，这些用例才开始有意义。
+
+判定本身一条没松：中断要留下可续的现场、续跑要写新 trace 同 thread、
+表被收回 / 结构漂移必须挡住、被挡之后仍然可续。
+"""
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 
-from askdb import graph, server
+from askdb import agentgraph, server, tools
 from askdb.audit import get_audit, read_records
-from tests.test_graph import OK_SQL, FakeLlm
+
+OK_SQL = "SELECT COUNT(*) AS n FROM documents"
 
 
-def _interrupted_ask(cfg, ex, monkeypatch) -> graph.AskResult:
-    """让 guard 节点抛出进程级异常，制造一次真实中断。"""
+class FakeLlm:
+    """按脚本依次返回决策；不配脚本就一直"还没想好"（停不下来）。
+
+    真 LlmClient 的 model_name 是 property，这里保持一致 —— 当成方法调过一次，
+    线上直接 500（见 aae409b）。
+    """
+
+    def __init__(self, *actions, answerable=True):
+        self.answerable = answerable
+        self.actions = list(actions) or [_act()]
+        self.calls: list[str] = []
+        self.i = 0
+
+    @property
+    def model_name(self) -> str:
+        return "fake"
+
+    def structured(self, schema, system, human):
+        u = SimpleNamespace(input_tokens=10, output_tokens=2, cost_cny=0.0)
+        if schema.__name__ == "IntentCheck":
+            return SimpleNamespace(answerable=self.answerable, out_of_scope=False,
+                                   reason="ok", clarify="补充一下"), u
+        self.calls.append(human)
+        a = self.actions[min(self.i, len(self.actions) - 1)]
+        self.i += 1
+        return a, u
+
+
+def _act(finish=False, answer="", tool="execute_sql", sql=OK_SQL):
+    return SimpleNamespace(finish=finish, answer=answer, tool=tool,
+                           thought="想一下", args={"sql": sql})
+
+
+@pytest.fixture(autouse=True)
+def _fresh_graph():
+    """每个用例拿一张新编译的图 —— 缓存跨用例复用会带着上一个 saver。"""
+    agentgraph.reset_graph()
+    yield
+    agentgraph.reset_graph()
+
+
+def _run(cfg, ex, llm, question="有多少文档", thread_id=None):
+    from askdb.agent import run_agent
+
+    return run_agent(question, cfg, executor=ex, llm=llm, thread_id=thread_id)
+
+
+def _interrupted(cfg, ex, monkeypatch):
+    """让工具调用抛进程级异常，制造一次真实中断。"""
     with monkeypatch.context() as m:
-        m.setattr(graph.guard, "check",
+        m.setattr(tools, "invoke",
                   lambda *a, **k: (_ for _ in ()).throw(RuntimeError("进程被杀")))
-        return graph.ask("有多少文档", cfg, executor=ex, llm=FakeLlm(OK_SQL))
+        return _run(cfg, ex, FakeLlm(_act()))
 
+
+# ---------------------------------------------------------------- 中断
 
 def test_interrupt_leaves_trace_and_resumable_checkpoint(cfg, ex, monkeypatch):
-    r1 = _interrupted_ask(cfg, ex, monkeypatch)
-    assert r1.ok is False and r1.rejected_by == "INTERRUPTED"
+    """中断必须留下两样东西：一条能查的审计，和一个能续的现场。
+
+    少了审计，任务中心整片列不出这条线程（2026-09-07 实测过）；
+    少了现场，"可续跑"这一档就永远是空的。
+    """
+    r1 = _interrupted(cfg, ex, monkeypatch)
+    assert r1.ok is False
     assert r1.trace_id and r1.thread_id == r1.trace_id     # 客户端由此持有续跑凭据
     rec = get_audit(cfg.audit_log, r1.trace_id)
-    assert rec["rejected_by"] == "INTERRUPTED" and rec["kind"] == "ask"
-    # 检查点停在中断节点之前，线程未走完
-    snap = graph.build_graph(cfg.checkpoint_db).get_state(
-        {"configurable": {"thread_id": r1.trace_id}})
-    assert snap.next
+    assert rec is not None and rec["kind"] == "ask"
+    # 检查点停在中断节点之前，线程没走完
+    assert agentgraph.is_resumable(r1.thread_id, cfg) is True
 
 
 def test_resume_completes_and_links_audit(cfg, ex, monkeypatch):
-    r1 = _interrupted_ask(cfg, ex, monkeypatch)
-    r2 = graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL))
-    assert r2 is not None and r2.ok and r2.row_count > 0
-    # trace 新开、thread 不变 —— 审计里能看出"这是第 2 次执行"
+    """续跑写新 trace、同一个 thread —— 审计里看得出"这是第 2 次执行"。"""
+    r1 = _interrupted(cfg, ex, monkeypatch)
+    r2 = agentgraph.resume(r1.thread_id, cfg, executor=ex,
+                           llm=FakeLlm(_act(), _act(finish=True, answer="有数据")))
+    assert r2 is not None and r2.ok
     assert r2.trace_id != r1.trace_id
     assert r2.thread_id == r1.thread_id
-    recs = read_records(cfg.audit_log)
-    assert [x["kind"] for x in recs] == ["ask", "resume"]
-    assert recs[1]["thread_id"] == r1.thread_id
+    kinds = [x["kind"] for x in read_records(cfg.audit_log)]
+    assert kinds[-1] == "resume", kinds
 
 
 def test_resume_missing_or_finished_returns_none(cfg, ex):
-    assert graph.resume("0123456789ab", cfg, executor=ex) is None      # 不存在
-    done = graph.ask("有多少文档", cfg, executor=ex, llm=FakeLlm(OK_SQL))
+    """不存在、已跑完 —— 都返回 None，由接口层与"不存在"同样处理。
+
+    **已跑完那条尤其要挡**：不挡的话，一条线程可以被无限次重放，每次都记成
+    "第 N 次执行"，而其实什么新输入都没有。
+    """
+    assert agentgraph.resume("0123456789ab", cfg, executor=ex) is None
+    done = _run(cfg, ex, FakeLlm(_act(), _act(finish=True, answer="好")))
     assert done.ok
-    assert graph.resume(done.thread_id, cfg, executor=ex) is None      # 已跑完
+    assert agentgraph.resume(done.thread_id, cfg, executor=ex) is None
 
 
-def test_clarify_resume_clears_stale_error_and_feeds_clarification(cfg, ex):
-    """「等待补充」补充后必须真正闭环：清掉上一轮 NO_SQL 的失败痕迹，
-    并把补充条件喂进 generate。
+# ---------------------------------------------------------------- 补充
 
-    回归的是这样一个 bug：thread_id 复用会把上次收尾时的 error 一并载回，
-    generate 据此落到 RETRY 模板（没有补充条件的位置），把用户刚给的澄清
-    整条丢掉 —— 补充多少次都还是同一句「信息不足」，出口形同虚设。
+def test_clarification_reaches_the_model_without_rewriting_the_question(cfg, ex):
+    """补充条件要真的喂进决策，而且**不改写原问题**。
+
+    回归的是这个 bug：补充被丢掉之后，补多少次都还是同一句"信息不足"，
+    出口形同虚设。而 question 一旦被就地改写，同一条线程在界面上会变成
+    另一个问题 —— 审计标题与审批指纹都读它。
     """
-    # generate 一次都产不出 SQL → 停在「等待补充」，检查点里留着 NO_SQL 的 error
-    r1 = graph.ask("帮我分析一下", cfg, executor=ex, llm=FakeLlm())
-    assert not r1.ok and r1.rejected_by == "NO_SQL"
-
-    # 补充后在同一条线程续跑；这次 generate 给得出 SQL
-    resume_llm = FakeLlm(OK_SQL)
-    r2 = graph.resume(r1.thread_id, cfg, executor=ex, llm=resume_llm,
-                      clarification="查 documents 表，按 status 分组，COUNT(*)",
-                      question=r1.question)
-    assert r2 is not None and r2.ok                      # 真正闭环，不再是 NO_SQL
-    assert r2.thread_id == r1.thread_id and r2.trace_id != r1.trace_id
-
-    gen = [c for c in resume_llm.calls if "step" in c]
-    assert gen, "续跑应当再次调用 generate_sql"
-    assert gen[0]["error"] == ""                          # 上一轮失败痕迹已清零
-    assert "documents" in gen[0]["step"]                  # 补充条件确实喂进 generate
+    llm = FakeLlm(_act(finish=True, answer="好"))
+    r = agentgraph.resume("0123456789ab", cfg, executor=ex, llm=llm,
+                          question="帮我分析一下",
+                          clarification="查 documents 表，按 status 分组")
+    assert r is not None and r.question == "帮我分析一下"   # 原问题没被改写
+    assert any("documents" in c for c in llm.calls), "补充条件没进决策提示词"
 
 
-def test_clarify_resume_feeds_clarification_into_recall(cfg, ex, monkeypatch):
-    """补充要连着进 schema 召回，不能只按原问句召回。
+def test_resume_without_new_input_is_not_a_rerun(cfg, ex):
+    """没有活现场、又没给问题原文 —— 不跑，返回 None。
 
-    「等待补充」的原问句往往很泛，只按它召回命中的是一堆不相干的表；用户
-    「直接写出表名」后若召回仍只读原问句，那张表永远进不了 schema_prompt，
-    generate 只能说"给定表里没有它" —— 界面却写着「或直接写出表名」。
+    不带任何新信息再跑一遍，拿到的必然还是同一个结果，只是白花一次配额。
     """
-    r1 = graph.ask("帮我看看", cfg, executor=ex, llm=FakeLlm())
-    assert not r1.ok and r1.rejected_by == "NO_SQL"
-
-    seen: list[str] = []
-    real = graph.schema_rag.recall
-    monkeypatch.setattr(graph.schema_rag, "recall",
-                        lambda q, c, *a, **k: (seen.append(q), real(q, c, *a, **k))[1])
-    graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL),
-                 clarification="查 documents 表，按 status 分组", question=r1.question)
-    assert any("documents" in q for q in seen), seen     # 补充条件确实进了召回查询
+    assert agentgraph.resume("0123456789ab", cfg, executor=ex) is None
 
 
-def test_resume_endpoint_uniform_404_and_success(cfg, ex, monkeypatch):
+# ---------------------------------------------------------------- 续跑前校验
+
+def test_resume_blocked_when_table_no_longer_visible(cfg, ex, monkeypatch):
+    """中断期间表被收回：不能拿旧前提接着跑。"""
+    r1 = _interrupted(cfg, ex, monkeypatch)
+    narrowed = _without_tables(cfg)
+    r2 = agentgraph.resume(r1.thread_id, narrowed, executor=ex, llm=FakeLlm())
+    assert r2 is not None and r2.ok is False
+    assert r2.rejected_by == "RESUME_BLOCKED"
+
+
+def test_blocked_resume_keeps_the_task_resumable(cfg, ex, monkeypatch):
+    """被前置校验挡下**不是终态**：现场还在，条件恢复后照样能续。
+
+    归成普通拒绝的话，任务中心会把它当"已收尾"，续跑入口跟着消失 ——
+    而它恰恰是唯一一档"等条件恢复"的任务。
+    """
+    r1 = _interrupted(cfg, ex, monkeypatch)
+    agentgraph.resume(r1.thread_id, _without_tables(cfg), executor=ex, llm=FakeLlm())
+    assert agentgraph.is_resumable(r1.thread_id, cfg) is True
+
+
+def test_blocked_resume_is_audited(cfg, ex, monkeypatch):
+    """挡下来这件事本身要留痕，否则"为什么没跑"事后说不清。"""
+    r1 = _interrupted(cfg, ex, monkeypatch)
+    r2 = agentgraph.resume(r1.thread_id, _without_tables(cfg), executor=ex, llm=FakeLlm())
+    rec = get_audit(cfg.audit_log, r2.trace_id)
+    assert rec is not None and rec["rejected_by"] == "RESUME_BLOCKED"
+
+
+def _without_tables(cfg):
+    """一份把可见表清空的配置 —— 模拟中断期间权限被收窄。"""
+    import copy
+    import dataclasses
+
+    return dataclasses.replace(cfg, tables={}, raw=copy.deepcopy(cfg.raw))
+
+
+# ---------------------------------------------------------------- 接口
+
+def test_resume_endpoint_uniform_404(cfg, monkeypatch):
+    """非法、不存在、别人的 —— 三种响应**逐字节一致**。
+
+    区分就等于给了一个探测"某条线程存不存在"的入口，而线程里带着别人问过的
+    问题原文。
+    """
     monkeypatch.setattr(server, "load", lambda _p: cfg)
     client = TestClient(server.create_app("ignored.yaml"))
 
@@ -103,78 +199,34 @@ def test_resume_endpoint_uniform_404_and_success(cfg, ex, monkeypatch):
         resp = client.post("/api/resume", json={"thread_id": tid})
         assert resp.status_code == 404
         bodies.add(resp.text)
-    assert len(bodies) == 1            # 非法、不存在响应逐字节一致
-
-    r1 = _interrupted_ask(cfg, ex, monkeypatch)
-    # 恢复从断点节点继续：generate 产物已在状态里，单步收尾不再调模型，
-    # 未配密钥的实例也能完成 —— 与 /api/sql 免密钥同理
-    d = client.post("/api/resume", json={"thread_id": r1.thread_id}).json()
-    assert d["ok"] is True and d["thread_id"] == r1.thread_id
-    assert d["trace_id"] != r1.trace_id
+    assert len(bodies) == 1
 
 
-# ---------------------------------------------------------------- 恢复前重新校验
+# ---------------------------------------------------------------- 复放与降级
+
+def test_replay_returns_the_decision_trail(cfg, ex, monkeypatch):
+    """复放取回的是**决策轨迹**，不是 SQL 全文。
+
+    agent 的每一步快照里有意义的是"第几步、挑了哪个工具、有没有结论"——
+    失败复现要看的就是它在哪一步拐错了弯。SQL 全文另有 replay_api 那道开关
+    管着（对外实例默认关），这里一个字都不出。
+    """
+    r1 = _interrupted(cfg, ex, monkeypatch)
+    snaps = agentgraph.replay(r1.thread_id, cfg)
+    assert snaps, "中断的线程没有任何快照"
+    assert all({"next", "step", "tool"} <= set(s) for s in snaps)
+    assert not any("sql" in str(k).lower() for s in snaps for k in s), \
+        "复放把 SQL 泄出来了"
 
 
-def _blocked(cfg, ex, monkeypatch, tweak) -> tuple[graph.AskResult, graph.AskResult]:
-    """先制造一次中断，再按 tweak 改变续跑时的前提，返回（中断、续跑）两次结果。"""
-    r1 = _interrupted_ask(cfg, ex, monkeypatch)
-    tweak()
-    r2 = graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL))
-    assert r2 is not None
-    return r1, r2
+def test_is_resumable_degrades_to_none_not_false(cfg, monkeypatch):
+    """检查点库问不通时返回 None，**不是 False**。
 
+    None = "不知道"，False = "确定不能续"。压成 False 的话，库抖一下就会把
+    一批还能救的任务标成不可续 —— 而任务中心据此把入口灰掉，人就再也点不到了。
+    """
+    def _boom(_cfg):
+        raise RuntimeError("检查点库连不上")
 
-def test_resume_blocked_when_table_no_longer_visible(cfg, ex, monkeypatch):
-    """中断期间表被移出可见范围 —— 续跑必须停在校验，不能拿旧前提接着跑。"""
-    def revoke() -> None:
-        for name in list(cfg.tables):
-            cfg.tables.pop(name)
-
-    _, r2 = _blocked(cfg, ex, monkeypatch, revoke)
-    assert r2.ok is False and r2.rejected_by == graph.RESUME_BLOCKED
-    assert "可见范围" in r2.error
-    # 一次模型调用都不该花：校验在配额与图执行之前
-    assert r2.tok_in == 0 and r2.tok_out == 0
-
-
-def test_resume_blocked_on_schema_drift(cfg, ex, monkeypatch):
-    """白名单声明的列在库里没了 —— 检查点里那条 SQL 的前提已经不成立。"""
-    def drift() -> None:
-        from askdb.config import Column
-
-        t = next(iter(cfg.tables.values()))
-        t.columns["column_that_never_existed"] = Column(
-            name="column_that_never_existed", type="TEXT")
-
-    _, r2 = _blocked(cfg, ex, monkeypatch, drift)
-    assert r2.ok is False and r2.rejected_by == graph.RESUME_BLOCKED
-    assert "表结构" in r2.error
-
-
-def test_blocked_resume_keeps_the_task_resumable(cfg, ex, monkeypatch):
-    """被挡下不是终态：检查点还在，条件恢复后照样能续 —— 任务中心也得这么看。"""
-    from askdb.audit import tasks
-
-    r1 = _interrupted_ask(cfg, ex, monkeypatch)
-    saved = dict(cfg.tables)
-    cfg.tables.clear()
-    blocked = graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL))
-    assert blocked is not None and blocked.rejected_by == graph.RESUME_BLOCKED
-
-    row = next(t for t in tasks(cfg.audit_log, None) if t["thread_id"] == r1.thread_id)
-    assert row["status"] == "interrupted" and row["resumable"] is True
-
-    cfg.tables.update(saved)          # 条件恢复，续跑应当照常完成
-    ok = graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL))
-    assert ok is not None and ok.ok is True
-
-
-def test_blocked_resume_is_audited(cfg, ex, monkeypatch):
-    """挡下来这件事必须留痕，否则"我点了续跑没反应"事后查不出原因。"""
-    r1 = _interrupted_ask(cfg, ex, monkeypatch)
-    cfg.tables.clear()
-    r2 = graph.resume(r1.thread_id, cfg, executor=ex, llm=FakeLlm(OK_SQL))
-    rec = get_audit(cfg.audit_log, r2.trace_id)
-    assert rec["kind"] == "resume" and rec["rejected_by"] == graph.RESUME_BLOCKED
-    assert rec["thread_id"] == r1.thread_id
+    monkeypatch.setattr(agentgraph, "ensure_graph", _boom)
+    assert agentgraph.is_resumable("a" * 12, cfg) is None

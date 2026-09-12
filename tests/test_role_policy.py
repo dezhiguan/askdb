@@ -174,7 +174,7 @@ def test_ask_path_receives_narrowed_config(cfg, monkeypatch):
         seen["role"] = config.role
         raise RuntimeError("stop")           # 只验入参，不跑真链路
 
-    monkeypatch.setattr(server, "run_ask", _capture)
+    monkeypatch.setattr(server, "run_agent", _capture)
     client = _client(cfg, monkeypatch)
     try:
         client.post("/api/ask", json={"question": "有多少知识库"})

@@ -52,10 +52,19 @@ def test_chaos_injection_actually_fires_and_is_judged(cfg, monkeypatch):
     确实回不来，这就是这组数字存在的意义）、Schema 漂移只要求不编造。
     """
     from evals import chaos
-    from tests.test_graph import OK_SQL, FakeLlm
+    from tests.cases.test_e_agent import OK_SQL, FakeLlm, _act
 
-    rep = chaos.run(cfg, _chaos_cases(), verbose=False,
-                    llm_factory=lambda: FakeLlm(OK_SQL, OK_SQL, OK_SQL))
+    def _llm():
+        """查一次 → （被注入打掉时）再查一次 → 收尾。
+
+        第二步不是凑数：**"可重试的超时"这条判据要求链路自己回来**。只给一步
+        的话，注入打掉第一次之后 agent 直接收尾，结果与基线不同，会被判成
+        "沉默的错误"——那是替身不够，不是链路不恢复。
+        """
+        return FakeLlm(_act(sql=OK_SQL), _act(sql=OK_SQL),
+                       _act(finish=True, answer="有结果"))
+
+    rep = chaos.run(cfg, _chaos_cases(), verbose=False, llm_factory=_llm)
     assert rep.n_cases == 1 and rep.skipped == 0
     got = {f.key: f for f in rep.faults}
     assert set(got) == {"db_timeout", "llm_rate_limit", "schema_drift"}
@@ -65,7 +74,7 @@ def test_chaos_injection_actually_fires_and_is_judged(cfg, monkeypatch):
 
     # 可重试的执行超时：反思→重新生成→再执行，结果应当与基线一致
     assert got["db_timeout"].recovered == 1
-    # 模型调用失败在图里直接 finalize，没有重试 —— 如实记 0，不许粉饰
+    # 模型调用失败在图里直接收尾，没有重试 —— 如实记 0，不许粉饰
     assert got["llm_rate_limit"].recovered == 0
     # 列不存在：不要求答出来，只要求别编造
     assert got["schema_drift"].recovered == 1

@@ -25,7 +25,8 @@ from rich.table import Table as RichTable
 from . import guard
 from .config import load
 from .executor import DataSourceError, Executor
-from .graph import AskResult, ask as run_ask, jsonable
+from .agent import run_agent as run_ask
+from .graph import AskResult, jsonable
 
 app = typer.Typer(add_completion=False, help="askdb —— 可信数据问答 Agent")
 con = Console()
@@ -241,7 +242,7 @@ def cmd_replay(
 
     检查点库跟着配置走 —— 用哪份配置跑出来的失败，就用哪份配置复现。
     """
-    from .graph import replay as do_replay
+    from .agentgraph import replay as do_replay
 
     cfg = _load(config)
     snaps = do_replay(trace_id, cfg)
@@ -254,23 +255,29 @@ def cmd_replay(
               f"确认配置是否对得上：这份配置的检查点落在 {where}。"
               "本机与线上落点不同，别拿本机的配置去查线上的 trace。")
 
+    # 2026-09-12：快照字段随 agent 迁到 LangGraph 一并换了。管道那版每步
+    # 存的是"这一版 SQL 长什么样"（sql_raw / sql_final / attempt）；agent 每步
+    # 存的是"第几步、挑了哪个工具、有没有结论"—— 失败复现要看的正是它在哪
+    # 一步拐错了弯。照着旧字段读会整片打不出来（KeyError 或全空）。
     con.print(f"[bold]复现[/] {trace_id}   共 {len(snaps)} 个检查点\n")
     first_bad = None
     for i, s in enumerate(snaps):
-        nxt = "、".join(s["next"]) or "END"
-        bad = bool(s["error"] or s["rejected_by"])
+        nxt = "、".join(s.get("next") or ()) or "END"
+        bad = bool(s.get("error") or s.get("rejected_by"))
         if bad and first_bad is None:
             first_bad = i
         mark = "[red]✗[/]" if bad else "[green]✓[/]"
-        att = f"  重试 {s['attempt']}" if s.get("attempt") else ""
-        con.print(f"{mark} [{i}] 下一步 [cyan]{nxt}[/]{att}")
-        if s["sql_raw"] and s["sql_raw"] != s["sql_final"]:
-            con.print(f"      模型产出 [dim]{' '.join(s['sql_raw'].split())[:110]}[/]")
-        if s["sql_final"]:
-            con.print(f"      改写之后 {' '.join(s['sql_final'].split())[:110]}")
-        if s["rejected_by"]:
+        step = f"  第 {s['step']} 步" if s.get("step") else ""
+        con.print(f"{mark} [{i}] 下一步 [cyan]{nxt}[/]{step}")
+        if s.get("tool"):
+            con.print(f"      调用工具 [cyan]{s['tool']}[/]")
+        if s.get("answer"):
+            con.print(f"      结论 [dim]{' '.join(str(s['answer']).split())[:110]}[/]")
+        if s.get("tok_used"):
+            con.print(f"      [dim]累计 token {s['tok_used']}[/]")
+        if s.get("rejected_by"):
             con.print(f"      [red]拦截[/] {s['rejected_by']}")
-        if s["error"]:
+        if s.get("error"):
             con.print(f"      [red]报错[/] {str(s['error'])[:150]}")
 
     if first_bad is None:

@@ -378,56 +378,26 @@ def test_rewriting_the_question_stays_on_the_same_thread(hclient, hcfg):
     assert r.status_code != 404, "只改写不补充被挡掉了"
 
 
-def test_clarify_node_lets_a_supplemented_question_through(cfg, monkeypatch):
-    """clarify 节点**此前只有一条出路**：判定成立就终止链路。
-
-    判定本身是对的（模型自己判不稳），错在判完之后没有回来的路 —— 于是"补充"
-    只能是换个问法重新发起，而那就是换一条线程，原线程永远停在等待补充。
-
-    补充**不放宽判定**：它不去猜指代指向谁，只是把人给的那句话原样往下传。
-    """
-    from askdb import graph
-
-    seen: list[str] = []
-
-    class _Tracer:
-        def start(self):
-            return 0
-
-        def add(self, _node, _t, note, **_kw):
-            seen.append(note)
-
-    class _Deps:
-        pass
-
-    deps = _Deps()
-    deps.cfg = cfg
-    deps.tracer = _Tracer()
-    monkeypatch.setattr(graph, "_deps", lambda _c: deps)
-
-    blocked = graph._n_clarify({"question": "那前三名呢"}, {})
-    assert blocked["rejected_by"] == "NEED_CONTEXT"
-
-    passed = graph._n_clarify(
-        {"question": "那前三名呢", "clarification": "指文档数最多的知识库"}, {})
-    assert passed == {"clarification": "指文档数最多的知识库"}
-    assert any("补充" in s for s in seen)
-
-
-def test_clarification_reaches_the_prompt_without_rewriting_the_question():
-    """补充只进提示词，**绝不改 question 本身**。
+def test_clarification_reaches_the_model_without_rewriting_the_question():
+    """补充只进决策历史，**绝不改 question 本身**。
 
     审计、任务标题、复核队列、审批指纹全都读那个字段；就地改掉的话，同一条
     线程在界面上会变成另一个问题，审批票的指纹也会对不上。
-    """
-    from askdb import graph
 
-    state = {"question": "那前三名呢", "clarification": "指文档数"}
-    asked = graph._asked(state)
-    assert "那前三名呢" in asked and "指文档数" in asked
-    assert state["question"] == "那前三名呢", "问题原文被改写了"
-    # 没有补充时原样返回，不留空标题
-    assert graph._asked({"question": "库里有多少表"}) == "库里有多少表"
+    2026-09-12 从老管道的 graph._asked 改到 agentgraph：管道把补充拼进提示词，
+    agent 把它摆进决策历史（模型第一轮就看得到）。**验的那件事一字没变。**
+    """
+    from askdb import agentgraph
+
+    st = agentgraph.initial_state("那前三名呢", 0, "a" * 12, "b" * 12,
+                                  6, 32000, "指文档数最多的知识库")
+    assert st["question"] == "那前三名呢", "问题原文被改写了"
+    assert any("指文档数最多的知识库" in h["brief"] for h in st["history"]), \
+        "补充条件没进决策历史"
+
+    # 没有补充时历史是空的，不留一条占位
+    plain = agentgraph.initial_state("库里有多少表", 0, "a" * 12, "b" * 12, 6, 32000)
+    assert plain["history"] == []
 
 
 # ===========================================================================

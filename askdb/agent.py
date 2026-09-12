@@ -289,15 +289,21 @@ def _result(cfg: Config, question: str, trace_id: str, thread_id: str, org: int,
 
 def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
               executor: Executor | None = None, llm: LlmClient | None = None,
-              trace_id: str | None = None, thread_id: str | None = None) -> AskResult:
-    """自主决策循环入口。返回与 graph.ask 同一套 AskResult，并写审计（收尾）。
+              trace_id: str | None = None, thread_id: str | None = None,
+              clarification: str = "") -> AskResult:
+    """自主决策入口。返回与 graph.ask 同一套 AskResult，并写审计（收尾）。
+
+    clarification 是发起人事后补上的条件（「补充条件」「换个问法」走这里）。
+    它进决策历史而**不改写 question** —— question 是这条线程的身份，
+    审计标题与审批指纹都读它，就地改掉会让同一条线程变成另一个问题。
 
     审计是任务中心 / 复核队列 / replay 的共同数据源：它们都从审计记录派生
     （audit.tasks / audit.needs_review），所以 agent 链路一旦如实写审计，这三样
     立刻复用现网机制，无需各造一套。
     """
     result = _drive(question, cfg, org_id, executor=executor, llm=llm,
-                    trace_id=trace_id, thread_id=thread_id)
+                    trace_id=trace_id, thread_id=thread_id,
+                    clarification=clarification)
     try:                                  # 审计不该成为查询失败的原因
         write_audit(cfg, _audit_of(result, cfg, "ask"))
     except Exception:
@@ -307,13 +313,24 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
 
 def _drive(question: str, cfg: Config, org_id: int | None = None, *,
            executor: Executor | None = None, llm: LlmClient | None = None,
-           trace_id: str | None = None, thread_id: str | None = None) -> AskResult:
+           trace_id: str | None = None, thread_id: str | None = None,
+           clarification: str = "") -> AskResult:
+    """跑一次 agent 图。
+
+    2026-09-12 从 `for step in range(...)` 改成 LangGraph（见 agentgraph）。
+    换掉的是控制流，**每一条判定都原样搬了过去**；换来的是检查点覆盖到 agent
+    链路，于是「创建任务 / 补充条件 / 换个问法」不必再为了续跑退回老管道 ——
+    那条分流的代价是：最该深挖的请求反而被送进只能猜列名的链路。
+    """
+    from . import agentgraph
+
     trace_id = trace_id or uuid.uuid4().hex[:12]
     thread_id = thread_id or trace_id
-    org = org_id if org_id is not None else int(cfg.raw.get("tenant", {}).get("default_ctx", 0) or 0)
+    org = org_id if org_id is not None else int(
+        cfg.raw.get("tenant", {}).get("default_ctx", 0) or 0)
     tracer = Tracer()
 
-    # 每日配额快速失败（与管道同一口径）。
+    # 每日配额快速失败（与管道同一口径）。**进图之前判**，一个 token 都不花。
     dq = build_quota(cfg)
     over, used = dq.exhausted()
     if over:
@@ -323,249 +340,42 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
                        hint="明日自动恢复；直查 SQL 不受配额限制。")
 
     # 发起记录先落盘：进程中途被杀时检查点/审计里仍有这条线程，任务中心据此
-    # 列得出、凭 thread_id 续得上（与 _execute 同一处理）。它只带"这条线程存在、
-    # 归谁、打哪个库、问的什么"，收尾记录到时共用 trace_id 顶掉它。
+    # 列得出、凭 thread_id 续得上（与管道 _execute 同一处理）。
     try:
         write_audit(cfg, {
             "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
             "phase": PHASE_STARTED, "thread_id": thread_id, "org_id": org,
-            "question": question, "role": cfg.role or "ANONYMOUS", "user": cfg.user or "",
-            "source": cfg.source_id or "builtin", "source_name": cfg.source_name or cfg.path,
+            "question": question, "role": cfg.role or "ANONYMOUS",
+            "user": cfg.user or "",
+            "source": cfg.source_id or "builtin",
+            "source_name": cfg.source_name or cfg.path,
         })
     except Exception:
         pass
 
+    own_exec = executor is None
     ex = executor or Executor(cfg)
     client = llm or LlmClient(cfg)
-    ctx = tools.ToolContext(cfg=cfg, org_id=org, executor=ex)
     max_steps, cost_cap = _budget(cfg)
-
-    # 1) grounded 召回
-    t = tracer.start()
-    rec = tools.search_schema(question, cfg)
-    tables_hit = rec.data.get("tables", [])
-    schema_prompt = rec.data.get("prompt", "")
-    # 输入是拿去做嵌入的问句本身，输出是**喂进提示词的表结构全文** ——
-    # 后者才是判「模型为什么没用那张表」的第一手材料：召回对了但结构没渲染
-    # 出某一列，与压根没召回那张表，在 note 的"召回 N 张表"上完全一样。
-    # 嵌入的账记在这一步 —— 它就是这一步花的钱，口径与管道链路（graph 里
-    # 那份 embed_kw）逐字一致。mode: all / 关键词回落时三项都是空，不落字段：
-    # 记一个 tok_in=0 会让「输入摘要」那列显示 "embed 0 tok"，比占位符更误导。
-    # model 记嵌入模型名，不与生成模型混为一谈。
-    embed_kw = {"tok_in": rec.data.get("embed_tokens") or 0,
-                "cost_cny": rec.data.get("embed_cost_cny") or 0.0,
-                "model": rec.data.get("embed_model") or ""} \
-        if (rec.data.get("embed_tokens") or rec.data.get("embed_model")) else {}
-    tracer.add("schema_recall", t, _brief(rec), tables=tables_hit,
-               input=question, output=schema_prompt, **embed_kw)
-
-    # 2) 意图 / 可答性预检
-    t = tracer.start()
+    deps = agentgraph.Deps(
+        cfg=cfg, llm=client, executor=ex, tracer=tracer,
+        ctx=tools.ToolContext(cfg=cfg, org_id=org, executor=ex))
+    init = agentgraph.initial_state(question, org, trace_id, thread_id,
+                                    max_steps, cost_cap, clarification)
     try:
-        intent, u = client.structured(
-            IntentCheck, _sys(INTENT_SYSTEM, cfg),
-            INTENT_USER.format(schema=schema_prompt, question=question))
-    except QuotaExceeded as e:
-        tracer.add("intent", t, str(e), status="blocked")
+        final = agentgraph.ensure_graph(cfg).invoke(
+            init,
+            {"configurable": {"thread_id": thread_id, "deps": deps},
+             "recursion_limit": agentgraph.recursion_limit(max_steps)})
+    except Exception as e:                        # noqa: BLE001
+        # 图本身抛出来（递归上限、检查点库故障）。**不能让它变成裸 500** ——
+        # 用户看到的必须是一句能理解的话，且这条线程要如实收尾，否则它会
+        # 永远停在「运行中」（那正是 2026-09-11 那 8 条僵尸线程的来路）。
+        tracer.add("finalize", tracer.start(), f"执行图异常：{e}", status="failed")
         return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="QUOTA", error=str(e), hint="明日自动恢复。")
-    except Exception as e:
-        tracer.add("intent", t, f"预检失败：{e}", status="failed")
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="LLM", error=f"意图预检失败：{e}",
-                       hint="检查网络与密钥；也可关闭 agent.enabled 退回管道。")
-    tracer.add("intent", t, intent.reason, model=client.model_name,
-               tok_in=u.input_tokens, tok_out=u.output_tokens, cost_cny=u.cost_cny)
-
-    if intent.out_of_scope:
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="OOS", tables_hit=tables_hit,
-                       error=intent.reason or "该问题涉及的业务实体在当前库中不存在，无法回答。",
-                       reasoning=intent.reason)
-    if not intent.answerable:
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="CLARIFY", tables_hit=tables_hit,
-                       error=intent.clarify or "问题缺少明确的查询对象，请补充。",
-                       reasoning=intent.clarify)
-
-    # 3) 自主循环
-    agent_system = _sys(AGENT_SYSTEM.format(tools=_render_specs()), cfg)
-    history: list[dict[str, Any]] = []
-    last_exec: dict | None = None
-    #: 本轮**每一次**成功执行的结果。接地校验要看全部，不能只看最后一次 ——
-    #: 模型的结论经常引用更早几步的数（"全表 447,000 条，其中可售 398,082"）。
-    exec_results: list[dict[str, Any]] = []
-    scan_blocked: tools.ToolResult | None = None   # 最后一次被 R-11 拦下的执行
-    last_error = ""                                # 最后一次 execute_sql 的失败原因
-    answer = ""
-    converged = ""
-    step_count = 0
-    gmode = _grounding_mode(cfg)
-    ungrounded: list[str] = []
-    grounding_retried = False
-    for step in range(1, max_steps + 1):
-        if tracer.tok_in + tracer.tok_out > cost_cap:                       # R-17
-            converged = f"累计 token 超预算 {cost_cap}，收敛作答"
-            break
-        human = AGENT_USER.format(
-            schema=schema_prompt, question=question,
-            history=_render_history(history), steps_left=max_steps - step + 1)
-        t = tracer.start()
-        try:
-            action, u = client.structured(AgentAction, agent_system, human)
-        except QuotaExceeded as e:
-            tracer.add("decide", t, str(e), status="blocked")
-            converged = "配额耗尽，收敛"
-            break
-        except Exception as e:
-            tracer.add("decide", t, f"决策失败：{e}", status="failed")
-            return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                           rejected_by="LLM", error=f"决策失败：{e}", tables_hit=tables_hit,
-                           step_count=max(1, step_count))
-        tracer.add("decide", t, (action.thought or "")[:80], model=client.model_name,
-                   tok_in=u.input_tokens, tok_out=u.output_tokens, cost_cny=u.cost_cny)
-
-        if action.finish:
-            answer = action.answer
-            bad = (grounding.ungrounded(answer, exec_results,
-                                        known=_known_constants(cfg))
-                   if gmode != "off" and answer else [])
-            if bad:
-                ungrounded = [grounding.fmt([x]) for x in bad]
-                tracer.add("grounding", tracer.start(),
-                           f"结论里 {len(bad)} 个数追溯不到查询结果：{grounding.fmt(bad)}",
-                           status="blocked" if gmode == "enforce" else "ok")
-                # enforce 档先给一次改正机会：把追不到的数点名回灌，让模型去查。
-                # 直接拒会把误判的代价全压在正确答案上，而多跑一轮只花一次调用。
-                if gmode == "enforce" and not grounding_retried and step < max_steps:
-                    grounding_retried = True
-                    history.append({
-                        "tool": "(接地校验)", "args": {},
-                        "brief": f"**你的结论里这些数字没有出现在任何一次查询结果里："
-                                 f"{grounding.fmt(bad)}**。它们既不等于某个返回值，也不是"
-                                 f"两个返回值做一次加减乘除得到的。请先用 execute_sql 把它们"
-                                 f"真正查出来，再重写结论；确实查不到就如实说查不到，不要保留"
-                                 f"这些数字。"})
-                    answer = ""
-                    continue
-            else:
-                ungrounded = []
-            break
-
-        step_count += 1
-        res = tools.invoke(action.tool, action.args, ctx)
-        tt = tracer.start()
-        # 静态 step 名（工具名进 note）：复放/追踪页的步骤映射是静态表，
-        # 动态 step id 会显示成原始串（见 tests/test_frontend）。
-        # 工具名进结构化 tool 字段（前端 Span 列直接显示），note 只留结果摘要，不再前缀工具名。
-        tracer.add("tool_call", tt, _brief(res),
-                   status="ok" if res.ok else "blocked", tool=action.tool,
-                   # 工具的输入就是模型填的那组参数（execute_sql 的 sql、
-                   # get_table_schema 的 table），输出是工具返回的完整数据。
-                   # _brief 只给一句"返回 10 行"，看不出返回的是哪 10 行，
-                   # 也看不出模型到底把什么 SQL 递了进来。
-                   input=_io_json(action.args),
-                   output=_io_json(res.data) if res.ok
-                          else f"{res.rejected_by or ''} {res.error}".strip())
-
-        # 数据源根本连不上：重试没有价值，继续循环只会把 R-17 预算烧光，
-        # 而烧光之后返回的是一句"未完全收敛"，用户看不出真正原因是库挂了。
-        # 2026-09-11 跑测里宠物医疗源 10 条里 3 条这么烧掉、1 条据此编了答案。
-        if res.data.get("fatal"):
-            return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                           rejected_by="DATASOURCE", error=res.error,
-                           hint=res.data.get("hint", "") or "请在「数据源」页检查该源的连通性。",
-                           tables_hit=tables_hit, step_count=max(1, step_count))
-
-        item: dict[str, Any] = {"tool": action.tool, "args": action.args, "brief": _brief(res)}
-
-        # 高成本查询 → 先给模型一次换写法的机会，还是不行才挂人工审批（HITL）。
-        # 原来这里直接 return：模型连"可以改用预聚合汇总表"都来不及试，而 R-11
-        # 在生产数据规模下会挡掉大量最基本的问题（2026-09-11 跑测 26/130），
-        # 审批页当前又没有入口，用户看到的是一条死路。改为把拒绝连同可行的替代
-        # 写法回灌进历史，循环继续；到收尾仍无成功执行时才按 R-11 挂审批 ——
-        # 交由 server 既有 _open_approval 建单，带上被拦的 SQL 与预估扫描量。
-        if res.rejected_by == "R-11":
-            scan_blocked = res
-            item["brief"] = (
-                f"{res.error}。**这一版不能执行，换个更省的写法再试一次**："
-                "① 优先改查同源的预聚合汇总表（表名多为 *_stats_daily / *_daily_stats），"
-                "直接对汇总列求和；② 或加时间窗 / 主键区间过滤，分段统计后自行相加；"
-                "③ 严禁用抽样（TABLESAMPLE、LIMIT 取样）冒充全量。"
-                "若两条路都走不通，finish=true 并如实说明这个口径当前取不到。")
-            history.append(item)
-            continue
-
-        if action.tool == "execute_sql" and not res.ok:
-            last_error = res.error or (res.rejected_by or "")
-
-        if res.ok and action.tool == "execute_sql":
-            last_exec = res.data
-            exec_results.append({"columns": list(res.data.get("columns") or []),
-                                 "rows": list(res.data.get("rows") or [])})
-            ctx.last_result = res.data          # 供 analyze_result / export_result 用
-            item["preview"] = {"columns": res.data.get("columns", []),
-                               "rows": planner.preview_rows(res.data.get("rows", [])),
-                               "row_count": res.data.get("row_count")}
-        elif res.ok and action.tool == "get_table_schema":
-            item["columns"] = [c["name"] for c in res.data.get("columns", [])]
-        elif res.ok and action.tool == "search_schema":
-            item["columns"] = res.data.get("tables", [])
-        history.append(item)
-    else:
-        converged = f"达步数上限 {max_steps}，收敛作答"
-
-    # 4) 收尾
-    #
-    # 这一段是"能不能把这个答案给用户"的最后一道判定，纯代码、不问模型。
-    # 原来只有一句 `ok = bool(last_exec) or bool(answer)` —— 只要模型吐了字就算成功，
-    # 于是"一次 SQL 都没发、直接写个整数再补一段口径说明"照样返回 ok=true。
-    # 2026-09-11 跑测里 130 条有 15 条是这么来的，数量级差 2~3 个（订单总数答 1 万、
-    # 实际 120 万），界面上无从分辨。下面三条都是确定性判定：
-    common = dict(tables_hit=tables_hit, step_count=max(1, step_count), converged=converged,
-                  ungrounded=ungrounded)
-
-    if last_exec is not None and ungrounded and gmode == "enforce":
-        # 给过一次改正机会了还是追溯不到 —— 这些数不是从库里来的，不能递出去。
-        # 与 NO_EVIDENCE 分开是因为两者的处置不同：那条是"一次都没跑"，
-        # 这条是"跑了，但答案没用上跑出来的东西"。
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="UNGROUNDED", last_exec=last_exec,
-                       error=f"结论里这些数字追溯不到任何一次查询结果："
-                             f"{'、'.join(ungrounded)}，因此不给出这个答案。",
-                       hint="换个更具体的问法，或在「直查 SQL」里自己跑一条核对；"
-                            "结果表仍在下方，可直接看。",
-                       **common)
-
-    if last_exec is not None:
-        # 有数据。模型没来得及归因时，别用一句"未完全收敛"把已经查到的结果盖掉 ——
-        # 结果表就在 AskResult 里，直说"看表"比丢掉它诚实得多。
-        if not answer:
-            answer = (("（未在预算内完成归因）" + converged + "。") if converged else "") + \
-                     "以下为最后一次查询执行的原始结果，请直接看结果表。"
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=True,
-                       reasoning=answer, last_exec=last_exec, **common)
-
-    # 以下都是"本轮没有一次成功的 execute_sql"。
-    if scan_blocked is not None:
-        # 换过写法仍然过不去：按 R-11 挂审批，交由 server 建单。
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="R-11", last_exec=scan_blocked.data,
-                       error=scan_blocked.error, **common)
-
-    tail = f"（最后一次查询执行失败：{last_error}）" if last_error else ""
-    if _has_number(answer):
-        # **本条是 P0 兜底**：没取到数据就不许出数字。这里刻意不把模型那段话
-        # 回显给用户 —— 它正是编造出来的内容，回显等于换个位置继续骗人。
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="NO_EVIDENCE",
-                       error="本轮没有任何一次查询执行成功，因此不给出带数字的结论。" + tail,
-                       hint="换个更具体的问法，或先确认这个口径需要的表是否可查；"
-                            "也可在「直查 SQL」里自己跑一条核对。",
-                       **common)
-    if not answer:
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="NO_RESULT", error="未能产出结果" + tail, **common)
-    # 不含任何数字的定性回答（例如"这个库里有哪些表"）没有可编造的量，放行。
-    return _result(cfg, question, trace_id, thread_id, org, tracer, ok=True,
-                   reasoning=answer, **common)
+                       rejected_by="EXEC", error=f"执行链路异常：{e}",
+                       hint="这不是提问本身的问题，稍后重试；持续出现请联系运维。")
+    finally:
+        if own_exec:
+            ex.close()
+    return agentgraph.to_result(final, cfg, tracer)

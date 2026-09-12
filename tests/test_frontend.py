@@ -175,10 +175,10 @@ def test_every_span_the_backend_emits_is_mapped():
     漏的代价不对称，所以钉在这里：多一个死项只是冗余，少一个是读错链路。
     """
     steps: set[str] = set()
-    for name in ("graph.py", "agent.py", "server.py", "trace.py"):
-        f = ROOT / "askdb" / name
-        if not f.exists():
-            continue
+    # **扫整个包，不写文件白名单。** 2026-09-12 节点从 graph.py 搬到
+    # agentgraph.py，白名单没跟上 —— 这条用例于是只扫到 7 个 step 就报
+    # "没扫到"。护栏自己有个白名单，等于把同一类漂移搬进了护栏。
+    for f in sorted((ROOT / "askdb").glob("*.py")):
         src = f.read_text(encoding="utf-8")
         steps |= set(re.findall(r'tracer\.add\("([a-z_]+)"', src))
         steps |= set(re.findall(r'"step": "([a-z_]+)"', src))

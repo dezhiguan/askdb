@@ -42,7 +42,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from askdb import graph
+from askdb.agent import run_agent
 from askdb.config import Config, load
 from askdb.executor import DataSourceError, Executor
 
@@ -111,7 +111,10 @@ class Fault:
 
 FAULTS: list[Fault] = [
     Fault("db_timeout", "数据库超时", "executor", "run", _timeout),
-    Fault("llm_rate_limit", "模型限流", "llm", "generate_sql", _rate_limited),
+    # 2026-09-12：注入点从 generate_sql 换成 structured。固定管道当天删除，
+    # agent 全程走 structured（意图预检与每一轮决策都是它）—— 打在 generate_sql
+    # 上等于**一次都没注进去**，而报告照样会显示"注入 1 次"。
+    Fault("llm_rate_limit", "模型限流", "llm", "structured", _rate_limited),
     Fault("schema_drift", "Schema 漂移", "executor", "run", _column_gone,
           tolerate_failure=True),
 ]
@@ -162,7 +165,7 @@ def _baseline(cfg: Config, cases: list[Case], ex: Executor, verbose: bool,
     """无注入的一遍，作为"本来应该答成什么样"的参照。"""
     base: dict[str, list[tuple]] = {}
     for i, c in enumerate(cases, 1):
-        r = graph.ask(c.question, cfg, executor=ex,
+        r = run_agent(c.question, cfg, executor=ex,
                       llm=llm_factory() if llm_factory else None)
         if r.ok:
             base[c.id] = _norm(r.rows)
@@ -214,7 +217,7 @@ def run(cfg: Config, cases: list[Case], verbose: bool = True,
                     probe = _FailOnce(base_llm, fault.method, fault.error)
                     inj_llm = probe
                 try:
-                    r = graph.ask(c.question, cfg, executor=inj_ex, llm=inj_llm)
+                    r = run_agent(c.question, cfg, executor=inj_ex, llm=inj_llm)
                 except Exception as e:      # noqa: BLE001 —— 崩了也是一条结果
                     fr.cases.append(Injection(id=c.id, fired=probe.fired,
                                               recovered=False,

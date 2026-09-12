@@ -39,7 +39,9 @@ from . import tools as _tools
 from .executor import DataSourceError, Executor, MaskUnresolved
 from . import async_runner as _async_runner
 from .agent import run_agent
-from .graph import ask as run_ask, jsonable, resume as run_resume
+from .agentgraph import resume as run_resume
+from .agent import run_agent
+from .graph import jsonable
 from .quota import build_quota
 from .qcache import build_answer_cache, make_key as _cache_key
 from .trace import now_iso as _now_iso, observability_status as _obs_status
@@ -2222,7 +2224,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # clarify = 带补充条件的重跑，它同样走图、同样落检查点（见
         # graph._rerun_with_clarification），漏掉它这一类记录就点不开快照。
         if rec.get("kind", "ask") in ("ask", "resume", "clarify") and rec.get("attempts"):
-            from .graph import replay as _snap
+            from .agentgraph import replay as _snap
 
             try:
                 # 续跑记录的检查点在原任务的线程上（trace 新开、thread 不变）
@@ -2375,7 +2377,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         逐条查检查点只发生在 stale 的那几条上（线上个位数），不是全量：
         正在跑的线程不会陈旧，正常收尾的线程连 stale 都不会置位。
         """
-        from .graph import is_resumable
+        from .agentgraph import is_resumable
 
         for it in items:
             if not it.get("stale"):
@@ -2674,7 +2676,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     detail=f"{name} 只能是 all / " + " / ".join(allowed))
         username = _current_user(request) or ""
         from .audit import tasks as _tasks
-        from .graph import is_resumable
+        from .agentgraph import is_resumable
 
         # 审批状态要联查进来：R-11 被拦下的那条**在等人放行**，不是终局。
         # 只看审计的话它与"碰了安全红线"长得一模一样，页面上都是「已拦截」，
@@ -3250,23 +3252,29 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             if hit is not None:
                 return JSONResponse(_serve_cached_ask(hit, scoped, q_text, eff_org))
 
-        # agent.enabled 打开时走 LLM 自主决策链路（v2）；否则走既有固定管道。
-        # 默认关，不影响现网。as_task（可续跑任务线）仍走管道 —— 它用 LangGraph
-        # 检查点续跑；agent 循环尚不支持中途落检查点续跑，故任务线不落到 agent。
-        if bool(scoped.raw.get("agent", {}).get("enabled", False)) and not req.as_task:
-            # 长任务自动异步：主请求最多等 async_after_ms，超时转后台并提示去任务中心
-            # （后台线程跑完写 final 审计，任务中心据审计更新状态）。见 §2。
-            import uuid as _uuid
-            _tid = _uuid.uuid4().hex[:12]
-            _thr = int(scoped.raw.get("agent", {}).get("async_after_ms", 8000))
-            r, _notice = _async_runner.run_or_detach(
-                lambda: run_agent(q_text, scoped, org_id=req.org_id,
-                                  trace_id=_tid, thread_id=_tid),
-                _thr, _tid)
-            if _notice is not None:
-                return JSONResponse(_notice)
-        else:
-            r = run_ask(q_text, scoped, org_id=req.org_id)
+        # **唯一一条链路。** 2026-09-12 起没有第二条路可选，所以这里不再有分支。
+        #
+        # 此前 `and not req.as_task` 把「创建任务」送进老管道，理由是"任务线要靠
+        # 检查点续跑，agent 循环不支持"—— agent 改用 LangGraph 之后这条不成立了；
+        # 何况那个能力生产上近 30 天触发 0 次（interrupted=0 / recovered=0）。
+        # 而 as_task 自己的契约本就是"**只用来加严**鉴权"（见 AskRequest.as_task），
+        # 拿一个鉴权标记当路由开关，代价是最该深挖的请求反被降级到猜列名的链路。
+        #
+        # `agent.enabled` 也一并撤了：老管道删掉之后它的 false 值等于"这个产品
+        # 不能查数"，那不是开关，是一个能把产品关掉的配置项。max_steps /
+        # cost_cap_tokens / async_after_ms / grounding 那几个是真旋钮，留着。
+        #
+        # 长任务自动异步：主请求最多等 async_after_ms，超时转后台并提示去任务中心
+        # （后台线程跑完写 final 审计，任务中心据审计更新状态）。
+        import uuid as _uuid
+        _tid = _uuid.uuid4().hex[:12]
+        _thr = int(scoped.raw.get("agent", {}).get("async_after_ms", 8000))
+        r, _notice = _async_runner.run_or_detach(
+            lambda: run_agent(q_text, scoped, org_id=req.org_id,
+                              trace_id=_tid, thread_id=_tid),
+            _thr, _tid)
+        if _notice is not None:
+            return JSONResponse(_notice)
         out = r.to_dict()
         if r.rejected_by == "R-11" and not scoped.scan_waiver:
             # 与直查同一条口径：超阈值挂起，不是终结。

@@ -211,24 +211,53 @@ def test_sql_rejects_empty_body(client):
 
 # ---------------------------------------------------------------- /api/ask
 
-def test_ask_uses_pipeline(client, monkeypatch):
-    class Fake:
-        def generate_sql(self, *a, **k):
-            return SqlDraft(sql="SELECT file_name AS 文件名 FROM documents", reasoning="r"), LlmUsage(10, 5)
+def test_ask_goes_through_the_agent(client, monkeypatch):
+    """/api/ask **只有一条链路**：agent 图。
 
-        def structured(self, schema, system, human):
-            from askdb.planner import Assessment, Plan
-            if schema is Plan:
-                return Plan(multi_step=False, reason="替身"), LlmUsage(1, 1)
-            return Assessment(enough=True, reason="替身"), LlmUsage(1, 1)
+    2026-09-12 之前这里叫 test_ask_uses_pipeline，验的是另一条路 —— 那条路
+    2026-09-12 随老管道一起删了。分流条件（`and not req.as_task`）也没了：
+    它把「创建任务」送进管道，而 as_task 的契约本就是"只用来加严鉴权"。
+    """
+    seen = {}
 
+    def _fake(q, cfg, org_id=None, **kw):
+        from askdb.graph import AskResult
 
-    monkeypatch.setattr(server, "run_ask",
-                        lambda q, cfg, org_id=None: __import__("askdb.graph", fromlist=["ask"])
-                        .ask(q, cfg, org_id=org_id, llm=Fake()))
+        seen.update(question=q, kw=kw)
+        return AskResult(ok=True, question=q, trace_id="a" * 12, org_id=0,
+                         thread_id="a" * 12, columns=["文件名"], rows=[["x"]],
+                         row_count=1, reasoning="替身")
+
+    monkeypatch.setattr(server, "run_agent", _fake)
     d = client.post("/api/ask", json={"question": "有哪些文档"}).json()
     assert d["ok"] and d["columns"] == ["文件名"]
-    assert d["tables_hit"]
+    assert seen["question"] == "有哪些文档"
+    # 长任务自动异步要用得上 trace_id/thread_id，两者必须传下去
+    assert seen["kw"].get("trace_id") and seen["kw"].get("thread_id")
+
+
+def test_as_task_no_longer_switches_the_execution_path(client, monkeypatch):
+    """**as_task 只加严鉴权，不改走哪条链路。**
+
+    它的字段说明写的就是这个（"为真时要求登录，为假时行为与从前完全一致"），
+    而 `and not req.as_task` 曾把它变成路由开关 —— 点「创建任务」就掉进能力
+    更弱的管道。删掉那条分流之后，两种请求必须落到同一个入口。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "askdb" / "server.py").read_text(
+        encoding="utf-8")
+    # 只禁**分流**这一种用法。别的地方用它是合理的（比如任务不吃应答缓存），
+    # 所以判据钉在"有没有第二条执行链路"上，不是"这个词出现没出现"。
+    for banned in ("run_ask", "graph.ask", "from .graph import ask"):
+        assert banned not in src, (
+            f"{banned} 又回来了 —— /api/ask 只该有 agent 一条链路。"
+            "as_task 的契约是「只用来加严鉴权」，当路由开关用的代价是"
+            "最该深挖的请求被降级到另一条链路")
+
+    # 它该做的那件事没变：为真时要求登录。
+    r = client.post("/api/ask", json={"question": "有哪些文档", "as_task": True})
+    assert r.status_code == 401, r.text
 
 
 def test_ask_rejects_too_long_question(client):
@@ -309,8 +338,15 @@ def test_mcp_ask_payload_carries_sql_and_caveat(cfg, monkeypatch):
                 return Plan(multi_step=False, reason="替身"), LlmUsage(1, 1)
             return Assessment(enough=True, reason="替身"), LlmUsage(1, 1)
 
-    monkeypatch.setattr(mcp_server, "run_ask",
-                        lambda q, c, org_id=None: graph.ask(q, c, org_id=org_id, llm=Fake()))
+    # 2026-09-12：固定管道删除，MCP 与 CLI 一样走 agent。这条验的是**载荷形状**
+    # （sql / rewrites / caveat 要出给调用方），与哪条链路产出的无关，
+    # 所以给一个字段齐全的替身即可。
+    from askdb.graph import AskResult
+
+    monkeypatch.setattr(mcp_server, "run_ask", lambda q, c, org_id=None, **kw: AskResult(
+        ok=True, question=q, trace_id="a" * 12, org_id=65, thread_id="a" * 12,
+        sql_final="SELECT file_name AS 文件名 FROM documents LIMIT 200",
+        rewrites=["注入 LIMIT 200"], columns=["文件名"], rows=[["x"]], row_count=1))
     p = _mcp_call(build := mcp_server.build_server(cfg), "ask", {"question": "有哪些文档"})
     assert p["ok"] and p["sql"] and p["rewrites"]      # 强制改写要让调用方看见
     assert "人工核对" in p["caveat"]
@@ -433,8 +469,18 @@ def test_step_count_is_a_scalar_not_the_trace_array(client):
     会短路成整个数组。这里同时钉住两侧：接口给的 step_count 必须是标量，
     页面必须从 step_count 取值而不是 steps。
     """
+    # **阈值要调大**：agent 超过 async_after_ms 会转后台，那条响应只有
+    # {async, message, thread_id, trace_id}，不带结果字段 —— 这一格验的是
+    # 同步响应的形状，转后台就验不到了。
+    from askdb import server as _srv
+
+    cfg = _srv.load("ignored.yaml")
+    cfg.raw["agent"] = {**cfg.raw.get("agent", {}), "async_after_ms": 60000}
+
     d = client.post("/api/ask", json={"question": "有多少文档"}).json()
-    assert isinstance(d["step_count"], int)
+    # 未配模型密钥时 agent 在预检就停下并如实报错 —— 这一格验的是**字段形状**，
+    # 不是能不能查到数，所以两种响应都该带上这两个字段。
+    assert isinstance(d["step_count"], int), d
     assert isinstance(d["steps"], list)          # 追踪数组，不是步数
 
     page = (WEB_LEGACY / "index.html").read_text(encoding="utf-8")

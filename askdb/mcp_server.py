@@ -24,7 +24,8 @@ from typing import Any
 from . import guard, identity
 from .config import Config, load
 from .executor import DataSourceError, Executor
-from .graph import ask as run_ask, jsonable
+from .agent import run_agent as run_ask
+from .graph import jsonable
 from .quota import build_quota
 
 TOOLS_DESC = {
