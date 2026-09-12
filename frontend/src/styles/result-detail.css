@@ -44,6 +44,9 @@
 .result-answer p { margin: 0 0 8px; }
 .result-answer p:last-child { margin-bottom: 0; }
 .result-answer code { padding: 1px 4px; border-radius: 4px; background: rgba(11,97,57,.08); font-size: 12px; }
+/* markdown 标题：只要重量，不占标题层级（组件里有说明）。 */
+.result-answer .answer-h { margin: 12px 0 6px; font-size: 14px; font-weight: 700; }
+.result-answer > .answer-h:first-child { margin-top: 0; }
 .result-answer .answer-list { margin: 0 0 8px; padding-left: 18px; }
 .result-answer .answer-list li { margin-bottom: 6px; }
 .result-answer .answer-list li::marker { color: var(--green); }

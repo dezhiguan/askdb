@@ -19,7 +19,7 @@ import { useState } from 'react'
  *
  * 模型出的答案是 markdown，此前整段按纯文本渲染，于是弹窗里直接出现
  * `| BANK_TRANSFER | 对公转账 | 3,391 |` 和 `**需要注意的两点**`。
- * 这里只认四种最常出现的记法，其余一律按原文走 —— 认不出的东西保持原样，
+ * 这里只认五种最常出现的记法，其余一律按原文走 —— 认不出的东西保持原样，
  * 比猜错了改写它安全。不引第三方依赖，也绝不走 dangerouslySetInnerHTML。 */
 
 const TABLE_LINE = /^\s*\|.*\|\s*$/
@@ -106,6 +106,11 @@ function parseAnswer(text: string): Block[] {
       i = j - 1
       continue
     }
+
+    /* 标题：`## 各支付渠道支付成功率`。不渲成 <h2> —— 弹窗里已经有「答案说明」
+       这一级标题，再插一级真标题会把对话框的层级弄乱；只取它的视觉重量。 */
+    const h = line.match(/^\s*#{1,6}\s+(.*\S)\s*$/)
+    if (h) { flush(); out.push({ kind: 'text', node: <p key={`h${out.length}`} className="answer-h">{inline(h[1], `h${out.length}`)}</p> }); continue }
 
     /* 有序列表：`1. xxx` / `2. xxx`。模型的「需要注意的两点」就长这样。 */
     const li = line.match(/^\s*\d+[.、]\s+(.*)$/)
