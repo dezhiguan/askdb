@@ -310,7 +310,10 @@
 
 .span-type { display: inline-flex; padding: 2px 4px; border-radius: 3px; color: var(--green); background: var(--green-wash); }
 .span-type.model { color: var(--blue); background: var(--blue-wash); }
+/* 工具与库访问同色：两者都是"对外做了一次真实动作"。
+   RAG（确定性召回）与它们分开 —— 它既不是模型选的，也不访问业务库。 */
 .span-type.tool, .span-type.db { color: var(--amber); background: var(--amber-wash); }
+.span-type.rag { color: var(--blue); background: var(--blue-wash); }
 .span-type.sys { color: var(--muted); background: var(--paper-2); }
 
 .trace-empty { padding: 20px 13px; color: var(--muted); font-size: 8px; }

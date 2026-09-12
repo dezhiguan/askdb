@@ -32,8 +32,17 @@ const NA = '—'
 /** 滚动分页每次取多少条。12 条约是左栏一屏半 —— 一屏都填不满就触发不了滚动。 */
 const PAGE_SIZE = 12
 
-/** 工具/数据库类节点数 —— 原型「工具调用」那一格的真实口径。 */
-const isToolStep = (s: ReplayStep) => STEP_TYPE[s.step] === 'TOOL' || STEP_TYPE[s.step] === 'DB'
+/** 真正的工具调用次数 —— **模型自己选的那几次**。
+ *
+ *  2026-09-12 修正。此前这里数的是 TOOL ∪ DB，而那两类里只有 tool_call 是
+ *  模型选的：schema_recall 是进门必跑的确定性召回，dry_run / execute 是
+ *  execute_sql 这一个工具内部的阶段（agent 只落一条 tool_call），单独出现时
+ *  来自直查 /api/sql —— 那条路连模型都不过。
+ *
+ *  症状很直白：老管道的一条 trace 里模型一次工具都没选，这一格却写着 3。
+ *  判据改成"谁决定要不要调它"：tools.REGISTRY 里那几个由模型挑的才算。
+ *  老管道因此恒为 0 —— 那是事实，不是缺数据。 */
+const isToolStep = (s: ReplayStep) => STEP_TYPE[s.step] === 'TOOL'
 const toolCalls = (steps: ReplayStep[]) => steps.filter(isToolStep).length
 
 /** 这条链路是不是按主路径跑完的，以及不是的话代价在哪。

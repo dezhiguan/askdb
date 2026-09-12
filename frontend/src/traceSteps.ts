@@ -26,6 +26,11 @@ export const STEP_NAMES: Record<string, string> = {
   reflect: '反思重试',
   finalize: '结果与溯源',
   interrupted: '执行中断',
+  // 只在直查建连失败时出现（server 手写那一条）。此前漏登记，界面上显示成
+  // 英文原名 connect —— 而这恰恰是最需要一眼看懂的一格：库连不上。
+  connect: '数据源建连',
+  // 续跑前置校验：权限收窄 / 库连不上 / 表结构变了。同样漏登记过。
+  resume_precheck: '续跑前校验',
 }
 
 /** 节点归类。这是对**图节点身份**的静态分类，不是运行时探测出来的 span kind ——
@@ -39,7 +44,18 @@ export const STEP_TYPE: Record<string, string> = {
   // 一个拦 SQL，一个拦文案里没有事实依据的陈述。
   scrub: 'GUARD',
   hedge: 'GUARD',
-  schema_recall: 'TOOL',
+  // **只有 tool_call 是工具调用。**
+  //
+  // 2026-09-12 之前 schema_recall 也标 TOOL，而它是一个确定性召回节点：
+  // 两条链路（agent 与老管道）进门都跑它，模型既选不了也跳不过。把它叫工具，
+  // 界面上就会出现"这条链路调了 1 次工具"，而模型一次工具都没选过 ——
+  // 老管道的 trace 里根本没有 tool_call 这一步。
+  //
+  // 判据是**谁决定要不要调它**：模型自己挑的（tools.REGISTRY 里那几个）才叫
+  // 工具，流程写死的不叫。干跑与执行同理，它们是 execute_sql 这一个工具内部
+  // 的阶段（tools.py 里一个 tracer 都没有，agent 只落一条 tool_call），
+  // 单独出现时来自直查 /api/sql —— 那条路连模型都不过。
+  schema_recall: 'RAG',
   intent: 'MODEL',
   plan: 'MODEL',
   decide: 'MODEL',
@@ -49,6 +65,15 @@ export const STEP_TYPE: Record<string, string> = {
   reflect: 'MODEL',
   dry_run: 'DB',
   execute: 'DB',
+  // 直查建连失败时落这一条。是一次真实的库访问尝试，归 DB ——
+  // 落到 SYS 兜底的话，"库连不上"在界面上看起来像一次系统内务。
+  connect: 'DB',
+  // 数字接地校验：纯函数，不碰 IO，判的是模型**说了什么**（结论里的数追不
+  // 追得到查询结果）。与 scrub / hedge 同属护栏一档 —— 一个拦 SQL，
+  // 这几个拦文案里没有事实依据的陈述。
+  grounding: 'GUARD',
+  // 续跑前置校验：权限、连接、表结构三项，都不过才放行。判的是能不能接着跑。
+  resume_precheck: 'GUARD',
   finalize: 'SYS',
   interrupted: 'SYS',
 }

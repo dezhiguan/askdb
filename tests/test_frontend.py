@@ -158,6 +158,59 @@ def test_role_names_cover_every_role():
     assert not missing, f"这些角色在页面上会显示成英文码：{missing}"
 
 
+def _step_map(block: str) -> set[str]:
+    src = (FRONTEND_SRC / "traceSteps.ts").read_text(encoding="utf-8")
+    m = re.search(block + r"[^{]*\{(.*?)\n\}", src, re.S)
+    assert m, f"traceSteps.ts 里找不到 {block}"
+    return set(re.findall(r"^\s{2}([a-z_]+):", m.group(1), re.M))
+
+
+def test_every_span_the_backend_emits_is_mapped():
+    """后端落了一个新 step、前端两张表没跟上 —— **不报错，静默降级**。
+
+    这正是 2026-09-12 抓出来的：grounding（已跑 17 次）、connect、
+    resume_precheck 三个 step 都不在表里，于是徽章一律落 SYS 兜底、名字显示成
+    英文原名。界面看起来完全正常，只是把"库连不上"画成了一次系统内务。
+
+    漏的代价不对称，所以钉在这里：多一个死项只是冗余，少一个是读错链路。
+    """
+    steps: set[str] = set()
+    for name in ("graph.py", "agent.py", "server.py", "trace.py"):
+        f = ROOT / "askdb" / name
+        if not f.exists():
+            continue
+        src = f.read_text(encoding="utf-8")
+        steps |= set(re.findall(r'tracer\.add\("([a-z_]+)"', src))
+        steps |= set(re.findall(r'"step": "([a-z_]+)"', src))
+    assert len(steps) > 10, "没扫到 step，正则或后端结构变了"
+
+    for block in ("export const STEP_NAMES", "export const STEP_TYPE"):
+        missing = sorted(steps - _step_map(block))
+        assert not missing, f"{block} 漏了这些 step（会静默降级）：{missing}"
+
+
+def test_only_model_chosen_tools_count_as_tool_calls():
+    """**只有模型自己选的那几次算工具调用。**
+
+    tools.REGISTRY 里的才是工具；schema_recall 是进门必跑的确定性召回，
+    dry_run / execute 是 execute_sql 内部的阶段（agent 只落一条 tool_call），
+    单独出现时来自直查 —— 那条路连模型都不过。
+
+    此前「工具调用」那一格数的是 TOOL ∪ DB，于是老管道的 trace 里模型一次工具
+    都没选，界面却写着 3。这条用例钉的就是那个等号两边。
+    """
+    types_src = (FRONTEND_SRC / "traceSteps.ts").read_text(encoding="utf-8")
+    tool_steps = {s for s in _step_map("export const STEP_TYPE")
+                  if re.search(rf"^\s{{2}}{s}: 'TOOL'", types_src, re.M)}
+    assert tool_steps == {"tool_call"}, (
+        f"被当成工具的 step 变了：{sorted(tool_steps)}。"
+        f"判据是'谁决定要不要调它'——模型挑的才算，流程写死的不算")
+
+    page = (FRONTEND_SRC / "pages" / "TracesPage.tsx").read_text(encoding="utf-8")
+    assert "=== 'TOOL' || STEP_TYPE[s.step] === 'DB'" not in page, (
+        "「工具调用」那一格又把 DB 算进来了")
+
+
 SOURCES_PAGE = FRONTEND_SRC / "pages" / "DataSourcesPage.tsx"
 
 
