@@ -17,26 +17,35 @@
   padding-bottom: 12px; border-bottom: 1px solid var(--line);
 }
 .result-ask-label { display: block; color: var(--muted); font: 6px var(--mono); letter-spacing: .12em; }
-.result-ask h4 { margin: 5px 0 0; font-family: var(--serif); font-size: 16px; font-weight: 400; line-height: 1.45; }
+.result-ask h4 { margin: 6px 0 0; font-family: var(--serif); font-size: 18px; font-weight: 400; line-height: 1.4; }
 .result-ask p { margin: 5px 0 0; color: var(--muted); font-size: 8px; line-height: 1.55; }
 
 /* ---------------- 区块 ---------------- */
 
 .result-sec { margin-top: 16px; }
 .result-sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
-.result-sec-head h5 { margin: 0; color: var(--muted); font: 6px var(--mono); letter-spacing: .12em; font-weight: 700; }
-.result-sec-head span { color: var(--muted); font-size: 11px; }
+.result-sec-head h5 { margin: 0; color: var(--ink-2); font: 7px var(--mono); letter-spacing: .14em; font-weight: 700; }
+.result-sec-head span { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 
 /* ---------------- 1 结果数据 ---------------- */
 
-.result-rows-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.55); }
-.result-rows-scroll table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.result-rows-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.62); }
+.result-rows-scroll table { width: 100%; border-collapse: collapse; }
 .result-rows-scroll th,
-.result-rows-scroll td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.result-rows-scroll th { color: var(--muted); font-size: 11.5px; font-weight: 600; background: var(--paper-2); }
+.result-rows-scroll td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.result-rows-scroll th { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .02em; background: var(--paper-2); }
+.result-rows-scroll td { font-size: 14px; }
 .result-rows-scroll tbody tr:last-child td { border-bottom: none; }
-/* 数字列等宽对齐 —— 结果表里大多数列是数，不等宽就读不出量级差。 */
-.result-rows-scroll td { font-variant-numeric: tabular-nums; }
+.result-rows-scroll tbody tr:hover { background: rgba(255,255,255,.85); }
+
+/* 数字列：右对齐 + 等宽 + 加一档字重。这是「突出结果」落在像素上的那一下 ——
+   左对齐的变宽数字，89,997 和 460,323 得一位一位数才知道哪个大。 */
+.result-rows-scroll th.num,
+.result-rows-scroll td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.result-rows-scroll td.num { font-weight: 500; font-family: var(--mono); }
+
+/* 单格长串：整段铺开，不留一条要横拖到底的细缝。 */
+.result-rows-scroll.single td { white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.85; }
 
 /* ---------------- 2 答案说明 ---------------- */
 
@@ -53,12 +62,18 @@
 
 /* 答案里的 markdown 表格。渲成真表格之前，它是一行行 `| a | b |` 的字面量。 */
 .result-answer .answer-table { margin: 8px 0 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; }
-.result-answer .answer-table table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+/* 答案里的表跟结果表同一套分量 —— 很多时候（结果行是一条拼接字符串时）
+   它才是这个问题真正能读的那张表，不该长得比上面那张轻。 */
+.result-answer .answer-table table { width: 100%; border-collapse: collapse; }
 .result-answer .answer-table th,
-.result-answer .answer-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.result-answer .answer-table th { color: var(--muted); font-size: 11px; background: var(--paper-2); }
-.result-answer .answer-table tr:last-child td { border-bottom: none; }
-.result-answer .answer-table td { font-variant-numeric: tabular-nums; }
+.result-answer .answer-table td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.result-answer .answer-table th { color: var(--muted); font-size: 11px; font-weight: 600; background: var(--paper-2); }
+.result-answer .answer-table td { font-size: 14px; }
+.result-answer .answer-table tbody tr:last-child td { border-bottom: none; }
+.result-answer .answer-table tbody tr:hover { background: rgba(255,255,255,.85); }
+.result-answer .answer-table th.num,
+.result-answer .answer-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.result-answer .answer-table td.num { font-weight: 500; font-family: var(--mono); }
 
 /* 折叠按块做（见组件里的说明），不裁高度 —— 裁高度会把表格切掉半截。 */
 .result-more {

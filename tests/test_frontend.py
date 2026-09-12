@@ -453,7 +453,9 @@ def test_trace_page_does_not_depend_on_replay():
     回放关闭时照样是满的。
 
     2026-09-06 起事实网格严格照原型的六格（总耗时/模型/Token/工具调用/
-    SQL Hash/数据源），角色、轮次、成本等格子已撤 —— 那些是原型没有的字段。
+    SQL Hash/数据源），角色、轮次等格子已撤 —— 那些是原型没有的字段。
+    2026-09-12 第五格由 SQL Hash 换成**本次调用成本**：哈希只回答"两次是不是
+    同一条 SQL"，而这一格的位置放一个看的人真会读的数更值；六格的数量没变。
     """
     src = _code_only(FRONTEND_SRC / "pages" / "TracesPage.tsx")
 
@@ -461,7 +463,7 @@ def test_trace_page_does_not_depend_on_replay():
     assert "fetchReplay" not in src, "执行追踪页又挂回 /api/replay 了（要登录+开关，默认取不到）"
 
     head = src[src.index("function TraceDetail("):src.index("function TraceNodes(")]
-    for field in ("item.elapsed_ms", "item.trace_id", "item.kind", "chain?.model", "chain?.sql_hash"):
+    for field in ("item.elapsed_ms", "item.trace_id", "item.kind", "chain?.model", "chain?.cost_cny"):
         assert field in head, f"详情区事实网格没有用 {field}"
 
     # 钉的是「取不到就整块消失」这一类退化，不管它退化的判据是什么

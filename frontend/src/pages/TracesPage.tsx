@@ -446,6 +446,10 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
   /* 实际出活的模型优先于链路级那个字段：切了备选时两者不是同一个。
      链路级字段留作兜底 —— 直查与老记录没有 span 级 model。 */
   const model = health.answering || chain?.model || ''
+  /* 成本走流水本身兜底：/api/trace 还没回来、或这条链路被可见性收窄挡成 404
+     时，chain 是 null，而列表那条记录上的 cost_cny 是同一条审计记录里的同一
+     个数 —— 没理由在右栏留个占位符。 */
+  const cost = chain?.cost_cny ?? item.cost_cny
 
   return (
     <>
@@ -511,7 +515,7 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
             </small>
           )}
         </div>
-        <div className="trace-fact"><span>SQL Hash</span><strong title={chain?.sql_hash ?? ''}>{shortHash(chain?.sql_hash)}</strong></div>
+        <div className="trace-fact"><span>成本</span><strong title={costTitle(cost)}>{money(cost)}</strong></div>
         <div className="trace-fact"><span>数据源</span><strong title={item.source_name ?? ''}>{item.source_name || NA}</strong></div>
       </div>
 
@@ -626,10 +630,22 @@ function tokens(chain: TraceChain | null): string {
   return ((chain.tok_in ?? 0) + (chain.tok_out ?? 0)).toLocaleString()
 }
 
-/** 原型写的是「8ad2…91cf」—— 首尾各四位。整串放进 title，要对账时能拷走。 */
-function shortHash(hash: string | null | undefined): string {
-  if (!hash) return NA
-  return hash.length <= 12 ? hash : `${hash.slice(0, 4)}…${hash.slice(-4)}`
+/** 这一次跑完花了多少钱。四位小数与任务中心、可信度栏那两处同一口径 ——
+ *  同一条 trace 在三个地方必须显示同一个数，改这里就要三处一起改。
+ *
+ *  真 0 与"没记到"分开：命中缓存的那次调用成本确实是 ¥0.0000，而老记录里
+ *  cost_cny 缺字段 —— 后者留占位，不拿 0 顶上，否则一条没记账的链路看起来
+ *  像是白跑的。 */
+function money(cost: number | null | undefined): string {
+  if (cost == null) return NA
+  return `¥${cost.toFixed(4)}`
+}
+
+/** 四位小数会把比 ¥0.0001 还小的一次调用显示成 ¥0.0000 —— 那不是免费。
+ *  title 里给未截断的原值，要对账时能拷走。 */
+function costTitle(cost: number | null | undefined): string {
+  if (cost == null) return ''
+  return `本次调用成本 ¥${cost}`
 }
 
 /** 输出摘要里的「命中 N 张表」。
