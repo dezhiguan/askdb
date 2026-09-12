@@ -898,10 +898,9 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string,
   const rowCount = finalRes?.rows_returned ?? replay?.rows_returned
   const result = (task.status === 'done' && (hasFinal || (replay && sql)))
     ? {
-      conclusion: `本次查询返回 ${rowCount ?? '—'} 行结果`,
-      note: hasFinal
-        ? '下方为本次查询的结果（已脱敏、前若干行）与执行可核对信息。'
-        : '审计只保留执行事实与原生 SQL，不保存结果行；下表是这次执行可核对的信息。',
+      /* 有结果行时不用解释，表上那行「共 N 行」自己会说；没有结果行时才要
+         交代一句为什么 —— 否则弹窗看起来像是漏了数据。 */
+      traceNote: hasFinal ? '' : '审计只保留执行事实与原生 SQL，不保存结果行。',
       answer: finalRes?.answer || '',
       resultColumns: finalRes?.columns ?? [],
       resultRows: (finalRes?.rows_preview ?? []) as unknown[][],

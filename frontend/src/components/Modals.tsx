@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ModalName } from '../types'
+import { ResultDetail } from './ResultDetail'
 
 /* 弹窗结构、文案与类名对齐原型 trusted-data-agent-prototype.html：
    createTaskModal / taskResultModal / taskReasonModal / clarificationModal。 */
@@ -254,8 +255,8 @@ export const EMPTY_TASK_FILTERS: TaskFilters = { source: 'all', risk: 'all', use
 /* ---------------- 任务结果 / 任务原因 ---------------- */
 
 export interface TaskResultView {
-  conclusion: string
-  note: string
+  /** 没有结果行可看时，溯源区那一句「为什么只剩它」。 */
+  traceNote: string
   overview: [string, string][]
   rows: [string, string, string][]
   sql: string
@@ -316,89 +317,40 @@ export function TaskResultModal({ detail, loading, onClose, onViewTrace }: {
   onClose: () => void
   onViewTrace: () => void
 }) {
-  const [copyLabel, setCopyLabel] = useState('复制 SQL')
-  const copy = async () => {
-    try { await navigator.clipboard.writeText(detail.result?.sql ?? '') } catch { /* 剪贴板不可用就只改按钮文案 */ }
-    setCopyLabel('已复制')
-    window.setTimeout(() => setCopyLabel('复制 SQL'), 1200)
-  }
+  const r = detail.result
   return (
     <div className="modal modal-sheet task-detail-modal" role="dialog" aria-modal="true" aria-labelledby="taskResultTitle">
       <div className="modal-head">
         <div>
           <div className="eyebrow">{detail.id} · {detail.statusLabel.toUpperCase()}</div>
-          <h3 id="taskResultTitle">{detail.result ? '任务结果详情' : '任务状态详情'}</h3>
-          <p>结果只保留摘要、原生 SQL 与可验证执行信息。</p>
+          <h3 id="taskResultTitle">{r ? '任务结果详情' : '任务状态详情'}</h3>
         </div>
         <button className="modal-close" type="button" onClick={onClose} aria-label="关闭任务结果">×</button>
       </div>
       <div className="modal-body">
-        <div className="task-detail-intro">
-          <div><h4>{detail.question}</h4><p>{detail.description}</p></div>
-          <span className={`status ${detail.wait ? 'wait' : ''}`}>{detail.statusLabel}</span>
-        </div>
-        <div className="task-detail-meta">
-          <span>数据源 · {detail.source}</span>
-          <span>执行时间 · {detail.executedAt}</span>
-          <span>耗时 · {detail.duration}</span>
-        </div>
-        {loading && <div className="task-detail-empty"><i>…</i><strong>正在读取执行记录</strong><p>结果来自审计回放，读取完成前不会先显示任何数字。</p></div>}
-        {!loading && detail.result && (
-          <div>
-            <div className="task-conclusion">
-              <span>KEY FINDING</span>
-              <strong>{detail.result.conclusion}</strong>
-              <p>{detail.result.note}</p>
-            </div>
-            {detail.result.answer && <p className="result-answer">{detail.result.answer}</p>}
-            {(detail.result.resultRows?.length ?? 0) > 0 && (
-              <div className="result-rows">
-                {detail.result.resultNote && <div className="result-cap">结果 · {detail.result.resultNote}</div>}
-                <div className="result-rows-scroll">
-                  <table>
-                    <thead><tr>{(detail.result.resultColumns ?? []).map((c, ci) => <th key={ci}>{c}</th>)}</tr></thead>
-                    <tbody>
-                      {(detail.result.resultRows ?? []).map((row, ri) => (
-                        <tr key={ri}>{row.map((v, vi) => <td key={vi}>{v === null || v === undefined ? '—' : String(v)}</td>)}</tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-            {detail.result.overview.length > 0 && (
-              <div className="task-result-overview">
-                {detail.result.overview.map(([label, value]) => (
-                  <div className="task-result-metric" key={label}><span>{label}</span><strong>{value}</strong></div>
-                ))}
-              </div>
-            )}
-            {detail.result.rows.length > 0 && (
-              <div className="task-result-table">
-                <table>
-                  <thead><tr><th>指标 / 维度</th><th>结果</th><th>说明</th></tr></thead>
-                  <tbody>
-                    {detail.result.rows.map(row => (
-                      <tr key={row[0]}><td>{row[0]}</td><td>{row[1]}</td><td>{row[2]}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            {detail.result.sql && (
-              <div className="task-sql-block">
-                <div className="task-sql-head"><span>原生 SQL · READ ONLY</span><button type="button" onClick={copy}>{copyLabel}</button></div>
-                <pre>{detail.result.sql}</pre>
-              </div>
-            )}
+        {loading && (
+          <div className="task-detail-empty">
+            <i>…</i><strong>正在读取执行记录</strong>
+            <p>结果来自审计回放，读取完成前不会先显示任何数字。</p>
           </div>
         )}
-        {!loading && !detail.result && (
-          <div className="task-detail-empty">
-            <i>…</i>
-            <strong>{detail.emptyTitle}</strong>
-            <p>{detail.emptyText}</p>
-          </div>
+        {!loading && (
+          <ResultDetail
+            question={detail.question}
+            questionNote={detail.description}
+            statusLabel={detail.statusLabel}
+            wait={detail.wait}
+            answer={r?.answer}
+            columns={r?.resultColumns}
+            rows={r?.resultRows}
+            cap={r?.resultNote}
+            facts={[`数据源 · ${detail.source}`, `执行时间 · ${detail.executedAt}`, `耗时 · ${detail.duration}`]}
+            overview={r?.overview}
+            auditRows={r?.rows}
+            sql={r?.sql}
+            traceNote={r?.traceNote}
+            empty={r ? null : { title: detail.emptyTitle, text: detail.emptyText }}
+          />
         )}
         <div className="modal-actions">
           <button className="ghost" type="button" onClick={onClose}>关闭</button>

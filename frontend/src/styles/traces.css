@@ -442,15 +442,10 @@
 .trace-badges .result-open-btn::before { content: "▸"; }
 .trace-badges .result-open-btn:hover { border-color: var(--green); background: #cfe8da; }
 
-/* 弹窗正文结构复用 .modal-sheet 那一套（pages.css / proto-tasks.css），
-   这里只补执行追踪特有的那行执行事实。 */
+/* 弹窗正文由 components/ResultDetail.tsx 渲染，样式在 result-detail.css，
+   与任务中心是同一份；这里只剩弹窗自己的宽度。 */
 .trace-result-modal { width: min(720px, calc(100vw - 32px)); }
 .trace-result-modal .modal-body { max-height: calc(86vh - 78px); overflow-y: auto; }
-.trace-result-meta { display: flex; flex-wrap: wrap; gap: 6px; }
-.trace-result-meta span {
-  padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px;
-  color: var(--ink-2); background: rgba(255,255,255,.52); font: 6px var(--mono);
-}
 
 /* 与任务中心的结果弹窗同一个断点：同一份结果在窄屏上一个占满、一个还卡在
    720px，看起来像两个不同的东西。 */

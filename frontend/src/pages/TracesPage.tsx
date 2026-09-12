@@ -1,5 +1,6 @@
 import { PageHeader } from '../components/AppShell'
 import { ModalShell } from '../components/Modals'
+import { ResultDetail } from '../components/ResultDetail'
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchAudit, fetchAuditStats, fetchTraceChain, fetchResult, tracingLink,
@@ -529,36 +530,31 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
               <div>
                 <div className="eyebrow">{item.trace_id.toUpperCase()} · {outcome}</div>
                 <h3 id="traceResultTitle">最终结果</h3>
-                <p>结果来自这次执行的审计记录，未脱敏字段不会在这里补齐。</p>
               </div>
               <button className="modal-close" type="button" onClick={() => setShowResult(false)} aria-label="关闭">×</button>
             </div>
             <div className="modal-body">
-              <div className="trace-result-meta">
-                <span>数据源 · {item.source_name || NA}</span>
-                <span>耗时 · {secs(item.elapsed_ms)}</span>
-                {model && <span>模型 · {model}</span>}
-              </div>
-              {finalResult.answer && <p className="result-answer">{finalResult.answer}</p>}
-              {(finalResult.rows_preview?.length ?? 0) > 0 && (
-                <div className="result-rows">
-                  <div className="result-cap">
-                    结果{typeof finalResult.rows_returned === 'number' ? ` · 共 ${finalResult.rows_returned} 行` : ''}
-                    {(finalResult.rows_returned ?? 0) > (finalResult.rows_preview?.length ?? 0) ? `（仅前 ${finalResult.rows_preview?.length} 行）` : ''}
-                    {(finalResult.masked_columns?.length ?? 0) > 0 ? ` · 已脱敏 ${finalResult.masked_columns?.join('、')}` : ''}
-                  </div>
-                  <div className="result-rows-scroll">
-                    <table>
-                      <thead><tr>{(finalResult.columns ?? []).map((c, ci) => <th key={ci}>{c}</th>)}</tr></thead>
-                      <tbody>
-                        {(finalResult.rows_preview ?? []).map((row, ri) => (
-                          <tr key={ri}>{row.map((v, vi) => <td key={vi}>{v === null || v === undefined ? '—' : String(v)}</td>)}</tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
+              {/* 正文与任务中心的结果弹窗共用一个组件：同一条 /api/result，
+                  各写一套的那一版，字号与顺序已经开始分叉。 */}
+              <ResultDetail
+                question={item.question || undefined}
+                answer={finalResult.answer || undefined}
+                columns={finalResult.columns ?? undefined}
+                rows={finalResult.rows_preview ?? undefined}
+                cap={[
+                  typeof finalResult.rows_returned === 'number' ? `共 ${finalResult.rows_returned} 行` : '',
+                  (finalResult.rows_returned ?? 0) > (finalResult.rows_preview?.length ?? 0)
+                    ? `仅前 ${finalResult.rows_preview?.length} 行` : '',
+                  (finalResult.masked_columns?.length ?? 0) > 0
+                    ? `已脱敏 ${finalResult.masked_columns?.join('、')}` : '',
+                ].filter(Boolean).join(' · ')}
+                facts={[
+                  `数据源 · ${item.source_name || NA}`,
+                  `耗时 · ${secs(item.elapsed_ms)}`,
+                  ...(model ? [`模型 · ${model}`] : []),
+                ]}
+                traceNote="审计只保留执行事实；未脱敏字段不会在这里补齐。"
+              />
               <div className="modal-actions">
                 <button className="ghost" type="button" onClick={() => setShowResult(false)}>关闭</button>
               </div>
