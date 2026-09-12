@@ -190,25 +190,6 @@
 .task-detail-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .task-detail-intro h4 { margin: 0; font-family: var(--serif); font-size: 15px; font-weight: 400; }
 .task-detail-intro p { margin: 5px 0 0; color: var(--muted); font-size: 8px; line-height: 1.55; }
-.task-detail-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.task-detail-meta span { padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px; color: var(--ink-2); background: rgba(255,255,255,.52); font: 6px var(--mono); }
-
-.task-conclusion { margin-top: 12px; padding: 12px; border-left: 3px solid var(--green); border-radius: 0 7px 7px 0; background: var(--green-wash); }
-.task-conclusion span { display: block; color: var(--green); font: 6px var(--mono); }
-.task-conclusion strong { display: block; margin-top: 5px; font-family: var(--serif); font-size: 15px; font-weight: 400; }
-.task-conclusion p { margin: 5px 0 0; color: var(--ink-2); font-size: 8px; line-height: 1.55; }
-.task-result-overview { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-top: 10px; }
-.task-result-metric { padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.52); }
-.task-result-metric span { display: block; color: var(--muted); font-size: 6px; }
-.task-result-metric strong { display: block; margin-top: 4px; font: 8px var(--mono); }
-.task-result-table { margin-top: 11px; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; }
-.task-result-table table { min-width: 470px; }
-.task-result-table td { padding: 8px; border-bottom: 1px solid var(--line); font-size: 7.5px; vertical-align: top; }
-.task-result-table tr:last-child td { border-bottom: 0; }
-.task-sql-block { margin-top: 11px; overflow: hidden; border-radius: 7px; background: var(--dark); }
-.task-sql-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.11); color: #a9bbb0; font: 6px var(--mono); }
-.task-sql-head button { border: 0; color: var(--green-2); background: transparent; font: 7px var(--mono); cursor: pointer; }
-.task-sql-block pre { max-height: 160px; margin: 0; padding: 11px; overflow: auto; color: #dbe7df; font: 7px/1.7 var(--mono); white-space: pre-wrap; }
 
 .task-detail-empty { margin-top: 12px; padding: 18px; border: 1px dashed #bbbdb6; border-radius: 8px; background: rgba(255,255,255,.35); text-align: center; }
 .task-detail-empty i { width: 34px; height: 34px; display: grid; place-items: center; margin: 0 auto 8px; border-radius: 50%; color: var(--amber); background: var(--amber-wash); font: 12px var(--mono); font-style: normal; }
@@ -358,19 +339,7 @@
   .task-run-summary { position: static; }
   .task-choice-grid, .task-create-form .form-grid { grid-template-columns: 1fr; }
   .task-detail-modal { width: calc(100vw - 18px); }
-  .task-result-overview { grid-template-columns: 1fr; }
   .task-reason-row { grid-template-columns: 1fr; gap: 4px; }
   .clarify-modal .clarify-form { grid-template-columns: 1fr; }
 }
 
-/* 最终答案 + 已脱敏结果表（/api/result）——任务中心与执行追踪是同一份结果，
-   样式也就只能有一份：两边各写一套的那一版，行高、字号、表格圆角已经开始分叉。 */
-.modal-sheet .result-answer { font-size: 14px; line-height: 1.7; margin: 14px 0 0; white-space: pre-wrap; word-break: break-word; }
-.modal-sheet .result-rows { margin-top: 14px; }
-.modal-sheet .result-cap { font-size: 11.5px; color: var(--muted); margin-bottom: 7px; }
-.modal-sheet .result-rows-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
-.modal-sheet .result-rows table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.modal-sheet .result-rows th,
-.modal-sheet .result-rows td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.modal-sheet .result-rows th { color: var(--muted); font-weight: 600; background: var(--paper); }
-.modal-sheet .result-rows tr:last-child td { border-bottom: none; }

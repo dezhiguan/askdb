@@ -1,0 +1,120 @@
+/* 结果详情正文（components/ResultDetail.tsx）—— 任务中心与执行链路共用。
+ *
+ * 这一版的排序是：提问 → 结果数据 → 答案说明 → 溯源（折叠）。
+ * 视觉上只做一件事：让「问的那个数字」是弹窗里最先、也最大的东西。
+ * 改之前模型原文用 14px 铺在最上面，结果表用 13px 压在下面，执行事实、
+ * 可核对信息、SQL 三块又全都常驻 —— 一屏里没有主次。
+ *
+ * 字号沿用 .modal-sheet 那一档（11~14px），不用页面里 6~8px 的原型刻度：
+ * 这块是要被逐字读的正文，不是标签。 */
+
+.result-detail { margin-top: 2px; }
+
+/* ---------------- 提问 ---------------- */
+
+.result-ask {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--line);
+}
+.result-ask-label { display: block; color: var(--muted); font: 6px var(--mono); letter-spacing: .12em; }
+.result-ask h4 { margin: 5px 0 0; font-family: var(--serif); font-size: 16px; font-weight: 400; line-height: 1.45; }
+.result-ask p { margin: 5px 0 0; color: var(--muted); font-size: 8px; line-height: 1.55; }
+
+/* ---------------- 区块 ---------------- */
+
+.result-sec { margin-top: 16px; }
+.result-sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.result-sec-head h5 { margin: 0; color: var(--muted); font: 6px var(--mono); letter-spacing: .12em; font-weight: 700; }
+.result-sec-head span { color: var(--muted); font-size: 11px; }
+
+/* ---------------- 1 结果数据 ---------------- */
+
+.result-rows-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.55); }
+.result-rows-scroll table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.result-rows-scroll th,
+.result-rows-scroll td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.result-rows-scroll th { color: var(--muted); font-size: 11.5px; font-weight: 600; background: var(--paper-2); }
+.result-rows-scroll tbody tr:last-child td { border-bottom: none; }
+/* 数字列等宽对齐 —— 结果表里大多数列是数，不等宽就读不出量级差。 */
+.result-rows-scroll td { font-variant-numeric: tabular-nums; }
+
+/* ---------------- 2 答案说明 ---------------- */
+
+.result-answer { font-size: 13.5px; line-height: 1.75; color: var(--ink); }
+.result-answer p { margin: 0 0 8px; }
+.result-answer p:last-child { margin-bottom: 0; }
+.result-answer code { padding: 1px 4px; border-radius: 4px; background: rgba(11,97,57,.08); font-size: 12px; }
+/* markdown 标题：只要重量，不占标题层级（组件里有说明）。 */
+.result-answer .answer-h { margin: 12px 0 6px; font-size: 14px; font-weight: 700; }
+.result-answer > .answer-h:first-child { margin-top: 0; }
+.result-answer .answer-list { margin: 0 0 8px; padding-left: 18px; }
+.result-answer .answer-list li { margin-bottom: 6px; }
+.result-answer .answer-list li::marker { color: var(--green); }
+
+/* 答案里的 markdown 表格。渲成真表格之前，它是一行行 `| a | b |` 的字面量。 */
+.result-answer .answer-table { margin: 8px 0 10px; overflow-x: auto; border: 1px solid var(--line); border-radius: 7px; }
+.result-answer .answer-table table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.result-answer .answer-table th,
+.result-answer .answer-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.result-answer .answer-table th { color: var(--muted); font-size: 11px; background: var(--paper-2); }
+.result-answer .answer-table tr:last-child td { border-bottom: none; }
+.result-answer .answer-table td { font-variant-numeric: tabular-nums; }
+
+/* 折叠按块做（见组件里的说明），不裁高度 —— 裁高度会把表格切掉半截。 */
+.result-more {
+  margin-top: 6px; padding: 4px 9px;
+  border: 1px solid var(--line); border-radius: 5px;
+  color: var(--green); background: rgba(255,255,255,.6);
+  font: 7px var(--mono); font-weight: 700;
+}
+.result-more:hover { border-color: var(--green); background: var(--green-wash); }
+
+/* ---------------- 3 溯源 ---------------- */
+
+.result-trace details {
+  margin-top: 7px; overflow: hidden;
+  border: 1px solid var(--line); border-radius: 7px;
+  background: rgba(255,255,255,.45);
+}
+.result-trace summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 11px;
+  font: 8px var(--mono); font-weight: 700;
+  list-style: none; cursor: pointer;
+}
+.result-trace summary::-webkit-details-marker { display: none; }
+.result-trace summary::before { content: "›"; display: inline-block; color: var(--muted); transition: transform .15s ease; }
+.result-trace details[open] summary::before { transform: rotate(90deg); }
+.result-trace summary > span { margin-left: auto; color: var(--muted); font-weight: 400; }
+.result-trace summary .result-copy {
+  margin-left: 8px; padding: 2px 7px;
+  border: 1px solid var(--line); border-radius: 4px;
+  color: var(--green); background: white; font: 7px var(--mono); font-weight: 700;
+}
+.result-fold { padding: 0 11px 11px; }
+
+.result-facts { display: flex; flex-wrap: wrap; gap: 6px; }
+.result-facts span {
+  padding: 5px 7px; border: 1px solid var(--line); border-radius: 5px;
+  color: var(--ink-2); background: rgba(255,255,255,.6); font: 6px var(--mono);
+}
+.result-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-top: 8px; }
+.result-metrics > div { padding: 9px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.6); }
+.result-metrics span { display: block; color: var(--muted); font-size: 6px; }
+.result-metrics strong { display: block; margin-top: 4px; font: 11px var(--mono); font-weight: 700; }
+
+.result-audit { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.6); }
+.result-audit table { width: 100%; min-width: 420px; border-collapse: collapse; }
+.result-audit td { padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 11.5px; vertical-align: top; }
+.result-audit td:first-child { color: var(--muted); white-space: nowrap; }
+.result-audit td:last-child { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+.result-audit tr:last-child td { border-bottom: none; }
+
+.result-sql {
+  max-height: 180px; margin: 0; padding: 11px; overflow: auto;
+  border-radius: 6px; color: #dbe7df; background: var(--dark);
+  font: 11.5px/1.7 var(--mono); white-space: pre-wrap;
+}
+
+/* 这三格在 720px 的弹窗里横排绰绰有余，不跟页面那条 1180 断点走 ——
+   跟着走的结果是三个两行高的小盒子竖成一条，把折叠区撑到两屏。 */
