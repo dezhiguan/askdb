@@ -943,13 +943,20 @@ export const runSql = (sql: string, source = '', orgId?: number) =>
 
 /** 从断点续跑。thread_id 非法/不存在/已跑完/不属于当前账号，一律 404 且响应一致。
  *  枚举入口只对**已登录用户**开放，且只列自己的（见 /api/tasks）。 */
+/** 把一条停下来的线程往前推一步。
+ *
+ *  两种新输入，至少要有一个（都没有则服务端 404 —— 什么都不变地重跑一次，
+ *  拿到的必然还是同一个结果）：
+ *    · clarification 原问题不变，多给一个条件
+ *    · question      问题本身换一个说法
+ *  **两种都接在原线程上**，不开新线程：同一个诉求换个说法仍是同一条线索。 */
 export async function resumeTask(
-  threadId: string, clarification = '',
+  threadId: string, clarification = '', question = '',
 ): Promise<AskResult | null> {
   const response = await request('/api/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ thread_id: threadId, clarification }),
+    body: JSON.stringify({ thread_id: threadId, clarification, question }),
   })
   if (response.status === 404) return null
   const data = await response.json().catch(() => null)

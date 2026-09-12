@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
 import {
   askQuestion,
+  decideApproval,
   decideReview,
   fetchReplay,
   fetchResult,
@@ -180,6 +181,11 @@ type ModalState =
      就会在某个分支上把复核的判定发到运维接口上。 */
   | { kind: 'review'; task: Task }
   | { kind: 'ops'; task: Task }
+  | { kind: 'approve'; task: Task }
+  /* 「换个问法」与「补充条件」共用 ClarificationModal，靠 mode 区分。
+     分两个 kind 而不是一个带参数：两者提交的字段不同（question vs
+     clarification），合成一个再靠状态去分支，迟早在某条分支上发错字段。 */
+  | { kind: 'revise'; task: Task }
 
 export function TasksPage({ onNavigate, notify, me }: {
   /** 第二个参数是**带去目标页的内容**。查询页拿它做预填 —— 终态那几档的
@@ -332,16 +338,17 @@ export function TasksPage({ onNavigate, notify, me }: {
     return buildDetail(modal.task, replay, result?.user ?? '', taskResult, me)
   }, [modal, replay, result, taskResult, me])
 
-  /** 补充条件后在同一条线程上继续。
+  /** 把一条停下来的线程往前推一步 —— 补充条件，或换个问法。
    *
-   *  两种情形走同一个接口，由服务端按"现场在不在检查点里"分流：
+   *  **两者都接在原线程上**，也都走同一个接口，由服务端分流：
    *    · 真中断（进程被杀）→ 从断点继续，已完成的节点不重跑
-   *    · 等待补充（NO_SQL）→ 带着补充条件重跑整条链路
-   *  前端不判这个 —— 判据在 graph.resume，前端再写一份必然漂。 */
-  const resume = async (task: Task, clarification = '') => {
+   *    · 等待补充 / 已拦截 / 复核打回 → 带着新输入重跑整条链路
+   *  前端不判这个 —— 判据在 graph.resume 与 server._RESUMABLE_STAGES，
+   *  前端再写一份必然漂。 */
+  const resume = async (task: Task, clarification = '', question = '') => {
     setBusy(task.thread_id)
     try {
-      const response = await resumeTask(task.thread_id, clarification)
+      const response = await resumeTask(task.thread_id, clarification, question)
       if (!response) {
         notify('这个任务已经跑完，或不属于当前账号')
       } else if (response.ok) {
@@ -396,6 +403,20 @@ export function TasksPage({ onNavigate, notify, me }: {
     }
   }
 
+  const submitApproval = async (task: Task, approved: boolean, note: string) => {
+    setBusy(task.thread_id)
+    try {
+      await decideApproval(task.trace_id, approved, note)
+      notify(approved ? '已放行 —— 由发起人凭票重跑' : '已驳回，发起人会看到你的意见')
+      setModal({ kind: 'none' })
+      load()
+    } catch (e) {
+      notify(String((e as Error).message || e))
+    } finally {
+      setBusy('')
+    }
+  }
+
   const submitOps = async (task: Task, resolved: boolean, note: string) => {
     setBusy(task.thread_id)
     try {
@@ -435,14 +456,13 @@ export function TasksPage({ onNavigate, notify, me }: {
       case 'clarify': setModal({ kind: 'clarify', task }); return
       case 'review': setModal({ kind: 'review', task }); return
       case 'ops': setModal({ kind: 'ops', task }); return
+      case 'approve': setModal({ kind: 'approve', task }); return
       case 'redeem': void redeem(task); return
-      case 'revise':
-        setModal({ kind: 'none' })
-        /* **带上问题原文**。这里原来只是 onNavigate('query')，查询页是空白的
-           —— 点「调整后重新提问」的人得自己回来抄一遍原问题。终态那几档
-           （护栏拦下、复核打回、运维已恢复）走的都是这一条。 */
-        onNavigate('query', task.question || '')
-        return
+      /* **就地改，不跳查询页。** 原来这里是 onNavigate('query', question)：
+         人被扔到查询页重新发起，于是"换个问法"等于开一条新线程，原来那条
+         永远挂在「已拦截 / 复核未通过」上。现在在弹窗里改完直接走
+         /api/resume，接在同一条线程上。 */
+      case 'revise': setModal({ kind: 'revise', task }); return
       default: return
     }
   }
@@ -711,7 +731,44 @@ export function TasksPage({ onNavigate, notify, me }: {
             ].filter(Boolean)}
             busy={busy === modal.task.thread_id}
             onClose={() => setModal({ kind: 'none' })}
-            onConfirm={text => resume(modal.task, text)}
+            onConfirm={p => resume(modal.task, p.clarification ?? '')}
+          />
+        </ModalShell>
+      )}
+
+      {modal.kind === 'revise' && (
+        <ModalShell onClose={() => setModal({ kind: 'none' })}>
+          <ClarificationModal
+            mode="revise"
+            taskId={modal.task.thread_id}
+            question={modal.task.question || '（无问题文本）'}
+            hints={[detail?.reason?.detail ?? '', detail?.reason?.nextStep ?? ''].filter(Boolean)}
+            busy={busy === modal.task.thread_id}
+            onClose={() => setModal({ kind: 'none' })}
+            onConfirm={p => resume(modal.task, '', p.question ?? '')}
+          />
+        </ModalShell>
+      )}
+
+      {modal.kind === 'approve' && (
+        <ModalShell onClose={() => setModal({ kind: 'none' })}>
+          <DispositionModal
+            eyebrow={`${modal.task.trace_id} · APPROVAL`}
+            title="这条该不该去跑"
+            subject={modal.task.question || '（直查模式）'}
+            /* 审批人判的是"该不该扫这么多行"，所以摆的是扫描量与阈值，
+               不是结果 —— 结果这时候还不存在，SQL 一行都没在库上执行过。 */
+            facts={[
+              modal.task.rejected_by ? `触发规则 ${modal.task.rejected_by}` : '',
+              modal.task.risk_why || '',
+              `数据源 ${modal.task.source_name || modal.task.source || '—'}`,
+            ].filter(Boolean)}
+            affirmLabel="放行一次"
+            denyLabel="驳回"
+            denyNeedsNote
+            busy={busy === modal.task.thread_id}
+            onClose={() => setModal({ kind: 'none' })}
+            onDecide={(ok, note) => submitApproval(modal.task, ok, note)}
           />
         </ModalShell>
       )}
@@ -925,11 +982,22 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string,
         || '审批通过后凭票重跑；审批是一次性的，用过即作废。',
       /* **放行票只能由发起人用**：服务端 approvals.waiver 校验"是本人的"，
          别人点下去必然 403。所以按钮只对主人出现。 */
-      action: (task.approval_status === 'APPROVED' && mine)
-        ? ('redeem' as const) : ('none' as const),
-      actionLabel: task.approval_status === 'APPROVED'
-        ? (mine ? '凭票重跑' : '已批准，待发起人重跑')
-        : '等待系统管理员放行',
+      /* 三种人在这一格看到三样东西：
+           · 系统管理员（且不是自己发起的）—— 放行 / 驳回
+           · 发起人，票已批准                —— 凭票重跑（服务端不替人执行）
+           · 其余                            —— 一句"在等谁"
+         判定合在一处算，散到弹窗里就会出现按钮亮着、点下去 403。 */
+      action: (task.approval_status === 'REQUESTED' && canReview && !mine)
+        ? ('approve' as const)
+        : (task.approval_status === 'APPROVED' && mine)
+          ? ('redeem' as const) : ('none' as const),
+      actionLabel: task.approval_status === 'REQUESTED'
+        ? (canReview
+            ? (mine ? '不能审批自己的申请' : '放行 / 驳回')
+            : '等待系统管理员放行')
+        : task.approval_status === 'APPROVED'
+          ? (mine ? '凭票重跑' : '已批准，待发起人重跑')
+          : '等待系统管理员放行',
     }
     : task.status === 'needs_operator'
     ? {

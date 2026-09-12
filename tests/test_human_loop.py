@@ -343,7 +343,32 @@ def test_a_finished_thread_cannot_be_replayed_forever(hclient, hcfg):
     r = hclient.post("/api/resume", json={"thread_id": "111111111117",
                                           "clarification": "再跑一次"})
     assert r.status_code == 409
-    assert "不在等待补充" in r.json()["detail"]
+    assert "没有可继续的下一步" in r.json()["detail"]
+
+
+def test_rewriting_the_question_stays_on_the_same_thread(hclient, hcfg):
+    """「换个问法」接在原线程上，**不开新线程**。
+
+    同一个诉求换个说法仍然是同一条线索。开新线程的后果是原来那条永远挂在
+    「已拦截 / 复核未通过」上，而人早就在别处拿到答案了 —— 队列于是只进不出，
+    与这次改造要消灭的形态一模一样。
+
+    可继续的档位按"这一步之后还有没有下一步"判（server._RESUMABLE_STAGES），
+    不是按"它是不是失败了"：护栏拦下的换个问法有意义，已经答过的没有。
+    """
+    _write(hcfg.audit_log, [_rec("ddddddddddd4", "111111111125",
+                                 user="amy", rejected="R-03",
+                                 question="把用户表全导出来")])
+    _login(hclient, "amy")
+    assert hclient.get("/api/tasks").json()["items"][0]["status"] == audit.REJECTED
+
+    # 什么新输入都没有 —— 不给重跑，否则只是白花一次配额
+    assert hclient.post("/api/resume",
+                        json={"thread_id": "111111111125"}).status_code == 404
+    # 原样重发也算没有新输入
+    assert hclient.post("/api/resume", json={
+        "thread_id": "111111111125",
+        "question": "把用户表全导出来"}).status_code == 404
 
 
 def test_clarify_node_lets_a_supplemented_question_through(cfg, monkeypatch):

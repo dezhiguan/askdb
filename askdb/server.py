@@ -137,6 +137,19 @@ _WRITE_ACTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 )
 
 
+#: 还能被「往前推一步」的任务态。**判据是"这一步之后还有没有下一步"**，
+#: 不是"它是不是失败了"：
+#:   · 等待补充 / 可续跑 / 运行中 —— 现场或问题本身还缺一块，补上就能跑
+#:   · 已拦截 / 复核未通过 / 等待运维 —— 结论有了，但换个问法仍是同一条线索
+#: **已完成不在其中**：那条已经答过了，再问是另一个问题，该开新线程 ——
+#: 否则同一条线程会被无限次重放，每次都记成"第 N 次执行"。
+#:
+#: 取值必须来自 audit 的那份折算，别在这里另写一套字符串。
+_RESUMABLE_STAGES: frozenset[str] = frozenset({
+    _audit.WAITING_INPUT, _audit.INTERRUPTED, _audit.RUNNING,
+    _audit.REJECTED, _audit.REVIEW_RETURNED, _audit.NEEDS_OPERATOR,
+})
+
 #: 「运行中」多久没收尾就不再算运行中（秒）。默认一刻钟 —— 远在任何一条正常
 #: 查询之上（R-17 的 token 上限与执行超时都在几十秒量级），又远短于"没人再看
 #: 它一眼"的那种永久滞留。
@@ -543,6 +556,14 @@ class ResumeRequest(BaseModel):
     #: 它就会被当成对话框用，而这套系统没有多轮上下文 —— 那条路的终点是
     #: 模型假装"沿用上一轮口径"再编一个答案出来（2026-09-09 实测过）。
     clarification: str = Field(default="", max_length=500)
+    #: 改写后的问题。**「换个问法」不该开一条新线程** —— 同一个诉求换个说法
+    #: 仍然是同一条线索，开新线程会让原来那条永远挂在「已拦截 / 复核未通过」
+    #: 上，而人早就在别处拿到答案了。上限与 AskRequest.question 一致。
+    #:
+    #: 与 clarification 的分工：补充是"原问题不变，多给一个条件"，改写是
+    #: "问题本身换一个说法"。两者可以同时给，但至少要有一个 —— 什么新输入
+    #: 都没有就重跑，拿到的必然还是同一个结果，只是白花一次配额。
+    question: str = Field(default="", max_length=500)
 
 
 def _friendly_validation_message(errors: list[dict]) -> str:
@@ -2787,14 +2808,18 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         #
         # 判据用任务态而不是 rejected_by 白名单：档位的折算口径只此一份
         # （audit.stage），两处各写一份必然漂。
-        if last_rec is not None and clarification:
+        rewritten = (req.question or "").strip()
+        # **必须有新输入**：补充条件，或换一个问法。两者都没有就重跑，拿到的
+        # 必然还是同一个结果 —— 那不是"继续"，是白花一次配额。
+        new_input = bool(clarification) or bool(
+            rewritten and rewritten != origin_question)
+        if last_rec is not None and new_input:
             stage_now = _audit.stage(last_rec)
-            if stage_now not in (_audit.WAITING_INPUT, _audit.INTERRUPTED,
-                                 _audit.RUNNING):
+            if stage_now not in _RESUMABLE_STAGES:
                 raise HTTPException(
                     status_code=409,
-                    detail="这条任务当前不在等待补充，无法补充后重跑。"
-                           "若要换个问法，请在查询页重新发起。")
+                    detail="这条任务已经有结论了，没有可继续的下一步。"
+                           "要问一个新问题请在查询页发起。")
 
         try:
             # 传 request：续跑同样要过环境校验。任务是历史，权限是现在 ——
@@ -2811,7 +2836,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         scoped = _scoped(request, base)
         r = run_resume(req.thread_id, scoped, clarification=clarification,
-                       question=origin_question, org_id=origin_org)
+                       question=(rewritten or origin_question) if new_input else "",
+                       org_id=origin_org)
         if r is None:
             return not_found
         return JSONResponse(r.to_dict())

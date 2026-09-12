@@ -282,12 +282,13 @@ export interface TaskReasonView {
    *  就会出现按钮亮着、点下去 403。
    *
    *    clarify  补充条件后在同一条线程重跑（等待补充 / 可续跑，仅发起人）
+   *    approve  放行或驳回这条申请（等待审批，仅系统管理员且非本人）
    *    redeem   凭已批准的票重跑（等待审批且已批准，仅发起人）
-   *    review   采信或打回这个数字（等待复核，仅系统管理员）
+   *    review   采信或打回这个数字（等待复核，仅系统管理员且非本人）
    *    ops      标记执行期故障已处置（等待运维，仅运维/系统管理员）
-   *    revise   回查询页换个问法（终态：护栏拦下、复核打回）
+   *    revise   换个问法，**仍在同一条线程上**（护栏拦下、复核打回、故障已恢复）
    *    none     此刻没有这个人能做的事 */
-  action: 'clarify' | 'redeem' | 'review' | 'ops' | 'revise' | 'none'
+  action: 'clarify' | 'approve' | 'redeem' | 'review' | 'ops' | 'revise' | 'none'
   actionLabel: string
 }
 
@@ -477,29 +478,40 @@ const CLARIFY_MAX = 500
  *
  *  `hints` 是 agent 自己给出的那几句（error_hint / review_why / next_actor）——
  *  它们是这个框里唯一有信息量的引导，让人自己猜"要补什么"，这个框就没人填。 */
-export function ClarificationModal({ taskId, question, hints = [], busy, onClose, onConfirm }: {
+export function ClarificationModal({ taskId, question, hints = [], mode = 'clarify',
+                                    busy, onClose, onConfirm }: {
   taskId: string
   question: string
   /** agent 停下来时给出的原因/建议。空数组时不渲染这一块，不编一句占位的话。 */
   hints?: string[]
+  /** clarify = 原问题不变、补一个条件；revise = 直接改写问题本身。
+   *
+   *  **两种都在这个弹窗里做完，都接在原线程上。** 2026-09-12 之前 revise 是
+   *  `onNavigate('query')` —— 跳到查询页重来，于是"换个问法"等于开一条新线程，
+   *  原来那条永远挂在「已拦截 / 复核未通过」上。队列只进不出，
+   *  与这次改造要消灭的形态一模一样。 */
+  mode?: 'clarify' | 'revise'
   busy?: boolean
   onClose: () => void
-  onConfirm: (clarification: string) => void
+  onConfirm: (payload: { clarification?: string; question?: string }) => void
 }) {
-  const [text, setText] = useState('')
+  const revise = mode === 'revise'
+  const [text, setText] = useState(revise ? question : '')
   const trimmed = text.trim()
-  // 空补充**不允许提交**：服务端拿不到补充就不会重跑（graph.resume 直接返回
-  // None → 404），按钮却是亮的，点下去只会得到一句"任务不存在"。
+  // 空补充 / 原样重发**不允许提交**：服务端拿不到新输入就不会重跑
+  // （graph.resume 直接返回 None → 404），按钮却是亮的，点下去只会得到
+  // 一句"任务不存在"。
   const ready = trimmed.length > 0 && trimmed.length <= CLARIFY_MAX
+    && (!revise || trimmed !== question.trim())
   return (
-    <div className="modal modal-sheet clarify-modal" role="dialog" aria-modal="true">
+    <div className="modal clarify-modal" role="dialog" aria-modal="true">
       <div className="modal-head">
         <div>
-          <div className="eyebrow">{taskId} · CLARIFY</div>
-          <h3>补充条件后继续</h3>
-          <p>补充内容会写进这条任务的执行状态，在同一条线程上重跑，不是新开一次提问。</p>
+          <div className="eyebrow">{taskId} · {revise ? 'REVISE' : 'CLARIFY'}</div>
+          <h3>{revise ? '换个问法继续' : '补充条件后继续'}</h3>
+          <p>在同一条线程上重跑，不是新开一次提问 —— 审计里看得出这是第几次执行。</p>
         </div>
-        <button className="modal-close" type="button" onClick={onClose} aria-label="关闭补充信息">×</button>
+        <button className="modal-close" type="button" onClick={onClose} aria-label="关闭">×</button>
       </div>
       <div className="modal-body">
         <div className="clarify-alert">
@@ -507,10 +519,12 @@ export function ClarificationModal({ taskId, question, hints = [], busy, onClose
             <i>?</i>
             <span>
               <strong>{question}</strong>
-              <small>Agent 在这条上停住了，尚未产出可执行的 SQL。</small>
+              <small>{revise
+                ? '这条已有结论，但换个问法仍是同一条线索。'
+                : 'Agent 在这条上停住了，尚未产出可执行的 SQL。'}</small>
             </span>
           </div>
-          <span className="status wait">WAITING FOR INPUT</span>
+          <span className="status wait">{revise ? 'NEEDS REWRITE' : 'WAITING FOR INPUT'}</span>
         </div>
         {hints.length > 0 && (
           <ul className="clarify-hints">
@@ -519,27 +533,33 @@ export function ClarificationModal({ taskId, question, hints = [], busy, onClose
         )}
         <div className="clarify-form">
           <label className="clarify-field">
-            <span>补充条件 <code>REQUIRED</code></span>
+            <span>{revise ? '改写后的问题' : '补充条件'} <code>REQUIRED</code></span>
             <textarea
               rows={4}
               value={text}
               maxLength={CLARIFY_MAX}
               autoFocus
-              placeholder="例如：统计 2026 年 8 月，按数据源分组，只算解析完成的文档"
+              placeholder={revise
+                ? '换一个能在这个库的开放范围内回答的问法'
+                : '例如：统计 2026 年 8 月，按数据源分组，只算解析完成的文档'}
               onChange={e => setText(e.target.value)}
             />
           </label>
         </div>
         <div className="clarify-spec">
-          <span>RESUME SPEC · 将写入任务状态</span>
+          <span>{revise ? 'REVISED QUESTION' : 'RESUME SPEC · 将写入任务状态'}</span>
           <strong>{trimmed || '—'}</strong>
-          <small>{trimmed.length} / {CLARIFY_MAX}</small>
+          <small>
+            {trimmed.length} / {CLARIFY_MAX}
+            {revise && trimmed && trimmed === question.trim() && ' · 与原问题相同，改一改再提交'}
+          </small>
         </div>
         <div className="modal-actions">
           <button className="ghost" type="button" onClick={onClose}>稍后处理</button>
           <button className="primary" type="button" disabled={busy || !ready}
-                  onClick={() => onConfirm(trimmed)}>
-            {busy ? '执行中…' : '补充并继续执行'}
+                  onClick={() => onConfirm(revise ? { question: trimmed }
+                                                  : { clarification: trimmed })}>
+            {busy ? '执行中…' : revise ? '换个问法重跑' : '补充并继续执行'}
           </button>
         </div>
       </div>
