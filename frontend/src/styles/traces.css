@@ -216,6 +216,24 @@
   font: 7px var(--mono);
 }
 .span-table td { padding: 8px; border-bottom: 1px solid #e4e1d9; font: 7px var(--mono); }
+/* 滚动分页的那截窗口。高度写死而不是按视口算：这张表下面还有结果弹窗入口，
+   按 vh 算会在矮屏上把它挤出屏幕，在高屏上又长到分页失去意义。 */
+.span-scroll { max-height: 520px; overflow-y: auto; }
+/* 表头跟着滚 —— 一张要滚七八屏的表，滚到第 40 行时列名早没了，
+   「输入摘要」和「输出摘要」两列光看内容分不出谁是谁。 */
+.span-scroll thead th { position: sticky; top: 0; z-index: 1; }
+/* 续下一批的哨兵行。它同时是按钮：自动加载没触发时这里还点得动。 */
+.span-table tr.span-more td { padding: 0; border-bottom: 0; text-align: center; }
+.span-table tr.span-more button {
+  width: 100%;
+  padding: 9px 8px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: 7px var(--mono);
+  cursor: pointer;
+}
+.span-table tr.span-more button:hover { color: var(--blue); background: var(--paper-2); }
 .span-table td.good { color: var(--green); font-weight: 800; }
 /* 原型只有 good；失败态不能跟成功态一个颜色 */
 .span-table td.bad { color: var(--red); font-weight: 800; }

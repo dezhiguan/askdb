@@ -91,6 +91,13 @@ def search_schema(question: str, cfg: Config) -> ToolResult:
             "truncated": list(r.truncated),
             "mode": r.mode,
             "note": r.note or "",
+            # 嵌入的用量与金额必须透出来。这一层原先把 recall() 算好的三项
+            # 原地丢掉，于是 agent 链路上 vector 召回花的 embedding 钱在
+            # span 和成本统计里都不存在 —— 管道链路（graph）记，agent 不记，
+            # 同一次召回换条路走账就对不上。字段名与 recall 结果保持一致。
+            "embed_tokens": r.embed_tokens,
+            "embed_cost_cny": r.embed_cost,
+            "embed_model": r.embed_model,
         },
         note=r.note or "",
     )

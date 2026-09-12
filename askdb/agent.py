@@ -348,8 +348,16 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
     # 输入是拿去做嵌入的问句本身，输出是**喂进提示词的表结构全文** ——
     # 后者才是判「模型为什么没用那张表」的第一手材料：召回对了但结构没渲染
     # 出某一列，与压根没召回那张表，在 note 的"召回 N 张表"上完全一样。
+    # 嵌入的账记在这一步 —— 它就是这一步花的钱，口径与管道链路（graph 里
+    # 那份 embed_kw）逐字一致。mode: all / 关键词回落时三项都是空，不落字段：
+    # 记一个 tok_in=0 会让「输入摘要」那列显示 "embed 0 tok"，比占位符更误导。
+    # model 记嵌入模型名，不与生成模型混为一谈。
+    embed_kw = {"tok_in": rec.data.get("embed_tokens") or 0,
+                "cost_cny": rec.data.get("embed_cost_cny") or 0.0,
+                "model": rec.data.get("embed_model") or ""} \
+        if (rec.data.get("embed_tokens") or rec.data.get("embed_model")) else {}
     tracer.add("schema_recall", t, _brief(rec), tables=tables_hit,
-               input=question, output=schema_prompt)
+               input=question, output=schema_prompt, **embed_kw)
 
     # 2) 意图 / 可答性预检
     t = tracer.start()

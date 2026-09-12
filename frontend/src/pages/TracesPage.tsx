@@ -32,6 +32,11 @@ const NA = '—'
 /** 滚动分页每次取多少条。12 条约是左栏一屏半 —— 一屏都填不满就触发不了滚动。 */
 const PAGE_SIZE = 12
 
+/** Span 明细一次铺多少行。一条 agent 链路动辄四五十个 span，整张表一次铺完
+ *  会把详情卡撑到几屏高 —— 右栏其余内容（结果弹窗入口、六格摘要）被推得
+ *  再也扫不到。20 行略高于表体一屏，滚到底才续下一批。 */
+const SPAN_PAGE = 20
+
 /** 真正的工具调用次数 —— **模型自己选的那几次**。
  *
  *  2026-09-12 修正。此前这里数的是 TOOL ∪ DB，而那两类里只有 tool_call 是
@@ -509,7 +514,9 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
         <div className="trace-fact"><span>数据源</span><strong title={item.source_name ?? ''}>{item.source_name || NA}</strong></div>
       </div>
 
-      <TraceNodes steps={steps} result={result}
+      {/* key 挂 trace_id：换一条链路要连展开态和铺开行数一起归零。不挂的话
+          组件被复用，上一条展开到第 4 行、铺开 60 行的状态会套在新链路上。 */}
+      <TraceNodes key={item.trace_id} steps={steps} result={result}
                   cachedFrom={chain?.cached_from} onFocusTrace={onFocusTrace} />
 
       {showResult && finalResult && (
@@ -712,6 +719,29 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
     return next
   })
 
+  /* 铺到第几行。滚到表底自动续下一批 —— 不是点一次加载一次：这张表是**顺着
+     读**的，每 20 行截断一次会把"这一步之后发生了什么"切成人为的段落。
+     哨兵同时是一颗可点的按钮：IntersectionObserver 在 root 上不生效时
+     （容器还没量出高度、或浏览器不支持），它至少还点得动，不会卡成死表。 */
+  const [shown, setShown] = useState(SPAN_PAGE)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const sentinelRef = useRef<HTMLTableRowElement | null>(null)
+  const rest = steps.length - shown
+  const showMore = useCallback(
+    () => setShown(n => Math.min(n + SPAN_PAGE, steps.length)), [steps.length])
+  useEffect(() => {
+    if (rest <= 0) return
+    const el = sentinelRef.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    /* root 给滚动容器本身：这张表滚的是自己那 520px，不是整页视口 ——
+       用默认 root 的话，哨兵在容器里露出来的时候页面视口根本没动过。 */
+    const io = new IntersectionObserver(
+      es => { if (es.some(e => e.isIntersecting)) showMore() },
+      { root: scrollRef.current, rootMargin: '80px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [rest, showMore])
+
   /* 一行都没有时，那一行说的是**为什么**没有。
    *
    * 四种空态原来渲染成同一张只有表头的空表，于是"接口把这条挡掉了"和
@@ -756,9 +786,14 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
 
       <div className="span-table">
         <div className="span-table-title">
-          <strong>Span 明细</strong><span>按开始时间排序 · 失败与回退默认展开</span>
+          <strong>Span 明细</strong>
+          <span>
+            按开始时间排序 · 失败与回退默认展开
+            {/* 分页只在真分了页时说一句。没过一页还写「12/12」是噪声。 */}
+            {steps.length > SPAN_PAGE && ` · 已铺 ${Math.min(shown, steps.length)}/${steps.length}`}
+          </span>
         </div>
-        <div className="table-scroll">
+        <div className="table-scroll span-scroll" ref={scrollRef}>
           <table>
             <thead>
               <tr><th>类型</th><th>Span</th><th>输入摘要</th><th>输出摘要</th>
@@ -768,7 +803,9 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
               {steps.length === 0 && (
                 <tr className="span-empty"><td colSpan={7}>{empty}</td></tr>
               )}
-              {steps.map((step, i) => (
+              {/* 下标照原数组算（slice 从 0 起，i 不偏）—— 展开态记的是下标，
+                  切片一旦不是从头切，点开的就会是另一行。 */}
+              {steps.slice(0, shown).map((step, i) => (
                 <Fragment key={`${step.step}-${i}`}>
                   <tr>
                     <td><span className={`span-type ${(STEP_TYPE[step.step] ?? 'sys').toLowerCase()}`}>{STEP_TYPE[step.step] ?? 'SYS'}</span></td>
@@ -874,6 +911,15 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                   )}
                 </Fragment>
               ))}
+              {rest > 0 && (
+                <tr className="span-more" ref={sentinelRef}>
+                  <td colSpan={7}>
+                    <button type="button" onClick={showMore}>
+                      继续铺开（还有 {rest} 行）
+                    </button>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
