@@ -1748,13 +1748,16 @@ def resume(
     snap = g.get_state({"configurable": {"thread_id": thread_id}})
     extra = (clarification or "").strip()
     if not snap.values or not snap.next:
-        # 没有活现场。**必须同时有补充条件和问题原文**才走重跑那条路。
+        # 没有活现场。**要跑什么**由调用方给：原问题 + 补充条件，或改写后的问题。
         #
-        # 缺补充就返回 None（接口层照旧 404）—— 这是有意的，不是漏判：
-        # 没有活检查点意味着这条线程已经正常收尾了，不带任何新信息再跑一遍，
-        # 拿到的必然还是同一个"信息不足"，只是白花一次配额。原有语义
-        # 「没有断点 → 404」也因此一行没变，现存用例照旧成立。
-        if not extra or not question.strip():
+        # 给不出问题文本就返回 None（接口层照旧 404），原有语义
+        # 「没有断点 → 404」一行没变，现存用例照旧成立。
+        #
+        # **"有没有新输入"这道判定在接口层**（server 的 new_input）：只有那里
+        # 同时看得到用户提交的原文与审计里的原问题，能分辨"改写过"与"原样重发"。
+        # 这里再判一次 extra 非空的话，只给改写、不给补充的那条路会被静默挡掉
+        # —— 2026-09-12 线上实测就是这么 404 的。
+        if not question.strip():
             return None
         return _rerun_with_clarification(
             cfg, thread_id=thread_id, question=question.strip(),

@@ -370,6 +370,13 @@ def test_rewriting_the_question_stays_on_the_same_thread(hclient, hcfg):
         "thread_id": "111111111125",
         "question": "把用户表全导出来"}).status_code == 404
 
+    # **只给改写、不给补充**也必须走得通 —— 2026-09-12 线上实测这条是 404：
+    # server 的闸门放行了，graph.resume 却仍硬要求 clarification 非空，
+    # 于是"换个问法"整条路静默失效。判定只该有一处（接口层）。
+    r = hclient.post("/api/resume", json={
+        "thread_id": "111111111125", "question": "用户表有多少行"})
+    assert r.status_code != 404, "只改写不补充被挡掉了"
+
 
 def test_clarify_node_lets_a_supplemented_question_through(cfg, monkeypatch):
     """clarify 节点**此前只有一条出路**：判定成立就终止链路。
