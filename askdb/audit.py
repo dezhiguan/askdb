@@ -921,6 +921,16 @@ def tasks(path: Any, only_user: str | None = None, *,
         item["thread_id"] = tid
         item["attempts_on_thread"] = len(recs)
         item["first_ts"] = recs[0].get("ts", "")
+        # 线程标题取**第一条**记录的问题，与 owner 同一条口径。
+        #
+        # 2026-09-12「换个问法」改成接在原线程上之后，这一格会与最后一次实际
+        # 问的东西对不上：线程可能从"帮我看看数据怎么样"起步，最终答的是
+        # "一共有多少个知识库"。**这是产品决定，不是漏改** —— 一条线程是一条
+        # 线索，它最初问的是什么本身就是要留住的信息；改成跟着最后一次走，
+        # 那条线索从哪儿来的就再也看不见了。
+        #
+        # 要看这次到底答了什么，打开任务详情（每次执行各是一条 trace）。
+        # 别把这里"修"成 last —— 先读这段。
         item["question"] = recs[0].get("question") or last.get("question") or ""
         trace = str(last.get("trace_id") or tid)
         item["approval_status"] = approvals.get(trace, "")
