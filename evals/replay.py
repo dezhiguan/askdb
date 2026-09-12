@@ -11,7 +11,7 @@
 指标须成对观察：单独优化准确率可以通过放宽护栏实现，
 单独优化拦截率可以通过全部拒绝实现 —— 任一单点指标都可被操纵。
 
-用法：
+用法（默认配置 config/sample.yaml，对着本机样例库跑；换源用 -c 与 --golden）：
   python -m evals.replay                      # 仅非盲测题
   python -m evals.replay --blind              # 仅盲测题（验收用，成绩即最终成绩）
   python -m evals.replay --all --out r.json
@@ -685,7 +685,10 @@ def summarize(rep: Report) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="黄金集回放")
-    ap.add_argument("-c", "--config", default="config/askdb.yaml")
+    ap.add_argument("-c", "--config", default="config/sample.yaml",
+                    help="被测配置。默认样例库那份 —— 评测必须落在一份带 "
+                         "datasource 的配置上；config/askdb.yaml 是对外实例那份，"
+                         "数据源在运行时注册表里，用它跑评测必然连不上库。")
     ap.add_argument("--golden", default="",
                     help="题库路径，默认 evals/golden.jsonl（样例库那份）")
     ap.add_argument("--blind", action="store_true", help="仅盲测集（验收用）")

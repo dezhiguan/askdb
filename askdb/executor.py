@@ -1234,6 +1234,16 @@ class Executor:
             self.backend = _PgBackend(cfg)
         elif t == "mysql":
             self.backend = _MySqlBackend(cfg)
+        elif not t:
+            # 这份配置压根没有 datasource 段。对外实例那份（config/askdb.yaml）
+            # 就是这样 —— 数据源在运行时注册表里，由界面添加。照原样报
+            # 「暂不支持的数据源类型：」等于让人去查一个不存在的类型名。
+            raise DataSourceError(
+                "这份配置没有声明 datasource",
+                hint="评测与命令行要一份带 datasource 段的配置，"
+                     "本机用 -c config/sample.yaml；对外实例的数据源在运行时注册表里，"
+                     "从数据源页添加，不走这里。",
+            )
         else:
             raise DataSourceError(
                 f"暂不支持的数据源类型：{t}",

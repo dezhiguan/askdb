@@ -138,7 +138,10 @@ def table(reports: list[tuple[str, str, Report]]) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="消融实验")
-    ap.add_argument("-c", "--config", default="config/askdb.yaml")
+    ap.add_argument("-c", "--config", default="config/sample.yaml",
+                    help="被测配置。默认样例库那份 —— 评测必须落在一份带 "
+                         "datasource 的配置上；config/askdb.yaml 是对外实例那份，"
+                         "数据源在运行时注册表里，用它跑评测必然连不上库。")
     ap.add_argument("--golden", default="",
                     help="题库路径，默认 evals/golden.jsonl（样例库那份）")
     ap.add_argument("--groups", default="A,B,C,D,E,F")

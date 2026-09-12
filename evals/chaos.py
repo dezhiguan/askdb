@@ -27,7 +27,7 @@
 说明不了任何事，计进分母只会把这组数字冲淡。
 
 用法：
-    python -m evals.chaos -c config/askdb.yaml --limit 4 \\
+    python -m evals.chaos --limit 4 \\
         --out evals/results/chaos.json
 
 跑一轮要真调模型（基线 1 遍 + 每类故障各 1 遍），用 --limit 控制花销。
@@ -245,7 +245,10 @@ def summarize(rep: ChaosReport) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="故障注入：验证链路的恢复能力")
-    ap.add_argument("-c", "--config", default="config/askdb.yaml")
+    ap.add_argument("-c", "--config", default="config/sample.yaml",
+                    help="被测配置。默认样例库那份 —— 评测必须落在一份带 "
+                         "datasource 的配置上；config/askdb.yaml 是对外实例那份，"
+                         "数据源在运行时注册表里，用它跑评测必然连不上库。")
     ap.add_argument("--golden", default="", help="题库路径，默认 evals/golden.jsonl")
     ap.add_argument("--limit", type=int, default=4,
                     help="用前 N 道可作答题注入（每题要跑 1+3 遍，默认 4）")
