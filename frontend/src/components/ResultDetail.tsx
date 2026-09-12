@@ -25,6 +25,24 @@ import { useState } from 'react'
 const TABLE_LINE = /^\s*\|.*\|\s*$/
 const TABLE_RULE = /^\s*\|[\s:|-]+\|\s*$/
 
+/* 数字列右对齐 + 等宽。左对齐的数字列读不出量级差 —— 89,997 和 460,323
+   顶格排在一起，要一位一位数才知道哪个大。 */
+const NUMLIKE = /^[+-]?[¥$]?\s*\d[\d,\s]*(\.\d+)?\s*%?$/
+
+/** 逐列判断是不是数字列：整列非空单元格都像数字才算，空列不算。 */
+function numericCols(rows: readonly unknown[][], n: number): boolean[] {
+  return Array.from({ length: n }, (_, c) => {
+    let seen = 0
+    for (const row of rows) {
+      const v = row[c]
+      if (v === null || v === undefined || v === '' || v === '—') continue
+      if (!NUMLIKE.test(String(v).trim())) return false
+      seen += 1
+    }
+    return seen > 0
+  })
+}
+
 /** 拆一行 `| a | b |` 成单元格 */
 function cells(line: string): string[] {
   return line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())
@@ -91,13 +109,18 @@ function parseAnswer(text: string): Block[] {
         body.push(cells(lines[j]))
         j += 1
       }
+      const num = numericCols(body, head.length)
       out.push({ kind: 'table', node: (
         <div key={`t${out.length}`} className="answer-table">
           <table>
-            <thead><tr>{head.map((c, ci) => <th key={ci}>{inline(c, `th${ci}`)}</th>)}</tr></thead>
+            <thead><tr>{head.map((c, ci) => (
+              <th key={ci} className={num[ci] ? 'num' : undefined}>{inline(c, `th${ci}`)}</th>
+            ))}</tr></thead>
             <tbody>
               {body.map((row, ri) => (
-                <tr key={ri}>{row.map((c, ci) => <td key={ci}>{inline(c, `td${ri}-${ci}`)}</td>)}</tr>
+                <tr key={ri}>{row.map((c, ci) => (
+                  <td key={ci} className={num[ci] ? 'num' : undefined}>{inline(c, `td${ri}-${ci}`)}</td>
+                ))}</tr>
               ))}
             </tbody>
           </table>
@@ -171,14 +194,22 @@ export function ResultDetail({
 
   /* 答案里的**文字一句都不折**：那两条「用 payments 算不出真实成功率」式的
      口径提醒就长在这段散文里，折起来等于把正确性警告藏了。
-     默认折起的只有答案**重述结果的那张 markdown 表** —— 模型几乎总要把结果
-     再抄一遍成表格，而那份数据上面「结果数据」已经完整显示过；两张表叠在一屏
-     里正是这次要改掉的乱。上面没有结果表时（看不到结果行的那些记录），答案里
-     这张就是唯一的一张，那就不折。
+
+     只有当上面那张结果表**本身就是一张表**（多列多行）时，才折起答案里重述
+     的那张 —— 两张一样的表叠在一屏是要改掉的乱。
+     判据不能只看「有没有结果行」：线上这条「每个支付渠道的支付成功率」返回的
+     是 1 行 1 列，一整条 `WECHAT(微信支付): total=460323 … | ALIPAY…` 拼接
+     字符串；它占着结果表的位置，却一个渠道也比不出来，而答案里那张五列九行的
+     markdown 表才是这个问题真正的答案。按「有结果行就折」会把唯一能读的那张
+     表藏进折叠里。
      按块折而不是按高度裁 —— 裁高度会把表切掉半截，看起来像渲染坏了。 */
   const blocks = hasAnswer ? parseAnswer(answer as string) : []
-  const foldTables = hasRows && blocks.some(b => b.kind === 'table')
+  const resultIsTabular = (rows?.length ?? 0) >= 2 && (columns?.length ?? 0) >= 2
+  const foldTables = resultIsTabular && blocks.some(b => b.kind === 'table')
   const shown = !foldTables || full ? blocks : blocks.filter(b => b.kind !== 'table')
+
+  const resultNum = numericCols(rows ?? [], columns?.length ?? 0)
+  const singleCell = (rows?.length ?? 0) === 1 && (columns?.length ?? 0) === 1
 
   const hasFacts = (facts?.length ?? 0) > 0
   const hasOverview = (overview?.length ?? 0) > 0
@@ -209,12 +240,20 @@ export function ResultDetail({
             <h5>结果数据</h5>
             {cap && <span>{cap}</span>}
           </div>
-          <div className="result-rows-scroll">
+          {/* 单格长串（1 行 1 列，值是一整条拼接字符串）不能按表格那样 nowrap：
+              那会变成一条要横着拖到底的细缝。这一格改成整段换行铺开。 */}
+          <div className={`result-rows-scroll${singleCell ? ' single' : ''}`}>
             <table>
-              <thead><tr>{(columns ?? []).map((c, ci) => <th key={ci}>{c}</th>)}</tr></thead>
+              <thead><tr>{(columns ?? []).map((c, ci) => (
+                <th key={ci} className={resultNum[ci] ? 'num' : undefined}>{c}</th>
+              ))}</tr></thead>
               <tbody>
                 {(rows ?? []).map((row, ri) => (
-                  <tr key={ri}>{row.map((v, vi) => <td key={vi}>{v === null || v === undefined ? '—' : String(v)}</td>)}</tr>
+                  <tr key={ri}>{row.map((v, vi) => (
+                    <td key={vi} className={resultNum[vi] ? 'num' : undefined}>
+                      {v === null || v === undefined ? '—' : String(v)}
+                    </td>
+                  ))}</tr>
                 ))}
               </tbody>
             </table>
