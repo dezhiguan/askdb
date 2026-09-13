@@ -171,6 +171,42 @@ def carry_within_limit(carry: dict[str, list], cfg: Config) -> tuple[bool, str]:
     return True, ""
 
 
-def preview_rows(rows: list[list[Any]], n: int = 5) -> list[list[Any]]:
-    """结果摘要 —— 只回灌前几行，不把整个结果集塞进提示词。"""
-    return [list(r) for r in rows[:n]]
+#: 回灌进提示词的结果预览上限，按**渲染后的字符数**算，不是行数。
+#:
+#: 原来是写死的"前 5 行"。拿行数当预算单位两头不讨好：5 行窄表（一个渠道名 +
+#: 一个整数）根本省不下什么，5 行宽表照样能撑爆预算 —— 真正该封顶的量没被度量。
+#: 更要命的是它对小结果过度节流：trace 26096703989b 里一个 9 行 2 列的结果，
+#: 全给进提示词也就 ~150 字符，为省这点，模型看不到后 4 行，先把总数编成
+#: 1,027,010（真值 1,122,911）被接地校验拦下，又空转一轮反思重跑了一条逐字节
+#: 相同的 SQL —— 白烧 9,096 token / 7.9 秒，占那次查询总量的 43% 与 35%。
+#:
+#: 放宽是安全的：结果集本身已由 R-13（guard.max_rows，生产配的是 200）封顶，
+#: 这一层是在一个已经有界的东西上再砍一刀，这里还有字符预算兜底。
+PREVIEW_CHARS = 1600
+
+
+def preview_rows(rows: list[list[Any]],
+                 budget: int = PREVIEW_CHARS) -> list[list[Any]]:
+    """结果摘要 —— 在字符预算内尽量多给行，**给得下就全给**。
+
+    "能不能全给"本身是一个会传到模型那里的信号：agent._render_history 在
+    预览行数等于 row_count 时，会把提示词里那句"仅前 N 行（其余未展示，不得
+    据此断言整列的分布）"换成"全部行"。所以只要这里把行给全，模型就没有理由
+    再写"结果被截断，其余渠道不在此列出"—— trace 26096703989b 的自相矛盾正是
+    这么来的（结果表 9 行齐全，紧挨着的答案却说列不出来）。
+
+    **至少给一行**：单行就超预算时宁可超。给出一个零行的预览，模型会读成
+    "这次查询没有返回数据"，那是比超预算坏得多的错。
+    """
+    out: list[list[Any]] = []
+    used = 0
+    for r in rows:
+        row = list(r)
+        # 与 _render_history 的渲染方式对齐（", " 连列、"；" 连行）。两边各按
+        # 一套算，这个预算就是虚的。
+        cost = len(", ".join(str(v) for v in row)) + 1
+        if out and used + cost > budget:
+            break
+        out.append(row)
+        used += cost
+    return out
