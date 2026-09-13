@@ -17,10 +17,17 @@ datasource:
 
 tenant:
   column: org_id
-  # 2026-09-03 换库后改为 2。库里 443 个知识库中有 427 个 org_id 为 NULL，
-  # 任何租户都看不到它们 —— 这是对的（无归属数据不该被任一租户读到），
-  # 但也意味着换默认租户前要先确认该组织确实有数据，否则页面正常、结果恒空。
-  default_ctx: 2                     # P0 由 CLI --org 覆盖；后续由调用方上下文传入
+  # 2026-09-13 改为 65。此前写的是 2 —— 那是本机 ragforge 真实库的租户号，
+  # 跟着这份配置被沿用到了样例库上，而**样例库里根本没有 org 2**
+  # （只有 65 / 66 / 67 / 316）。后果不是报错，是租户谓词把每一行都滤掉：
+  # 每道题都返回空，黄金集与故障注入整轮跑在一个空库上，成绩全是噪声。
+  # 上一行注释自己警告过的那件事，正是发生在它自己身上。
+  #
+  # 换这一项之前先确认该组织**确实有数据**：
+  #   SELECT org_id, COUNT(*) FROM documents GROUP BY 1;
+  # 65「平台组织」是样例库里数据最全的一个（11 个知识库 / 94976 篇文档 /
+  # 4000 次模型调用），六类题目都覆盖得到。
+  default_ctx: 65                    # P0 由 CLI --org 覆盖；后续由调用方上下文传入
   # ragforge 库已对 askdb_ro 建好按 app.org_id 过滤的 RLS 策略，
   # 与 executor.py 注入的 session 变量同名 —— 库侧兜底 + 谓词双保险。
   mode: predicate            # predicate | rls | rls_and_predicate（rls 需 PostgreSQL）
