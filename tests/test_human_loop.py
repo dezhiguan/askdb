@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -566,3 +567,50 @@ def test_stale_and_next_actor_have_one_definition(hcfg):
     assert not audit.is_stale_run({**started, "phase": ""}, 900)
     assert audit.next_actor(audit.WAITING_APPROVAL, "APPROVED") == audit.NEXT_ACTOR_APPROVED
     assert audit.next_actor(audit.WAITING_APPROVAL) != audit.NEXT_ACTOR_APPROVED
+
+
+def test_detached_r11_still_opens_the_approval_ticket(hclient, hcfg, monkeypatch):
+    """**交接出去的执行，R-11 照样要挂审批。**
+
+    2026-09-13 生产 Playwright 跑测抓到：挂审批原来只写在同步返回那一段，
+    交接出去的执行走不到 —— 当天 4 条 R-11 一张单都没开，任务全部停在
+    「已拦截：不可放行，改写法也过不去」，而它们其实只是"等人放行"。
+    阈值 45s 时这条路几乎不发生；10s 之后它是常态，人工介入那一档对长任务
+    就整个断了。
+
+    这里用立即交接（as_task ⇒ threshold 0）把那条路钉死。
+    """
+    from askdb import approvals, server as srv
+    from askdb.graph import AskResult
+
+    def _fake(q, cfg, org_id=None, **kw):
+        return AskResult(ok=False, question=q, trace_id=kw["trace_id"],
+                         org_id=0, thread_id=kw["thread_id"],
+                         rejected_by="R-11", sql_final="SELECT * FROM orders",
+                         explain_rows=9_000_000,
+                         error="预估扫描 9,000,000 行，超过阈值")
+
+    monkeypatch.setattr(srv, "run_agent", _fake)
+    _login(hclient, "amy")
+    body = hclient.post("/api/ask", json={"question": "把订单全部列出来",
+                                          "as_task": True}).json()
+    assert body.get("async"), "as_task 应当立即交接"
+    thread = body["thread_id"]
+
+    # 后台线程收尾后补开单子 —— 给它一点时间落盘
+    for _ in range(50):
+        rows = list(approvals.state(hcfg).values())
+        if rows:
+            break
+        time.sleep(0.05)
+    rows = list(approvals.state(hcfg).values())
+    assert rows, "交接出去的 R-11 没有开审批单"
+    assert rows[0]["status"] == approvals.REQUESTED
+    assert rows[0]["user"] == "amy", "申请人要记发起人，不是空串"
+
+    # 有了这张单，任务态才从终结态「已拦截」翻成「等待审批」——
+    # 折算口径只此一处（audit.stage），这里钉的是"单子开出来了"这半边。
+    # （替身不写审计，所以任务详情这一页在本用例里没有记录可读，
+    #   状态折算由 test_approved_ticket_does_not_fall_into_blocked 那条覆盖）
+    rec = _rec(thread, thread, user="amy", rejected="R-11")
+    assert audit.stage(rec, approval_status=approvals.REQUESTED) == audit.WAITING_APPROVAL

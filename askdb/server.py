@@ -3006,6 +3006,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         _thr = _async_after_ms(scoped)
         _ho = _async_runner.new_handoff(_thr)
         _q = (rewritten or origin_question) if new_input else ""
+        _who = (_current_user(request) or "", tuple(_roles(request)))
+
+        def _settle_detached_resume(res: Any) -> None:
+            _stash_handoff(scoped, req.thread_id, res)
+            _open_approval_bg(scoped, res, who=_who, kind="ask",
+                              question=_q or origin_question)
         try:
             r, _notice = _async_runner.run_or_detach(
                 lambda: run_resume(req.thread_id, scoped,
@@ -3013,8 +3019,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                                    org_id=origin_org, handoff=_ho),
                 _thr, req.thread_id, user=scoped.user or "",
                 per_user=_async_per_user(scoped), handoff=_ho,
-                on_detached_done=lambda res: _stash_handoff(
-                    scoped, req.thread_id, res))
+                on_detached_done=lambda res: _settle_detached_resume(res))
         except _async_runner.CapacityExceeded:
             raise HTTPException(
                 status_code=429,
@@ -3112,6 +3117,33 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             threshold=int(cfg.raw["guard"]["max_scan_rows"]),
             source=scoped.source_id or "builtin")
         return {"approval_id": rec["id"], "approval_status": rec["status"]}
+
+    def _open_approval_bg(scoped: Config, result: Any, *,
+                          who: tuple[str, tuple[str, ...]], kind: str,
+                          question: str) -> None:
+        """交接出去的执行收尾时补开审批单。**判据与同步那一路逐字相同。**
+
+        单独一个函数而不是复用 _open_approval：那个吃 request，而这里跑在
+        后台线程上，请求早就结束了。共用的是判据与 approvals.request 的入参，
+        身份由发起时取好带进来（见 _settle_detached 的说明）。
+
+        不抛：这是收尾动作，抛了会把一次已经跑完的执行变成后台异常。
+        """
+        try:
+            if result is None or getattr(result, "rejected_by", None) != "R-11":
+                return
+            if scoped.scan_waiver:
+                return                # 已经拿票放行过，不再给自己开第二张
+            user, roles = who
+            _approvals.request(
+                cfg, trace_id=result.trace_id, user=user, roles=list(roles),
+                kind=kind, question=question,
+                sql=result.sql_final or result.sql_raw, match_text=question,
+                est_rows=getattr(result, "explain_rows", None),
+                threshold=int(cfg.raw["guard"]["max_scan_rows"]),
+                source=scoped.source_id or "builtin")
+        except Exception:             # noqa: BLE001
+            pass                      # 收尾动作，不能把跑完的执行变成后台异常
 
     def _audit_owner_filter(request: Request) -> str | None:
         """审计的可见范围：None = 全量，字符串 = 只看这个人发起的。
@@ -3459,13 +3491,28 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         if req.as_task or req.approval_id:
             _thr = 0
         _ho = _async_runner.new_handoff(_thr)
+        # 身份在这里定下来带走：**后台线程里没有 request**，而审批单要记
+        # "谁申请的、他当时是什么角色"。等到收尾再去取，取到的是空。
+        _who = (_current_user(request) or "", tuple(_roles(request)))
+
+        def _settle_detached(res: Any) -> None:
+            """交接出去之后的收尾。**与同步返回那一路做同样的事。**
+
+            2026-09-13 生产跑测抓到：R-11 挂审批原来只写在同步返回那一段，
+            交接出去的执行走不到 —— 任务于是停在「已拦截：不可放行」，
+            而它其实只是"等人放行"。阈值 45s 时这条路几乎不发生，10s 之后
+            它是常态，人工介入那一档对长任务就整个断了。
+            """
+            _stash_handoff(scoped, _tid, res)
+            _open_approval_bg(scoped, res, who=_who, kind="ask", question=q_text)
+
         try:
             r, _notice = _async_runner.run_or_detach(
                 lambda: run_agent(q_text, scoped, org_id=req.org_id,
                                   trace_id=_tid, thread_id=_tid, handoff=_ho),
                 _thr, _tid, user=scoped.user or "",
                 per_user=_async_per_user(scoped), handoff=_ho,
-                on_detached_done=lambda res: _stash_handoff(scoped, _tid, res))
+                on_detached_done=_settle_detached)
         except _async_runner.CapacityExceeded:
             raise HTTPException(
                 status_code=429,
