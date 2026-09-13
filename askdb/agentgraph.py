@@ -309,7 +309,8 @@ def _n_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
 GROUND_RETRY_TOOL = "(接地校验)"
 
 
-def _decide_stage(action: Any, history: list[dict[str, Any]]) -> str:
+def _decide_stage(action: Any, history: list[dict[str, Any]],
+                  finish: bool | None = None) -> str:
     """这次决策在链路里担的是哪一档活。
 
     一条 agent 链路上 `decide` 会连着出现五六次，平铺着看不出哪次是在挑工具、
@@ -330,7 +331,9 @@ def _decide_stage(action: Any, history: list[dict[str, Any]]) -> str:
     # 痕迹都没有，而"这是最后一步"看位置就知道。
     if last_tool == GROUND_RETRY_TOOL:
         return "reflect"
-    if getattr(action, "finish", False):
+    # finish 传归一之后的值：模型同时填了 finish 与 tool 时按工具走，这一步
+    # 就不是"收敛作答"，标成 converge 会让链路上出现一个收了尾却又继续跑的格子。
+    if (getattr(action, "finish", False) if finish is None else finish):
         return "converge"                # 收敛作答
     if last_tool:
         return "assess"                  # 看过上一份结果之后再决定查什么
@@ -364,20 +367,54 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         _llm_spans(d, "decide")
         d.tracer.add("decide", t, f"决策失败：{e}", status="failed")
         return {"step": step, "rejected_by": "LLM", "error": f"决策失败：{e}"}
+    tok_used = state.get("tok_used", 0) + u.input_tokens + u.output_tokens
+
+    # finish 与 tool 同时成立时**以工具为准**。
+    #
+    # AgentAction 的 finish / tool 是两个独立字段，没有互斥约束，模型经常两个
+    # 一起给。路由原来只看 finish，那条 SQL 一次都没跑、链路上一个字都不留。
+    #
+    # 判据来自实测：2026-09-13 连跑四次「每个支付渠道各有多少笔」，三次以
+    # UNGROUNDED 交白卷，而每一次 reflect 的 thought 写的都是工具那条路 ——
+    # "用窗口函数 SUM(COUNT(*)) OVER () 让库算出总计，避免手算出错" ——
+    # 药方每次都开对了，每次被丢掉，然后带着同一个手算错的合计再交一次卷。
+    # 五次决策五次同一形状，没有反例：finish 是填 schema 的副产物，
+    # 真实意图在 tool 上。
+    #
+    # 两道闸，缺一不可：
+    #   · 工具名必须真实存在。模型胡诌一个工具名时，宁可按 finish 收尾，
+    #     也不要把一次能交卷的链路送进"未知工具"的死胡同。
+    #   · 必须还有预算。改走工具要多花一步；正好卡在上限上时，_after_act 会
+    #     直接送去 finalize，而那时 answer 已经丢掉，本来能给的答案就没了。
+    prefer_tool = bool(
+        action.finish and action.tool and action.tool in tools.REGISTRY
+        and step < state.get("max_steps", 0)
+        and tok_used <= state.get("cost_cap", 0))
+    finish = bool(action.finish) and not prefer_tool
+
+    note = (action.thought or "")[:80]
+    if prefer_tool:
+        # 让这件事在 Span 列上看得见。不标 degraded —— 降级说的是系统没走主
+        # 路径，这里是模型自己把两个互斥字段都填了，链路本身是健康的。
+        note = f"[finish+tool → 按工具执行] {note}"[:110]
+
     sp = _llm_spans(d, "decide", u)
-    d.tracer.add("decide", t, (action.thought or "")[:80],
-                 stage=_decide_stage(action, state.get("history") or []),
+    d.tracer.add("decide", t, note,
+                 stage=_decide_stage(action, state.get("history") or [],
+                                     finish=finish),
                  **_sp_kw(sp))
 
     out: dict[str, Any] = {
         "step": step,
-        "tok_used": state.get("tok_used", 0) + u.input_tokens + u.output_tokens,
+        "tok_used": tok_used,
         # 决策结果进 state 供 _n_act 读。它是可序列化的普通 dict，不是
         # AgentAction 对象 —— 检查点存不下 pydantic 模型。
-        "action": {"finish": bool(action.finish), "answer": action.answer or "",
+        # finish 写的是**归一之后**的值：_after_decide 读它来路由，两处各判
+        # 一次就会出现"这里按工具走、那里按收尾走"。
+        "action": {"finish": finish, "answer": action.answer or "",
                    "tool": action.tool or "", "args": dict(action.args or {})},
     }
-    if action.finish:
+    if finish:
         out["answer"] = action.answer or ""
     _check_handoff(d, state, step=step, tok_used=out["tok_used"])
     return out
