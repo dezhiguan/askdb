@@ -547,6 +547,26 @@ def _redact(item: dict[str, Any], with_text: bool) -> dict[str, Any]:
     return {**item, "question": None, "user": ""}
 
 
+#: 「该找运维」的收尾码。判据是**这次失败与提问本身无关** —— 换个问法也过不去，
+#: 要等系统恢复。
+#:
+#: DATASOURCE 是 2026-09-12 补的：agent 链路库连不上时落的是它（tools.execute_sql
+#: 的 fatal 分支），而这里当时只认管道的 EXEC，于是"库挂了"被判成「已拦截」，
+#: 界面对用户说"这条触碰的是安全边界，改写法也过不去" —— 一句完全错的话，
+#: 而且那条任务永远进不了运维队列。
+_OPS_CODES = frozenset({"EXEC", "DATASOURCE"})
+
+#: 「等你补充」的收尾码。判据是**补一句就可能跑通**。
+#:
+#: CLARIFY 同样是 2026-09-12 补的。管道产出 NO_SQL，agent 产出 CLARIFY
+#: （_n_intent 里 answerable=false 那条），而这里只认前者 —— 固定管道删除之后
+#: NO_SQL 再也不会出现，这一档会**恒为空**，看起来像"问题变少了"。
+#:
+#: **OOS（越域）有意不在这里**：问营销中心库里有多少航班数据，补充再多也没用。
+#: 它落「已拦截」是对的 —— 两者此前混在 NO_SQL 里，agent 把它们分开了，
+#: 正好各归各位。
+_INPUT_CODES = frozenset({"NO_SQL", "CLARIFY"})
+
 #: 这两个收尾码都表示「现场还在检查点里」：INTERRUPTED 是执行中断，
 #: RESUME_BLOCKED 是续跑前置校验没过（权限收窄 / 库连不上 / 表结构变了）。
 #: 后者**不是终态** —— 条件恢复后这条线程照样能续，所以判定上与中断同档。
@@ -675,13 +695,13 @@ def stage(rec: dict[str, Any], *, approval_status: str = "",
         if review_status == "ACCEPTED":
             return DONE          # 已采信，回到普通的"已完成"
         return WAITING_REVIEW if needs_review(rec) else DONE
-    if code == "EXEC":
+    if code in _OPS_CODES:
         # 运维给过结论就不再挂在队列上。两种结论都是终局，都落回"已拦截"：
         # RESOLVED 的下一步在发起人手上（原样重试），WONTFIX 是真的没有下一步。
         # 界面靠 ops_status 把这两种和"护栏拦下"分开讲，别在这里再多开一档 ——
         # 状态档每多一个，前端就要多一处 if，而它们的下一步动作是同一个。
         return REJECTED if ops_status else NEEDS_OPERATOR
-    if code == "NO_SQL":
+    if code in _INPUT_CODES:
         return WAITING_INPUT
     if approval_status == "REQUESTED":
         # 目前只有 R-11 会开审批单；判据用"有没有未决审批"而不是硬编码规则号，

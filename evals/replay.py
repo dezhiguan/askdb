@@ -31,6 +31,7 @@ from collections.abc import Callable
 from typing import Any
 
 from askdb import graph, guard
+from askdb.agent import run_agent
 from askdb.config import Config, load as load_cfg
 from askdb.executor import Executor
 
@@ -628,7 +629,10 @@ def run(cfg: Config, cases: list[Case], group: str = "current",
         for i, c in enumerate(cases, 1):
             t0 = time.perf_counter()
             try:
-                r = graph.ask(c.question, cfg, executor=ex)
+                # 2026-09-12：固定管道删除，这里跟着改到 agent。
+                # **黄金集测的必须是线上真跑的那条链路** —— 跑另一条等于
+                # 拿一份不存在的实现的成绩去判断生产质量。
+                r = run_agent(c.question, cfg, executor=ex)
             except Exception as e:      # 链路本身崩了也要记，不能中断整轮
                 rep.outcomes.append(Outcome(
                     id=c.id, category=c.category, blind=c.blind, passed=False,

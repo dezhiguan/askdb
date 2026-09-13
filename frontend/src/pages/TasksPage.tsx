@@ -1016,10 +1016,13 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string,
     }
     : task.status === 'waiting_input'
     ? {
-      category: '信息不足 · NO_SQL',
+      /* 收尾码跟着记录走，**别写死**：管道时代这一档只有 NO_SQL，2026-09-12
+         agent 接管之后是 CLARIFY（问得不够具体）。写死的那个码在界面上会显示
+         成一个系统里已经不存在的东西，而排查的人第一件事就是去搜它。 */
+      category: `信息不足 · ${task.rejected_by ?? 'CLARIFY'}`,
       node: '语义理解',
       detail: replay?.snapshots?.find(item => item.error)?.error
-        ?? '模型没能从这个问题里确定要查什么，没有产出 SQL。',
+        ?? '模型没能从这个问题里确定要查什么。补一个条件（时间范围、口径或统计维度）通常就能跑通。',
       policy: `${task.kind} · ${rolesLabel(task.role)}`,
       /* **补充回到同一条线程**，不是重新提问。
          2026-09-11 之前这里的动作是 revise（跳回查询页，还不带问题原文），

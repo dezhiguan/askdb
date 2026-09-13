@@ -230,3 +230,39 @@ def test_is_resumable_degrades_to_none_not_false(cfg, monkeypatch):
 
     monkeypatch.setattr(agentgraph, "ensure_graph", _boom)
     assert agentgraph.is_resumable("a" * 12, cfg) is None
+
+
+def test_clarification_is_written_back_into_the_live_checkpoint(cfg, ex, monkeypatch):
+    """**真中断 + 补充条件**：补充要写回检查点，模型续跑时才看得到。
+
+    这条与"没有活现场的重跑"是两条不同的路，容易只测到其中一条：
+      · 无检查点 → 带补充重跑整条链路（initial_state 把它放进 history）
+      · 有检查点 → 恢复是从图**内部**继续的，中间节点拿不到 resume() 的入参，
+        只看得到状态 —— 所以必须 update_state 写回去。
+
+    漏掉这一步的症状很隐蔽：续跑成功、也没报错，只是补充那句话凭空消失，
+    模型照着原来的历史又跑一遍。
+    """
+    r1 = _interrupted(cfg, ex, monkeypatch)
+    assert agentgraph.is_resumable(r1.thread_id, cfg) is True
+
+    llm = FakeLlm(_act(finish=True, answer="好了"))
+    r2 = agentgraph.resume(r1.thread_id, cfg, executor=ex, llm=llm,
+                           clarification="只算 status='FAILED' 的")
+    assert r2 is not None
+    assert any("FAILED" in c for c in llm.calls), "补充没写回检查点，模型看不到"
+
+
+def test_resume_survives_a_checkpoint_that_refuses_writes(cfg, ex, monkeypatch):
+    """补充写不回去时**照样能续** —— 那是原有语义，不能因为加了补充就更脆。
+
+    检查点库抖一下就让续跑整个失败，等于把一个可选增强变成了新的单点。
+    """
+    r1 = _interrupted(cfg, ex, monkeypatch)
+    g = agentgraph.ensure_graph(cfg)
+    monkeypatch.setattr(g, "update_state",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("写不进去")))
+    r2 = agentgraph.resume(r1.thread_id, cfg, executor=ex,
+                           llm=FakeLlm(_act(finish=True, answer="好了")),
+                           clarification="只算失败的")
+    assert r2 is not None and r2.ok, "补充写失败把续跑也带崩了"
