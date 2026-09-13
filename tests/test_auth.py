@@ -225,8 +225,15 @@ def test_anonymous_read_on_a_real_database_keeps_its_replacement_boundaries():
     assert (c.raw.get("auth") or {}).get("enabled") is True, (
         "匿名可读的实例仍必须启用登录 —— 写操作要靠它认人，审计要靠它记名"
     )
-    assert c.raw["observability"]["replay_api"] is False, (
-        "回放返回 SQL 全文，匿名可读时等于把库结构透给任何访客"
+    # 回放开关于 2026-09-13 打开（审计中心那颗「复放」要能点）。于是挡住访客的
+    # 不再是这个开关，而是 /api/replay 自己那道登录门 —— 未登录与开关关闭同为
+    # 404。这里钉的就改成那道门：它才是"SQL 全文不下发给访客"的真正承重件，
+    # 开关取值只是部署选择。匿名拿 404 的端到端用例见 tests/test_replay_api.py
+    # 的 test_anonymous_replay_is_indistinguishable_from_not_found。
+    gate = (root / "askdb" / "server.py").read_text(encoding="utf-8")
+    body = gate.split("def replay_trace(", 1)[1]
+    assert "if not _current_user(request):" in body.split("from .audit import", 1)[0], (
+        "回放接口丢了登录门 —— 开关既然开着，匿名就能拿到 SQL 全文"
     )
     # 内置源若哪天配回来，那两条旧断言必须一起回来：它一回来就又是一条
     # 不经注册表、直接吃配置的链路，只读账号与租户隔离在那条路上仍然是门。

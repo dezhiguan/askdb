@@ -8,6 +8,7 @@ import { KIND_NAMES, STEP_NAMES, stepFailed } from '../traceSteps'
 import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
 import { personName } from '../person'
 import { rolesLabel } from '../roles'
+import type { View } from '../types'
 
 
 function fmtTime(ts: string): string {
@@ -46,7 +47,11 @@ type Drawer =
   | { mode: 'cost' }
   | null
 
-export function AuditPage({ me }: { me: Me | null }) {
+export function AuditPage({ me, onNavigate }: {
+  me: Me | null
+  /** 「观测」列要用它跳到执行追踪页并定位那条 trace（第二个参数就是 trace_id） */
+  onNavigate: (view: View, focus?: string) => void
+}) {
   // 导出是**把数据带出这套系统**，比在页面上看一眼重一档：带走的那份文件
   // 之后谁看、存在哪里，审计里都记不到。所以这一个动作要求登录，
   // 与页面上原文可见与否（那是 text_visible 说了算）是两条独立的判据。
@@ -259,7 +264,8 @@ export function AuditPage({ me }: { me: Me | null }) {
           <tbody>
             {list?.items.map(item => (
               <AuditRow key={item.trace_id + item.ts} item={item} stats={stats} me={me}
-                textVisible={textVisible(list)} onReplay={openReplay} />
+                textVisible={textVisible(list)} onReplay={openReplay}
+                onObserve={traceId => onNavigate('traces', traceId)} />
             ))}
             {list && list.items.length === 0 && !loading && (
               <tr><td colSpan={10} className="audit-empty">没有匹配的记录</td></tr>
@@ -349,16 +355,22 @@ function StatTiles({ stats }: { stats: AuditStats | null }) {
   )
 }
 
-/** 观测列为什么点不了 —— 三种原因说清楚，别都甩一句"未接入"。 */
-function observeHint(item: AuditItem, stats: AuditStats | null): string {
+/** 观测列仍然点不了时，为什么 —— 只剩直查这一种，说清楚它没有 run 树。
+ *  外部观测后端未接入 / 仅内网可达都不再是禁用理由：那两种情形下这一列
+ *  改指站内执行追踪页（同一条 trace 的本地链路），见 AuditRow。 */
+function observeHint(item: AuditItem): string {
   if (item.kind === 'sql') return '直查不经模型，没有 run 树'
-  if (!stats || !stats.tracing.enabled) return '调用链观测未接入'
-  if (!tracingReachable(stats.tracing)) {
-    // 自托管实例只在内网活着。站内的「复放」是同一条链路的权威来源，
-    // 不是降级替代 —— 本地 trace 才是复放依据，观测后端只是旁路。
-    return '观测后端仅内网可达；这条链路请用左侧「复放」查看'
+  return '这条记录没有可展开的链路'
+}
+
+/** 观测列跳站内执行追踪时的说明：为什么是站内，而不是某个外部后端。 */
+function inSiteObserveHint(stats: AuditStats | null): string {
+  if (stats?.tracing.enabled && !tracingReachable(stats.tracing)) {
+    // 自托管实例只在内网活着，外链点下去打的是访客自己机器的端口。
+    // 本地 trace 本来就是复放依据，观测后端只是旁路 —— 指回站内不是降级。
+    return '外部观测后端仅内网可达；在站内执行追踪页看这条链路'
   }
-  return '调用链观测未接入'
+  return '在站内执行追踪页展开这条链路的节点与 Span'
 }
 
 function guardText(item: AuditItem): string {
@@ -375,12 +387,14 @@ function who(item: AuditItem, me: Me | null): string {
   return personName(item.user_name, item.user, me)
 }
 
-function AuditRow({ item, stats, textVisible, onReplay, me }: {
+function AuditRow({ item, stats, textVisible, onReplay, onObserve, me }: {
   item: AuditItem
   stats: AuditStats | null
   /** 问题原文可见（= 已登录）。复放返回的是 SQL 全文，比这一行更敏感，同一判据 */
   textVisible: boolean
   onReplay: (traceId: string) => void
+  /** 没有可达的外部观测后端时，观测列跳站内执行追踪页 */
+  onObserve: (traceId: string) => void
   me: Me | null
 }) {
   const replayOn = !!stats?.replay_api && textVisible
@@ -435,12 +449,19 @@ function AuditRow({ item, stats, textVisible, onReplay, me }: {
             >复放</span>}
       </td>
       <td onClick={event => event.stopPropagation()}>
+        {/* 有可达的外部后端就去那儿；没有（未接入 / 只在内网活着）**不再置灰** ——
+            这条 trace 的节点链与 Span 站内本来就有一份（/api/trace，不挂在回放
+            开关上），指过去比给一个点不动的破折号有用得多。直查没有 run 树，
+            仍然只能是禁用态。 */}
         {link
           ? <a className="link-button" href={link} target="_blank" rel="noopener noreferrer"
                title={`在项目 ${stats?.tracing.project} 内按 trace_id 过滤`}>
               {stats?.tracing.backend === 'langfuse' ? 'Langfuse' : 'LangSmith'} ↗
             </a>
-          : <span className="link-disabled" title={observeHint(item, stats)}>{DASH}</span>}
+          : item.kind !== 'sql'
+            ? <button className="link-button" title={inSiteObserveHint(stats)}
+                      onClick={() => onObserve(item.trace_id)}>链路 →</button>
+            : <span className="link-disabled" title={observeHint(item)}>{DASH}</span>}
       </td>
     </tr>
   )

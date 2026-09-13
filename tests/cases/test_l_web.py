@@ -115,8 +115,12 @@ def test_public_instance_config_is_safe():
     if ds is not None:
         assert ds.get("password_env"), "数据库口令必须走环境变量"
         assert "password=" not in ds.get("dsn", ""), "连接串里不得写明文口令"
-    assert c.raw["observability"]["replay_api"] is False, \
-        "回放会返回 SQL 全文，连真实库时必须关"
+    # 2026-09-13 由「必须关」改成「必须显式写」：审计中心的「复放」要能点，
+    # 而 SQL 全文不透给访客靠的是 /api/replay 里那道登录门与字段白名单，
+    # 不是这个开关（理由写在 config/public.yaml 这一行的注释上）。
+    # 仍然不许它靠默认值 —— 默认值会让"开还是关"变成一件没人做过的决定。
+    assert isinstance(c.raw["observability"].get("replay_api"), bool), \
+        "replay_api 必须在配置里显式写死，开关状态不能靠默认值"
 
     # ---- 成本边界 ----
     #

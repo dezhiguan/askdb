@@ -138,13 +138,13 @@ function App() {
     if (view === 'permissions') return <PermissionsPage notify={notify} me={me} />
     if (view === 'glossary') return <GlossaryPage onNavigate={navigate} notify={notify} me={me} sources={sources} />
     if (view === 'approvals') return <ApprovalsPage notify={notify} />
-    if (view === 'audit') return <AuditPage me={me} />
+    if (view === 'audit') return <AuditPage me={me} onNavigate={navigate} />
     if (view === 'evaluation') return <EvaluationPage onNavigate={navigate} me={me} onOpenLogin={() => setLoginOpen(true)} />
     // key 带上 focusTrace：已经停在这一页时再定位另一条，靠重挂让左栏
     // 的搜索框与选中项一起复位（它们是页内初始状态）
     if (view === 'traces') return <TracesPage key={focusTrace ?? ''} focusTrace={focusTrace}
                                               onNavigate={navigate} onOpenModal={setModal} me={me} />
-    return <AuditPage me={me} />
+    return <AuditPage me={me} onNavigate={navigate} />
   })()
 
   return (
