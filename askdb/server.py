@@ -172,6 +172,67 @@ def _stale_after_s(cfg: Config) -> int:
     return v
 
 
+#: 长任务交接的三个旋钮，一处解析、多处共用。
+#:
+#: 阈值放在 agent 段（与 max_steps / cost_cap_tokens 同处），因为它描述的是
+#: "一次执行等多久算长"，不是部署形态。**默认值取 10 秒**：实测 p50 9.6s，
+#: 再往上调这条路在生产上就几乎不触发（45s 时就是这样），用户只是干等。
+_ASYNC_AFTER_MS = 10000
+
+
+def _async_after_ms(cfg: Config) -> int:
+    """同步等多久就交接后台（毫秒）。0 = 立即交接。"""
+    try:
+        return int((cfg.raw.get("agent", {}) or {}).get(
+            "async_after_ms", _ASYNC_AFTER_MS))
+    except (TypeError, ValueError):
+        return _ASYNC_AFTER_MS
+
+
+def _async_per_user(cfg: Config) -> int:
+    """一个账号最多同时在后台挂几条。满了**拒绝**，不排队 ——
+    排队会让回执里那句"正在后台执行"变成谎话。"""
+    try:
+        return int((cfg.raw.get("agent", {}) or {}).get(
+            "async_per_user", _async_runner.DEFAULT_PER_USER))
+    except (TypeError, ValueError):
+        return _async_runner.DEFAULT_PER_USER
+
+
+#: 交接出去的执行，完整结果在这里暂存一份，供查询页原地接管取回。
+#:
+#: 复用应答缓存那套 Redis（多副本共享 —— 发起的 Pod 与轮询打到的 Pod 常常
+#: 不是同一个），但**语义完全不同**：这不是缓存命中，是同一次执行的结果
+#: 换个地方交付，因此 key 里带 thread_id 而不是问题指纹，也不参与命中统计。
+#:
+#: 取不到不是错误：轮询端点会退回按审计记录拼的结果块（答案 + 已脱敏结果行）。
+#: 所以 Redis 没配、挂了、过期了，原地接管都只是少几个字段，不会失败。
+_HANDOFF_TTL_S = 3600
+
+
+def _handoff_key(thread_id: str) -> str:
+    return f"ho:{thread_id}"
+
+
+def _stash_handoff(cfg: Config, thread_id: str, result: Any) -> None:
+    if result is None:
+        return
+    try:
+        cache = build_answer_cache(cfg)
+        if cache.enabled:
+            cache.put(_handoff_key(thread_id), result.to_dict(), _HANDOFF_TTL_S)
+    except Exception:                 # noqa: BLE001
+        pass                          # 送达方式的优化，永远 fail-open
+
+
+def _take_handoff(cfg: Config, thread_id: str) -> dict[str, Any] | None:
+    try:
+        cache = build_answer_cache(cfg)
+        return cache.get(_handoff_key(thread_id)) if cache.enabled else None
+    except Exception:                 # noqa: BLE001
+        return None
+
+
 def _write_action_name(method: str, path: str) -> str:
     """这次被拦下的写操作叫什么。认不出来返回空串。"""
     segs = tuple(seg for seg in path.split("/") if seg)
@@ -621,6 +682,12 @@ def fallback_status(cfg: Config) -> dict[str, Any]:
 
 def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     cfg: Config = load(config_path)
+    # 后台池按配置定容。交接是常态路径（阈值 10s、实测 p50 9.6s），
+    # 池子太小的表现不是报错，是"该交接的交接不出去，只能同步跑"——
+    # 慢，但不丢（见 async_runner 模块头注）。
+    _async_runner.configure(
+        pool_size=int((cfg.raw.get("agent", {}) or {}).get(
+            "async_pool_size", _async_runner.DEFAULT_POOL_SIZE)))
     app = FastAPI(title="askdb", docs_url="/api/docs", openapi_url="/api/openapi.json")
 
     @app.exception_handler(_sources.StoreUnavailable)
@@ -2454,6 +2521,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             pass
         return out
 
+    def _open_traces(ctx: dict[str, Any]) -> tuple[str, ...]:
+        """还等着人动手的 trace —— 未决的审批单，以及批了票还没用掉的那些。
+
+        已驳回 / 已用掉的不钉：它们没有下一步，滑出窗口是应该的
+        （真要翻更早的，走审计流水页，那一页是真分页）。
+        """
+        return tuple(
+            t for t, st in (ctx.get("approval_status") or {}).items()
+            if st in (_approvals.REQUESTED, _approvals.APPROVED))
+
     @app.get("/api/approvals")
     def approvals_list(request: Request) -> dict[str, Any]:
         """待审批队列。
@@ -2691,12 +2768,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 存储取回来，否则两档都只进不出。三份一起由 _task_context 取。
         #
         # 阈值传进去做风险折算（审计里没有风险字段，见 audit._risk 的说明）
+        _ctx = _task_context()
         items = _tasks(
             cfg,
             None if _can(request, _identity.TASKS_ALL) else username,
             max_rows=cfg.max_rows,
             max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
-            **_task_context(),
+            # 等人动手的那些不能因为滑出窗口就从这一页消失：审批单能躺 4 天，
+            # 而窗口只有最近 2000 条线程。交接出去的任务尤其吃这个亏 ——
+            # 人本来就不在场，回来得更晚（见 audit._pin）。
+            pin_traces=_open_traces(_ctx),
+            **_ctx,
         )
         # 陈旧的「运行中」线程（进程被杀）在审计里先判成可续跑，**在分页与
         # 统计之前**按检查点核实一遍：核得过的是真可续，核不过说明现场压根
@@ -2744,6 +2826,87 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "truncated": len(items) >= _audit.TASKS_MAX_THREADS,
         }
         return result
+
+    @app.get("/api/tasks/{thread_id}")
+    def task_detail(thread_id: str, request: Request) -> JSONResponse:
+        """一条任务线现在怎么样了 —— **交接之后原地接管靠这一个接口**。
+
+        阈值降到 10 秒之后，交接是常态路径而不是异常路径（实测 p50 9.6s）。
+        再让人换一页去看结果，等于把过半查询的体验判了死刑。所以查询页拿到
+        回执后就地轮询这里：跑完了在原位置渲染完整结果，停在需要人动手的档
+        就把那句话显示出来。
+
+        三样东西，各有各的出处，**都不新造一份口径**：
+          · 状态与"下一步该谁动手"——  audit.stage / _NEXT_ACTOR，与任务中心同源；
+          · 进度（第几步、哪个工具）—— 检查点（agentgraph.progress），
+            不为它往审计里插中间记录，那会让统计与任务聚合跟着变形；
+          · 结果 —— 优先取交接暂存（就是同步返回的那份完整应答），取不到退回
+            按审计记录拼的结果块。退回不是错误，只是字段少几个。
+
+        归属校验与 /api/resume 同一条：有主的任务只有发起人看得到详情，
+        不存在与看不到同为 404（不提供枚举入口）。
+        """
+        # **无条件要登录**，与 /api/result 同一道门：这里会带出结果行。
+        # 匿名能发起查询的实例上（auth.required=false 且不要求登录查询）
+        # 老线程的 owner 是空串，不设这道门就等于把它们的结果行对所有人开放。
+        if not _current_user(request):
+            raise HTTPException(status_code=401, detail="查看任务详情需要登录")
+        not_found = JSONResponse({"error": "not found"}, status_code=404)
+        if not _TRACE_ID_RE.fullmatch(thread_id or ""):
+            return not_found
+        from .agentgraph import progress as _progress
+        from .audit import AuditFilter, iter_records
+
+        recs: list[dict[str, Any]] = []
+        stream = iter_records(cfg, AuditFilter(include_started=True,
+                                               thread_ids=(thread_id,)))
+        with closing(stream):
+            recs.extend(stream)
+        if not recs:
+            return not_found
+        owner = recs[0].get("user") or ""
+        if owner and owner != (_current_user(request) or ""):
+            return not_found
+
+        # 发起记录与收尾记录共用 trace_id：收尾一到，占位那条就该退场，
+        # 否则"最后一条"可能是占位，任务会永远显示成运行中（与 audit.tasks 同一处理）。
+        done_traces = {r.get("trace_id") for r in recs
+                       if r.get("phase") != _audit.PHASE_STARTED}
+        recs = [r for r in recs
+                if r.get("phase") != _audit.PHASE_STARTED
+                or r.get("trace_id") not in done_traces]
+        if not recs:
+            return not_found
+        last = recs[-1]
+        trace = str(last.get("trace_id") or thread_id)
+        ctx = _task_context()
+        stale = _audit.is_stale_run(last, ctx["stale_after_s"])
+        status = _audit.stage(
+            last,
+            approval_status=ctx["approval_status"].get(trace, ""),
+            review_status=ctx["review_status"].get(trace, ""),
+            ops_status=ctx["ops_status"].get(trace, ""),
+            stale=stale)
+        running = status == _audit.RUNNING
+        out: dict[str, Any] = {
+            "thread_id": thread_id, "trace_id": trace, "status": status,
+            "running": running,
+            "next_actor": _audit.next_actor(
+                status, ctx["approval_status"].get(trace, "")),
+            "question": recs[0].get("question") or "",
+            "owner": owner,
+            "attempts_on_thread": len(recs),
+        }
+        if running:
+            out["progress"] = _progress(thread_id, cfg)
+            return JSONResponse(out)
+        # 跑完了（或停在某一档）。完整应答优先，审计结果块兜底。
+        out["result"] = _take_handoff(cfg, thread_id) or None
+        out["result_block"] = _audit.result_block(last)
+        out["rejected_by"] = last.get("rejected_by")
+        out["error"] = last.get("error") or ""
+        out["hint"] = last.get("hint") or ""
+        return JSONResponse(out)
 
     @app.post("/api/resume")
     def resume_task(req: ResumeRequest, request: Request) -> JSONResponse:
@@ -2837,9 +3000,28 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             ) from e
 
         scoped = _scoped(request, base)
-        r = run_resume(req.thread_id, scoped, clarification=clarification,
-                       question=(rewritten or origin_question) if new_input else "",
-                       org_id=origin_org)
+        # 续跑同样会跑长 —— 它恢复的本来就是一条已经证明自己跑得久的线程。
+        # 不接交接的话，这条路只能一直等到入口 nginx 断开（504），而后台
+        # 其实跑得好好的。判据、阈值、回执与 /api/ask 完全同一套。
+        _thr = _async_after_ms(scoped)
+        _ho = _async_runner.new_handoff(_thr)
+        _q = (rewritten or origin_question) if new_input else ""
+        try:
+            r, _notice = _async_runner.run_or_detach(
+                lambda: run_resume(req.thread_id, scoped,
+                                   clarification=clarification, question=_q,
+                                   org_id=origin_org, handoff=_ho),
+                _thr, req.thread_id, user=scoped.user or "",
+                per_user=_async_per_user(scoped), handoff=_ho,
+                on_detached_done=lambda res: _stash_handoff(
+                    scoped, req.thread_id, res))
+        except _async_runner.CapacityExceeded:
+            raise HTTPException(
+                status_code=429,
+                detail=f"你已有 {_async_per_user(scoped)} 条任务在后台执行，"
+                       f"到任务中心看看它们的进展，跑完再续这一条。")
+        if _notice is not None:
+            return JSONResponse(_notice)
         if r is None:
             return not_found
         return JSONResponse(r.to_dict())
@@ -3264,15 +3446,31 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 不能查数"，那不是开关，是一个能把产品关掉的配置项。max_steps /
         # cost_cap_tokens / async_after_ms / grounding 那几个是真旋钮，留着。
         #
-        # 长任务自动异步：主请求最多等 async_after_ms，超时转后台并提示去任务中心
-        # （后台线程跑完写 final 审计，任务中心据审计更新状态）。
+        # 长任务交接：主请求最多同步等 async_after_ms，越线即回执、后台跑完
+        # 写 final 审计。**入口这一等只是兜底** —— 图在每个节点边界读同一个
+        # 截止时刻，"多步 / token 过半 / 大扫描"这三条在阈值之前就能定，
+        # 定了就立刻交接，不必让人白等（见 async_runner 模块头注）。
         import uuid as _uuid
         _tid = _uuid.uuid4().hex[:12]
-        _thr = int(scoped.raw.get("agent", {}).get("async_after_ms", 8000))
-        r, _notice = _async_runner.run_or_detach(
-            lambda: run_agent(q_text, scoped, org_id=req.org_id,
-                              trace_id=_tid, thread_id=_tid),
-            _thr, _tid)
+        _thr = _async_after_ms(scoped)
+        # 提前交接：这两条在入口就已经确定，等一秒都是白等。
+        #   · as_task —— 用户显式声明"我不等了"，这是一条任务线
+        #   · approval_id —— 它之所以有票，正因为被判过大扫描
+        if req.as_task or req.approval_id:
+            _thr = 0
+        _ho = _async_runner.new_handoff(_thr)
+        try:
+            r, _notice = _async_runner.run_or_detach(
+                lambda: run_agent(q_text, scoped, org_id=req.org_id,
+                                  trace_id=_tid, thread_id=_tid, handoff=_ho),
+                _thr, _tid, user=scoped.user or "",
+                per_user=_async_per_user(scoped), handoff=_ho,
+                on_detached_done=lambda res: _stash_handoff(scoped, _tid, res))
+        except _async_runner.CapacityExceeded:
+            raise HTTPException(
+                status_code=429,
+                detail=f"你已有 {_async_per_user(scoped)} 条任务在后台执行，"
+                       f"到任务中心看看它们的进展，跑完再发起新的。")
         if _notice is not None:
             return JSONResponse(_notice)
         out = r.to_dict()

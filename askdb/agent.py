@@ -303,7 +303,7 @@ def _result(cfg: Config, question: str, trace_id: str, thread_id: str, org: int,
 def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
               executor: Executor | None = None, llm: LlmClient | None = None,
               trace_id: str | None = None, thread_id: str | None = None,
-              clarification: str = "") -> AskResult:
+              clarification: str = "", handoff: Any = None) -> AskResult:
     """自主决策入口。返回与 graph.ask 同一套 AskResult，并写审计（收尾）。
 
     clarification 是发起人事后补上的条件（「补充条件」「换个问法」走这里）。
@@ -316,7 +316,7 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
     """
     result = _drive(question, cfg, org_id, executor=executor, llm=llm,
                     trace_id=trace_id, thread_id=thread_id,
-                    clarification=clarification)
+                    clarification=clarification, handoff=handoff)
     try:                                  # 审计不该成为查询失败的原因
         write_audit(cfg, _audit_of(result, cfg, "ask"))
     except Exception:
@@ -327,7 +327,7 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
 def _drive(question: str, cfg: Config, org_id: int | None = None, *,
            executor: Executor | None = None, llm: LlmClient | None = None,
            trace_id: str | None = None, thread_id: str | None = None,
-           clarification: str = "") -> AskResult:
+           clarification: str = "", handoff: Any = None) -> AskResult:
     """跑一次 agent 图。
 
     2026-09-12 从 `for step in range(...)` 改成 LangGraph（见 agentgraph）。
@@ -372,7 +372,9 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
     max_steps, cost_cap = _budget(cfg)
     deps = agentgraph.Deps(
         cfg=cfg, llm=client, executor=ex, tracer=tracer,
-        ctx=tools.ToolContext(cfg=cfg, org_id=org, executor=ex))
+        ctx=tools.ToolContext(cfg=cfg, org_id=org, executor=ex),
+        # 交接现场随执行走。节点边界据它判"要不要提前交接后台"（见 agentgraph）
+        handoff=handoff)
     init = agentgraph.initial_state(question, org, trace_id, thread_id,
                                     max_steps, cost_cap, clarification)
     try:
