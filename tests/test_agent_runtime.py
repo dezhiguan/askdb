@@ -753,6 +753,12 @@ _REAL = dict(_PROBE, columns=["gmv"], rows=[[7693056921.16]])
 _FAKE_ANSWER = {"finish": True, "answer": "8 月 GMV 合计 1,347,590.05 元，181,164 行。"}
 _GOOD_ANSWER = {"finish": True, "answer": "8 月 GMV 合计 7,693,056,921.16 元。"}
 _DO_EXEC = {"finish": False, "tool": "execute_sql", "args": {"sql": "SELECT 1 FROM documents"}}
+#: 接地校验点名之后模型**换一条 SQL** 去补查。必须与 _DO_EXEC 不同：
+#: agentgraph 的重复动作检测会挡下逐字节相同的再执行（只读 SQL 重跑拿回的是
+#: 同一份结果，未展示的行不会因此出现）。原来这里复用 _DO_EXEC、靠夹具在第二次
+#: 返回另一份数据来模拟"补查成功"，那是现实中不存在的情形。
+_DO_EXEC_2 = {"finish": False, "tool": "execute_sql",
+              "args": {"sql": "SELECT SUM(gmv) FROM documents"}}
 
 
 def _patch_exec_script(monkeypatch, script):
@@ -786,7 +792,7 @@ def test_grounding_shadow_records_but_does_not_block(tmp_path, monkeypatch):
 def test_grounding_enforce_gives_one_chance_to_fix(tmp_path, monkeypatch):
     """先点名回灌让模型去查，补上了就放行 —— 误判的代价只是多跑一轮。"""
     r = _run_grounding(tmp_path, monkeypatch,
-                       [_DO_EXEC, _FAKE_ANSWER, _DO_EXEC, _GOOD_ANSWER],
+                       [_DO_EXEC, _FAKE_ANSWER, _DO_EXEC_2, _GOOD_ANSWER],
                        [_PROBE, _REAL], "enforce")
     assert r.ok and not r.ungrounded_numbers
     assert "7,693,056,921.16" in r.reasoning

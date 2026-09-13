@@ -426,6 +426,14 @@ def _n_ground(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     return {"ungrounded": ungrounded}
 
 
+#: 结果**只由参数决定**的工具 —— 只有这几个适用重复动作检测。
+#:
+#: analyze_result / export_result 吃的是 ctx.last_result（上一次 execute_sql 的
+#: 结果），同一组参数在不同时刻指向的是不同的数据；把它们算作"重复"会把一次
+#: 合法的再分析拦掉。判据是**结果依赖什么**，不是"看起来像不像同一次调用"。
+_PURE_TOOLS = frozenset({"execute_sql", "search_schema", "get_table_schema"})
+
+
 def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     """执行模型挑中的那个工具。**护栏最密的一个节点，四条缺一不可。**
 
@@ -437,6 +445,47 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     d = _deps(config)
     act = state.get("action") or {}
     tool_name, args = act.get("tool") or "", dict(act.get("args") or {})
+
+    # ⓪ 重复动作：同一组 (工具, 参数) 已经跑过就不再跑第二遍。
+    #
+    #    这个循环原本唯一的刹车是 max_steps，没有任何机制发现"在原地打转"。
+    #    trace 26096703989b 里，接地校验把编造的数打回来之后，模型重发了一条与
+    #    第 1 步**逐字节相同**的 SQL，拿回逐字节相同的结果，白烧一轮 —— 而它
+    #    的 thought 写的是"补一次查询：拿到全部 9 个渠道的计数与总计"，计划是
+    #    对的，动作没跟上。所以回灌里必须写清**该换成什么写法**：只说"你重复了"
+    #    等于让它再猜一次，大概率原地再转一圈。
+    #
+    #    前提是只读查询在同一次执行的几秒内结果稳定。这条链路上的工具全是只读的
+    #    （tools.REGISTRY），整轮通常 30 秒内跑完。将来若接入带副作用或对时效
+    #    敏感的工具，这个判断要重新掂量 —— 那时应按工具白名单收窄，而不是撤掉。
+    #    **只有上一次真的拿到结果才算重复。** 上一次失败（库超时、护栏拦下、
+    #    模型写错了 SQL）时重发同一条是完全正当的重试 —— evals/chaos 注入一次
+    #    数据库超时、模型重发同一条 SQL 恢复，正是这条链路的既定行为，按"见过
+    #    就不跑"会把它判成沉默失败。老检查点的 history 没有 ok 这个键，
+    #    `is True` 让它们落到"允许重跑"那一侧：放行一次多余的查询，
+    #    比挡掉一次正当的重试轻得多。
+    repeat_of = next(
+        (i for i, h in enumerate(state.get("history") or [], 1)
+         if h.get("tool") == tool_name and h.get("args") == args
+         and h.get("ok") is True), None)
+    if repeat_of is not None and tool_name in _PURE_TOOLS:
+        rt = d.tracer.start()
+        # 落 span 而不是静默跳过：省掉的这次调用要能在追踪页上看见，否则
+        # "模型为什么没再查一次"这个问题在链路上没有答案。degraded 而非 ok ——
+        # 它有产出，但不是主路径。
+        d.tracer.add("tool_call", rt, f"与第 {repeat_of} 步完全相同，未重复执行",
+                     status="degraded", tool=tool_name, input=_io_json(args))
+        history = list(state.get("history") or [])
+        history.append({
+            "tool": tool_name, "args": args,
+            "brief": (f"**这条与第 {repeat_of} 步完全相同，没有重新执行** —— "
+                      "再跑一次拿回的还是同一份结果，未展示的行不会因此出现。"
+                      "要拿到没看到的行，得改写 SQL：用 OFFSET 翻页、用 WHERE "
+                      "缩小范围，或改成更聚合的写法（同一条 SQL 里把总计也选出来）。"
+                      "确实拿不到就 finish=true 如实说明哪一部分没拿到，"
+                      "**不要拿已看到的几行去外推**。"),
+        })
+        return {"step_count": state.get("step_count", 0) + 1, "history": history}
 
     res = tools.invoke(tool_name, args, d.ctx)
     tt = d.tracer.start()
@@ -463,7 +512,10 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         return out
 
     history = list(state.get("history") or [])
-    item: dict[str, Any] = {"tool": tool_name, "args": args, "brief": _brief(res)}
+    # ok 供上面的重复动作检测用：判"重跑会不会拿到新东西"，得先知道上一次
+    # 到底拿到没拿到。
+    item: dict[str, Any] = {"tool": tool_name, "args": args,
+                            "brief": _brief(res), "ok": bool(res.ok)}
 
     # ② 高成本查询不直接拒，先给模型一次换写法的机会（HITL 之前的那一步）。
     #    原来这里直接 return：模型连"可以改用预聚合汇总表"都来不及试，而 R-11
