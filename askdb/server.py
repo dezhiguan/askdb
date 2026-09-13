@@ -3505,6 +3505,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             """
             _stash_handoff(scoped, _tid, res)
             _open_approval_bg(scoped, res, who=_who, kind="ask", question=q_text)
+            # 票是一次性的，作废也必须发生在这一路。
+            # 2026-09-13 生产复验抓到：作废原来只写在同步返回那一段，凭票重跑
+            # 又恒定立即交接（A-2）—— 于是那张票**永远走不到作废那一行**，
+            # 同一张票可以反复绕开 R-11。一次批准就成了对这句问话的永久放行。
+            # 与同步那一路同一条判据：**执行成功之后**才烧，失败不烧
+            # （否则一次数据源抖动就要重走一遍人工流程）。
+            if scoped.scan_waiver and res is not None and res.ok:
+                try:
+                    _approvals.consume(cfg, req.approval_id)
+                except Exception:     # noqa: BLE001
+                    pass
 
         try:
             r, _notice = _async_runner.run_or_detach(

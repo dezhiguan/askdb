@@ -614,3 +614,39 @@ def test_detached_r11_still_opens_the_approval_ticket(hclient, hcfg, monkeypatch
     #   状态折算由 test_approved_ticket_does_not_fall_into_blocked 那条覆盖）
     rec = _rec(thread, thread, user="amy", rejected="R-11")
     assert audit.stage(rec, approval_status=approvals.REQUESTED) == audit.WAITING_APPROVAL
+
+
+def test_detached_redeem_burns_the_one_time_ticket(hclient, hcfg, monkeypatch):
+    """**凭票重跑跑通之后，票要烧掉 —— 交接出去也一样。**
+
+    2026-09-13 生产复验抓到：作废原来只写在同步返回那一段，而凭票重跑恒定
+    立即交接（A-2 提前交接），于是那张票永远走不到作废那一行。同一张票可以
+    反复绕开 R-11 —— 一次批准变成了对这句问话的永久放行。
+
+    失败不烧：一次数据源抖动不该让人重走一遍人工流程（与同步那一路同判据）。
+    """
+    from askdb import approvals, server as srv
+    from askdb.graph import AskResult
+
+    q = "物流轨迹表一共有多少行"
+    approvals.request(hcfg, trace_id="ffffffffff01", user="amy", roles=["PRODUCT"],
+                      kind="ask", question=q, sql="SELECT COUNT(*) FROM t",
+                      match_text=q, est_rows=4_000_000, threshold=200_000, source="")
+    approvals.decide(hcfg, "ffffffffff01", approver="admin1", approved=True, note="")
+
+    def _ok(question, cfg, org_id=None, **kw):
+        return AskResult(ok=True, question=question, trace_id=kw["trace_id"],
+                         org_id=0, thread_id=kw["thread_id"], reasoning="共 4,495,834 行")
+
+    monkeypatch.setattr(srv, "run_agent", _ok)
+    _login(hclient, "amy")
+    body = hclient.post("/api/ask", json={"question": q,
+                                          "approval_id": "ffffffffff01"}).json()
+    assert body.get("async"), "凭票重跑应当立即交接（A-2）"
+
+    for _ in range(50):
+        if approvals.state(hcfg)["ffffffffff01"]["status"] == approvals.CONSUMED:
+            break
+        time.sleep(0.05)
+    assert approvals.state(hcfg)["ffffffffff01"]["status"] == approvals.CONSUMED, \
+        "交接出去的凭票重跑没有把票烧掉 —— 这张票可以反复用"
