@@ -33,6 +33,22 @@ export const STEP_NAMES: Record<string, string> = {
   resume_precheck: '续跑前校验',
 }
 
+/** `decide` 这一次担的是哪一档活（后端 StepTrace.stage）。
+ *
+ *  一条 agent 链路上「Agent 决策」会连着出现五六次，平铺着看不出哪次在挑工具、
+ *  哪次是看完结果决定再查一轮、哪次是在返工。判定在后端做（agentgraph.
+ *  _decide_stage），这里只负责把它翻成人话。
+ *
+ *  **有意不复用 STEP_NAMES 里的 assess / reflect**：那两个 id 指的是老固定管道
+ *  的固定节点，2026-09-12 之后不再产生，但审计库里还留着几百条。两套东西共用
+ *  一个 id，按 step 聚合的统计会把它们算在一起。 */
+export const STAGE_NAMES: Record<string, string> = {
+  select: '工具选择',
+  assess: '结果自检',
+  reflect: '反思重试',
+  converge: '收敛作答',
+}
+
 /** 节点归类。这是对**图节点身份**的静态分类，不是运行时探测出来的 span kind ——
  *  某一步实际花没花 token，看它自己的 token 列，不要从这一列反推。 */
 export const STEP_TYPE: Record<string, string> = {

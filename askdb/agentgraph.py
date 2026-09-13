@@ -88,6 +88,122 @@ def _deps(config: RunnableConfig) -> Deps:
 
 
 # ---------------------------------------------------------------------------
+# 模型尝试流水 → span
+#
+# 采集在 LlmClient（_note_ok / _note_fail 把提示词与厂商原始响应记进流水），
+# **消费在这里**。这套消费端原来在 graph.py，2026-09-12 的
+# 「agent 迁到 LangGraph，固定管道整条删除」把老管道删掉时一并带走了，于是
+# 采集端还在记、却再没有人来取 —— `take_attempts` 在仓库里只剩一个定义，
+# 零调用点。界面上的症状是 MODEL 类 span 的「详情」列恒为「—」，而那一列
+# 恰恰是"模型到底看到了什么"的唯一出处。
+#
+# 一起失效的还有三样，都比那一列重：失败的尝试不再各占一条 span（切了备选
+# 被救回来的链路，与一次就成的干净链路长得一模一样）、attempt/attempts_total
+# 恒 0、status="fallback" 再也不会出现。
+#
+# 搬回来时逐条照抄 graph.py 原来那版，语义不动。
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _LlmSpan:
+    """一次模型调用**最终**落账的口径。失败的尝试不在这里，它们已就地落条。"""
+    status: str = "ok"
+    model: str = ""
+    ms: int | None = None       # None ＝ 没有可信的单次耗时，退回按节点起点算
+    attempt: int = 0
+    attempts_total: int = 0
+    tok_in: int = 0
+    tok_out: int = 0
+    cached_in: int = 0
+    cost_cny: float = 0.0
+    #: 这次调用的提示词全文与厂商原始响应，由 LlmClient 记在 LlmAttempt 上。
+    #: 从这里走一遍，所有过模型的节点（intent / decide）**一处接线就全有了**
+    #: —— 各自去拼提示词的话，漏一个不会报错，只会让追踪页那一行永远是占位符。
+    prompt: str = ""
+    raw: str = ""
+
+
+def _llm_spans(d: Deps, step: str, usage: Any = None) -> _LlmSpan:
+    """把这一步模型的**每次尝试**落成独立 span，返回最终那次的落账口径。
+
+    失败的尝试在这里就地落条，各带自己的错误码、处置与真实烧掉的 token。
+    成功那次不在这里落 —— 它还要带业务 note（"判定可答"、决策的 thought），
+    只有调用方知道该写什么。
+
+    **每个模型调用点都要调一次，异常分支也不例外。** 不调的话，这一步失败的
+    尝试会顺延到下一个节点被取走，落成挂在别人名下的 span —— 那比不记还坏。
+
+    usage 是调用方拿到的合计用量，只在流水为空时兜底（理论上不该发生，
+    但宁可退回旧口径，也不要在成功的链路上把 token 记成 0）。
+    """
+    # 记流水是 LlmClient 的**可选能力**，不进 structured 那份核心契约：
+    # 不记流水的实现（测试替身、将来别的模型客户端）就按"只跑了一次"处理，
+    # 退回一步一条 span 的口径 —— 那仍然是真的，只是少了返工的细节。
+    take = getattr(d.llm, "take_attempts", None)
+    attempts = take() if callable(take) else []
+    total = len(attempts)
+    # 只跑一次就成的步骤不写 attempt/attempts_total —— 每条审计凭空多两个键，
+    # 乘上几十万条不是小事，而"1/1"本身不含信息。
+    n_total = total if total > 1 else 0
+    # 没有流水就**不填 model**：这一步到底是谁应答的，此时并不知道。
+    # 从配置里的主模型名顶上去会让"切了备选照样记主模型"这个老 bug 复活。
+    final = _LlmSpan(attempts_total=n_total)
+    if usage is not None:
+        final.tok_in = getattr(usage, "input_tokens", 0)
+        final.tok_out = getattr(usage, "output_tokens", 0)
+        # 缓存命中量与金额按可选取：与上面"记流水是可选能力"同一条口径 ——
+        # 兜底分支只在流水为空时才走到（生产的 LlmClient 总是记流水，拿到的
+        # 是完整的 LlmUsage），这里宽容的只是简化过的客户端实现。
+        final.cached_in = getattr(usage, "cached_input_tokens", 0)
+        final.cost_cny = getattr(usage, "cost_cny", 0.0)
+    for i, a in enumerate(attempts, 1):
+        if a.status == "ok":
+            final = _LlmSpan(
+                # 被重试或备选救回来的产出**不是 ok**。这一条正是页面上
+                # "看不出降级"的那半张脸：一次就成与救回来一次，原来在
+                # 状态列上是同一个字。
+                status="fallback" if total > 1 else "ok",
+                model=a.model, ms=a.ms,
+                attempt=i if total > 1 else 0, attempts_total=n_total,
+                tok_in=a.usage.input_tokens, tok_out=a.usage.output_tokens,
+                cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
+                prompt=a.prompt, raw=a.raw,
+            )
+            continue
+        # note 写**我们自己的话**，厂商原文进 error_message —— 见 trace.py
+        # 那两个字段的注释：/api/trace 免登录可读，不能让 4xx 回显把提示词
+        # 里的表结构与用户问题捎出去。
+        d.tracer.add(
+            step, 0.0, "模型调用失败，未产出", status="failed", ms=a.ms,
+            attempt=i if total > 1 else 0, attempts_total=n_total,
+            model=a.model, error_code=a.error_code,
+            error_message=a.error_message, disposition=a.disposition,
+            tok_in=a.usage.input_tokens, tok_out=a.usage.output_tokens,
+            cached_in=a.usage.cached_input_tokens, cost_cny=a.usage.cost_cny,
+            # 失败那次的提示词最该留：它就是"为什么会失败"的现场。
+            # raw 在调用直接抛异常时为空，格式失灵时不空 —— 后者正是要看的。
+            input=a.prompt, output=a.raw,
+        )
+    return final
+
+
+def _sp_kw(sp: _LlmSpan, status: str = "") -> dict[str, Any]:
+    """摊成 tracer.add 的关键字参数。status 非空时按调用方的判定覆盖 ——
+    业务上判失败与模型调用本身成没成，是两件事。"""
+    kw: dict[str, Any] = {
+        "ms": sp.ms, "status": sp.status, "model": sp.model,
+        "attempt": sp.attempt, "attempts_total": sp.attempts_total,
+        "tok_in": sp.tok_in, "tok_out": sp.tok_out,
+        "cached_in": sp.cached_in, "cost_cny": sp.cost_cny,
+        "input": sp.prompt, "output": sp.raw,
+    }
+    if status:
+        kw["status"] = status
+    return kw
+
+
+# ---------------------------------------------------------------------------
 # 节点
 #
 # 全部从 agent.py 那个 for 循环逐段搬过来，**语义不做任何改动**。
@@ -132,14 +248,18 @@ def _n_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             INTENT_USER.format(schema=state.get("schema_prompt", ""),
                                question=state["question"]))
     except QuotaExceeded as e:
+        # 异常分支也要取流水：不取，这一步失败的尝试会顺延到下一个节点被取走，
+        # 落成挂在别人名下的 span —— 比不记还坏。
+        _llm_spans(d, "intent")
         d.tracer.add("intent", t, str(e), status="blocked")
         return {"rejected_by": "QUOTA", "error": str(e), "hint": "明日自动恢复。"}
     except Exception as e:                        # noqa: BLE001
+        _llm_spans(d, "intent")
         d.tracer.add("intent", t, f"预检失败：{e}", status="failed")
         return {"rejected_by": "LLM", "error": f"意图预检失败：{e}",
                 "hint": "检查网络与密钥。"}
-    d.tracer.add("intent", t, intent.reason, model=d.llm.model_name,
-                 tok_in=u.input_tokens, tok_out=u.output_tokens, cost_cny=u.cost_cny)
+    sp = _llm_spans(d, "intent", u)
+    d.tracer.add("intent", t, intent.reason, **_sp_kw(sp))
 
     out: dict[str, Any] = {
         "tok_used": state.get("tok_used", 0) + u.input_tokens + u.output_tokens}
@@ -153,6 +273,39 @@ def _n_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         out.update({"rejected_by": "CLARIFY", "reasoning": intent.clarify,
                     "error": intent.clarify or "问题缺少明确的查询对象，请补充。"})
     return out
+
+
+#: 接地校验回灌时塞进 history 的伪工具名（见 _n_ground）。下一次 decide 看到它，
+#: 就是在为"结论里有查不到的数"返工 —— 这是"反思重试"唯一可靠的判据。
+GROUND_RETRY_TOOL = "(接地校验)"
+
+
+def _decide_stage(action: Any, history: list[dict[str, Any]]) -> str:
+    """这次决策在链路里担的是哪一档活。
+
+    一条 agent 链路上 `decide` 会连着出现五六次，平铺着看不出哪次是在挑工具、
+    哪次是看完结果决定再查一轮、哪次是在返工 —— 而"自检了四轮才收敛"正是读
+    这条链路时最该一眼看到的事。
+
+    判据全部现成：模型这次的 action，加上 history 最后一项是什么。
+
+    **不复用老管道那几个 step id**（assess / reflect / finalize）。它们在
+    2026-09-12 之前指的是固定管道里的固定节点，审计库里还躺着几百条；复用之后
+    同一个 id 在时间轴两侧是两件不同的事，"assess 平均耗时"这类统计会把两种
+    东西混在一起算。所以另开一个 stage 字段，step 仍然是 decide。
+    """
+    last = history[-1] if history else None
+    last_tool = str((last or {}).get("tool") or "")
+    # **返工优先于收敛**：接地校验打回之后模型直接给答案（没再查一次），这一次
+    # 既是返工也是收尾。标成"反思重试"，因为"它是被打回来才重写的"在别处一点
+    # 痕迹都没有，而"这是最后一步"看位置就知道。
+    if last_tool == GROUND_RETRY_TOOL:
+        return "reflect"
+    if getattr(action, "finish", False):
+        return "converge"                # 收敛作答
+    if last_tool:
+        return "assess"                  # 看过上一份结果之后再决定查什么
+    return "select"                      # 还没查过任何东西，纯挑工具
 
 
 def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
@@ -175,13 +328,17 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         action, u = d.llm.structured(
             AgentAction, _sys(AGENT_SYSTEM.format(tools=_render_specs()), d.cfg), human)
     except QuotaExceeded as e:
+        _llm_spans(d, "decide")
         d.tracer.add("decide", t, str(e), status="blocked")
         return {"step": step, "converged": "配额耗尽，收敛"}
     except Exception as e:                        # noqa: BLE001
+        _llm_spans(d, "decide")
         d.tracer.add("decide", t, f"决策失败：{e}", status="failed")
         return {"step": step, "rejected_by": "LLM", "error": f"决策失败：{e}"}
-    d.tracer.add("decide", t, (action.thought or "")[:80], model=d.llm.model_name,
-                 tok_in=u.input_tokens, tok_out=u.output_tokens, cost_cny=u.cost_cny)
+    sp = _llm_spans(d, "decide", u)
+    d.tracer.add("decide", t, (action.thought or "")[:80],
+                 stage=_decide_stage(action, state.get("history") or []),
+                 **_sp_kw(sp))
 
     out: dict[str, Any] = {
         "step": step,
@@ -226,7 +383,7 @@ def _n_ground(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             and state.get("step", 0) < state["max_steps"]):
         history = list(state.get("history") or [])
         history.append({
-            "tool": "(接地校验)", "args": {},
+            "tool": GROUND_RETRY_TOOL, "args": {},
             "brief": f"**你的结论里这些数字没有出现在任何一次查询结果里："
                      f"{grounding.fmt(bad)}**。它们既不等于某个返回值，也不是"
                      f"两个返回值做一次加减乘除得到的。请先用 execute_sql 把它们"

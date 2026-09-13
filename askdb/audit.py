@@ -100,9 +100,12 @@ TRACE_FIELDS = (
 #      能看到的那条链路里，内容展开到底"，不是"让你看到看不到的链路"。
 #   2. error_message 依旧不在这里 —— 它是厂商回显，长度与内容都不受我们控制。
 #      提示词我们自己拼、自己截断（trace.IO_CAP），两者不是一回事。
+# stage 是**步骤级**字段（decide 这一次担的是哪一档活），与本模块记录级的
+# phase（PHASE_STARTED 发起记录）不是一回事 —— 有意不同名，两个命名空间在
+# 这个文件里离得太近，同名迟早被当成同一个东西读。
 STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables",
                "attempt", "attempts_total", "model", "error_code", "disposition",
-               "tool", "input", "output")
+               "tool", "stage", "input", "output")
 
 # 真正过模型的图节点。与前端 traceSteps.ts 的 STEP_TYPE == 'MODEL' 是同一份口径，
 # 两边都写一次是因为一个算数、一个只做展示；漂了会让「模型调用成功率」这格

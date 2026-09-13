@@ -418,6 +418,15 @@
   font: 6px var(--mono);
   font-style: normal;
 }
+/* decide 的分档标签。与「尝试 / 模型」那行同一档字号，但给绿色 —— 它说的是
+   这一步在链路里担了什么活，不是降级信息，不该和那些灰字混成一片。 */
+.span-table .span-stage {
+  display: block;
+  margin-top: 2px;
+  color: var(--green);
+  font: 6px var(--mono);
+  font-style: normal;
+}
 /* 失败详情：默认展开，不再折一层 —— 这一行存在的全部理由就是把
    错误码、原始消息与处置摆出来，折起来等于没记 */
 .span-table tr.span-error td { background: #fdf4f3; border-left: 2px solid #e5b3ae; }

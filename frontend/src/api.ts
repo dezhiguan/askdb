@@ -243,6 +243,11 @@ export interface ReplayStep {
    *  execute_sql）。只有 tool_call 步骤带，用于在 Span 列直接显示是哪个工具。
    *  不含内容，随 /api/trace 出接口。 */
   tool?: string
+  /** `decide` 这一次担的是哪一档活：select（挑工具）/ assess（看完结果再决定）/
+   *  reflect（接地校验打回来返工）/ converge（收敛作答）。判定在后端
+   *  （agentgraph._decide_stage），这里只负责翻成人话（见 STAGE_NAMES）。
+   *  只有 decide 步骤带；不含内容，随 /api/trace 出接口。 */
+  stage?: string
   /** 这一步**收到了什么**与**产出了什么**的全文。2026-09-12 起随 /api/trace
    *  免登录出接口（见后端 audit.STEP_FIELDS 上那段说明）。
    *

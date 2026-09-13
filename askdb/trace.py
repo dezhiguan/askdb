@@ -118,6 +118,16 @@ class StepTrace:
     #: 当成全部，照着它去判"模型为什么没看到那张表"。
     input: str = ""
     output: str = ""
+    #: 这一步在链路里担的是哪一档活。目前只有 decide 填（select / assess /
+    #: reflect / converge，见 agentgraph._decide_stage）。
+    #:
+    #: **有意与 step 分开，不复用老管道的 assess / reflect / finalize 那几个
+    #: step id**：那几个 id 在 2026-09-12 之前指的是固定管道里的固定节点，
+    #: 审计库里还留着几百条。复用之后同一个 id 在时间轴两侧是两件不同的事，
+    #: 按 step 聚合的统计会把两种东西算在一起。
+    #:
+    #: 不含内容，可随 /api/trace 出接口。
+    stage: str = ""
     #: 该步涉及的表名。目前只有 schema_recall 填：note 里的"命中 N 张表"是个
     #: 数字，而看的人真正要判断的是**哪 N 张** —— 召回偏了与召回对了，在那个
     #: 数字上完全一样。放结构化字段而不是拼进 note，是因为界面要能逐张列出，
@@ -139,7 +149,7 @@ class Tracer:
         tables: list[str] | None = None, ms: int | None = None,
         attempt: int = 0, attempts_total: int = 0, model: str = "",
         error_code: str = "", error_message: str = "", disposition: str = "",
-        tool: str = "", input: object = None, output: object = None,
+        tool: str = "", stage: str = "", input: object = None, output: object = None,
     ) -> StepTrace:
         """ms 显式传入时不按 since 算 —— 一个节点落多条 span（每次尝试一条）
         时，since 是**整个节点**的起点，拿它算每一条就等于给每次尝试都记上
@@ -153,7 +163,7 @@ class Tracer:
             tables=list(tables or []),
             attempt=attempt, attempts_total=attempts_total, model=model,
             error_code=error_code, error_message=error_message,
-            disposition=disposition, tool=tool,
+            disposition=disposition, tool=tool, stage=stage,
             # 截断在**入口**做，不在出接口时做：这里截一次，审计记录、
             # /api/trace、/api/replay 三条路自动同口径。放到出口去截，
             # 三个地方各截一次，迟早有一处漏掉或截出不同长度。

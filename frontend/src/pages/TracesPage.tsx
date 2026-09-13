@@ -11,7 +11,7 @@ import type { ModalName, View } from '../types'
 import { writeGuard } from '../writeGuard'
 import { resultChecks, scoreOf, scoreTitle } from '../trust'
 import { rolesLabel } from '../roles'
-import { KIND_NAMES, STATUS_HINT, STEP_NAMES, STEP_TYPE, stepFailed, stepSoft } from '../traceSteps'
+import { KIND_NAMES, STAGE_NAMES, STATUS_HINT, STEP_NAMES, STEP_TYPE, stepFailed, stepSoft } from '../traceSteps'
 
 
 function fmtTime(ts: string): string {
@@ -823,6 +823,11 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                     <td><span className={`span-type ${(STEP_TYPE[step.step] ?? 'sys').toLowerCase()}`}>{STEP_TYPE[step.step] ?? 'SYS'}</span></td>
                     <td>
                       {STEP_NAMES[step.step] ?? step.step}
+                      {/* decide 连着出现五六次，不分档就看不出哪次在挑工具、哪次
+                          是看完结果再决定、哪次在返工。判定在后端（stage 字段）。 */}
+                      {step.stage && STAGE_NAMES[step.stage] && (
+                        <em className="span-stage">{STAGE_NAMES[step.stage]}</em>
+                      )}
                       {/* 工具调用这一步调的具体工具名，换行成子行显示，样式与下面
                           「尝试/模型」子行一致，不另起颜色。 */}
                       {step.tool && <em className="span-attempt">{step.tool}</em>}
