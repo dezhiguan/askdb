@@ -644,11 +644,35 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     收敛理由（达步数上限 / token 触顶）在这里用 _converge_reason 现算 ——
     判据与 _after_act 共用一份，见那个函数的说明。
     """
-    from .agent import _grounding_mode, _has_number
+    from .agent import _grounding_mode, _has_number, _io_json
 
     d = _deps(config)
-    # 早退（配额 / LLM 故障 / 越界 / 库挂了）原样带出去，不再二次判定
+    t = d.tracer.start()
+
+    def _verdict(note: str, status: str = "blocked", **out: Any) -> dict[str, Any]:
+        """收尾判定落一条 span，再把判定本身返回。
+
+        **这一步此前一条 span 都不落，而枪毙答案的判定恰恰发生在这里。**
+        症状是链路上三行全绿、最后一行还写着"证据充分，可给出结论"，用户却
+        什么都没拿到 —— 2026-09-13 线上 trace fd3711604c2f 就是这样：模型
+        一次 execute_sql 都没跑，直接编了一张五渠道的表（真实 9 个渠道、
+        总计编成 1,027,010 而真值 1,122,911），NO_EVIDENCE 把它拦下了，
+        而拦这件事在 Span 明细里看不见。
+        对照 grounding：它落 span，所以"结论里 N 个数追溯不到"看得见。
+
+        output 里带上结构化判定（rejected_by / error / hint），排查时不用
+        再去猜 note 那句话对应哪个分支。
+        """
+        d.tracer.add("finalize", t, note, status=status,
+                     output=_io_json(out) if out else None)
+        return out
+
+    # 早退（配额 / LLM 故障 / 越界 / 库挂了）原样带出去，不再二次判定。
+    # **落 ok 不落 blocked**：真正失败的是上游那一步，它自己已经有一条红的
+    # span；这里再红一次，一次故障在界面上会变成两次。
     if state.get("rejected_by"):
+        d.tracer.add("finalize", t,
+                     f"上游已判定 {state.get('rejected_by')}，不再二次判定")
         return {}
 
     gmode = _grounding_mode(d.cfg)
@@ -663,11 +687,14 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     if last_exec is not None and ungrounded and gmode == "enforce":
         # 给过一次改正机会仍追溯不到 —— 这些数不是从库里来的，不能递出去。
         # 与 NO_EVIDENCE 分开：那条是"一次都没跑"，这条是"跑了但答案没用上"。
-        return {"rejected_by": "UNGROUNDED",
-                "error": f"结论里这些数字追溯不到任何一次查询结果："
-                         f"{'、'.join(ungrounded)}，因此不给出这个答案。",
-                "hint": "换个更具体的问法，或在「直查 SQL」里自己跑一条核对；"
-                        "结果表仍在下方，可直接看。"}
+        return _verdict(
+            f"结论里 {len(ungrounded)} 个数追溯不到查询结果，给过一次改正机会"
+            f"仍未补上，不给出这个答案",
+            rejected_by="UNGROUNDED",
+            error=f"结论里这些数字追溯不到任何一次查询结果："
+                  f"{'、'.join(ungrounded)}，因此不给出这个答案。",
+            hint="换个更具体的问法，或在「直查 SQL」里自己跑一条核对；"
+                 "结果表仍在下方，可直接看。")
 
     if last_exec is not None:
         # 有数据。模型没来得及归因时，别用一句"未完全收敛"把已经查到的结果盖掉
@@ -675,27 +702,38 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         if not answer:
             answer = (("（未在预算内完成归因）" + converged + "。") if converged else "") + \
                      "以下为最后一次查询执行的原始结果，请直接看结果表。"
+        # 成功也要落一格。链路末尾永远缺最后一步的话，看的人不知道收尾到底
+        # 做了什么判定 —— "没有坏消息"和"没有这一步"长得一模一样。
+        d.tracer.add("finalize", t,
+                     "已附最终结果与口径" + (f"；{converged}" if converged else ""))
         return {"answer": answer}
 
     # 以下都是"本轮没有一次成功的 execute_sql"。
     if state.get("scan_blocked") is not None:
         # 换过写法仍然过不去：按 R-11 挂审批，交由 server 建单。
         sb = state.get("scan_blocked") or {}
-        return {"rejected_by": "R-11", "last_exec": sb,
-                "error": sb.get("error") or "预估扫描量超过阈值，需人工放行"}
+        return _verdict(
+            "换过写法仍超扫描上限，按 R-11 挂审批",
+            rejected_by="R-11", last_exec=sb,
+            error=sb.get("error") or "预估扫描量超过阈值，需人工放行")
 
     tail = (f"（最后一次查询执行失败：{state.get('last_error')}）"
             if state.get("last_error") else "")
     if _has_number(answer):
         # **P0 兜底**：没取到数据就不许出数字。这里刻意不把模型那段话回显给
         # 用户 —— 它正是编造出来的内容，回显等于换个位置继续骗人。
-        return {"rejected_by": "NO_EVIDENCE", "answer": "",
-                "error": "本轮没有任何一次查询执行成功，因此不给出带数字的结论。" + tail,
-                "hint": "换个更具体的问法，或先确认这个口径需要的表是否可查；"
-                        "也可在「直查 SQL」里自己跑一条核对。"}
+        return _verdict(
+            "本轮一次 execute_sql 都没跑成，结论里的数字没有来源，"
+            "不给出这个答案",
+            rejected_by="NO_EVIDENCE", answer="",
+            error="本轮没有任何一次查询执行成功，因此不给出带数字的结论。" + tail,
+            hint="换个更具体的问法，或先确认这个口径需要的表是否可查；"
+                 "也可在「直查 SQL」里自己跑一条核对。")
     if not answer:
-        return {"rejected_by": "NO_RESULT", "error": "未能产出结果" + tail}
+        return _verdict("没有任何一次成功查询，模型也没给出结论",
+                        rejected_by="NO_RESULT", error="未能产出结果" + tail)
     # 不含任何数字的定性回答（"这个库里有哪些表"）没有可编造的量，放行。
+    d.tracer.add("finalize", t, "定性回答，不含可编造的数字，放行")
     return {"answer": answer}
 
 
