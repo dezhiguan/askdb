@@ -248,9 +248,13 @@ export interface TaskFilters {
   risk: string
   user: string
   since: string
+  /** 长任务 / 短任务，all = 不筛 */
+  taskKind: string
 }
 
-export const EMPTY_TASK_FILTERS: TaskFilters = { source: 'all', risk: 'all', user: 'all', since: 'all' }
+export const EMPTY_TASK_FILTERS: TaskFilters = {
+  source: 'all', risk: 'all', user: 'all', since: 'all', taskKind: 'all',
+}
 
 /* ---------------- 任务结果 / 任务原因 ---------------- */
 

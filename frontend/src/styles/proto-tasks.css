@@ -343,3 +343,8 @@
   .clarify-modal .clarify-form { grid-template-columns: 1fr; }
 }
 
+
+/* 任务类型（长/短）。长任务用琥珀色标出来 —— 这一页最常问的问题就是
+   "哪些跑成了长任务"，颜色让它一眼可扫，而不用逐行读字。 */
+.tasks-page .task-kind .kind-long { color: var(--amber); }
+.tasks-page .task-kind .kind-short { color: var(--muted); }

@@ -778,6 +778,46 @@ def next_actor(status: str, approval_status: str = "") -> str:
     return _NEXT_ACTOR.get(status, "")
 
 
+#: 任务类型。**两档，判据是"这次执行有没有越过交接阈值"** ——
+#: 也就是它到底有没有变成一条需要去任务中心兑付的任务。
+LONG_TASK = "long"
+SHORT_TASK = "short"
+TASK_KINDS = (LONG_TASK, SHORT_TASK)
+
+TASK_KIND_LABELS = {LONG_TASK: "长任务", SHORT_TASK: "短任务"}
+
+
+def task_kind(rec: dict[str, Any], async_after_ms: int,
+              now_s: float | None = None) -> str:
+    """这条线程是长任务还是短任务 —— **确定性折算，不是新字段**。
+
+    与 _risk / stage 同一套做法：判据全部来自记录里已有的东西，
+    所以历史记录也分得出来，不需要回填。
+
+      · 收尾了 —— 看这次执行的墙钟耗时 elapsed_ms，越过阈值就是长任务。
+        这与"交接"是同一条线：交接判的就是墙钟越没越过 async_after_ms
+        （见 async_runner）。池满时降级成同步跑到底的那些也会落在这一档 ——
+        **这是对的**，它们确实跑成了长任务，只是当时没有后台槽位交接出去。
+      · 还没收尾 —— 没有 elapsed_ms 可看，改看它已经跑了多久。跑满阈值
+        就是长任务；刚发起那一瞬间算短任务，随时间自己翻过去。
+
+    阈值由调用方传进来（server 从 agent.async_after_ms 取），不在这里读配置：
+    审计模块不认识部署配置，而"多久算长"是部署决定的。
+    """
+    if async_after_ms <= 0:
+        return SHORT_TASK
+    # **先判发起记录**：它是个占位，没有"这次跑了多久"可言 —— 真实的发起
+    # 记录压根不写 elapsed_ms（见 agent.run_agent 那条 PHASE_STARTED）。
+    # 顺序反过来的话，占位上任何一个残留的耗时都会把还在跑的线程判成短任务。
+    if rec.get("phase") == PHASE_STARTED:
+        age_ms = _age_s(rec, _now_epoch() if now_s is None else now_s) * 1000
+        return LONG_TASK if age_ms >= async_after_ms else SHORT_TASK
+    elapsed = rec.get("elapsed_ms")
+    if isinstance(elapsed, (int, float)) and elapsed > 0:
+        return LONG_TASK if elapsed >= async_after_ms else SHORT_TASK
+    return SHORT_TASK
+
+
 def _thread_status(last: dict[str, Any], *, approval_status: str = "",
                    review_status: str = "", ops_status: str = "",
                    stale: bool = False) -> str:
@@ -947,6 +987,7 @@ def tasks(path: Any, only_user: str | None = None, *,
           review_status: dict[str, str] | None = None,
           ops_status: dict[str, str] | None = None,
           pin_traces: tuple[str, ...] = (),
+          async_after_ms: int = 0,
           stale_after_s: int = 0) -> list[dict[str, Any]]:
     """执行线程，新的在前。``only_user=None`` 给全部，字符串只给这个人发起的。
 
@@ -1043,6 +1084,9 @@ def tasks(path: Any, only_user: str | None = None, *,
         item["owner"] = owner
         # 风险档是折算出来的，不是记录里的字段 —— 理由一并给出，页面可解释
         item["risk"], item["risk_why"] = _risk(last, max_rows, max_scan_rows)
+        # 长/短任务同样是折算出来的，不是记录里的字段 —— 判据与交接同一条：
+        # 这次执行有没有越过 async_after_ms（见 task_kind）。
+        item["task_kind"] = task_kind(last, async_after_ms, now_s or None)
         out.append(item)
 
     out.sort(key=lambda r: str(r.get("ts", "")), reverse=True)
@@ -1122,7 +1166,7 @@ def paginate_tasks(
     items: list[dict[str, Any]], *, page: int = 1, page_size: int = 10,
     status: str = FILTER_ANY, source: str = FILTER_ANY,
     risk: str = FILTER_ANY, user: str = FILTER_ANY, since: str = FILTER_ANY,
-    q: str = "", tz: Any = None,
+    task_kind_filter: str = FILTER_ANY, q: str = "", tz: Any = None,
 ) -> dict[str, Any]:
     """把 tasks() 的全量线程筛好、统计好、切好页 —— 一次返回给页面。
 
@@ -1200,6 +1244,9 @@ def paginate_tasks(
         matched = [it for it in matched if str(it.get("user") or "") == user]
     if since != FILTER_ANY:
         matched = [it for it in matched if _within_since(str(it.get("ts", "")), since, now)]
+    if task_kind_filter != FILTER_ANY:
+        matched = [it for it in matched
+                   if str(it.get("task_kind") or "") == task_kind_filter]
     needle = q.strip().lower()
     if needle:
         matched = [

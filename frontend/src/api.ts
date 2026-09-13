@@ -1250,6 +1250,10 @@ export interface Task {
    *  （见 askdb/audit.py 的 _risk）—— 所以理由必须跟着走，页面要能解释。 */
   risk?: 'HIGH' | 'MEDIUM' | 'LOW' | null
   risk_why?: string | null
+  /** 长任务 / 短任务。**折算出来的，不是记录里的字段**（见 audit.task_kind）：
+   *  判据与交接同一条 —— 这次执行有没有越过 async_after_ms。
+   *  所以历史线程也分得出来，不需要回填。 */
+  task_kind?: 'long' | 'short'
   /** 只有 interrupted 的线程能续跑。列表列全部线程，续跑入口只对它们开放 ——
    *  给已收尾的线程也挂一个续跑按钮，点了必然失败 */
   resumable: boolean
@@ -1301,6 +1305,8 @@ export interface TaskQuery {
   risk?: string
   user?: string
   since?: string
+  /** 长/短任务。all = 不筛 */
+  taskKind?: string
   /** 关键词：问题原文 / 线程 id / trace id。**筛选在服务端做** ——
    *  在浏览器里过滤当前这一页，搜的就只是十行，搜不到的看起来像不存在 */
   q?: string
@@ -1325,6 +1331,9 @@ export interface TasksResult {
   sources: TaskFilterOptionDto[]
   users: TaskFilterOptionDto[]
   user: string
+  /** 交接阈值（毫秒）。列表用它解释"凭什么算长任务" —— 一个说不出理由的
+   *  标签比不标更糟（与 risk_why 同一条道理）。 */
+  async_after_ms: number
 }
 
 const EMPTY_TASK_STATS: TaskStats = {
@@ -1342,6 +1351,7 @@ export async function fetchTasks(query: TaskQuery = {}): Promise<TasksResult> {
     risk: query.risk ?? 'all',
     user: query.user ?? 'all',
     since: query.since ?? 'all',
+    task_kind: query.taskKind ?? 'all',
     q: query.q ?? '',
   })
   const response = await request(`/api/tasks?${params}`)
@@ -1357,6 +1367,9 @@ export async function fetchTasks(query: TaskQuery = {}): Promise<TasksResult> {
     sources: body.sources ?? [],
     users: body.users ?? [],
     user: body.user || '',
+    // 「多久算长任务」由服务端给，页面不自己写一个数 —— 它是部署配置
+    // （agent.async_after_ms），写死在前端就会与实际折算口径漂开
+    async_after_ms: body.async_after_ms ?? 0,
   }
 }
 

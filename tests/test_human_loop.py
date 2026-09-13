@@ -650,3 +650,55 @@ def test_detached_redeem_burns_the_one_time_ticket(hclient, hcfg, monkeypatch):
         time.sleep(0.05)
     assert approvals.state(hcfg)["ffffffffff01"]["status"] == approvals.CONSUMED, \
         "交接出去的凭票重跑没有把票烧掉 —— 这张票可以反复用"
+
+
+def test_task_kind_is_derived_from_the_handoff_threshold(hcfg):
+    """长/短任务是**折算**出来的，判据与交接同一条：越没越过 async_after_ms。
+
+    折算而不是新字段，所以历史线程也分得出来，不需要回填 —— 与 _risk / stage
+    同一套做法。
+    """
+    from askdb import audit as A
+
+    short = {**_rec("aaaaaaaaaa01", "100000000001", user="amy", rejected=None),
+             "elapsed_ms": 4_200}
+    long_ = {**_rec("aaaaaaaaaa02", "100000000002", user="amy", rejected=None),
+             "elapsed_ms": 26_930}
+    assert A.task_kind(short, 10_000) == A.SHORT_TASK
+    assert A.task_kind(long_, 10_000) == A.LONG_TASK
+    # 边界取闭区间：恰好等于阈值的那一下就是交接发生的那一刻
+    assert A.task_kind({**short, "elapsed_ms": 10_000}, 10_000) == A.LONG_TASK
+    # 阈值关掉（0 = 立即交接那一档由 server 另判）时不瞎标
+    assert A.task_kind(long_, 0) == A.SHORT_TASK
+    # 还没收尾的按"已经跑了多久"算：刚发起是短的，跑久了自己翻过去
+    started = {**_rec("aaaaaaaaaa03", "100000000003", user="amy", rejected=None,
+                      ts=_now(-60)), "phase": audit.PHASE_STARTED}
+    assert A.task_kind(started, 10_000) == A.LONG_TASK
+    fresh = {**_rec("aaaaaaaaaa04", "100000000004", user="amy", rejected=None),
+             "phase": audit.PHASE_STARTED}
+    assert A.task_kind(fresh, 10_000) == A.SHORT_TASK
+
+
+def test_tasks_page_lists_and_filters_by_task_kind(hclient, hcfg):
+    """列表给出类型，筛选按类型收窄；非法取值 400（不能当成"没筛"放过去）。"""
+    _write(hcfg.audit_log, [
+        {**_rec("bbbbbbbbbb01", "200000000001", user="amy", rejected=None,
+                question="短的那条"), "elapsed_ms": 3_100},
+        {**_rec("bbbbbbbbbb02", "200000000002", user="amy", rejected=None,
+                question="长的那条"), "elapsed_ms": 26_930},
+    ])
+    hcfg.raw["agent"] = {**(hcfg.raw.get("agent") or {}), "async_after_ms": 10_000}
+    _login(hclient, "amy")
+
+    body = hclient.get("/api/tasks").json()
+    kinds = {it["question"]: it["task_kind"] for it in body["items"]}
+    assert kinds == {"短的那条": "short", "长的那条": "long"}
+    # 阈值出接口：页面要能说清"凭什么算长任务"
+    assert body["async_after_ms"] == 10_000
+
+    only_long = hclient.get("/api/tasks?task_kind=long").json()
+    assert [it["question"] for it in only_long["items"]] == ["长的那条"]
+    # 统计卡算在筛选之前，不跟着筛选变
+    assert only_long["total"] == 1 and only_long["total_all"] == 2
+
+    assert hclient.get("/api/tasks?task_kind=middling").status_code == 400

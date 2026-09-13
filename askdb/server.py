@@ -2711,7 +2711,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     @app.get("/api/tasks")
     def tasks(request: Request, page: int = 1, page_size: int = 10,
               status: str = "all", source: str = "all", risk: str = "all",
-              user: str = "all", since: str = "all", q: str = "") -> dict[str, Any]:
+              user: str = "all", since: str = "all", task_kind: str = "all",
+              q: str = "") -> dict[str, Any]:
         """执行线程一页，新的在前。筛选、统计与切页都在这里做。
 
         列全部而不是只列中断的：中断只在异常逃出执行图时才发生（进程故障、
@@ -2746,6 +2747,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             ("status", status, _audit.TASK_STATUSES),
             ("risk", risk, _audit.RISK_LEVELS),
             ("since", since, _audit.SINCE_CHOICES),
+            ("task_kind", task_kind, _audit.TASK_KINDS),
         ):
             if value != "all" and value not in allowed:
                 raise HTTPException(
@@ -2778,6 +2780,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 而窗口只有最近 2000 条线程。交接出去的任务尤其吃这个亏 ——
             # 人本来就不在场，回来得更晚（见 audit._pin）。
             pin_traces=_open_traces(_ctx),
+            # 长/短任务按"这次执行有没有越过交接阈值"折算，阈值从配置取 ——
+            # 与 /api/ask 那一路读的是同一个值（_async_after_ms），
+            # 两处各写一个默认值就会出现"列表说它是长任务、它当时却没被交接"
+            async_after_ms=_async_after_ms(cfg),
             **_ctx,
         )
         # 陈旧的「运行中」线程（进程被杀）在审计里先判成可续跑，**在分页与
@@ -2795,7 +2801,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 会在这里被核回 False；被杀掉那条留着现场，核得过。
         result = _audit.paginate_tasks(
             items, page=page, page_size=page_size, status=status,
-            source=source, risk=risk, user=user, since=since, q=q.strip(),
+            source=source, risk=risk, user=user, since=since,
+            task_kind_filter=task_kind, q=q.strip(),
             # 日界按配置声明的时区算：容器时钟是 UTC，不传这个，「今日完成」
             # 会到北京时间早上八点才翻页
             tz=_audit.day_tz(cfg))
@@ -2825,6 +2832,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "max_threads": _audit.TASKS_MAX_THREADS,
             "truncated": len(items) >= _audit.TASKS_MAX_THREADS,
         }
+        # 阈值出接口：页面要能说清"凭什么算长任务"。一个说不出理由的标签，
+        # 比不标更糟（与 risk_why 同一条道理）。
+        result["async_after_ms"] = _async_after_ms(cfg)
         return result
 
     @app.get("/api/tasks/{thread_id}")

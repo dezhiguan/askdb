@@ -170,6 +170,10 @@ const RISK_LABEL: Record<string, string> = {
 const SINCE_LABEL: Record<string, string> = {
   all: '全部时间', today: '今天', '7d': '近 7 天', '30d': '近 30 天',
 }
+/** 任务类型。取值同样定义在后端（audit.TASK_KINDS），这里只是文案。 */
+const TASK_KIND_LABEL: Record<string, string> = {
+  all: '全部类型', long: '长任务', short: '短任务',
+}
 
 type ModalState =
   | { kind: 'none' }
@@ -228,6 +232,7 @@ export function TasksPage({ onNavigate, notify, me }: {
       risk: filters.risk,
       user: filters.user,
       since: filters.since,
+      taskKind: filters.taskKind,
       q: keyword,
     })
       .then(value => { setResult(value); setError('') })
@@ -261,6 +266,7 @@ export function TasksPage({ onNavigate, notify, me }: {
   const loading = !result && !error
   const total = result?.total ?? 0
   const totalAll = result?.total_all ?? 0
+  const thresholdMs = result?.async_after_ms ?? 0
   const sourceOptions = result?.sources ?? []
   const userOptions = result?.users ?? []
   const labelForUser = (value: string, label: string) =>
@@ -282,6 +288,12 @@ export function TasksPage({ onNavigate, notify, me }: {
       : null,
     filters.risk !== 'all'
       ? { label: '风险', value: filters.risk, onClear: () => patch({ risk: 'all' }) } : null,
+    filters.taskKind !== 'all'
+      ? {
+        label: '任务类型',
+        value: TASK_KIND_LABEL[filters.taskKind] ?? filters.taskKind,
+        onClear: () => patch({ taskKind: 'all' }),
+      } : null,
     filters.source !== 'all'
       ? {
         label: '数据源',
@@ -562,6 +574,16 @@ export function TasksPage({ onNavigate, notify, me }: {
               ))}
             </select>
             <select
+              className={filters.taskKind === 'all' ? '' : 'on'}
+              aria-label="按任务类型筛选"
+              value={filters.taskKind}
+              onChange={event => patch({ taskKind: event.target.value })}
+            >
+              {['all', 'long', 'short'].map(value => (
+                <option key={value} value={value}>{TASK_KIND_LABEL[value]}</option>
+              ))}
+            </select>
+            <select
               className={filters.source === 'all' ? '' : 'on'}
               aria-label="按数据源筛选"
               value={filters.source}
@@ -610,6 +632,7 @@ export function TasksPage({ onNavigate, notify, me }: {
               <div className="task-head" role="row">
                 <span />
                 <span>任务 / 线程</span>
+                <span>类型</span>
                 <span>数据源</span>
                 <span>风险</span>
                 <span>关键信息</span>
@@ -628,6 +651,17 @@ export function TasksPage({ onNavigate, notify, me }: {
                       {task.thread_id} · {personName(task.user_name, task.user, me)} · {fmtClock(task.ts)}
                       {' · 已执行 '}{task.attempts_on_thread} 次
                     </small>
+                  </div>
+                  {/* 长/短任务。**折算出来的，不是记录里的字段**（audit.task_kind）：
+                      判据与交接同一条 —— 这次执行有没有越过交接阈值。所以
+                      title 里把阈值说出来，一个说不出理由的标签比不标更糟。 */}
+                  <div className="task-meta task-kind">
+                    <strong
+                      className={task.task_kind === 'long' ? 'kind-long' : 'kind-short'}
+                      title={kindWhy(task, thresholdMs)}
+                    >
+                      {TASK_KIND_LABEL[task.task_kind ?? ''] ?? '—'}
+                    </strong>
                   </div>
                   {/* 数据源恒为一列：这一页把所有数据源的线程列在一起，「这条跑在哪个库」
                       原来只有点开弹窗才看得到，而筛选条上就摆着「全部数据源」——
@@ -832,6 +866,23 @@ export function TasksPage({ onNavigate, notify, me }: {
  *  running 原来在这里放"已发起 12:58"，interrupted 放"现场：检查点在" ——
  *  前者与行首那行小字里的时间是同一个值，后者没有任何信息量（状态已经写着
  *  可续跑了）。两处都换成真正只有这一档才有的东西：跑到哪、停在哪个节点。 */
+/** 这条为什么算长任务 / 短任务。**标签必须说得出理由**，与 risk_why 同一条道理。
+ *
+ *  阈值由服务端给（agent.async_after_ms），不在前端写死 —— 写死就会与实际
+ *  折算口径漂开，而漂开的表现是"列表说它是长任务，它当时却没被交接"。 */
+function kindWhy(task: Task, thresholdMs = 0): string {
+  const s = (ms: number) => `${(ms / 1000).toFixed(0)}s`
+  const line = thresholdMs > 0 ? `（阈值 ${s(thresholdMs)}）` : ''
+  if (task.task_kind === 'long') {
+    return task.elapsed_ms
+      ? `耗时 ${s(task.elapsed_ms)}，越过交接阈值${line}，转后台执行`
+      : `已经跑了超过交接阈值的时间${line}`
+  }
+  return task.elapsed_ms
+    ? `耗时 ${s(task.elapsed_ms)}，未越过交接阈值${line}，同步直返`
+    : `未越过交接阈值${line}`
+}
+
 function keyInfo(task: Task) {
   if (task.status === 'waiting_review' || task.status === 'review_returned') {
     /* 存疑理由是复核人唯一要看的东西，直接摆在行上；多条时给第一条，其余挂 title */
