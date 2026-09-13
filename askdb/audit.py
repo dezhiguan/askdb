@@ -103,7 +103,13 @@ TRACE_FIELDS = (
 # stage 是**步骤级**字段（decide 这一次担的是哪一档活），与本模块记录级的
 # phase（PHASE_STARTED 发起记录）不是一回事 —— 有意不同名，两个命名空间在
 # 这个文件里离得太近，同名迟早被当成同一个东西读。
-STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "note", "tables",
+# cached_in（tok_in 里命中前缀缓存的部分）必须跟着 tok_in 一起出接口：
+# 它决定了这次调用的**真实成本**（命中按标准输入价的 10% 计，见
+# trace.call_cost_cny），此前只存在 StepTrace 上、一条出口都没有，于是
+# "缓存到底命没命中"在生产上不可观测 —— config/public.yaml 里那句
+# "实测本链路 cache_read 恒为 0"也就无从复核。不含内容，与 tok_in 同档。
+STEP_FIELDS = ("step", "status", "ms", "tok_in", "tok_out", "cached_in",
+               "note", "tables",
                "attempt", "attempts_total", "model", "error_code", "disposition",
                "tool", "stage", "input", "output")
 

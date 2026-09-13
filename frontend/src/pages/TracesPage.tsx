@@ -859,6 +859,11 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                         : step.tok_in
                           ? `${STEP_TYPE[step.step] === 'MODEL' ? 'prompt' : 'embed'} `
                             + `${step.tok_in.toLocaleString()} tok`
+                            /* 命中前缀缓存的那部分单独标出来：它按标准输入价的
+                               10% 结算，是"这一步到底花了多少钱"的关键一项，
+                               混在 tok_in 里看不出来。没命中就不占位。 */
+                            + (step.cached_in
+                                ? `（缓存 ${step.cached_in.toLocaleString()}）` : '')
                           : NA}
                     </td>
                     <td className="span-note" title={step.note ?? ''}>

@@ -243,6 +243,9 @@ export interface ReplayStep {
    *  execute_sql）。只有 tool_call 步骤带，用于在 Span 列直接显示是哪个工具。
    *  不含内容，随 /api/trace 出接口。 */
   tool?: string
+  /** tok_in 里**命中前缀缓存**的部分（含在 tok_in 内，不另计）。命中按标准
+   *  输入价的 10% 结算，所以它直接决定这次调用的真实成本。0 = 没命中。 */
+  cached_in?: number
   /** `decide` 这一次担的是哪一档活：select（挑工具）/ assess（看完结果再决定）/
    *  reflect（接地校验打回来返工）/ converge（收敛作答）。判定在后端
    *  （agentgraph._decide_stage），这里只负责翻成人话（见 STAGE_NAMES）。
