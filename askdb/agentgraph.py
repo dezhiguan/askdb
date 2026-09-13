@@ -71,6 +71,11 @@ class AgentState(TypedDict, total=False):
     max_steps: int
     cost_cap: int
     tok_used: int  # ← R-17 必须在 state，不能读 tracer
+    #: 接地校验强制返工时一次性追加的预算（见 GROUNDING_RETRY_* 两个常量）。
+    #: 不直接改 max_steps / cost_cap：那两个是**用户配的值**，收敛理由里要
+    #: 原样报出来，被悄悄改大之后"达步数上限 9"会和配置里的 6 对不上。
+    steps_granted: int
+    tokens_granted: int
 
 
 @dataclass
@@ -354,7 +359,7 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     human = AGENT_USER.format(
         schema=state.get("schema_prompt", ""), question=state["question"],
         history=_render_history(state.get("history") or []),
-        steps_left=max(0, state["max_steps"] - step + 1))
+        steps_left=max(0, _step_cap(state) - step + 1))
     t = d.tracer.start()
     try:
         action, u = d.llm.structured(
@@ -388,8 +393,8 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     #     直接送去 finalize，而那时 answer 已经丢掉，本来能给的答案就没了。
     prefer_tool = bool(
         action.finish and action.tool and action.tool in tools.REGISTRY
-        and step < state.get("max_steps", 0)
-        and tok_used <= state.get("cost_cap", 0))
+        and step < _step_cap(state)
+        and tok_used <= _tok_cap(state))
     finish = bool(action.finish) and not prefer_tool
 
     note = (action.thought or "")[:80]
@@ -420,6 +425,24 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     return out
 
 
+#: 接地校验强制返工时一次性追加的预算。
+#:
+#: 一次改正要三步才走得完：decide（反思）→ act（去查）→ decide（拿真数重写）。
+#: 而接地校验触发时往往已经烧掉大半预算，第三步经常没有 —— 2026-09-13 线上
+#: trace e26935e37614 就是这样：SQL 真的跑了、真实合计也查回来了，模型却没有
+#: 机会拿它重写结论，finalize 看见 ungrounded 非空照样拒答。查到了却来不及用，
+#: 比没查更冤。
+#:
+#: 这笔额度**每次查询至多发一次**（grounding_retried 保证），所以上界是确定的：
+#: 两次 decide 加一次工具调用。它买的不是"多探索一会儿"，而是护栏自己强制的
+#: 返工 —— 那笔账不该记在用户的探索预算上。
+#:
+#: token 也要一起给。只放宽步数的话，这条链路会从"步数不够"变成"token 不够"，
+#: 症状一模一样，等于没修。
+GROUNDING_RETRY_STEPS = 2
+GROUNDING_RETRY_TOKENS = 16_000
+
+
 def _n_ground(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     """数字接地校验：结论里的数追不追得到某一次查询结果。
 
@@ -447,7 +470,7 @@ def _n_ground(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                  f"结论里 {len(bad)} 个数追溯不到查询结果：{grounding.fmt(bad)}",
                  status="blocked" if gmode == "enforce" else "ok")
     if (gmode == "enforce" and not state.get("grounding_retried")
-            and state.get("step", 0) < state["max_steps"]):
+            and state.get("step", 0) < _step_cap(state) + GROUNDING_RETRY_STEPS):
         history = list(state.get("history") or [])
         history.append({
             "tool": GROUND_RETRY_TOOL, "args": {},
@@ -458,8 +481,14 @@ def _n_ground(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                      f"这些数字。"})
         # 清空 answer 是**回 decide 的信号**，别省 —— _after_ground 靠
         # "重试过 且 没答案"两条同时成立才放行，只判其中一个会转起来。
+        # 连额度一起发下去。发在这里而不是 _after_act 里判 —— 那条边只知道
+        # "超了没有"，不知道"为什么值得多给"。
         return {"ungrounded": ungrounded, "grounding_retried": True,
-                "history": history, "answer": ""}
+                "history": history, "answer": "",
+                "steps_granted": int(state.get("steps_granted", 0))
+                                 + GROUNDING_RETRY_STEPS,
+                "tokens_granted": int(state.get("tokens_granted", 0))
+                                  + GROUNDING_RETRY_TOKENS}
     return {"ungrounded": ungrounded}
 
 
@@ -703,22 +732,32 @@ def _after_act(state: AgentState) -> Literal["decide", "finalize"]:
     """
     if state.get("rejected_by"):
         return "finalize"
-    if state.get("step", 0) >= state.get("max_steps", 0):
-        return "finalize"
-    if state.get("tok_used", 0) > state.get("cost_cap", 0):
-        return "finalize"
-    return "decide"
+    return "finalize" if _converge_reason(state) else "decide"
+
+
+def _step_cap(state: AgentState) -> int:
+    """R-16 这一轮实际能跑到第几步（含接地校验追加的那点额度）。"""
+    return int(state.get("max_steps", 0)) + int(state.get("steps_granted", 0))
+
+
+def _tok_cap(state: AgentState) -> int:
+    """R-17 这一轮实际的 token 上限（同上）。"""
+    return int(state.get("cost_cap", 0)) + int(state.get("tokens_granted", 0))
 
 
 def _converge_reason(state: AgentState) -> str:
     """为什么不再往下跑。空串 = 不是被上限挡住的。
 
-    与 _after_act 的判据**必须一致**，所以摆在一起 —— 两处各写一份，
-    就会出现"提前收敛了但没说为什么"。
+    **这是 R-16 / R-17 判据的唯一一份。** `_after_act` 直接读它的真假，
+    不再自己写一遍 —— 原来两处各判一次，改一处忘另一处就会出现"提前收敛了
+    但没说为什么"，而那正是这个函数的存在理由。
+
+    报出来的仍是**用户配的那个数**，不含追加额度：说"达步数上限 6"而实际
+    跑了 8 步，比说"上限 8"清楚 —— 前者对得上配置文件，后者对不上任何东西。
     """
-    if state.get("step", 0) >= state.get("max_steps", 0):
+    if state.get("step", 0) >= _step_cap(state):
         return f"达步数上限 {state.get('max_steps')}，收敛作答"
-    if state.get("tok_used", 0) > state.get("cost_cap", 0):
+    if state.get("tok_used", 0) > _tok_cap(state):
         return f"累计 token 超预算 {state.get('cost_cap')}，收敛作答"
     return ""
 
