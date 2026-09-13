@@ -631,6 +631,28 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     return out
 
 
+def _meta_evidence(state: AgentState) -> list[dict[str, Any]]:
+    """把**非 execute_sql** 的成功工具返回也折成可核对的证据。
+
+    search_schema 返回表清单、get_table_schema 返回列清单 —— 这些是模型回答
+    "库里有哪些表""某张表有哪些字段"时的真实依据，只是它们不经 execute_sql，
+    exec_results 里一条都没有。不把它们算作证据，这类问题就只能被判成编造。
+
+    除了名字本身，**还把清单长度一并给出**：模型说"共 8 张表"时，那个 8 正是
+    len(tables)，它在返回值里不作为一个元素存在，只作为个数存在。
+    """
+    out: list[dict[str, Any]] = []
+    for h in state.get("history") or []:
+        if not h.get("ok") or h.get("tool") == "execute_sql":
+            continue
+        names = list(h.get("columns") or [])
+        if not names:
+            continue
+        out.append({"columns": ["name"], "rows": [[n] for n in names]})
+        out.append({"columns": ["count"], "rows": [[len(names)]]})
+    return out
+
+
 def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     """收尾：能不能把这个答案给用户。**纯代码判定，不问模型。**
 
@@ -644,7 +666,8 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     收敛理由（达步数上限 / token 触顶）在这里用 _converge_reason 现算 ——
     判据与 _after_act 共用一份，见那个函数的说明。
     """
-    from .agent import _grounding_mode, _has_number, _io_json
+    from .agent import (_grounding_mode, _has_number, _io_json,
+                        _known_constants)
 
     d = _deps(config)
     t = d.tracer.start()
@@ -722,13 +745,45 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     if _has_number(answer):
         # **P0 兜底**：没取到数据就不许出数字。这里刻意不把模型那段话回显给
         # 用户 —— 它正是编造出来的内容，回显等于换个位置继续骗人。
-        return _verdict(
-            "本轮一次 execute_sql 都没跑成，结论里的数字没有来源，"
-            "不给出这个答案",
-            rejected_by="NO_EVIDENCE", answer="",
-            error="本轮没有任何一次查询执行成功，因此不给出带数字的结论。" + tail,
-            hint="换个更具体的问法，或先确认这个口径需要的表是否可查；"
-                 "也可在「直查 SQL」里自己跑一条核对。")
+        #
+        # 但判据不能是"有任何一个数字就拒"。_has_number 匹配的是**单个字符**：
+        # 有序列表的 "1." "2."、表名里的 payment_stats_daily…… 统统算数。于是
+        # "这个库里有哪些表"这类**只靠元数据就能如实回答**的问题被系统性误杀 ——
+        # 2026-09-13 线上 9d6bccacd61f：模型规规矩矩用 search_schema 召回 8 张表、
+        # 逐张列出并注明"以召回结果为准"，一个数据数字都没编，照样判 NO_EVIDENCE。
+        #
+        # 收紧成两档：
+        ran_tool = any(h.get("ok") for h in (state.get("history") or []))
+        if not ran_tool:
+            # ① 一次工具都没成功调用过 —— 纯凭空作答，照旧一刀切拒。
+            #    2026-09-13 d09d099a2209 正是这样：零次工具调用，直接编出一张
+            #    退款表（WECHAT 10,432 笔 / 1,978,562.34 元），还写着"通过
+            #    payment_no 关联 payments.channel_code"，那条 SQL 从不存在。
+            return _verdict(
+                "本轮一次工具都没调用成功，结论里的数字没有来源，"
+                "不给出这个答案",
+                rejected_by="NO_EVIDENCE", answer="",
+                error="本轮没有任何一次查询执行成功，因此不给出带数字的结论。" + tail,
+                hint="换个更具体的问法，或先确认这个口径需要的表是否可查；"
+                     "也可在「直查 SQL」里自己跑一条核对。")
+        # ② 调用成功过（哪怕只是 search_schema）—— 逐个数字核对来源，追不到才拒。
+        #    判据与 grounding 共用一份，不另起一套阈值：那一层已经按"宁可漏、
+        #    不可误"标定过（只查大额数、跳过年份占比、允许一次算术），
+        #    这里再写一套迟早两边漂开。
+        bad = grounding.ungrounded(answer, _meta_evidence(state),
+                                   known=_known_constants(d.cfg))
+        if bad:
+            return _verdict(
+                f"没有一次 execute_sql 跑成，结论里 {len(bad)} 个数也追溯不到"
+                f"任何一次工具返回，不给出这个答案",
+                rejected_by="NO_EVIDENCE", answer="",
+                error=f"本轮没有任何一次查询执行成功，而结论里这些数字追溯不到"
+                      f"工具返回：{grounding.fmt(bad)}。" + tail,
+                hint="换个更具体的问法，或先确认这个口径需要的表是否可查；"
+                     "也可在「直查 SQL」里自己跑一条核对。")
+        d.tracer.add("finalize", t,
+                     "没跑 SQL，但结论里的数都来自工具返回（表清单 / 字段清单），放行")
+        return {"answer": answer}
     if not answer:
         return _verdict("没有任何一次成功查询，模型也没给出结论",
                         rejected_by="NO_RESULT", error="未能产出结果" + tail)
