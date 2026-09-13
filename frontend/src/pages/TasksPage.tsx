@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
 import {
   askQuestion,
+  isAsyncReceipt,
   decideApproval,
   decideReview,
   fetchReplay,
@@ -351,6 +352,8 @@ export function TasksPage({ onNavigate, notify, me }: {
       const response = await resumeTask(task.thread_id, clarification, question)
       if (!response) {
         notify('这个任务已经跑完，或不属于当前账号')
+      } else if (isAsyncReceipt(response)) {
+        notify('已继续执行，耗时较长转后台；这一页会跟着更新。')
       } else if (response.ok) {
         notify(`已继续执行完成 · 新 trace ${response.trace_id}`)
       } else {
@@ -375,7 +378,11 @@ export function TasksPage({ onNavigate, notify, me }: {
     try {
       const response = await askQuestion(
         task.question || '', task.source || '', undefined, false, task.trace_id)
-      if (response.ok) {
+      // 凭票重跑一律立即交接后台：它有票，正因为被判过大扫描 ——
+      // 这类查询本来就跑得久，让人对着一个转圈的弹窗等没有意义。
+      if (isAsyncReceipt(response)) {
+        notify('已凭票重跑，正在后台执行；这一页会跟着更新。')
+      } else if (response.ok) {
         notify(`已凭票重跑 · 新 trace ${response.trace_id}`)
       } else {
         notify(`重跑未通过：${response.rejected_by ?? ''} ${response.error ?? ''}`.trim())
@@ -435,7 +442,11 @@ export function TasksPage({ onNavigate, notify, me }: {
     setCreating(true)
     try {
       const response = await askQuestion(payload.goal, payload.sourceId, undefined, true)
-      if (response.ok) {
+      // 「创建任务」是显式声明"我不等了"，所以后端立即交接、当场回执 ——
+      // 这是这一页唯一**不**原地接管结果的入口：任务线本来就在这一页上。
+      if (isAsyncReceipt(response)) {
+        notify('任务已创建，正在后台执行；结果就绪后在这一页查看。')
+      } else if (response.ok) {
         notify(`任务已创建并执行 · trace ${response.trace_id}`)
       } else {
         notify(`任务已创建但未执行完：${response.rejected_by ?? ''} ${response.error ?? ''}`.trim())

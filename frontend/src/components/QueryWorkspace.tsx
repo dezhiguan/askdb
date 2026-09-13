@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { askQuestion, fetchSchema, runSql, type AskResult, type Me, type Schema } from '../api'
+import {
+  askQuestion, fetchSchema, fetchTask, isAsyncReceipt, runSql,
+  type AskResult, type AsyncReceipt, type Me, type Schema, type TaskDetail,
+} from '../api'
 import { writeGuard, type WriteGuard } from '../writeGuard'
 import type { ResultTab, View } from '../types'
 import type { HealthState } from '../useHealth'
@@ -40,6 +43,11 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
   const [question, setQuestion] = useState(prefill ?? '')
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<AskResult | null>(null)
+  // 交接现场：这次执行转后台了，页面就地接管（轮询 → 原位置出结果）。
+  // 交接是常态路径而不是异常路径（阈值 10s、实测 p50 9.6s），所以它必须
+  // 长在这一页上 —— 换一页去看结果等于把过半查询的体验判死。
+  const [handoff, setHandoff] = useState<AsyncReceipt | null>(null)
+  const [task, setTask] = useState<TaskDetail | null>(null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<ResultTab>('result')
   const [schema, setSchema] = useState<Schema | null>(null)
@@ -150,6 +158,60 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
     notify?.(`已切换到 ${sourceCards.find(s => s.id === id)?.name ?? '所选数据源'}，上一次结果已清空`)
   }
 
+  /** 交接暂存取不到时按审计结果块拼一份。**少几个字段，不是失败** ——
+   *  答案与已脱敏结果行都在，够这一页把结果显示出来。 */
+  const fromBlock = (detail: TaskDetail): AskResult => ({
+    ok: !detail.rejected_by,
+    question: detail.question,
+    trace_id: detail.trace_id,
+    org_id: 0,
+    thread_id: detail.thread_id,
+    reasoning: detail.result_block?.answer ?? '',
+    columns: detail.result_block?.columns ?? [],
+    rows: detail.result_block?.rows_preview ?? [],
+    row_count: detail.result_block?.rows_returned ?? 0,
+    masked_columns: detail.result_block?.masked_columns ?? [],
+    truncated: !!detail.result_block?.truncated,
+    rejected_by: detail.rejected_by ?? null,
+    error: detail.error ?? '',
+    hint: detail.hint ?? '',
+  })
+
+  // 交接之后就地轮询。跑完在**原位置**渲染完整结果，人不用离开这一页；
+  // 停在需要人动手的档（等审批 / 等补充 / 等运维）就把那句话显示出来。
+  const threadId = handoff?.thread_id ?? ''
+  useEffect(() => {
+    if (!threadId) return
+    let alive = true
+    let timer = 0
+    const tick = async () => {
+      try {
+        const detail = await fetchTask(threadId)
+        if (!alive) return
+        if (!detail) { setError('这条任务查不到了，去任务中心看看。'); setHandoff(null); setRunning(false); return }
+        setTask(detail)
+        if (detail.running) { timer = window.setTimeout(tick, POLL_MS); return }
+        // 收尾了：完整应答优先，取不到退回审计结果块
+        const value = detail.result ?? fromBlock(detail)
+        setResult(value)
+        setTab(value.ok ? 'result' : value.rejected_by === 'INTERRUPTED' ? 'checkpoint' : 'sql')
+        recent.upsert(detail.question, value.ok ? 'completed'
+          : detail.status === 'waiting_input' ? 'needs-input' : 'interrupted',
+          { key: sourceKey, name: current.name })
+        setHandoff(null)
+        setRunning(false)
+      } catch {
+        // 轮询失败不改结论：后台还在跑，下一拍再问一次。一次网络抖动
+        // 不该把一条正在执行的任务显示成失败。
+        if (alive) timer = window.setTimeout(tick, POLL_MS)
+      }
+    }
+    timer = window.setTimeout(tick, POLL_MS)
+    return () => { alive = false; window.clearTimeout(timer) }
+    // recent / current 只在收尾那一拍用到，进依赖会让轮询每次重挂
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [threadId])
+
   const run = async () => {
     const text = question.trim()
     if (!text) { inputRef.current?.focus(); return }
@@ -175,6 +237,16 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
       // 用 current.id 而不是 sourceId：选中项被移除（内置源撤掉、运行时源删掉）时
       // current 会回落到第一项，此时 sourceId 还是旧值 —— 照它发就是界面显示 A、实际查 B
       const value = mode === 'ask' ? await askQuestion(text, current.id) : await runSql(text, current.id)
+      // 交接回执不是结果：它没有 ok 字段，照结果渲染会变成一张空的"已拦截"
+      // 结果页，而后台其实跑得好好的。识别出来，就地转成执行中卡片。
+      if (isAsyncReceipt(value)) {
+        setQuestion('')
+        setResult(null)
+        setTask(null)
+        setHandoff(value)
+        recent.upsert(text, 'running', bucket)
+        return                      // running 保持 true，由轮询那一拍收尾
+      }
       setResult(value)
       // 发出去了就把输入框清空。原来提交后原文留在框里，下一个问题打上去就
       // 接在了上一句后面 —— 2026-09-10 的跑测里每问一条都得先手动全选覆盖，
@@ -189,10 +261,10 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
         value.ok ? 'completed' : value.rejected_by === 'INTERRUPTED' ? 'needs-input' : 'interrupted',
         bucket,
       )
+      setRunning(false)
     } catch (e) {
       setError(String((e as Error).message || e))
       recent.upsert(text, 'interrupted', bucket)
-    } finally {
       setRunning(false)
     }
   }
@@ -250,6 +322,9 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
           ? <ResultTabs result={result} active={tab} dialect={current.dialect}
                         onChange={setTab} onResumed={setResult}
                         onOpenTrace={() => onNavigate('traces', result.trace_id || undefined)} />
+          : handoff
+          ? <HandoffCard receipt={handoff} task={task}
+                         onOpenTasks={() => onNavigate('tasks')} />
           : <Welcome
               mode={mode}
               schema={schema}
@@ -265,6 +340,46 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
       </div>
 
       <TrustSidebar health={health} source={current} result={result} mode={mode} me={me} onResultTab={setTab} onNavigate={onNavigate} />
+    </div>
+  )
+}
+
+/** 交接之后多久问一次。2s：够快到"跑完几乎立刻出结果"，又不至于让一条
+ *  跑五分钟的任务打出上百次请求。 */
+const POLL_MS = 2000
+
+/** 转后台之后停在原位置的那张卡。
+ *
+ *  它替掉的是改造前那张空结果页：交接回执没有 ok 字段，照 AskResult 渲染
+ *  会切到 SQL 页签、显示一张空表，「最近查询」还标成已中断 —— 后台明明
+ *  跑得好好的。 */
+function HandoffCard({ receipt, task, onOpenTasks }: {
+  receipt: AsyncReceipt
+  task: TaskDetail | null
+  onOpenTasks: () => void
+}) {
+  const progress = task?.progress
+  const waiting = task && !task.running && task.next_actor
+  return (
+    <div className="handoff-card">
+      <div className="handoff-head">
+        <span className="handoff-dot" />
+        <b>{waiting ? '等待处理' : '后台执行中'}</b>
+        {receipt.reason && <span className="handoff-reason">{receipt.reason}</span>}
+      </div>
+      <p className="handoff-question">{task?.question || ''}</p>
+      {progress && progress.step > 0 && (
+        <p className="handoff-step">
+          第 {progress.step}
+          {progress.max_steps ? ` / ${progress.max_steps}` : ''} 步
+          {progress.tool ? ` · ${progress.tool}` : ''}
+        </p>
+      )}
+      {waiting && <p className="handoff-actor">{task.next_actor}</p>}
+      <div className="handoff-foot">
+        <span>结果就绪后会在这里直接显示</span>
+        <button className="ghost" onClick={onOpenTasks}>任务中心</button>
+      </div>
     </div>
   )
 }

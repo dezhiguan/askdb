@@ -548,6 +548,19 @@
 .stage-error { margin: 0 13px 10px; }
 
 .result-shell { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+
+/* 转后台之后停在原位置的那张卡（QueryWorkspace.HandoffCard）。
+   与结论卡同一套留白，因为它占的就是结论卡将要出现的那个位置 —— 结果一到，
+   这张卡原地换成 ResultTabs，视线不用移动。 */
+.handoff-card { margin: 12px 16px 0; padding: 12px; border-left: 3px solid var(--blue); border-radius: 0 7px 7px 0; background: var(--blue-wash); }
+.handoff-head { display: flex; align-items: center; gap: 6px; font-size: 9px; }
+.handoff-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); animation: handoff-pulse 1.4s ease-in-out infinite; }
+@keyframes handoff-pulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+.handoff-reason { color: var(--muted); font-size: 8px; }
+.handoff-question { margin: 8px 0 0; font-size: 9px; }
+.handoff-step, .handoff-actor { margin: 6px 0 0; font-size: 8px; color: var(--muted); }
+.handoff-actor { color: var(--ink); }
+.handoff-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; font-size: 8px; color: var(--muted); }
 /* 栏距 16px、下划线内缩不通栏 —— 与原型结果区一致（原型输入区是 13px，
    结果区是 16px，这 3px 台阶是原型自带的，不是笔误） */
 .result-tabs { display: flex; margin: 0 16px; border-bottom: 1px solid var(--line); }

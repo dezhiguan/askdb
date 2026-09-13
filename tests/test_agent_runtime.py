@@ -539,6 +539,85 @@ def test_async_immediate():
     assert r is None and notice["async"]
 
 
+def test_handoff_node_boundary_requests_early():
+    """节点边界的三条提前判据。**它们在阈值之前就能定** —— 多等一秒都是白等。"""
+    ho = async_runner.new_handoff(60_000)
+    ho.check(step=3)
+    assert "多步" in ho.reason and ho.wake.is_set()
+
+    ho2 = async_runner.new_handoff(60_000)
+    ho2.check(step=1, tok_used=6000, cost_cap=12000)
+    assert "token" in ho2.reason
+
+    ho3 = async_runner.new_handoff(60_000)
+    ho3.check(step=1, explain_rows=600_000, scan_threshold=1_000_000)
+    assert "扫描" in ho3.reason
+
+
+def test_handoff_reason_is_first_one():
+    """理由**不被覆盖**：回执里那句话要与审计对得上。"""
+    ho = async_runner.new_handoff(60_000)
+    ho.check(step=3)
+    ho.check(step=1, tok_used=99999, cost_cap=100)
+    assert "多步" in ho.reason
+
+
+def test_handoff_detaches_before_threshold():
+    """节点边界请求交接 → 入口那一等**立刻**结束，不等满阈值。"""
+    ho = async_runner.new_handoff(30_000)
+
+    def slow():
+        ho.request("多步链路")
+        time.sleep(0.5)
+        return "done"
+
+    t0 = time.monotonic()
+    r, notice = async_runner.run_or_detach(slow, 30_000, "tid4", handoff=ho)
+    assert r is None and notice["reason"] == "多步链路"
+    assert time.monotonic() - t0 < 5      # 远小于 30s 阈值，说明是被叫醒的
+
+def test_async_per_user_cap_rejects_not_queues():
+    """每账号在跑上限：**拒绝**，不排队。排队会让"正在后台执行"变成谎话。"""
+    ho = async_runner.new_handoff(0)
+    async_runner.run_or_detach(lambda: time.sleep(0.4), 0, "t1", user="u1",
+                               per_user=1, handoff=ho)
+    with pytest.raises(async_runner.CapacityExceeded):
+        async_runner.run_or_detach(lambda: "R", 0, "t2", user="u1", per_user=1)
+    # 别人不受影响 —— 上限是按账号算的
+    r, notice = async_runner.run_or_detach(lambda: "R", 0, "t3", user="u2",
+                                           per_user=1)
+    assert notice["async"]
+
+
+def test_async_pool_full_runs_inline():
+    """全池满：不交接、同步跑到底。宁可这一条慢，也不能因为没槽位就把它丢掉。"""
+    pool = async_runner._Pool(size=1)
+    saved = async_runner._POOL
+    async_runner._POOL = pool
+    try:
+        async_runner.run_or_detach(lambda: time.sleep(0.4), 0, "t1", user="a")
+        r, notice = async_runner.run_or_detach(lambda: "R", 0, "t2", user="b")
+        assert r == "R" and notice is None
+    finally:
+        async_runner._POOL = saved
+
+
+def test_handoff_stashes_only_when_detached():
+    """暂存只发生在真交接出去的那些上 —— 同步返回的那次不必多写一遍。"""
+    got: list[str] = []
+    async_runner.run_or_detach(lambda: "R", 500, "t-sync",
+                               on_detached_done=lambda r: got.append(r))
+    assert got == []
+    ho = async_runner.new_handoff(0)
+    async_runner.run_or_detach(lambda: "R", 0, "t-async", handoff=ho,
+                               on_detached_done=lambda r: got.append(r))
+    for _ in range(50):
+        if got:
+            break
+        time.sleep(0.02)
+    assert got == ["R"]
+
+
 # --------------------------------------------------------------------------
 # grounding —— 结论里的数字接不接地（BUG-A5）
 #

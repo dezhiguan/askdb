@@ -490,3 +490,79 @@ def test_a_record_without_timestamp_is_never_called_stale(hcfg):
         _write(hcfg.audit_log, [rec])
         rows = audit.tasks(hcfg.audit_log, stale_after_s=900)
         assert rows[0]["stale"] is False, f"ts={bad_ts!r} 被误判为陈旧"
+
+
+# ===========================================================================
+# 交接出去的长任务：原地接管与窗口对齐（2026-09-13）
+# ===========================================================================
+
+def test_task_detail_reports_progress_while_running(hclient, hcfg):
+    """交接之后查询页轮询这里 —— 还在跑就报「运行中」，不编一个结果出来。"""
+    _write(hcfg.audit_log, [{**_rec("bbbbbbbbbbb1", "222222222222",
+                                    user="amy", rejected=None),
+                             "phase": audit.PHASE_STARTED}])
+    _login(hclient, "amy")
+    r = hclient.get("/api/tasks/222222222222")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["running"] and body["status"] == audit.RUNNING
+    assert body["next_actor"] == "系统正在执行"
+    # 检查点里没有这条线程 —— 报不出进度就不报，别编一个第 0 步
+    assert body["progress"] is None
+
+
+def test_task_detail_hands_back_result_block(hclient, hcfg):
+    """跑完了：交接暂存取不到就退回审计结果块。**少几个字段，不是失败。**"""
+    _write(hcfg.audit_log, [{**_rec("bbbbbbbbbbb2", "333333333333",
+                                    user="amy", rejected=None),
+                             "answer": "共 15,669 条", "columns": ["n"],
+                             "rows_preview": [[15669]], "rows_returned": 1}])
+    _login(hclient, "amy")
+    body = hclient.get("/api/tasks/333333333333").json()
+    assert not body["running"] and body["status"] == audit.DONE
+    assert body["result_block"]["answer"] == "共 15,669 条"
+
+
+def test_task_detail_is_owner_only(hclient, hcfg):
+    """有主的任务只有发起人看得到详情 —— 不存在与看不到同为 404。"""
+    _write(hcfg.audit_log, [_rec("bbbbbbbbbbb3", "444444444444",
+                                 user="amy", rejected=None)])
+    _login(hclient, "sre1")
+    assert hclient.get("/api/tasks/444444444444").status_code == 404
+    assert hclient.get("/api/tasks/notexistxxxx").status_code == 404
+
+
+def test_open_approval_thread_survives_the_window(hcfg):
+    """**等人动手的线程不能因为滑出窗口就消失。**
+
+    窗口按"最近发生了什么"取，而一张审批单可以躺 4 天 —— 交接出去的任务
+    尤其吃这个亏，人本来就不在场，回来得更晚。
+    """
+    old = _rec("ccccccccccc1", "555555555555", user="amy", rejected="R-11",
+               ts=_now(-86400 * 3))
+    fresh = [_rec(f"ddddddddddd{i}", f"66666666666{i}", user="amy", rejected=None)
+             for i in range(3)]
+    _write(hcfg.audit_log, [old, *fresh])
+
+    # 窗口只装得下最近两条：那张躺了三天的审批单被挤出去了
+    without = audit.tasks(hcfg, max_threads=2)
+    assert "555555555555" not in {t["thread_id"] for t in without}
+    # 钉住之后它回到这一页，且状态仍是「等审批」
+    pinned = audit.tasks(hcfg, max_threads=2, pin_traces=("ccccccccccc1",),
+                         approval_status={"ccccccccccc1": approvals.REQUESTED})
+    row = [t for t in pinned if t["thread_id"] == "555555555555"]
+    assert row and row[0]["status"] == audit.WAITING_APPROVAL
+
+
+def test_stale_and_next_actor_have_one_definition(hcfg):
+    """陈旧判定与「下一步该谁动手」各只有一份 —— 任务中心与任务详情共用。
+
+    两处各写一遍的表现是：同一条线程在列表里是「等运维」、点进去是「运行中」。
+    """
+    started = {**_rec("eeeeeeeeeee1", "777777777777", user="amy", rejected=None,
+                      ts=_now(-3600)), "phase": audit.PHASE_STARTED}
+    assert audit.is_stale_run(started, 900)
+    assert not audit.is_stale_run(started, 0)          # 0 = 关掉这项判定
+    assert not audit.is_stale_run({**started, "phase": ""}, 900)
+    assert audit.next_actor(audit.WAITING_APPROVAL, "APPROVED") == audit.NEXT_ACTOR_APPROVED
+    assert audit.next_actor(audit.WAITING_APPROVAL) != audit.NEXT_ACTOR_APPROVED

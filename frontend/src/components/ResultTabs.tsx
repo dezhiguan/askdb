@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from 'react'
-import { resumeTask, type AskResult } from '../api'
+import { isAsyncReceipt, resumeTask, type AskResult } from '../api'
 import { STEP_NAMES, stepFailed } from '../traceSteps'
 import { RULES } from '../rules'
 import type { ResultTab } from '../types'
@@ -404,6 +404,12 @@ function CheckpointPane({ result, onResumed }: {
       const value = await resumeTask(thread)
       if (value === null) {
         setError('这条任务已经跑完或不存在，无法续跑。')
+        return
+      }
+      // 续跑也会交接后台。回执不是结果 —— 当结果渲染就是一张空的"已拦截"页，
+      // 而后台正跑着。这里如实说一句，进展去任务中心看。
+      if (isAsyncReceipt(value)) {
+        setError('这条续跑耗时较长，已转后台执行；到任务中心查看进展。')
         return
       }
       onResumed(value)

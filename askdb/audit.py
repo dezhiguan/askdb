@@ -340,6 +340,35 @@ def read_records(src: Any, *, include_started: bool = False,
     return list(deque(_iter_file(path, f), maxlen=limit))
 
 
+def _pin(path: Any, threads: "OrderedDict[str, list[dict[str, Any]]] | dict",
+         pin_traces: tuple[str, ...]) -> None:
+    """把「还等着人动手」的线程补进这一页，哪怕它已经滑出最近 N 条的窗口。
+
+    **就地改 threads。** 为什么必须补：窗口是按"最近发生了什么"取的（2000 条
+    线程，繁忙时约半小时），而一张审批单可以躺 4 天。两者不对齐的后果是
+    发起人按提示回来看，任务已经不在这一页上了 —— 交接出去的任务尤其吃这个亏，
+    因为交接之后人本来就不在场，回来得更晚。
+
+    捞的是**整条线程**（与 _recent_threads 同一条理由：owner、尝试次数、
+    最后一档都要整条才算得对），条数封顶 TASKS_MAX_PINNED。
+    """
+    if not pin_traces:
+        return
+    have = {r.get("trace_id") for recs in threads.values() for r in recs}
+    for tid in list(dict.fromkeys(pin_traces))[:TASKS_MAX_PINNED]:
+        if not tid or tid in have:
+            continue
+        first = next(iter(iter_records(path, AuditFilter(include_started=True,
+                                                         trace_id=tid))), None)
+        if first is None:
+            continue
+        thread_id = _thread_of(first)
+        if not thread_id or thread_id in threads:
+            continue
+        threads[thread_id] = list(iter_records(
+            path, AuditFilter(include_started=True, thread_ids=(thread_id,))))
+
+
 def _summary(rec: dict[str, Any]) -> dict[str, Any]:
     s = {k: rec.get(k) for k in SUMMARY_FIELDS}
     # 老记录没有 kind 字段：它们全部产生自 /api/ask 链路
@@ -724,6 +753,31 @@ def stage(rec: dict[str, Any], *, approval_status: str = "",
     return REJECTED
 
 
+def is_stale_run(rec: dict[str, Any], stale_after_s: int,
+                 now_s: float | None = None) -> bool:
+    """这条「运行中」是不是已经陈旧（进程多半没了）。
+
+    **抽成函数是为了只有一份判定**：任务中心按一页算一次"现在"，任务详情
+    只判一条，两处各写一遍必然漂 —— 而漂的表现是同一条线程在列表里是
+    「等运维」、点进去是「运行中」。now_s 由调用方给，正是为了让一页里的
+    几千条共用同一个"现在"（见 tasks 里那段说明）。
+    """
+    if stale_after_s <= 0 or rec.get("phase") != PHASE_STARTED:
+        return False
+    return _age_s(rec, _now_epoch() if now_s is None else now_s) > stale_after_s
+
+
+def next_actor(status: str, approval_status: str = "") -> str:
+    """这一档**下一步该谁动手**。判定只此一处，页面与接口都读它。
+
+    已批准但票没用掉是同一个状态码下的另一句话：等的人从管理员换成了
+    发起人自己（见 NEXT_ACTOR_APPROVED）。
+    """
+    if status == WAITING_APPROVAL and approval_status == "APPROVED":
+        return NEXT_ACTOR_APPROVED
+    return _NEXT_ACTOR.get(status, "")
+
+
 def _thread_status(last: dict[str, Any], *, approval_status: str = "",
                    review_status: str = "", ops_status: str = "",
                    stale: bool = False) -> str:
@@ -880,12 +934,19 @@ def _recent_threads(path: Any, f: AuditFilter, max_threads: int, *,
 TASKS_MAX_THREADS = 2000
 
 
+#: 窗口之外还要额外捞回来的线程数上限。等人动手的那些不能因为"太久没动静"
+#: 就从这一页消失（见 tasks 的 pin_traces）—— 但也不能无上限地捞，
+#: 否则积压一多，这一页就退回到改造前"把全部线程读进内存"的形状。
+TASKS_MAX_PINNED = 200
+
+
 def tasks(path: Any, only_user: str | None = None, *,
           max_rows: int = 0, max_scan_rows: int = 0,
           approval_status: dict[str, str] | None = None,
           max_threads: int = TASKS_MAX_THREADS,
           review_status: dict[str, str] | None = None,
           ops_status: dict[str, str] | None = None,
+          pin_traces: tuple[str, ...] = (),
           stale_after_s: int = 0) -> list[dict[str, Any]]:
     """执行线程，新的在前。``only_user=None`` 给全部，字符串只给这个人发起的。
 
@@ -915,6 +976,7 @@ def tasks(path: Any, only_user: str | None = None, *,
     # 要么跑一半进程没了 —— 两种都得看得见，而这正是原来整片丢失的那一档。
     f = AuditFilter(include_started=True)
     threads = _recent_threads(path, f, max_threads, owned_by=only_user)
+    _pin(path, threads, pin_traces)
 
     approvals = dict(approval_status or {})
     reviews = dict(review_status or {})
@@ -958,11 +1020,7 @@ def tasks(path: Any, only_user: str | None = None, *,
         trace = str(last.get("trace_id") or tid)
         item["approval_status"] = approvals.get(trace, "")
         item["ops_status"] = ops.get(trace, "")
-        item["stale"] = bool(
-            stale_after_s > 0
-            and last.get("phase") == PHASE_STARTED
-            and _age_s(last, now_s) > stale_after_s
-        )
+        item["stale"] = is_stale_run(last, stale_after_s, now_s)
         item["status"] = _thread_status(
             last, approval_status=item["approval_status"],
             review_status=reviews.get(trace, ""),
@@ -980,12 +1038,7 @@ def tasks(path: Any, only_user: str | None = None, *,
         #
         # 已批准的审批单是同一个状态码下的另一句话（见 NEXT_ACTOR_APPROVED）：
         # 状态没变，但等的人从管理员换成了发起人自己。
-        item["next_actor"] = (
-            NEXT_ACTOR_APPROVED
-            if (item["status"] == WAITING_APPROVAL
-                and item["approval_status"] == "APPROVED")
-            else _NEXT_ACTOR.get(item["status"], "")
-        )
+        item["next_actor"] = next_actor(item["status"], item["approval_status"])
         # 归属如实给出去。空串 = 匿名发起，不是"丢了" —— 页面要能说清这一点。
         item["owner"] = owner
         # 风险档是折算出来的，不是记录里的字段 —— 理由一并给出，页面可解释

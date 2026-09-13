@@ -938,10 +938,66 @@ export interface AskResult {
  *  票是一次性的、绑在**问题原文**上：question 改一个字指纹就对不上，403。 */
 export const askQuestion = (question: string, source = '', orgId?: number,
                             asTask = false, approvalId = '') =>
-  post<AskResult>('/api/ask', {
+  post<AskResult | AsyncReceipt>('/api/ask', {
     question, source, org_id: orgId ?? null, as_task: asTask,
     approval_id: approvalId,
   })
+
+/** 交接回执：这次执行超过了软阈值（生产 10s），已经转到后台。
+ *
+ *  **不是失败，也不是结果。** 拿到它的正确做法是就地轮询 fetchTask(thread_id)，
+ *  跑完在原位置渲染完整结果 —— 交接改的只是"结果怎么送达"，已经花掉的步数与
+ *  token 全在检查点里，后台照跑。 */
+export interface AsyncReceipt {
+  async: true
+  thread_id: string
+  trace_id: string
+  /** 为什么交接的（超阈值 / 多步 / token 过半 / 大扫描），原样显示给用户 */
+  reason?: string
+  message: string
+}
+
+/** 判交接回执。**用 async 字段判，不要用 'ok' in value** ——
+ *  AskResult 的 ok 可以是 false（被拦下），那是结果不是回执。 */
+export function isAsyncReceipt(value: AskResult | AsyncReceipt): value is AsyncReceipt {
+  return (value as AsyncReceipt).async === true
+}
+
+/** 一条任务线现在怎么样了。交接之后原地接管就靠轮询它。
+ *
+ *  result 是同步返回的那份完整应答（交接时暂存的）；取不到时退回
+ *  result_block（答案 + 已脱敏结果行前 N 行）—— 少几个字段，不是失败。 */
+export interface TaskDetail {
+  thread_id: string
+  trace_id: string
+  status: string
+  running: boolean
+  next_actor: string
+  question: string
+  owner: string
+  attempts_on_thread: number
+  /** 只在 running 时有：第几步、正在用哪个工具。取自检查点 */
+  progress?: { step: number; max_steps: number; tool: string; next: string[] } | null
+  result?: AskResult | null
+  result_block?: {
+    answer?: string
+    columns?: string[]
+    rows_preview?: (string | number | boolean | null)[][]
+    rows_returned?: number
+    masked_columns?: string[]
+    truncated?: boolean
+  } | null
+  rejected_by?: string | null
+  error?: string
+  hint?: string
+}
+
+export async function fetchTask(threadId: string): Promise<TaskDetail | null> {
+  const response = await request(`/api/tasks/${encodeURIComponent(threadId)}`)
+  if (response.status === 404) return null
+  if (!response.ok) throw new Error(`/api/tasks ${response.status}`)
+  return response.json()
+}
 
 export const runSql = (sql: string, source = '', orgId?: number) =>
   post<AskResult>('/api/sql', { sql, source, org_id: orgId ?? null })
@@ -954,10 +1010,13 @@ export const runSql = (sql: string, source = '', orgId?: number) =>
  *  拿到的必然还是同一个结果）：
  *    · clarification 原问题不变，多给一个条件
  *    · question      问题本身换一个说法
- *  **两种都接在原线程上**，不开新线程：同一个诉求换个说法仍是同一条线索。 */
+ *  **两种都接在原线程上**，不开新线程：同一个诉求换个说法仍是同一条线索。
+ *
+ *  续跑同样会跑长 —— 它恢复的本来就是一条已经证明自己跑得久的线程，
+ *  所以这里也可能回一张交接回执（isAsyncReceipt），调用方必须先判一次。 */
 export async function resumeTask(
   threadId: string, clarification = '', question = '',
-): Promise<AskResult | null> {
+): Promise<AskResult | AsyncReceipt | null> {
   const response = await request('/api/resume', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

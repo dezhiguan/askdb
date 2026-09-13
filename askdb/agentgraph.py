@@ -81,9 +81,38 @@ class Deps:
     executor: Executor
     tracer: Tracer
     ctx: tools.ToolContext
+    #: 长任务交接现场（askdb/async_runner.py）。**节点边界据它决定要不要
+    #: 提前交接后台** —— "多步""token 过半""大扫描"这三条判据入口拿不到，
+    #: 只有跑到这里才确定；而对续跑/自愈/审批代跑这些不经过入口等待的路径，
+    #: 这里是唯一的交接点。
+    #:
+    #: None = 这次执行不参与交接（本机 CLI、评测、单测）。图的语义不变，
+    #: 检查它只是"要不要提前告诉等待者别等了"，从不改变执行结果。
+    handoff: Any = None
 
 def _deps(config: RunnableConfig) -> Deps:
     return config["configurable"]["deps"]
+
+
+def _check_handoff(d: Deps, state: AgentState, *, step: int = 0,
+                   tok_used: int = 0, explain_rows: int = 0) -> None:
+    """节点边界的交接检查。**只通知，不改变任何执行语义。**
+
+    没有 handoff（CLI / 评测 / 单测）就是空操作；有也只是把等在入口的那个
+    请求线程叫醒，图照原样跑下去 —— 交接改的是"结果怎么送达"，
+    不是"这次算到哪儿"。任何异常都吞掉：送达方式的优化不该成为查询失败的原因。
+    """
+    ho = getattr(d, "handoff", None)
+    if ho is None:
+        return
+    try:
+        ho.check(step=step or int(state.get("step", 0)),
+                 tok_used=tok_used or int(state.get("tok_used", 0)),
+                 cost_cap=int(state.get("cost_cap", 0)),
+                 explain_rows=explain_rows,
+                 scan_threshold=int(d.cfg.raw.get("guard", {}).get("max_scan_rows", 0) or 0))
+    except Exception:                 # noqa: BLE001
+        pass
 
 
 
@@ -350,6 +379,7 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     }
     if action.finish:
         out["answer"] = action.answer or ""
+    _check_handoff(d, state, step=step, tok_used=out["tok_used"])
     return out
 
 
@@ -448,6 +478,8 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
             "若两条路都走不通，finish=true 并如实说明这个口径当前取不到。")
         history.append(item)
         out.update({"scan_blocked": dict(res.data or {}), "history": history})
+        _check_handoff(d, state, step=state.get("step", 0),
+                       explain_rows=int((res.data or {}).get("explain_rows") or 0))
         return out
 
     if tool_name == "execute_sql" and not res.ok:
@@ -475,6 +507,9 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
 
     history.append(item)
     out["history"] = history
+    _check_handoff(d, state, step=state.get("step", 0),
+                   explain_rows=int(res.data.get("explain_rows") or 0)
+                                if isinstance(res.data, dict) else 0)
     return out
 
 
@@ -737,6 +772,33 @@ def is_resumable(thread_id: str, cfg: Config) -> bool | None:
     return bool(snap.values and snap.next)
 
 
+def progress(thread_id: str, cfg: Config) -> dict[str, Any] | None:
+    """这条线程此刻跑到哪儿了 —— 第几步、正在用哪个工具。
+
+    **取自检查点，不新增审计记录。** 图每过一个节点就落一次检查点，那里本就
+    记着 step 与 action；为"看得见进度"再往审计里写一串中间记录，等于让统计、
+    任务聚合、复核队列全部跟着变形，而它们的口径正是这个仓库最容易漂的东西。
+
+    查不到检查点（还没落第一个节点 / 检查点库异常）返回 None ——
+    调用方据此显示"正在执行"，而不是编一个第 0 步出来。
+    """
+    try:
+        snap = ensure_graph(cfg).get_state(
+            {"configurable": {"thread_id": thread_id}})
+    except Exception:                 # noqa: BLE001
+        return None
+    values = snap.values or {}
+    if not values:
+        return None
+    action = values.get("action") or {}
+    return {
+        "step": int(values.get("step", 0) or 0),
+        "max_steps": int(values.get("max_steps", 0) or 0),
+        "tool": str(action.get("tool") or ""),
+        "next": list(snap.next or ()),
+    }
+
+
 def replay(trace_id: str, cfg: Config) -> list[dict[str, Any]]:
     """取回某次调用的全部检查点快照，用于失败复现与归因。"""
     out: list[dict[str, Any]] = []
@@ -758,7 +820,7 @@ def replay(trace_id: str, cfg: Config) -> list[dict[str, Any]]:
 def resume(thread_id: str, cfg: Config,
            executor: Executor | None = None, llm: LlmClient | None = None,
            *, clarification: str = "", question: str = "",
-           org_id: int | None = None):
+           org_id: int | None = None, handoff: Any = None):
     """把一条停下来的线程往前推一步。
 
     **两条路，判据是现场还在不在检查点里：**
@@ -788,7 +850,8 @@ def resume(thread_id: str, cfg: Config,
             return None
         return _agent.run_agent(question.strip(), cfg, org_id=org_id,
                                 executor=executor, llm=llm,
-                                thread_id=thread_id, clarification=extra)
+                                thread_id=thread_id, clarification=extra,
+                                handoff=handoff)
 
     values = snap.values or {}
     org = int(values.get("org_id", org_id if org_id is not None else 0))
@@ -829,7 +892,10 @@ def resume(thread_id: str, cfg: Config,
 
     client = llm or LlmClient(cfg)
     deps = Deps(cfg=cfg, llm=client, executor=ex, tracer=tracer,
-                ctx=tools.ToolContext(cfg=cfg, org_id=org, executor=ex))
+                ctx=tools.ToolContext(cfg=cfg, org_id=org, executor=ex),
+                # 续跑同样要能交接：它恢复的本来就是一条已经证明自己跑得久的
+                # 线程，而这条路不经过入口等待 —— 节点边界是它唯一的交接点。
+                handoff=handoff)
     try:
         final = g.invoke(None, {
             "configurable": {"thread_id": thread_id, "deps": deps},
