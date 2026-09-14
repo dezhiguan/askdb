@@ -362,6 +362,40 @@ def _pg_connect_hint(dsn: str, upstream: str) -> str:
             "本机调试时确认 Postgres.app 已启动。")
 
 
+#: 这些算子会把输入**全部消费**掉后才产出（排序、聚合、连接、物化……），
+#: 因此它们头上的 LIMIT 拦不住底下的扫描量 —— `ORDER BY x LIMIT 5` 仍要扫全表。
+#: 反过来，LIMIT 直接压着纯扫描/直通节点时，引擎扫够 n 行就停，真实扫描量就是 n。
+_PG_LIMIT_OPAQUE = frozenset({
+    "Sort", "Incremental Sort", "Aggregate", "GroupAggregate", "HashAggregate",
+    "Group", "WindowAgg", "Unique", "SetOp", "Hash", "Materialize", "Memoize",
+    "Gather Merge", "Nested Loop", "Hash Join", "Merge Join",
+})
+
+
+def _pg_subtree_has_opaque(node: dict) -> bool:
+    if node.get("Node Type") in _PG_LIMIT_OPAQUE:
+        return True
+    return any(_pg_subtree_has_opaque(c) for c in node.get("Plans") or [])
+
+
+def _pg_scan_estimate(node: dict) -> int:
+    """R-11 的扫描量估算：全计划最宽一层扫了多少行。
+
+    与旧口径的唯一差别 —— **LIMIT 短路它下面的纯扫描子树**：
+    `SELECT * FROM t LIMIT 5`（无排序/聚合/连接）实际只扫 5 行，不该按全表估算
+    再误挂审批。子树里一旦出现会全量消费输入的算子（见 _PG_LIMIT_OPAQUE），
+    LIMIT 就拦不住，退回按各节点全表估算取最大（与旧行为一致），
+    所以 `ORDER BY x LIMIT 5` 这类仍会被如实判为全表扫描。
+    """
+    rows = int(node.get("Plan Rows", 0) or 0)
+    if node.get("Node Type") == "Limit" and not _pg_subtree_has_opaque(node):
+        return rows
+    best = rows
+    for child in node.get("Plans") or []:
+        best = max(best, _pg_scan_estimate(child))
+    return best
+
+
 class _PgBackend(_Backend):
     """PostgreSQL —— 护栏做在引擎层，比应用层可靠。"""
 
@@ -442,13 +476,9 @@ class _PgBackend(_Backend):
             plan = json.loads(plan)
         root = plan[0]["Plan"] if isinstance(plan, list) else plan["Plan"]
 
-        best = 0
-        stack = [root]
-        while stack:
-            node = stack.pop()
-            best = max(best, int(node.get("Plan Rows", 0) or 0))
-            stack.extend(node.get("Plans", []) or [])
-        return best, json.dumps(plan, ensure_ascii=False)[:4000]
+        # 全计划最宽一层的扫描量，但 LIMIT 会短路它下面的纯扫描子树，
+        # 见 _pg_scan_estimate —— 修 `SELECT * FROM 大表 LIMIT n` 被误判全表扫描。
+        return _pg_scan_estimate(root), json.dumps(plan, ensure_ascii=False)[:4000]
 
     def fetch(self, sql: str, cap: int):
         try:
