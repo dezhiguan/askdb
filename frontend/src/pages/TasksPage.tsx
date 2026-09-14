@@ -955,6 +955,13 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string,
   const list = (values: string[] | null | undefined) => (values && values.length ? values.join(', ') : '—')
 
   const sql = replay?.sql_final || replay?.sql_raw || ''
+  /* 直查任务的输入 SQL。task.question 在这条路上是一句占位的「（直查模式）」，
+     弹窗最顶上那一格于是从来没说清这次查的是什么 —— 而直查的输入就只有这条 SQL。
+     取值优先 /api/result（要登录、按可见表收窄，但**不挂在 replay_api 开关上**），
+     回放兜底：回放关着的实例上仍然要能看见自己提交的那条。 */
+  const questionSql = task.kind === 'sql'
+    ? (finalRes?.sql_raw || replay?.sql_raw || '')
+    : ''
   // 最终结果（/api/result）：已脱敏结果行 + 答案。登录态才有；被拦/旧记录为 null。
   const hasFinal = Boolean(finalRes && ((finalRes.rows_preview?.length ?? 0) > 0 || finalRes.answer))
   const rowCount = finalRes?.rows_returned ?? replay?.rows_returned
@@ -1161,6 +1168,7 @@ function buildDetail(task: Task, replay: Replay | null, currentUser: string,
     statusLabel,
     wait,
     question: task.question || '（无问题文本）',
+    questionSql,
     description: `线程 ${task.thread_id} · 发起人 ${task.owner || '匿名'}`
       + `${mine ? '（本人）' : ''} · 已执行 ${task.attempts_on_thread} 次`,
     source,
