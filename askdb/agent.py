@@ -292,6 +292,24 @@ def _grounding_mode(cfg: Config) -> str:
     return mode if mode in ("off", "shadow", "enforce") else "shadow"
 
 
+def _grounding_no_evidence_mode(cfg: Config) -> str:
+    """「没跑成 execute_sql、但某个工具成功过」这一档接地校验的档位：off/shadow/enforce。
+
+    与 grounding（UNGROUNDED 那条）**分开一个旋钮**，因为两者误判的形状不同：
+    UNGROUNDED 是"跑成了、答案没接上"，enforce 挡住的是模型把探查结果推开后
+    继续编数；而这一档拦的是"没落成 last_exec 却给了数字"，它会连带误杀一类
+    **正确的基础统计** —— D-3：150k 行的 COUNT 未在同步窗口内落 last_exec，
+    答案里正确的计数被 _meta_evidence 追不到，判成 NO_EVIDENCE。放宽这一档不能
+    顺带把 UNGROUNDED 一起放松，所以独立成钮。
+
+    默认 enforce（维持既有行为，不静默放松任何部署）；生产按需切 shadow 观测。
+    off 跳过这层校验，shadow 只记不拦、把答案照常递出。
+    """
+    mode = str((cfg.raw.get("agent", {}) or {}).get(
+        "grounding_no_evidence", "enforce")).lower()
+    return mode if mode in ("off", "shadow", "enforce") else "enforce"
+
+
 def _budget(cfg: Config) -> tuple[int, int]:
     a = cfg.raw.get("agent", {}) or {}
     pl = cfg.raw.get("planner", {}) or {}

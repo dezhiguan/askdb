@@ -775,8 +775,8 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     收敛理由（达步数上限 / token 触顶）在这里用 _converge_reason 现算 ——
     判据与 _after_act 共用一份，见那个函数的说明。
     """
-    from .agent import (_grounding_mode, _has_number, _io_json,
-                        _known_constants)
+    from .agent import (_grounding_mode, _grounding_no_evidence_mode,
+                        _has_number, _io_json, _known_constants)
 
     d = _deps(config)
     t = d.tracer.start()
@@ -879,9 +879,11 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         #    判据与 grounding 共用一份，不另起一套阈值：那一层已经按"宁可漏、
         #    不可误"标定过（只查大额数、跳过年份占比、允许一次算术），
         #    这里再写一套迟早两边漂开。
-        bad = grounding.ungrounded(answer, _meta_evidence(state),
-                                   known=_known_constants(d.cfg))
-        if bad:
+        ne_mode = _grounding_no_evidence_mode(d.cfg)
+        bad = (grounding.ungrounded(answer, _meta_evidence(state),
+                                    known=_known_constants(d.cfg))
+               if ne_mode != "off" else [])
+        if bad and ne_mode == "enforce":
             return _verdict(
                 f"没有一次 execute_sql 跑成，结论里 {len(bad)} 个数也追溯不到"
                 f"任何一次工具返回，不给出这个答案",
@@ -890,6 +892,15 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                       f"工具返回：{grounding.fmt(bad)}。" + tail,
                 hint="换个更具体的问法，或先确认这个口径需要的表是否可查；"
                      "也可在「直查 SQL」里自己跑一条核对。")
+        if bad:
+            # shadow：不拦，只记一格并把这些数带进 ungrounded_numbers 供观测 ——
+            # 这一档会误杀正确的基础统计（D-3），先在真实流量上量误判率再决定
+            # 切不切 enforce（见 _grounding_no_evidence_mode）。
+            d.tracer.add("finalize", t,
+                         f"接地-NO_EVIDENCE 影子档：本会拒 {len(bad)} 个追溯不到"
+                         f"工具返回的数（{grounding.fmt(bad)}），已放行观测")
+            return {"answer": answer,
+                    "ungrounded": [grounding.fmt([x]) for x in bad]}
         d.tracer.add("finalize", t,
                      "没跑 SQL，但结论里的数都来自工具返回（表清单 / 字段清单），放行")
         return {"answer": answer}

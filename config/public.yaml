@@ -184,6 +184,16 @@ agent:
   # 压不住这条，只能靠这层兜。
   grounding: enforce
 
+  # 接地校验的**第二档**：一次 execute_sql 都没跑成（但某个工具成功过，
+  # 比如 search_schema），结论里却带了追溯不到工具返回的数 → 上面 grounding
+  # 那条管不到它，由它单独判 NO_EVIDENCE。与 grounding 分钮，是因为它会连带
+  # 误杀一类**正确的基础统计**：D-3 —— 15 万行的 COUNT 未在同步窗口内落成
+  # last_exec，答案里正确的计数追不到证据就被判成编造（同一问法时对时错）。
+  #   off / shadow / enforce 语义同上。enforce=旧行为（拒）。
+  # 2026-09-14 按 D-3 切 shadow：先在真实流量上量这一档的误判率，
+  # UNGROUNDED（grounding: enforce）那条**保持不动**，不受影响。
+  grounding_no_evidence: shadow
+
   # 长任务交接（设计见 docs/design-long-task.md）
   #
   # 10s 是 2026-09-13 定的。此前 45s：实测 p50 9.6s / p99 30s，也就是这条路
