@@ -1221,3 +1221,45 @@ def test_stats_are_fed_back_only_when_the_preview_is_partial():
     long = G._stats_line([{"column": f"c{i}", "count": i, "distinct": i}
                           for i in range(200)])
     assert len(long) <= G._STATS_CHARS + 20 and "统计已截断" in long
+
+
+def test_schema_recall_span_books_the_embedding_cost(tmp_path, monkeypatch):
+    """向量召回那次 embedding 的用量与金额要落进 span —— 否则账面少一笔。
+
+    生产 trace 4bac5ce7f21b 的 ¥0.012834 就不含它：schema_recall 那一格
+    tok_in=0 / cost=0，看上去像"这一步不花钱"。
+    """
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    monkeypatch.setattr(tools, "search_schema", lambda q, c: tools.ToolResult(
+        ok=True, tool="search_schema",
+        data={"tables": ["documents"], "prompt": "【可用的表】documents",
+              "prompt_heads": "【可用的表】\n表 documents —— 文档", "blind": False,
+              "embed_tokens": 1234, "embed_cost_cny": 0.000617,
+              "embed_model": "text-embedding-v4"}))
+
+    res = A.run_agent("有多少文档", _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                      executor=_FakeExec(),
+                      llm=_FakeLLM([{"finish": True, "answer": "42 个。"}]))
+    span = next(s for s in res.steps if s["step"] == "schema_recall")
+    assert span["tok_in"] == 1234
+    assert span["cost_cny"] == pytest.approx(0.000617)
+    # 模型名要带上嵌入模型，否则成本表会把这笔钱挂到应答模型头上
+    assert span["model"] == "text-embedding-v4"
+    # 但它不能被算成一次"模型调用"——MODEL_STEPS 不含 schema_recall
+    from askdb.audit import MODEL_STEPS
+    assert "schema_recall" not in MODEL_STEPS
+
+
+def test_keyword_recall_books_nothing(tmp_path, monkeypatch):
+    """keyword 模式没有 embedding 调用，如实记 0，不要凭空造一笔。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)          # 桩不带 embed_* 字段
+    res = A.run_agent("有多少文档", _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                      executor=_FakeExec(),
+                      llm=_FakeLLM([{"finish": True, "answer": "42 个。"}]))
+    span = next(s for s in res.steps if s["step"] == "schema_recall")
+    # 空值/零值在序列化时会被剪掉，所以这里用 get —— 这也正说明 keyword 模式下
+    # 这几项不会往 span 里塞任何东西。
+    assert span.get("tok_in", 0) == 0
+    assert span.get("cost_cny", 0.0) == 0.0
+    assert span.get("model", "") == ""

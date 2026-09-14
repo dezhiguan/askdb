@@ -283,7 +283,32 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     # 输出必须是**喂进提示词的表结构全文**：排查"模型为什么没用那张表"时，
     # 召回对了但结构没渲染出某一列，与压根没召回那张表，在"召回 N 张表"
     # 这句 note 上完全一样，只有全文分得开。
+    #
+    # **embedding 的用量与金额必须一起落。** 这一行原来只传 tables/input/output，
+    # 于是 vector 召回那次 embedding 调用在 trace 里既没有 token 也没有金额 ——
+    # 生产 trace 4bac5ce7f21b 的 ¥0.012834 就不含它，schema_recall 那一格
+    # tok_in=0 / cost=0，看上去像是"这一步不花钱"。tools.search_schema 的返回体
+    # 里 embed_tokens / embed_cost_cny 一直是现成的，是这里把它们丢了。
+    #
+    # 金额很小，但方向是错的：做成本优化的前提是账面完整，而
+    # trace.embed_cost_cny 的注释自己就写着"不设默认价，0 元在成本页上是显眼的、
+    # 会被人问起来" —— 这里正是那个该被问起来的 0。
+    #
+    # embedding 只有输入没有输出，记进 tok_in 与模型调用的口径一致；keyword
+    # 模式下这三项恒为空/0，如实记 0。
+    #
+    # **model 必须一起带上嵌入模型名**，否则 audit 那张按模型分的成本表会走到
+    # "带金额却没记模型"那条兜底分支，把这笔 embedding 的钱挂到记录级的应答
+    # 模型（qwen3.8-flash）头上 —— 账面合得上，归属是错的。带上之后它记在
+    # text-embedding-v4 名下，次数与金额同源。
+    #
+    # 不会污染别处：MODEL_STEPS 不含 schema_recall，所以「模型调用成功率」的
+    # 分母不受影响；graph._answering_model 也按 MODEL_STEPS 过滤，不会把
+    # "这次由 text-embedding-v4 应答"写进审计（那条注释正是为此写的）。
     d.tracer.add("schema_recall", t, _brief(rec), tables=tables_hit,
+                 tok_in=int(rec.data.get("embed_tokens") or 0),
+                 cost_cny=float(rec.data.get("embed_cost_cny") or 0.0),
+                 model=str(rec.data.get("embed_model") or ""),
                  input=state["question"], output=schema_prompt)
     # 盲选 / 有表被预算裁掉时，提示词里这份就**不是**全部可用的表，
     # 此时 get_table_schema 仍有用武之地（去查一张没被注入的表）。
