@@ -1145,9 +1145,12 @@ def test_table_head_is_the_header_layer_only(tmp_path):
 def test_intent_schema_heads_knob(tmp_path, monkeypatch):
     """预检喂表头层还是全量，由 agent.intent_schema_heads 决定。"""
     cfg = _cfg(tmp_path, agent={"max_steps": 2})
-    assert A.intent_schema_heads(cfg) is True          # 缺配置默认开
-    cfg.raw["agent"]["intent_schema_heads"] = False
+    # **缺配置默认关** —— 与另外两个旋钮相反。这一条落在用户可见的拒答门上，
+    # 而它的验收（120 条生产拒答集）还没跑，默认值就该站在"不改变现有行为"
+    # 那一侧。见 agent.intent_schema_heads 的说明。
     assert A.intent_schema_heads(cfg) is False
+    cfg.raw["agent"]["intent_schema_heads"] = True
+    assert A.intent_schema_heads(cfg) is True
 
     seen = {}
 

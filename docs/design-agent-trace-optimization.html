@@ -521,10 +521,12 @@
   <p class="lede">三项指标的可达目标，按下面逐条论证的改动累加得出。改动 1 是确定性代码闸，改动 2–4 是提示词与注入层调整、须影子跑标定，所以给的是保守口径。</p>
   <div class="callout" style="border-top-color:var(--waste)">
     <h4>⚠ 这三个数已被实测证伪，看 §09</h4>
-    <p>六条改动已于 2026-09-15 全部落地，真模型跑测（同题、同源、两档各 6 次取中位数）的实际收益是
-    <strong>耗时 −14%、tok_in −17%、tok_out −23%、成本 −29%</strong>，而不是下面这三张卡上的 −71%/−71%/−68%。</p>
-    <p>原因不复杂：下面这三个数是拿<strong>一条</strong> trace 算的，而那条跑了 6 轮 decide，实测中位数只有 3.5 轮 ——
-    <strong>可省的部分从一开始就没有它显示的那么多</strong>。这正是本节下方那条口径提醒说的事，只是当时还只是提醒。
+    <p>六条改动已于 2026-09-15 全部落地。23 条生产真实提问的两档对照（只看两档都出数的 15 条）实测收益是
+    <strong>tok_in −16.5%、成本 −19.0%，而 tok_out 反而 +6.7%</strong> —— 不是下面这三张卡上的
+    −71% / −71% / −68%。<strong>其中 P0-3 被算成 51% 耗时、43% 成本的那一大块，量级没有被证实。</strong></p>
+    <p>原因不复杂：下面这三个数是拿<strong>一条</strong> trace 算的，而那条跑了 6 轮 decide，
+    对照组的中位数只有 4 轮 —— <strong>可省的部分从一开始就没有它显示的那么多</strong>。
+    这正是本节下方那条口径提醒说的事，只是当时还只是提醒。
     三张卡原样保留不回填，它们是当时的估算依据，改掉就失去了对照价值。</p>
   </div>
 
@@ -943,75 +945,90 @@ python -m evals.baseline --compare</pre>
 <tr><td class="num">5</td><td><strong>P1-2</strong><br><span style="color:var(--muted)">统计并进 execute_sql</span></td><td>返回体自带列级统计，analyze_result 撤出规格表</td><td><code>askdb/tools.py</code></td><td><span class="tag t-keep">● 已完成</span></td><td><code>de22a18</code></td></tr>
 <tr><td class="num">6</td><td><strong>账面</strong><br><span style="color:var(--muted)">embedding 成本进 trace</span></td><td>_n_recall 落 span 补 cost_cny / tok_in</td><td><code>askdb/agentgraph.py</code></td><td><span class="tag t-keep">● 已完成</span></td><td><code>0e28d11</code></td></tr>
 </tbody></table></div>
-  <div class="callout"><h4>落地过程中的偏差与决定</h4>三条提示词改动（P0-2 / P0-3 / P1-1）各带一个配置旋钮，默认开、可逐字回滚 —— 它们改的是模型行为的概率分布，没有影子档可言，旋钮既是标定手段也是回滚位。三条代码改动（P0-1 / P1-2 / 账面）落地即生效。实测结果见下一节：<strong>收益真实，但远小于按单条 trace 估出来的 −71%</strong>。</div>
+  <div class="callout"><h4>落地过程中的偏差与决定</h4>三条提示词改动各带旋钮。<strong>2026-09-15 对照组跑测后，<code>intent_schema_heads</code> 默认改回 false</strong>（b23 可复现 CLARIFY，见 §09）；<code>sql_consolidation</code> 与 <code>answer_no_table_dump</code> 维持默认开，未发现可复现回归。三条代码改动落地即生效。</div>
 </section>
 
 <section id="measured">
-  <h2><span class="num">09</span>落地实测：预估 −71%，实际 −14%~−29%</h2>
-  <p class="lede">六条改动全部落地后，拿 <code>4bac5ce7f21b</code> 那道原题在本机
-  <code>shop_logistics</code>（与生产同种子库）上真模型跑测，两档各 6 次取中位数。
-  <strong>收益是真的，但远小于方案里按单条 trace 估出来的数。</strong></p>
+  <h2><span class="num">09</span>落地实测：23 条对照组</h2>
+  <p class="lede">六条改动落地后，把 <code>evals/baseline-cases.jsonl</code> 那 23 条生产真实提问
+  在本机同种子库上真模型各跑一轮（off = 三个旋钮全关 = 改动前措辞）。
+  <strong>省是真的，但比方案里按单条 trace 估的小得多，而且抓出了一条该改默认值的问题。</strong></p>
 
-  <div class="tw">
-    <table>
-      <thead><tr><th>口径</th><th class="num">decide 轮</th><th class="num">SQL 次</th>
-        <th class="num">耗时 ms</th><th class="num">tok_in</th><th class="num">tok_out</th>
-        <th class="num">成本 ¥</th><th class="num">出数</th></tr></thead>
-      <tbody>
-        <tr><td>off（改动前措辞）</td><td class="num">3.5</td><td class="num">2.5</td>
-          <td class="num">19,820</td><td class="num">25,058</td><td class="num">1,348</td>
-          <td class="num">0.00897</td><td class="num">5/6</td></tr>
-        <tr><td><strong>on（本次改动）</strong></td><td class="num">3.0</td><td class="num">2.0</td>
-          <td class="num">16,951</td><td class="num">20,754</td><td class="num">1,036</td>
-          <td class="num">0.00635</td><td class="num">5/6</td></tr>
-      </tbody>
-      <tfoot><tr><td>差</td><td class="num">−14%</td><td class="num">−20%</td>
-        <td class="num">−14%</td><td class="num">−17%</td><td class="num">−23%</td>
-        <td class="num">−29%</td><td class="num">—</td></tr></tfoot>
-    </table>
+  <h3>只看两档都出数的 15 条（口径可比）</h3>
+  <div class="tw"><table>
+    <thead><tr><th>指标</th><th class="num">off</th><th class="num">on</th><th class="num">差</th></tr></thead>
+    <tbody>
+      <tr><td>tok_in 合计</td><td class="num">358,839</td><td class="num">299,720</td><td class="num">−16.5%</td></tr>
+      <tr><td>成本合计</td><td class="num">¥0.1501</td><td class="num">¥0.1216</td><td class="num">−19.0%</td></tr>
+      <tr><td>tok_out 合计</td><td class="num">11,257</td><td class="num">12,016</td><td class="num">+6.7%</td></tr>
+      <tr><td>decide 轮中位（全 23 条）</td><td class="num">4.0</td><td class="num">3.0</td><td class="num">−25%</td></tr>
+      <tr><td>SQL 次中位（全 23 条）</td><td class="num">3.0</td><td class="num">2.0</td><td class="num">−33%</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout" style="border-top-color:var(--waste)">
+    <h4>三条要说清楚的，都不利于这份方案</h4>
+    <p><strong>① −71% 是错的，真实量级是 −17% 输入 / −19% 成本。</strong>方案 §02 那三个数拿
+    <strong>一条</strong> trace 算，而 <code>4bac5ce7f21b</code> 跑了 6 轮 decide，对照组里的中位数只有 4 轮 ——
+    可省的部分从一开始就没有那条 trace 显示的那么多。§05 自己写着"不能直接报成全站"，现在数据把它坐实了。</p>
+    <p><strong>② P0-3 的大头收益没兑现。</strong>它在方案里被算成 51% 的耗时与 43% 的成本，依据是
+    收敛轮那 1,415 个输出 token。实测 <code>tok_out</code> 总量反而 +6.7% —— 逐条看，输出增减几乎完全
+    跟着 decide 轮数走（轮数 5→2 的那条省 606，轮数 2→3 的几条各涨 300–600）。
+    单独隔离它（只翻这一个旋钮）：答案字数中位 809 → 320、Markdown 表从 1/5 降到 0/4，
+    <strong>但收敛轮的输出 token 只降 8.6%，而且 n 只有 4–5、样本不配对</strong>。
+    方向对，<strong>那个量级没有被证实</strong>。</p>
+    <p><strong>③ 一条旋钮据此改回默认关。</strong>见下。</p>
   </div>
 
-  <div class="callout">
-    <h4>为什么预估会高出这么多 —— 这份方案自己踩了它自己警告过的坑</h4>
-    <p>§05 的 −71% 是拿<strong>一条</strong> trace 算的，而 <code>4bac5ce7f21b</code>
-    跑了 <strong>6 轮 decide</strong>。实测中位数是 <strong>3.5 轮</strong> ——
-    也就是说，那条 trace 本身就是尾部样本，<strong>可省的部分从一开始就没有它显示的那么多</strong>。
-    §05 的口径提醒里写着"这是单条 trace 的剖析，不能直接报成全站"，现在数据把这句话坐实了：
-    按单条 trace 估收益，会系统性高估。</p>
-    <p>另一半原因是<strong>方差</strong>。off 档 6 次里 decide 轮数从 2 跳到 5，on 档是 3 到 4 ——
-    提示词改动改的是概率分布，单次跑测证明不了任何事。这也是为什么三条提示词改动
-    各自带了旋钮：<strong>旋钮不是为了好看，是因为没有旋钮就没法标定</strong>。</p>
-  </div>
+  <h3>回归排查：6 条疑似，5 条是噪声</h3>
+  <p>单轮对照里 <code>on</code> 档出数 17/23、<code>off</code> 21/23，新增 6 条未出数。把这 6 条
+  加上 2 条"反而修好"的，两档各重跑 3 次：</p>
+  <div class="tw"><table>
+    <thead><tr><th>用例</th><th class="num">off</th><th class="num">on</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>b03 / b06 / b07 / b20</td><td class="num">3/3</td><td class="num">3/3</td><td>噪声</td></tr>
+      <tr><td>b08 逐个供应商统计采购金额</td><td class="num">2/3</td><td class="num">3/3</td><td>噪声（on 反而更稳）</td></tr>
+      <tr><td>b15 各承运商准时率月度均值</td><td class="num">3/3</td><td class="num">2/3</td><td>噪声（一次 <code>LLM</code>）</td></tr>
+      <tr><td>b14 物流轨迹表一共有多少行</td><td class="num">0/3</td><td class="num">0/3</td><td><strong>两档都挂</strong>，R-11 扫描上限，与本次改动无关</td></tr>
+      <tr><td><strong>b23 被隐藏的评价有多少条？</strong></td><td class="num">3/3</td><td class="num">1/3</td><td><strong>可复现</strong> · <code>CLARIFY</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>b23 单独探预检 10 次：全量 <span class="n">10/10</span> 判可答，表头层 <span class="n">9/10</span>。
+  信号不强，但它落在一道<strong>用户可见的拒答门</strong>上 —— 误判的后果是把一个答得了的问题
+  回成"问得不够具体"。</p>
+  <p><strong>处置：<code>intent_schema_heads</code> 默认改回 <code>false</code></strong>（代码、旋钮、测试全部保留）。
+  验收标准是那份 120 条生产拒答集回归，而它要生产登录态、本地跑不了；
+  <strong>在它能跑之前，默认值就该站在"不改变现有行为"那一侧</strong>。跑通了把配置改 <code>true</code> 即可。</p>
+  <p>顺带说明这条旋钮为什么值得留着：本机 12 条探针里，它把
+  「统计一下仓库总数」问 ragforge 从"全量判成可答（错）"纠正成"越域（对）"—— 正是语义攀附那一类。
+  <strong>问题出在探针选偏了</strong>：12 条全在测"库里有没有这个实体"，一条都没测"这些列答不答得了"，
+  而 b23 恰好是后者。</p>
 
-  <h3>确定性的那部分确实是确定的</h3>
-  <p>六条里只有 P0-2 / P0-3 / P1-1 是概率性的；另外三条是代码闸，落地即生效，在每一次
-  跑测里都成立：</p>
+  <h3>确定性的三条，每次都成立</h3>
   <ul>
-    <li><strong>P0-1</strong>：12 次跑测里 <code>tool_call · search_schema</code> 出现 <strong>0 次</strong>（生产那条里是 1 次纯空转）。</li>
-    <li><strong>P1-2</strong>：<code>analyze_result</code> 出现 0 次；列级统计随 <code>execute_sql</code> 返回。</li>
-    <li><strong>账面</strong>：<code>schema_recall</code> 那一格现在真的有钱了 —— 一次向量召回
-      <span class="n">3,649</span> token / <span class="n">¥0.0018</span>，记在
-      <code>text-embedding-v4</code> 名下。这笔钱此前在 trace 里根本不存在，所以
-      <strong>上表 on 档的成本是含它的，而生产那条 ¥0.012834 不含</strong> —— 真实差距比 −29% 更大一点。</li>
+    <li><strong>P0-1</strong>：全部跑测里 <code>tool_call · search_schema</code> 出现 <strong>0 次</strong>。</li>
+    <li><strong>P1-2</strong>：<code>analyze_result</code> 出现 <strong>0 次</strong>。</li>
+    <li><strong>账面</strong>：<code>schema_recall</code> 那一格真的有钱了（一次向量召回约
+      <span class="n">3,649</span> token / <span class="n">¥0.0018</span>，记在 <code>text-embedding-v4</code> 名下）。
+      也就是说上表 <code>on</code> 档的成本<strong>含 embedding</strong>，而生产那条 ¥0.012834 不含。</li>
+    <li><strong>结果区取数</strong>：专项复跑 5 次，4 次链路上存在"返回 1 行 / 20 行 / 200 行"的探查查询，
+      <strong>每次渲染的都是那条 18 行的作答查询</strong>；其中一次最后那条 SQL 还执行失败，照样取对。</li>
   </ul>
 
-  <h3>结果区取数：5/5 取对</h3>
-  <p>专门复跑 5 次看 <code>answer_step</code> 会不会指错。5 次里有 4 次链路上存在"返回 1 行 / 20 行 /
-  200 行"的探查或核对查询，<strong>每一次最终渲染的都是那条 18 行的作答查询</strong>，没有一次
-  落到探查语句上。其中一次最后一条 SQL 还执行失败了（<code>DISTINCT is not implemented</code>），
-  结果区照样取对。</p>
-
-  <h3>这不算验收</h3>
-  <p>上面全部是<strong>一道题、一个源、本机、N=6</strong>。真正的验收仍按 §06：
-  <code>python -m evals.baseline</code> 对照组 23 条各跑一轮 off/on，比
-  <code>avg_steps</code> / <code>p95_ms</code> / <code>avg_cost_cny</code> 与
-  <code>R-11</code> 拦截率、<code>ungrounded</code> 命中率；P1-1 另需那份 120 条生产拒答集
-  回归，拒答率不达 100% 就把 <code>intent_schema_heads</code> 关掉。<strong>这两件都需要生产
-  登录态，我这边跑不了。</strong></p>
+  <div class="callout">
+    <h4>本机这套数的两处污染，别拿去当生产值</h4>
+    <p><strong>① 到百炼的 RTT 是 460ms</strong>（<code>vpn-bypass</code> 只放行了三台服务器 IP，模型流量仍走公司隧道；
+    一次最简单的 embedding 调用要 1.8 秒）。叠加 <code>356266f</code> 刚把单次调用超时砍到 20 秒，
+    本机约 <strong>13% 的调用以 <code>LLM</code> 失败告终</strong> —— 那是环境，不是代码，生产在同区域内网。
+    <strong>所以耗时那一列不具代表性</strong>；token 与成本是服务端计数，不受影响。</p>
+    <p><strong>② 这仍然不是验收。</strong>本机同种子库、无并发、绕开了 HTTP 与长任务交接
+    （<code>/api/tasks/{id}</code> 无条件要登录，而 <code>async_runner</code> 在 step≥3 必然交接）。
+    生产验收仍按 §06 跑 <code>evals/baseline.py</code>。</p>
+  </div>
 </section>
 
 <footer>
-  <p><strong>文档</strong>　askdb 单链路提效方案 · V1.2<br>
+  <p><strong>文档</strong>　askdb 单链路提效方案 · V1.3<br>
   <strong>拟制日期</strong>　2026-09-15<br>
   <strong>依据</strong>　生产 trace <code>4bac5ce7f21b</code>（2026-09-14 16:10 UTC，14 个 span 完整输入输出，取自 <code>/api/trace</code>）；代码对照 <code>askdb@0c159f5</code> 的 <code>agentgraph.py</code> / <code>agent.py</code> / <code>tools.py</code> / <code>llm.py</code>；单价对照 <code>config/public.yaml</code>（qwen3.8-flash 输入 ¥0.0008/千、命中缓存 ¥0.00008/千、输出 ¥0.0027/千，2026-09-06 核对）；分布口径取自执行追踪页当日读数（P50 1.46s / P95 16.14s / 6,931 样本）<br>
   <strong>数字口径</strong>　<span style="color:var(--accent)">本文档内所有指标均为实测值</span>，逐条可回溯到上述 trace 的 span 明细或配置里的单价 —— <strong>不适用 <code>docs/README.md</code> 中「设计文档数字均为占位值」那条说明</strong>。改造后的预估值已在正文中明确标注为预估，并注明哪些是确定性的、哪些是概率性的。<br>
@@ -1020,9 +1037,12 @@ python -m evals.baseline --compare</pre>
   　　　　　　　V1.1 / 2026-09-15 / 补跑向量路径 recall@k 基准（<code>docs/test-report-schema-recall.md</code>）：
   <span style="color:var(--waste)">P2-2「schema 分层注入」据此否决</span>，同时确认 <code>top_k=8</code>/<code>max_k=12</code> 维持不动；
   新增 P2-3（召回的三种失败形态，均为正确性问题，优先级高于本方案任何一条省钱改动）<br>
-  　　　　　　　V1.2 / 2026-09-15 / 六条改动全部落地（见 §08 执行计划），补 §09 落地实测：
-  <span style="color:var(--waste)">实测收益 −14%~−29%，远小于 §02 按单条 trace 估的 −71%</span>，
-  原因与更正一并写在 §01 与 §09；三张预估卡原样保留不回填</p>
+  　　　　　　　V1.2 / 2026-09-15 / 六条改动全部落地（见 §08 执行计划）<br>
+  　　　　　　　V1.3 / 2026-09-15 / §09 换成 23 条对照组实测：
+  <span style="color:var(--waste)">tok_in −16.5% / 成本 −19.0% / tok_out +6.7%</span>，远小于 §02
+  按单条 trace 估的 −71%，且 P0-3 的量级未被证实；回归排查 6 条疑似里 5 条是噪声，
+  <strong>b23 可复现</strong> → <code>intent_schema_heads</code> 默认改回 false。
+  三张预估卡原样保留不回填</p>
 </footer>
 
 </div>

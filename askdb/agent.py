@@ -233,7 +233,7 @@ def answer_no_table_dump(cfg: Config) -> bool:
 
 
 def intent_schema_heads(cfg: Config) -> bool:
-    """意图预检喂表头层还是全量 schema。默认表头层。
+    """意图预检喂表头层还是全量 schema。**默认 False（全量）—— 见下面第二段。**
 
     2026-09-15 本机标定（真模型 / 真 schema / 12 条探针 / 3 个源，全量与表头层
     各跑一遍）：判定正确 full 11/12 → heads 12/12，输入 token −51%。唯一一条翻转
@@ -241,10 +241,19 @@ def intent_schema_heads(cfg: Config) -> bool:
     （对）**。方向与 INTENT_SYSTEM 自己的判据一致：它要的是"有没有承载这个实体
     的表"，列名正是它被明确要求忽略的那类证据，摆上去只会喂给它攀附的材料。
 
-    **12 条探针不是那份 120 条生产拒答集的替代品。** 切生产前仍要跑那份回归，
-    拒答率不达 100% 就把这个旋钮关掉 —— 这正是它存在的理由。
+    **但默认值是 False，因为 12 条探针选偏了。** 它们全在问"库里有没有这个
+    实体"（越域），一条都没测"这些列答不答得了"。2026-09-15 的 23 条对照组
+    跑测抓到了漏掉的那一面：b23「被隐藏的评价有多少条？」在 on 档 1/3 出数
+    （两次 CLARIFY），off 档 3/3；单独探预检 10 次是 9/10 对 10/10。信号不强，
+    但它落在一道**用户可见的拒答门**上，误判的后果是把一个答得了的问题
+    回成"问得不够具体"。
+
+    验收标准是那份 120 条生产拒答集回归（要生产登录态，本地跑不了）。
+    **在它能跑之前，默认值站在"不改变现有行为"那一侧**：收益这条路是对的，
+    只是证据还不够把默认值推过去。跑通那份回归就把配置改 true，
+    代码与测试都在，不必重做。
     """
-    return bool((cfg.raw.get("agent") or {}).get("intent_schema_heads", True))
+    return bool((cfg.raw.get("agent") or {}).get("intent_schema_heads", False))
 
 
 def sql_consolidation(cfg: Config) -> bool:

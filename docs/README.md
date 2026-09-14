@@ -11,7 +11,7 @@
 | [`design-trusted-data-agent-v2.html`](./design-trusted-data-agent-v2.html) | **可信数据 Agent v2** —— Skill/Tool/LLM/Runtime 四层；可选 agentic 模式的端到端流程、长短任务自动异步、任务中心状态机、人工审批/复核、Checkpoint 恢复 | V2.0 · 2026-09-11 |
 | [`test-cases.md`](./test-cases.md) · [`test-report.md`](./test-report.md) | 用例清单与测试报告 | 2026-08-18 |
 | [`test-report-agent-soak.md`](./test-report-agent-soak.md) | **查询 Agent 生产跑测报告** —— 13 源 × 10 条，基准值由直查 SQL 取得；12 条缺陷已修复上线（错答 19→4、R-11 拦截 26→0），接地校验经两轮生产影子标定后切 enforce | V3.0 · 2026-09-12 |
-| [`design-agent-trace-optimization.html`](./design-agent-trace-optimization.html) | **查询 Agent 链路提效方案** —— 单条生产 trace 逐 span 剖析，四处重复流程各带原始证据；六条改动已全部落地（含执行计划与逐条 commit）。**含一条对自己的更正：实测收益 −14%~−29%，远小于按单条 trace 估出的 −71%** | V1.2 · 2026-09-15 |
+| [`design-agent-trace-optimization.html`](./design-agent-trace-optimization.html) | **查询 Agent 链路提效方案** —— 单条生产 trace 逐 span 剖析；六条改动已落地并用 23 条对照组实测。**含两条对自己的更正：实测 tok_in −16.5% / 成本 −19.0%（远小于按单条 trace 估的 −71%），且 tok_out 反而 +6.7% —— P0-3 的量级未被证实** | V1.3 · 2026-09-15 |
 | [`test-report-schema-recall.md`](./test-report-schema-recall.md) | **Schema 召回基准 · 向量路径 recall@k** —— 97 条 / 12 源首次实测向量召回（此前只有关键词路径的数）；主表 @3 仅 74.0%、@8 才 95.8%，据此否掉提效方案里的「schema 分层注入」、确认 top_k=8/max_k=12 维持不动；落榜的 25 条全部是枢纽表，三种失败形态各有实探 | V1.0 · 2026-09-15 |
 
 HTML 都是单文件、无外部依赖，**下载后用浏览器直接打开**即可。
