@@ -438,8 +438,8 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     配额耗尽走 converged 而不是 rejected_by：已经查到的东西还在，该收敛作答，
     不是报错丢掉。
     """
-    from .agent import (AGENT_SYSTEM, AGENT_USER, AgentAction, _render_history,
-                        _render_specs, _sys)
+    from .agent import (AGENT_USER, AgentAction, _render_history,
+                        _sys, render_agent_system)
 
     d = _deps(config)
     step = state.get("step", 0) + 1
@@ -451,7 +451,7 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     try:
         action, u = d.llm.structured(
             AgentAction,
-            _sys(AGENT_SYSTEM.format(tools=_render_specs(_hidden_tools(state))), d.cfg),
+            _sys(render_agent_system(d.cfg, _hidden_tools(state)), d.cfg),
             human)
     except QuotaExceeded as e:
         _llm_spans(d, "decide")

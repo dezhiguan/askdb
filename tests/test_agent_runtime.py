@@ -986,3 +986,42 @@ def test_tool_call_span_measures_the_call_not_zero(tmp_path, monkeypatch):
     spans = [s for s in r.steps if s["step"] == "tool_call"]
     assert spans, "没有 tool_call span，这条测试什么都没验到"
     assert spans[0]["ms"] >= 20, f"tool_call 只记了 {spans[0]['ms']}ms —— 计时器又起反了"
+
+
+def test_sql_consolidation_knob_swaps_the_three_rules(tmp_path):
+    """P0-2 的三条规则按 agent.sql_consolidation 成套切换，且没有占位符漏填。
+
+    开：第 9 条在场，第 2、6 条不再要求"单独跑一次"。
+    关：逐字回到改动前 —— 这是它的回滚位，不是"旧代码"。
+    """
+    cfg = _cfg(tmp_path, agent={"max_steps": 2})
+
+    cfg.raw["agent"]["sql_consolidation"] = True
+    on = A.render_agent_system(cfg)
+    assert "9. **核对写进同一条 SQL" in on
+    assert "必须单独跑一次不带过滤的 COUNT" not in on
+    assert "必须有一条不带过滤的 COUNT 作为依据" in on
+
+    cfg.raw["agent"]["sql_consolidation"] = False
+    off = A.render_agent_system(cfg)
+    assert "9. **核对写进同一条 SQL" not in off
+    assert "必须单独跑一次不带过滤的 COUNT" in off
+    assert "另跑一条 GROUP BY" in off
+
+    # 两档都不许把 {rule2_tail} 这类占位符原样漏进提示词 —— 漏了模型会照着
+    # 那串花括号当成字面要求读，而这类错在结果上完全看不出来。
+    for text in (on, off):
+        assert "{rule" not in text and "{tools}" not in text
+
+    # 缺配置时默认开：关着等于把 4bac5ce7f21b 里那两轮自证口径留在生产上。
+    cfg.raw["agent"].pop("sql_consolidation")
+    assert A.sql_consolidation(cfg) is True
+
+
+def test_sql_consolidation_keeps_the_grounding_rules_intact(tmp_path):
+    """第 9 条是"怎么拿到依据"，不是"要不要依据" —— 前三条硬约束一字不动。"""
+    cfg = _cfg(tmp_path, agent={"max_steps": 2, "sql_consolidation": True})
+    on = A.render_agent_system(cfg)
+    assert "1. **没跑过就不许写。**" in on
+    assert "3. **被截断的结果不能用来说总量。**" in on
+    assert "不放松第 1、2、3 条" in on

@@ -62,6 +62,19 @@ planner:
 # 关闭时与从前完全一致。as_task 任务线暂仍走管道（agent 续跑接线待补）。
 agent:
   enabled: false
+  # 核对列并进同一条 SQL（提效方案 P0-2）。开=硬约束第 9 条生效，且第 2、6 条的
+  # "必须单独跑一次 COUNT""另跑一条 GROUP BY"改成"写进同一条 SQL 的一列"。
+  #
+  # 为什么要有这个旋钮：这是**改模型行为的概率分布**，不是判定改动，没有影子档
+  # 可言（同一次调用没法同时跑两套提示词）。旋钮既是标定手段也是回滚位 ——
+  # 用 evals/baseline.py 对照组各跑一轮 off/on，比 avg_steps / p95_ms /
+  # R-11 拦截率 / ungrounded 命中率，再定版。
+  #
+  # 判据：生产 trace 4bac5ce7f21b 第 6-9 步两轮"自证口径"，问的东西第 5 步的返回
+  # 里已经有了（每家 month_cnt=20、首尾月份一致 → 360 = 18×20 无重复无缺失），
+  # 代价 5,089ms + 10,863 输入 token ≈ ¥0.0027。护栏一条没放松：要陈述总量仍然
+  # 必须有不带过滤的 COUNT 作依据，只是不再要求它单独占一轮。
+  sql_consolidation: true
   max_steps: 6                       # R-16 循环步数上限（工具调用次数），超则收敛
   cost_cap_tokens: 12000             # R-17 累计 token 上限，未配则沿用 planner.cost_cap_tokens
   async_after_ms: 8000               # 墙钟软阈值：同步等这么久还没完就交接后台
