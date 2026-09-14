@@ -182,6 +182,11 @@ def test_every_span_the_backend_emits_is_mapped():
         src = f.read_text(encoding="utf-8")
         steps |= set(re.findall(r'tracer\.add\("([a-z_]+)"', src))
         steps |= set(re.findall(r'"step": "([a-z_]+)"', src))
+        # 直查那条路不走 Tracer（它在 server.py 里自己攒 steps），2026-09-15
+        # 起经由本地的 _step(...) 落 span —— 名字是第一个位置参数，字面量
+        # 不再出现在 `"step": "..."` 里。漏掉这一条，guard / dry_run /
+        # execute / connect 四个 step 会整片扫不到，本用例反而先报"没扫到"。
+        steps |= set(re.findall(r'_step\("([a-z_]+)"', src))
     assert len(steps) > 10, "没扫到 step，正则或后端结构变了"
 
     for block in ("export const STEP_NAMES", "export const STEP_TYPE"):

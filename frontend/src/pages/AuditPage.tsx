@@ -527,9 +527,19 @@ function ReplayView({ traceId, result }: { traceId: string; result: ReplayResult
   }
 
   const d: Replay = result.data
+  /* 直查记录的 question 是一句占位的「（直查模式）」—— 这条路不经模型、
+     没有问题文本，**提交的那条 SQL 就是这次的输入**。原来它只作为
+     「模型原始 SQL（改写前）」折在抽屉最底下，而那个标题对直查是错的
+     （没有模型），位置也把唯一的输入藏了起来。 */
+  const direct = d.kind === 'sql'
   return (
     <>
-      <p className="replay-question">{d.question}</p>
+      {direct
+        ? <>
+            <div className="eyebrow">输入 SQL</div>
+            <pre className="drawer-code">{d.sql_raw || d.sql_final}</pre>
+          </>
+        : <p className="replay-question">{d.question}</p>}
       <p className="drawer-note">
         {fmtTime(d.ts)} · {KIND_NAMES[d.kind] ?? d.kind} · org {d.org_id} · {d.attempts} 轮 ·
         ¥{d.cost_cny ?? 0} · {d.tok_in ?? 0}+{d.tok_out ?? 0} tok
@@ -570,7 +580,10 @@ function ReplayView({ traceId, result }: { traceId: string; result: ReplayResult
         <h4>最终 SQL<span className="status">护栏通过 · 只读执行</span></h4>
         <pre className="drawer-code">{d.sql_final}</pre>
       </>}
-      {d.sql_raw && d.sql_raw !== d.sql_final && (
+      {/* 改写前那一版。措辞按 kind 分：直查是**提交人自己写的**，
+          管它叫「模型原始 SQL」是在指认一个根本没参与的作者。
+          直查上它已经在抽屉最上面全文摆着了，这里不再折一遍。 */}
+      {!direct && d.sql_raw && d.sql_raw !== d.sql_final && (
         <details>
           <summary>模型原始 SQL（改写前）</summary>
           <pre className="drawer-code">{d.sql_raw}</pre>

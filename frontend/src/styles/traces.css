@@ -237,6 +237,18 @@
 .span-table td.good { color: var(--green); font-weight: 800; }
 /* 原型只有 good；失败态不能跟成功态一个颜色 */
 .span-table td.bad { color: var(--red); font-weight: 800; }
+/* 输入摘要里那条 SQL 的第一眼（直查链路唯一能看出"执行的是哪条"的地方）。
+   **必须单行且封宽**：这张表是 auto 布局，这一列一宽就把最右的「状态」挤出
+   可视区 —— 上一版把带预览文字的按钮放进这两列，正是这么翻车的。
+   全文在 title 里，也在「详情」展开行里。 */
+.span-table .span-in {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-2);
+}
 /* 输出摘要：换行显示全文（不再单行截断/点击放大），列宽收在合理范围内换行 */
 .span-table td.span-note { max-width: 340px; white-space: normal; word-break: break-word; line-height: 1.55; }
 /* 一行都没有时那句状态。跟表体同一套字号，不做成提示条 ——

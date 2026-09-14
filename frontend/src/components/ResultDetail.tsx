@@ -152,6 +152,10 @@ function parseAnswer(text: string): Block[] {
 export interface ResultDetailProps {
   /** 这次问的是什么。放最前 —— 下面所有东西都是围着它排的。 */
   question?: string
+  /** 直查模式下"提问"就是提交的那条 SQL：它占同一个位置，但按代码块排版。
+   *  给了它就不再显示 question —— 直查的 question 是一句占位的
+   *  「（直查模式）」，两个一起出等于在最显眼的位置写一句废话。 */
+  questionSql?: string
   questionNote?: string
   statusLabel?: string
   wait?: boolean
@@ -177,7 +181,7 @@ export interface ResultDetailProps {
 }
 
 export function ResultDetail({
-  question, questionNote, statusLabel, wait,
+  question, questionSql, questionNote, statusLabel, wait,
   answer, columns, rows, cap,
   facts, overview, auditRows, sql, traceNote, empty,
 }: ResultDetailProps) {
@@ -222,11 +226,13 @@ export function ResultDetail({
 
   return (
     <div className="result-detail">
-      {question && (
+      {(question || questionSql) && (
         <div className="result-ask">
           <div>
-            <span className="result-ask-label">提问</span>
-            <h4>{question}</h4>
+            <span className="result-ask-label">{questionSql ? '输入 SQL' : '提问'}</span>
+            {questionSql
+              ? <pre className="result-ask-sql">{questionSql}</pre>
+              : <h4>{question}</h4>}
             {questionNote && <p>{questionNote}</p>}
           </div>
           {statusLabel && <span className={`status ${wait ? 'wait' : ''}`}>{statusLabel}</span>}

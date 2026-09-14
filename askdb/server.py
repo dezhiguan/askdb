@@ -2211,8 +2211,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         （login + replay_api 双门、返回 SQL 全文与快照）都不同，这是**单独一道门**：
         - **要登录**（不像 /api/trace 匿名可读）—— 结果行含数据，不给访客；
         - 仍按调用者当下可见表收窄（同 /api/trace 的 404 口径）；
-        - **不受 replay_api 开关约束、也不返回 sql_final/sql_raw/question** ——
-          SQL 全文仍只走 /api/replay 那道门，这里只放答案与已脱敏结果行。
+        - **不受 replay_api 开关约束、也不返回 question**；模型写的 SQL 全文仍
+          只走 /api/replay 那道门，这里只放答案与已脱敏结果行。
+          **直查记录例外**：那条路没有问题文本，提交的 SQL 就是这次的"提问"，
+          两版 SQL 随结果一起给（见 audit.SQL_RESULT_FIELDS 上那段）。
         字段走 audit.RESULT_FIELDS 白名单；被拦下的记录（rejected_by 非空）返回 null，
         不展示推测或伪造的结果。
         """
@@ -3569,7 +3571,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         """
         import uuid as _uuid
 
-        from .trace import now_iso, write_audit
+        from .agent import _io_json
+        from .trace import clip_io, now_iso, write_audit
 
         # 直查同样按角色收窄：它绕过模型，但**不绕过权限**
         _require_login(request)
@@ -3585,6 +3588,28 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         trace_id = _uuid.uuid4().hex[:12]
         t0 = time.perf_counter()
         steps: list[dict[str, Any]] = []
+
+        def _step(name: str, *, status: str, note: str, ms: int = 0,
+                  input: object = None, output: object = None) -> None:
+            """直查的 span 与 agent 链路记同一套字段。
+
+            note 是我们写的一句话结果（"注入 LIMIT 200"、"返回 8 行"），
+            input/output 是这一步**真正收到与产出的东西**。此前直查三条 span
+            只有 note，于是追踪页「输入摘要」一列恒为占位符、「详情」点不开 ——
+            直查的输入就是那条 SQL，而整条链路上哪儿都找不到它，
+            看的人只知道"护栏过了、返回 8 行"，不知道过的是哪条 SQL。
+
+            截断复用 trace.clip_io：与 agent 链路同一个上限、同一处留痕。
+            空值不落键 —— 与 Tracer.as_list 同一条规矩（空串与"没记"是一件事，
+            前端据此显示占位符），也免得每条审计凭空胖两个键。
+            """
+            st: dict[str, Any] = {"step": name, "ms": ms, "status": status,
+                                  "note": note}
+            for k, v in (("input", input), ("output", output)):
+                text = clip_io(v)
+                if text:
+                    st[k] = text
+            steps.append(st)
 
         def _audit(*, rejected_by: str | None, sql_final: str = "",
                    rules_fired: list[str] | None = None,
@@ -3628,8 +3653,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
 
         g = guard.check(req.sql, scoped, org_id=org, dialect=scoped.dialect)
         if not g.ok:
-            steps.append({"step": "guard", "ms": 0, "status": "blocked",
-                          "note": f"{g.rejected_by} {g.reason}"})
+            # 被拦下的那条 SQL 最需要留在链路上：审计页上「R-02 挡掉的删表尝试」
+            # 不带原文，就只剩一句"挡住了"，看不出挡的是什么。
+            _step("guard", status="blocked", note=f"{g.rejected_by} {g.reason}",
+                  input=req.sql, output=f"{g.rejected_by} {g.reason}")
             _audit(rejected_by=g.rejected_by)
             return JSONResponse({
                 "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
@@ -3637,8 +3664,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 "hint": "改完 SQL 再试；这是纯代码的 AST 判定，不消耗 token。",
                 "steps": steps, "org_id": org, "trace_id": trace_id,
             })
-        steps.append({"step": "guard", "ms": 0, "status": "ok",
-                      "note": "；".join(g.rewrites) or "无需改写"})
+        # 输入是提交的原文，输出是护栏改写后**将要执行**的那一版。
+        # 两版都要有：注入了租户谓词和 LIMIT 之后，执行的已经不是提交的那条。
+        _step("guard", status="ok", note="；".join(g.rewrites) or "无需改写",
+              input=req.sql, output=g.sql)
 
         try:
             with Executor(scoped) as ex:
@@ -3647,7 +3676,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 # 「问它能出数、自己写同一条 SQL 反而被挡」。
                 ep = ex.explain(g.sql, cap=_tools._scan_cap(scoped, g.sql))
                 if not ep.ok and not scoped.scan_waiver:
-                    steps.append({"step": "dry_run", "ms": 0, "status": "blocked", "note": ep.reason})
+                    _step("dry_run", status="blocked", note=ep.reason,
+                          input=g.sql, output=ep.plan or ep.reason)
                     _audit(rejected_by="R-11", sql_final=g.sql, rules_fired=g.rules_fired)
                     # 挂起而不是终结：登记一条待审批，把单号回给发起人（P07）
                     pending = _open_approval(scoped, request, trace_id=trace_id, kind="sql",
@@ -3666,17 +3696,23 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 if not ep.ok:
                     # 已获批准。审计里必须看得出这条是走审批过来的，
                     # 否则阈值形同虚设 —— 事后没人能分辨"没超"和"超了但批了"。
-                    steps.append({"step": "dry_run", "ms": 0, "status": "ok",
-                                  "note": f"{ep.reason}（已获审批放行）"})
-                steps.append({"step": "dry_run", "ms": 0, "status": "ok",
-                              "note": f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计"})
+                    _step("dry_run", status="ok",
+                          note=f"{ep.reason}（已获审批放行）",
+                          input=g.sql, output=ep.plan or ep.reason)
+                # 干跑这一步收到的是改写后的 SQL，产出的是执行计划原文 ——
+                # "预估扫描 3,240 行"那个数就是从这份计划里取的最大值，
+                # 不给计划，这个数没有出处。
+                _step("dry_run", status="ok",
+                      note=f"预估扫描 {ep.est_rows:,} 行" if ep.est_rows else "计划无基数估计",
+                      input=g.sql, output=ep.plan)
                 try:
                     ex.set_org(org)
                     res = ex.run(g.sql, limit_capped="R-09" in g.rules_fired)
                 except MaskUnresolved as e:
                     # 与 agent 模式同一条规矩：判不出投影来源就不返回，
                     # 而不是把整行涂成星号递出去（见 executor._mask 的注释）。
-                    steps.append({"step": "execute", "ms": 0, "status": "blocked", "note": str(e)})
+                    _step("execute", status="blocked", note=str(e),
+                          input=g.sql, output=str(e))
                     _audit(rejected_by="P03", sql_final=g.sql, rules_fired=g.rules_fired,
                            explain_rows=ep.est_rows)
                     return JSONResponse({
@@ -3686,7 +3722,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                         "trace_id": trace_id,
                     })
                 except DataSourceError as e:
-                    steps.append({"step": "execute", "ms": 0, "status": "failed", "note": str(e)})
+                    _step("execute", status="failed", note=str(e),
+                          input=g.sql, output=str(e))
                     _audit(rejected_by="EXEC", sql_final=g.sql, rules_fired=g.rules_fired,
                            explain_rows=ep.est_rows)
                     return JSONResponse({
@@ -3703,7 +3740,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 前端拿不到任何可展示的原因）；而同一时刻 /api/selfcheck 与
             # 数据源扫描给的是 400 + 明确原因。三条链路对同一件事说三种话。
             # 注意 try 必须包住整个 with —— 建连发生在进入块体之前。
-            steps.append({"step": "connect", "ms": 0, "status": "failed", "note": str(e)})
+            _step("connect", status="failed", note=str(e),
+                  input=g.sql, output=str(e))
             _audit(rejected_by="DATASOURCE", sql_final=g.sql, rules_fired=g.rules_fired)
             return JSONResponse({
                 "ok": False, "question": "（直查模式）", "sql_raw": req.sql,
@@ -3715,8 +3753,16 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         note = f"返回 {res.row_count} 行"
         if res.masked_columns:
             note += f"；已脱敏 {len(res.masked_columns)} 列（{'、'.join(res.masked_columns[:5])}）"
-        steps.append({"step": "execute", "ms": res.elapsed_ms, "status": "ok",
-                      "note": note})
+        # 输出给列名与前 N 行（**已脱敏**，与 rows_preview 同一份、同一个上限）——
+        # 一句"返回 8 行"看不出返回的是哪 8 行。全量结果不进 span：
+        # 一次拉一万行的直查会把审计记录撑到 MB 级。
+        _step("execute", status="ok", note=note, ms=res.elapsed_ms, input=g.sql,
+              output=_io_json({
+                  "columns": [str(c) for c in res.columns],
+                  "rows": [[jsonable(v) for v in r]
+                           for r in res.rows[:_RESULT_PREVIEW_ROWS]],
+                  "row_count": res.row_count,
+              }))
         _audit(rejected_by=None, sql_final=g.sql, rules_fired=g.rules_fired,
                explain_rows=ep.est_rows, rows_returned=res.row_count,
                masked_columns=list(res.masked_columns),
