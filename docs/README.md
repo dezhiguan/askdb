@@ -11,6 +11,7 @@
 | [`design-trusted-data-agent-v2.html`](./design-trusted-data-agent-v2.html) | **可信数据 Agent v2** —— Skill/Tool/LLM/Runtime 四层；可选 agentic 模式的端到端流程、长短任务自动异步、任务中心状态机、人工审批/复核、Checkpoint 恢复 | V2.0 · 2026-09-11 |
 | [`test-cases.md`](./test-cases.md) · [`test-report.md`](./test-report.md) | 用例清单与测试报告 | 2026-08-18 |
 | [`test-report-agent-soak.md`](./test-report-agent-soak.md) | **查询 Agent 生产跑测报告** —— 13 源 × 10 条，基准值由直查 SQL 取得；12 条缺陷已修复上线（错答 19→4、R-11 拦截 26→0），接地校验经两轮生产影子标定后切 enforce | V3.0 · 2026-09-12 |
+| [`design-agent-trace-optimization.html`](./design-agent-trace-optimization.html) | **查询 Agent 链路提效方案** —— 单条生产 trace 逐 span 剖析，四处重复流程各带原始证据；分级改动的耗时／Token／成本三项预期收益、风险与验收口径。**数字全部实测，非占位值** | V1.0 · 2026-09-15 |
 
 HTML 都是单文件、无外部依赖，**下载后用浏览器直接打开**即可。
 GitHub 网页上只会显示源码，不会渲染。
@@ -33,6 +34,11 @@ open docs/prototype.html
 
 这些数字用于说明**将要度量什么**，而非**已经度量到什么**。
 **这些文档不会被回填** —— 它们是当时的设计稿，改掉就失去了对照价值。
+
+**两个例外**（数字是实测的，适用主 README 那条原则）：
+`test-report-agent-soak.md` 与 `design-agent-trace-optimization.html`。
+后者的每一个数都能回溯到生产 trace `4bac5ce7f21b` 的 span 明细或
+`config/public.yaml` 里的单价；其中标为"预估"的只有改造后的目标值。
 
 实测结果在主 README 的「实测结果」一节，P3 完成后已按承诺公开：盲测集成绩
 （实现全程不可见、一次性运行，该成绩即最终成绩）、未经筛选的失败样本分类分布、
