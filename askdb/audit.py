@@ -135,12 +135,25 @@ REPLAY_FIELDS = (
 # 追踪详情与任务中心要展示"最终结果"（答案 + 已脱敏结果行），这些字段既不在
 # 匿名可读的 TRACE_FIELDS 里，也不随 replay 那道 SQL 全文的开关走。
 #
-# 边界：只放答案文本、结果列名、**已脱敏**的前 N 行与行数/脱敏列。**不含 sql_final /
-# sql_raw / question**（SQL 全文仍只走 /api/replay 的 login+replay_api 双门）。
-# rows_preview 在写入侧就已经是 executor 脱敏后的行、且截到前 N 行。
+# 边界：只放答案文本、结果列名、**已脱敏**的前 N 行与行数/脱敏列。问答链路
+# **不含 sql_final / sql_raw / question**（模型写的 SQL 全文仍只走 /api/replay
+# 的 login+replay_api 双门）。rows_preview 在写入侧就已经是 executor 脱敏后的行、
+# 且截到前 N 行。
+#
+# **直查（kind == "sql"）是唯一的例外**，见 SQL_RESULT_FIELDS：那条路没有问题
+# 文本，提交的 SQL 本身就是这次的"提问"。不给它，结果弹窗上「提问」那一格
+# 永远只有一句「（直查模式）」—— 拿到一张八行的结果表，却没有任何东西说明
+# 它是查什么查出来的。
+# 这不是把 /api/replay 那道门挪松：/api/result 本身要登录、要 AUDIT_READ、
+# 按可见表收窄，比 2026-09-12 起随 /api/trace 免登录出接口的 span 输入输出
+# （同样带 SQL 全文，见上面 TRACE_FIELDS 那段）严得多。
 RESULT_PREVIEW_ROWS = 20
 RESULT_FIELDS = ("answer", "columns", "rows_preview", "rows_returned",
                  "masked_columns", "mask_degraded", "truncated")
+
+#: 直查记录额外放行的两个字段：提交原文与护栏改写后真正执行的那一版。
+#: 两版都要 —— 注入租户谓词和 LIMIT 之后，执行的已经不是提交的那条。
+SQL_RESULT_FIELDS = ("sql_raw", "sql_final")
 
 
 def result_block(rec: dict[str, Any]) -> dict[str, Any] | None:
@@ -151,7 +164,10 @@ def result_block(rec: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if not rec.get("rows_preview") and not rec.get("answer"):
         return None
-    return {k: rec[k] for k in RESULT_FIELDS if k in rec}
+    fields = RESULT_FIELDS
+    if rec.get("kind") == "sql":
+        fields += SQL_RESULT_FIELDS
+    return {k: rec[k] for k in fields if k in rec}
 
 
 #: 发起时先落的那条记录的标记。**它不是一次调用的结果，只是一个占位**：

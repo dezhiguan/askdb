@@ -432,13 +432,30 @@ class LlmClient:
             # 参数名是 enable_thinking，非 OpenAI 标准参数，须走 extra_body。
             kwargs["extra_body"] = {"enable_thinking": thinking}
 
+        # 超时与重试都从配置取，且**不再在主模型上原地重试**。
+        #
+        # 判据来自 300 条生产 trace / 689 个模型 span 的实测：
+        #   · 主模型成功调用 p50 3.1s / p90 10.2s / p95 13.3s / p99 24.8s；
+        #     90 秒的容忍度对健康调用毫无意义，它只是把抖动放大成 90 秒的卡顿。
+        #   · 超时设 20s 会误杀「本来能成功」的调用 10/680 = 1.47% —— 而那些
+        #     调用实际要跑 21–51 秒，用户早就等不下去了，切备选（实测 0.7–1.3s
+        #     接上）对他们反而更快。
+        #   · max_retries 原为 1，那是 **langchain 自己在主模型上重试一次**，
+        #     于是最坏路径是 2×timeout 才轮到 structured() 的 except 切备选
+        #     （90 秒配置下最坏 181 秒）。主模型超时通常意味着那一侧正在抖动或
+        #     排队，原地重试大概率再超一次，等于把等待翻倍。重试的职责交给
+        #     "切备选"——它换的是另一家厂商（见 config 里 fallback 那段说明），
+        #     才真正有独立失败的可能。
+        #
+        # 备选客户端沿用同一份 llm_cfg（_fallback_client 里 merge），因此这两个
+        # 值对它同样生效；要给备选单独放宽，在 fallback 段里覆写即可。
         self._model = ChatOpenAI(
             model=self.llm_cfg["model"],
             base_url=self.llm_cfg["base_url"],
             api_key=key,
             temperature=float(self.llm_cfg.get("temperature", 0)),
-            timeout=90,
-            max_retries=1,
+            timeout=float(self.llm_cfg.get("timeout_s", 20)),
+            max_retries=int(self.llm_cfg.get("max_retries", 0)),
             **kwargs,
         )
         return self._model

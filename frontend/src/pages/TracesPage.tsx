@@ -541,7 +541,14 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
               {/* 正文与任务中心的结果弹窗共用一个组件：同一条 /api/result，
                   各写一套的那一版，字号与顺序已经开始分叉。 */}
               <ResultDetail
-                question={item.question || undefined}
+                /* 直查没有问题文本，「提问」那一格原来只有一句「（直查模式）」——
+                   拿到一张八行的结果表，却没有任何东西说明它是查什么查出来的。
+                   提交的那条 SQL 就是这次的提问，直接摆在同一个位置。 */
+                question={finalResult.sql_raw ? undefined : (item.question || undefined)}
+                questionSql={finalResult.sql_raw || undefined}
+                /* 溯源里的「原生 SQL」给**真正执行的那一版**：注入租户谓词和
+                   LIMIT 之后，跑的已经不是提交的那条。 */
+                sql={finalResult.sql_final || undefined}
                 answer={finalResult.answer || undefined}
                 columns={finalResult.columns ?? undefined}
                 rows={finalResult.rows_preview ?? undefined}
@@ -666,6 +673,21 @@ function costTitle(cost: number | null | undefined): string {
  *  两侧都没记到东西时给占位符而不是一颗禁用按钮：点了没反应的按钮，看的人
  *  第一反应是页面坏了，不是"这一步本来就没有输入输出"。
  */
+/** 「输入摘要」一列在没有 token 计量时显示什么。
+ *
+ *  这一列原本只认两种内容：模型步的 prompt token 数，和缓存命中那一行通向
+ *  首跑的入口。直查链路一个 token 都不烧 —— 护栏、干跑、执行三行的输入摘要
+ *  于是全是占位符，页面上找不到这次执行的到底是哪条 SQL，而那是直查**唯一**
+ *  的输入。（全文其实一直记着，但入口只有最右那颗「详情」，而摘要列空着的时候
+ *  它读起来就是"这步本来就没有输入"。）
+ *
+ *  折成一行再显示：护栏改写后的 SQL 是多行带缩进的，原样铺进单元格会把这张表
+ *  撑高一倍。列宽由 CSS 封死、超出省略号 —— 这张表是 auto 布局，任何一列变宽
+ *  都是从最右的「状态」那里借的。全文仍点「详情」看。 */
+function inputPeek(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
 function SpanIoToggle({ step, open, onToggle }: {
   step: ReplayStep
   open: boolean
@@ -864,6 +886,12 @@ function TraceNodes({ steps, result, cachedFrom, onFocusTrace }: {
                                混在 tok_in 里看不出来。没命中就不占位。 */
                             + (step.cached_in
                                 ? `（缓存 ${step.cached_in.toLocaleString()}）` : '')
+                        /* 两样都没有时退到输入全文的第一眼：直查那三行就靠它
+                           才看得见执行的是哪条 SQL。 */
+                        : step.input
+                          ? <span className="span-in" title={step.input}>
+                              {inputPeek(step.input)}
+                            </span>
                           : NA}
                     </td>
                     <td className="span-note" title={step.note ?? ''}>

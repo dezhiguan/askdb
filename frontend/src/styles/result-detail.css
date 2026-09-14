@@ -19,6 +19,19 @@
 .result-ask-label { display: block; color: var(--muted); font: 6px var(--mono); letter-spacing: .12em; }
 .result-ask h4 { margin: 6px 0 0; font-family: var(--serif); font-size: 18px; font-weight: 400; line-height: 1.4; }
 .result-ask p { margin: 5px 0 0; color: var(--muted); font-size: 8px; line-height: 1.55; }
+/* 直查模式下这一格是提交的那条 SQL。等宽、保留换行（护栏改写前的原文常是
+   一行，自己手写的多行 SQL 缩进就是它的结构），高度封顶自己滚 ——
+   一条一百行的 SQL 不该把下面的结果表推出弹窗。
+   底色比溯源里那块深色代码框浅：这里是"问的是什么"，不是待核对的物证。 */
+.result-ask-sql {
+  max-height: 168px; margin: 6px 0 0; padding: 10px 12px; overflow: auto;
+  border: 1px solid var(--line); border-radius: 6px;
+  color: var(--ink); background: var(--paper-2);
+  font: 12.5px/1.7 var(--mono); white-space: pre-wrap; word-break: break-word;
+}
+/* 提问那一行原来靠 h4 的宽度撑着；换成 pre 之后要显式收窄，
+   否则 flex 子项按内容宽度撑开，右边那枚状态角标会被挤出弹窗。 */
+.result-ask > div { min-width: 0; flex: 1; }
 
 /* ---------------- 区块 ---------------- */
 

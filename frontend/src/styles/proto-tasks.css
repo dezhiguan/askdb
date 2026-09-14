@@ -190,6 +190,15 @@
 .task-detail-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .task-detail-intro h4 { margin: 0; font-family: var(--serif); font-size: 15px; font-weight: 400; }
 .task-detail-intro p { margin: 5px 0 0; color: var(--muted); font-size: 8px; line-height: 1.55; }
+/* 被拦下的直查：这一格是提交的那条 SQL，不是一句问题。等宽保留换行、
+   高度封顶自己滚，右边那枚状态角标不能被它撑出去（所以外层要收宽）。 */
+.task-detail-intro > div { min-width: 0; flex: 1; }
+.task-intro-sql {
+  max-height: 120px; margin: 0; padding: 8px 10px; overflow: auto;
+  border: 1px solid var(--line); border-radius: 6px;
+  color: var(--ink); background: var(--paper-2);
+  font: 11px/1.7 var(--mono); white-space: pre-wrap; word-break: break-word;
+}
 
 .task-detail-empty { margin-top: 12px; padding: 18px; border: 1px dashed #bbbdb6; border-radius: 8px; background: rgba(255,255,255,.35); text-align: center; }
 .task-detail-empty i { width: 34px; height: 34px; display: grid; place-items: center; margin: 0 auto 8px; border-radius: 50%; color: var(--amber); background: var(--amber-wash); font: 12px var(--mono); font-style: normal; }

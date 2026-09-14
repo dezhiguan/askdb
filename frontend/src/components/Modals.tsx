@@ -303,6 +303,10 @@ export interface TaskDetailView {
   /** true 走 .status.wait 琥珀色（原型：非 completed/running 一律 wait） */
   wait: boolean
   question: string
+  /** 直查任务的输入 SQL。直查不经模型、没有问题文本，question 是一句占位的
+   *  「（直查模式）」—— 这条 SQL 才是这次的输入，占同一个位置。
+   *  非直查任务为空串。 */
+  questionSql: string
   description: string
   source: string
   executedAt: string
@@ -340,7 +344,10 @@ export function TaskResultModal({ detail, loading, onClose, onViewTrace }: {
         )}
         {!loading && (
           <ResultDetail
-            question={detail.question}
+            /* 直查给 SQL，其余给问题原文 —— 两个一起出，等于在最显眼的位置
+               先写一句「（直查模式）」再写真正的输入。 */
+            question={detail.questionSql ? undefined : detail.question}
+            questionSql={detail.questionSql || undefined}
             questionNote={detail.description}
             statusLabel={detail.statusLabel}
             wait={detail.wait}
@@ -385,7 +392,14 @@ export function TaskReasonModal({ detail, busy, onClose, onViewTrace, onAction }
       </div>
       <div className="modal-body">
         <div className="task-detail-intro">
-          <div><h4>{detail.question}</h4><p>{detail.description}</p></div>
+          {/* 被拦下的直查同样只有一句「（直查模式）」——「触碰了安全边界」
+              说的是哪条 SQL，这里不给就只能去审计页翻。 */}
+          <div>
+            {detail.questionSql
+              ? <pre className="task-intro-sql">{detail.questionSql}</pre>
+              : <h4>{detail.question}</h4>}
+            <p>{detail.description}</p>
+          </div>
           <span className={`status ${detail.wait ? 'wait' : ''}`}>{detail.statusLabel}</span>
         </div>
         <div className="task-reason-card">
