@@ -85,7 +85,9 @@ AGENT_SYSTEM = """你是一个可信查数 Agent。你不能直接写库，只�
 {tools}
 
 规则：
-- 拿不准某张表的确切列名 / 枚举取值时，先用 get_table_schema 查清楚，**不要猜列名**。
+- 列名、类型、枚举取值一律以下方【可用的表】为准 —— 那份是本次召回的**完整原值**，
+  **不要猜**，也**不要为了"确认一下"再查一遍它已经写明的东西**。只有下方压根没有
+  列出那张表时，才用 get_table_schema。
 - 口径要遵循「可用的表与业务口径」里的说明（例如某列的口径注释、枚举取值）。
 - execute_sql 只写只读 SQL（SELECT/CTE）；它会自动过护栏、干跑、只读执行、脱敏。
 - 一步只做一件事。看到工具结果后再决定下一步。
@@ -130,7 +132,22 @@ AGENT_SYSTEM = """你是一个可信查数 Agent。你不能直接写库，只�
 另外：表名、列名、枚举取值一律**逐字照抄**工具返回的原值，不得改写成同义词或翻译
 （例如返回的是 ANSWER 就不能写成 CHAT）；需要解释时在括号里补中文说明。"""
 
-AGENT_USER = """{schema}
+#: 表头是**全局静态**的，而且排在 {schema} 之前 —— 它同时把跨请求可缓存的前缀
+#: 从"系统提示"往后延了一段。改动它要留意这一点：插一个随请求变的值进来，
+#: 就把这段前缀作废了。
+#:
+#: **这里有意不写"不要再调 search_schema"**，尽管那一轮确实是纯重复（线上
+#: trace 3f16cd49baec：3,318ms + 4,022 token + 一次 embedding 计费，换回
+#: 同一批表）。原因在 agentgraph._hidden_tools 的说明里：元数据问题
+#: （"这个库里有哪些表"）全靠模型自己调一次 search_schema 才能过 NO_EVIDENCE
+#: 那道闸，劝它别调等于把一个潜伏的误杀推成常态。那一轮要省，得先把闸的
+#: 判据换成"这个数是不是只由 schema 解释得了"，那是另一个改动。
+AGENT_USER = """【本次 schema 召回已经完成，下面这份就是召回结果】
+每张表的列名、类型、枚举取值都是**完整原值**，不是摘要，可以直接照它写 SQL。
+因此：下面已经列出的表不要再调 get_table_schema —— 它返回的与下面逐字相同，
+白跑一轮。下面**没有**列出的表才需要查。
+
+{schema}
 
 【用户问题】
 {question}
@@ -230,10 +247,17 @@ def _has_number(text: str) -> bool:
     return bool(_NUM_RE.search(text or ""))
 
 
-def _render_specs() -> str:
-    """把只读工具规格渲染成可读列表，注入 AGENT_SYSTEM。"""
+def _render_specs(hide: frozenset[str] = frozenset()) -> str:
+    """把只读工具规格渲染成可读列表，注入 AGENT_SYSTEM。
+
+    hide 里的工具**只是不出现在规格表里，并没有从 REGISTRY 摘掉** —— 模型硬要
+    调仍然调得到（tools.invoke 走 REGISTRY，与这份规格表无关）。这是有意的：
+    暴露面收窄是提示词侧的引导，不是能力阉割，判错了也不会把链路带进死胡同。
+    """
     lines = []
     for s in tools.tool_specs():
+        if s["name"] in hide:
+            continue
         params = "，".join(f"{k}（{v}）" for k, v in s["params"].items())
         lines.append(f"- {s['name']}：{s['summary']}。参数：{params}")
     return "\n".join(lines)

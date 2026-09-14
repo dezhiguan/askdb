@@ -825,3 +825,126 @@ def test_history_preview_says_how_many_rows_are_hidden(tmp_path):
         "preview": {"columns": ["carrier_code", "is_active"],
                     "rows": [["AN", True], ["CNSD", True]], "row_count": 18}}])
     assert "仅前 2 行" in text and "共返回 18 行" in text and "不得据此断言整列" in text
+
+
+# --------------------------------------------------------------------------
+# 冗余工具轮次 / span 计时
+#
+# 线上 trace 3f16cd49baec：5 次模型调用里有 2 次是去取提示词里已经逐字写着的
+# 东西（search_schema 换回同一批表、get_table_schema 取一张已注入的表），
+# 而三条 tool_call span 的耗时全是 0ms —— 后者是计时器起反了，不是真的快。
+# --------------------------------------------------------------------------
+def test_hidden_tools_drops_get_table_schema_only_when_recall_complete():
+    """召回完整 → 撤 get_table_schema；盲选/裁表 → 留着；没召回 → 一个都不撤。
+
+    **search_schema 任何时候都不撤**：元数据问题全靠模型自己调它一次才能过
+    NO_EVIDENCE 那道闸（见 _hidden_tools 的说明）。
+    """
+    from askdb import agentgraph as G
+    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": True}) \
+        == frozenset({"get_table_schema"})
+    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": False}) == frozenset()
+    assert G._hidden_tools({}) == frozenset()
+
+
+def test_decide_prompt_hides_get_table_schema_but_keeps_search_schema(tmp_path, monkeypatch):
+    """规格表要真的少一行 —— 只测 _hidden_tools 的返回值管不住接线。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    seen = []
+
+    class Rec(_FakeLLM):
+        def structured(self, schema, system, human):
+            if schema is not A.IntentCheck:
+                seen.append(system)
+            return super().structured(schema, system, human)
+
+    A.run_agent("有哪些表", _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                executor=_FakeExec(), llm=Rec([{"finish": True, "answer": "只有 documents。"}]))
+    assert seen, "decide 一次都没跑，这条测试什么都没验到"
+    assert "- get_table_schema：" not in seen[0]
+    assert "- search_schema：" in seen[0]
+    assert "- execute_sql：" in seen[0]
+
+
+def test_model_rerunning_search_schema_reuses_the_recall(tmp_path, monkeypatch):
+    """模型再调一次 search_schema 时，不重跑 embedding + 向量检索。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    calls = {"n": 0}
+    real = tools.ToolResult(
+        ok=True, tool="search_schema",
+        data={"tables": ["documents"], "prompt": "【可用的表】documents", "blind": False})
+
+    def counting(q, c):
+        calls["n"] += 1
+        return real
+
+    monkeypatch.setattr(tools, "search_schema", counting)
+    llm = _FakeLLM([
+        {"finish": False, "tool": "search_schema", "args": {"question": "换个问法"}},
+        {"finish": True, "answer": "只有 documents 一张表。"},
+    ])
+    r = A.run_agent("有哪些表", _cfg(tmp_path, agent={"max_steps": 3}), 316,
+                    executor=_FakeExec(), llm=llm)
+    assert calls["n"] == 1, "召回被重跑了：图一次 + 模型一次"
+    reuse = [s for s in r.steps if s["step"] == "tool_call"]
+    assert reuse and reuse[0]["status"] == "degraded"
+    assert "未重复执行" in reuse[0]["note"]
+
+
+def test_get_table_schema_on_an_injected_table_is_flagged_redundant(tmp_path, monkeypatch):
+    """查一张上文已逐字列出的表 —— 不拒，但回灌里要点破，否则它会养成习惯。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    humans = []
+
+    class Rec(_FakeLLM):
+        def structured(self, schema, system, human):
+            if schema is not A.IntentCheck:
+                humans.append(human)
+            return super().structured(schema, system, human)
+
+    llm = Rec([
+        {"finish": False, "tool": "get_table_schema", "args": {"table": "documents"}},
+        {"finish": True, "answer": "documents 有 3 列。"},
+    ])
+    r = A.run_agent("documents 有哪些列", _cfg(tmp_path, agent={"max_steps": 3}), 316,
+                    executor=_FakeExec(), llm=llm)
+    assert r.ok
+    # 点破这件事要到得了模型手里 —— 它走的是回灌历史，不是 span 的 note。
+    assert len(humans) >= 2, "第二轮 decide 没跑，验不到回灌"
+    assert "没有带来任何新信息" in humans[1]
+
+
+def test_meta_evidence_counts_the_graphs_own_recall():
+    """召回是真跑过的工具返回，只是执行者是图不是模型 —— 它也算证据。"""
+    from askdb import agentgraph as G
+    ev = G._meta_evidence({"tables_hit": ["a", "b", "c"]})
+    assert {"columns": ["name"], "rows": [["a"], ["b"], ["c"]]} in ev
+    assert {"columns": ["count"], "rows": [[3]]} in ev
+
+
+def test_tool_call_span_measures_the_call_not_zero(tmp_path, monkeypatch):
+    """计时器必须起在 tools.invoke **之前**。
+
+    这两行反过来写时，每条 tool_call span 的 ms 都由构造决定恒为 0 —— 界面上
+    "数据库 0ms"于是不是数据库快，而是这个读数根本没量（线上 3f16cd49baec）。
+    """
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    real_invoke = tools.invoke
+
+    def slow(name, args, ctx):
+        time.sleep(0.03)
+        return real_invoke(name, args, ctx)
+
+    monkeypatch.setattr(tools, "invoke", slow)
+    llm = _FakeLLM([
+        {"finish": False, "tool": "get_table_schema", "args": {"table": "documents"}},
+        {"finish": True, "answer": "documents 有 3 列。"},
+    ])
+    r = A.run_agent("documents 有哪些列", _cfg(tmp_path, agent={"max_steps": 3}), 316,
+                    executor=_FakeExec(), llm=llm)
+    spans = [s for s in r.steps if s["step"] == "tool_call"]
+    assert spans, "没有 tool_call span，这条测试什么都没验到"
+    assert spans[0]["ms"] >= 20, f"tool_call 只记了 {spans[0]['ms']}ms —— 计时器又起反了"

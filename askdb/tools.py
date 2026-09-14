@@ -352,7 +352,8 @@ REGISTRY: dict[str, Tool] = {
         {"question": "自然语言查询意图（一句话）"}, _t_search),
     "get_table_schema": Tool(
         "get_table_schema", Tier.READ,
-        "取某一张表的精确字段、类型、枚举取值——拿不准列名/口径时先查它，别猜",
+        "取**上文【可用的表】里没有列出**的那张表的字段、类型、枚举取值；"
+        "上文已列出的表不要再查，返回的是同一份内容",
         {"table": "表名"}, _t_get),
     "execute_sql": Tool(
         "execute_sql", Tier.READ,

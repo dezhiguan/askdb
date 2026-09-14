@@ -39,6 +39,10 @@ class AgentState(TypedDict, total=False):
 
     schema_prompt: str
     tables_hit: list[str]
+    #: 召回是否"足够完整"：没盲选、没因预算裁表。为真时 schema_prompt 里每张表
+    #: 都是全列原值，get_table_schema 对它们一无所加 —— 决策时据此收窄工具暴露面
+    #: （见 _hidden_tools）。**必须声明在这里**，理由同下面 action 那条。
+    schema_complete: bool
 
     history: list[dict[str, Any]] # 回灌进下一轮提示词
     exec_results: list[dict[str, Any]] #每一次执行成功；接地校验要看全部
@@ -267,7 +271,12 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     # 这句 note 上完全一样，只有全文分得开。
     d.tracer.add("schema_recall", t, _brief(rec), tables=tables_hit,
                  input=state["question"], output=schema_prompt)
-    return {"tables_hit": tables_hit, "schema_prompt": schema_prompt}
+    # 盲选 / 有表被预算裁掉时，提示词里这份就**不是**全部可用的表，
+    # 此时 get_table_schema 仍有用武之地（去查一张没被注入的表）。
+    complete = bool(schema_prompt) and not rec.data.get("blind") \
+        and not rec.data.get("truncated")
+    return {"tables_hit": tables_hit, "schema_prompt": schema_prompt,
+            "schema_complete": complete}
 
 
 def _n_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
@@ -345,6 +354,47 @@ def _decide_stage(action: Any, history: list[dict[str, Any]],
     return "select"                      # 还没查过任何东西，纯挑工具
 
 
+def _hidden_tools(state: AgentState) -> frozenset[str]:
+    """这一轮决策**不摆上桌**的工具。
+
+    2026-09-14 线上 trace 3f16cd49baec：5 次模型调用里有 2 次是去取提示词里
+    已经逐字写着的东西 ——
+
+      · 第 1 轮调 search_schema。而 _n_recall 调的就是同一个函数、同一个问题，
+        召回全文早已注入 AGENT_USER 的 {schema}。这一轮换回同一批 12 张表，
+        代价是 3,318ms + 4,022 输入 token + 又一次 embedding 计费调用。
+      · 第 2 轮调 get_table_schema("payments")。而 schema_rag.table_doc 渲染的
+        就是每张表的全部列名/类型/desc/enum，那 10 列早在提示词里。
+        代价 2,013ms + 4,104 token。
+
+    是提示词在教它这么干：规则第一条写着"拿不准列名先用 get_table_schema 查
+    清楚"、工具规格写着"拿不准列名/口径时先查它" —— 两句都是**预注入 schema
+    之前**留下的。措辞已经改掉，但只靠措辞是概率问题；这里再从暴露面上收一道。
+
+    收窄不等于摘掉：见 agent._render_specs 的说明，模型硬要调仍然调得到。
+
+    **search_schema 为什么留在桌上 —— 撤过，撤不掉。** 闸 ①（_n_finalize 里那条
+    NO_EVIDENCE）的判据是"模型自己有没有成功调过工具"，而元数据问题（"这个库里
+    有哪些表"）唯一能调的就是它。撤掉之后模型只能零工具调用直接作答，闸 ① 一刀切
+    拒 —— 把一个今天只是潜伏的误杀变成系统性的。
+
+    那就改闸 ① 的判据、让召回也算"有依据"？试过，被
+    tests/test_agent_runtime.py::test_agent_no_evidence_blocks_fabricated_number
+    当场拦下，而且它拦得对：退到闸 ② 之后，「大约有 120 万条订单」里的 120
+    小于 grounding.MIN_ABS（1000），那一层按自己的标定根本不查它，凭空编的
+    订单量就直接放行了。要走通得另起一套"这个数是不是只由 schema 解释得了"的
+    判定 —— 那是个该自己单独标定、先影子跑的改动，不是顺手塞进这个补丁的东西。
+
+    所以这里只收 get_table_schema：它与闸 ① 无关（元数据的依据来自 search_schema），
+    撤掉零风险。search_schema 那一轮改由提示词劝阻（AGENT_USER 表头）+ 下面
+    _n_act 的 ⓪′ 兜底 —— 劝不住时至少不重跑 embedding，并在回灌里点破。
+    """
+    if not state.get("schema_prompt"):
+        return frozenset()                     # 召回什么都没给，该让它自己去搜
+    return frozenset({"get_table_schema"}) if state.get("schema_complete") \
+        else frozenset()
+
+
 def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     """模型自己挑下一步调哪个工具 —— 这一步是 agent 与老管道的**全部区别**。
 
@@ -363,7 +413,9 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     t = d.tracer.start()
     try:
         action, u = d.llm.structured(
-            AgentAction, _sys(AGENT_SYSTEM.format(tools=_render_specs()), d.cfg), human)
+            AgentAction,
+            _sys(AGENT_SYSTEM.format(tools=_render_specs(_hidden_tools(state))), d.cfg),
+            human)
     except QuotaExceeded as e:
         _llm_spans(d, "decide")
         d.tracer.add("decide", t, str(e), status="blocked")
@@ -460,13 +512,17 @@ def _n_ground(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     if gmode == "off" or not answer:
         return {"ungrounded": []}
 
+    # 同 _n_act：计时器起在校验**之前**。grounding.ungrounded 要把答案里每个数
+    # 拿去和全部 exec_results 比对，是这条链路上唯一一处纯 CPU 的重活，
+    # 拿 add(start()) 记等于永远记 0，它慢起来时在链路上看不出来。
+    gt = d.tracer.start()
     bad = grounding.ungrounded(answer, state.get("exec_results") or [],
                                known=_known_constants(d.cfg))
     if not bad:
         return {"ungrounded": []}
 
     ungrounded = [grounding.fmt([x]) for x in bad]
-    d.tracer.add("grounding", d.tracer.start(),
+    d.tracer.add("grounding", gt,
                  f"结论里 {len(bad)} 个数追溯不到查询结果：{grounding.fmt(bad)}",
                  status="blocked" if gmode == "enforce" else "ok")
     if (gmode == "enforce" and not state.get("grounding_retried")
@@ -553,8 +609,42 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         })
         return {"step_count": state.get("step_count", 0) + 1, "history": history}
 
-    res = tools.invoke(tool_name, args, d.ctx)
+    # ⓪′ 召回已经做过的事不做第二遍。
+    #
+    #    _n_recall 调的就是 tools.search_schema(question)，结果全文已注入提示词。
+    #    模型再调一次 search_schema 时，重跑的是一次 **embedding 计费调用 + 向量
+    #    检索**，换回的是逐字相同的一份东西。_hidden_tools 已经把它从规格表里
+    #    撤了，这里是硬兜底 —— 规格表是引导，这一条才是保证。
+    #
+    #    不走上面那道 ⓪：那道闸按 (工具, 参数) 完全相同判，而召回这一次压根不在
+    #    history 里，且模型填的 question 往往是自己的改写，字面对不上。
+    if tool_name == "search_schema" and state.get("schema_prompt"):
+        rt = d.tracer.start()
+        hit = list(state.get("tables_hit") or [])
+        d.tracer.add("tool_call", rt,
+                     f"召回已在本次开始时完成（{len(hit)} 张表），未重复执行",
+                     status="degraded", tool=tool_name, input=_io_json(args),
+                     output=_io_json({"tables": hit, "reused": True}))
+        history = list(state.get("history") or [])
+        history.append({
+            "tool": tool_name, "args": args, "ok": True,
+            # columns 供 _meta_evidence 取证 —— "库里有哪些表"这类问题的依据
+            # 就是这份表名清单，丢了它接地校验会把正确答案判成编造。
+            "columns": hit,
+            "brief": ("**本次召回在最开始就已经做过，没有重新执行** —— 拿回的就是"
+                      "上文【可用的表】那一份，一字不差。要它之外的信息，"
+                      "改用 execute_sql 去查数据，别再召回一遍。"),
+        })
+        return {"step_count": state.get("step_count", 0) + 1, "history": history}
+
+    # 计时器必须在 invoke **之前**起。原来这两行是反的（先 invoke 再 start），
+    # 于是每一条 tool_call span 的 ms 都由构造决定恒为 0 —— 界面上"数据库 0ms"
+    # 不是数据库快，是这个读数根本没量。
+    # 铁证：同一个 search_schema，在 _n_recall 里（计时器在调用前起）量到 331ms，
+    # 在这里量到 0ms。execute_sql 还要过 AST 护栏 + 干跑 EXPLAIN + 只读执行 +
+    # 脱敏，更不可能是 0。
     tt = d.tracer.start()
+    res = tools.invoke(tool_name, args, d.ctx)
     # step 名**必须是静态的 tool_call**：复放/追踪页的步骤映射是静态表，
     # 动态 step id 会显示成原始串（见 tests/test_frontend 那两条护栏）。
     # 工具名进结构化 tool 字段，前端 Span 列直接读它。
@@ -620,6 +710,12 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                            "row_count": res.data.get("row_count")}
     elif res.ok and tool_name == "get_table_schema":
         item["columns"] = [c["name"] for c in res.data.get("columns", [])]
+        # 查的是上文已经逐字列出的表 —— 这一步没带来任何新信息，白花了一轮决策。
+        # 不拒（拒会再多烧一轮），但要在回灌里点破，别让它养成"先确认一遍"的习惯。
+        if str(res.data.get("table") or "") in set(state.get("tables_hit") or []):
+            item["brief"] += ("（**这张表的结构在上文【可用的表】里已经逐字列出**，"
+                              "这次查询没有带来任何新信息 —— 上文已列出的表直接照着用，"
+                              "不要再查一遍）")
     elif res.ok and tool_name == "search_schema":
         item["columns"] = res.data.get("tables", [])
 
@@ -642,6 +738,19 @@ def _meta_evidence(state: AgentState) -> list[dict[str, Any]]:
     len(tables)，它在返回值里不作为一个元素存在，只作为个数存在。
     """
     out: list[dict[str, Any]] = []
+    # _n_recall 那一次召回也是**真跑过的工具返回**（它调的就是 tools.search_schema），
+    # 只是执行者是图不是模型，于是它一直不在 history 里 —— 证据从前全靠模型自己
+    # 再调一次 search_schema 才进得来。补上它是因为那条路已经不保险了：
+    # 提示词改过之后模型更可能直接照注入的 schema 作答，而 _n_act 的 ⓪′ 又会把
+    # 重复召回折成复用。少了这一条，"库里有哪些表"的依据就只剩运气。
+    #
+    # **注意这不影响闸 ①**：那道闸判的是 history（模型自己动没动手），不读这里。
+    # 理由见 _hidden_tools 的说明 —— 让召回顶替闸 ① 试过，会放过"大约 120 万条
+    # 订单"这种小于 grounding.MIN_ABS 的编造。
+    hit = list(state.get("tables_hit") or [])
+    if hit:
+        out.append({"columns": ["name"], "rows": [[n] for n in hit]})
+        out.append({"columns": ["count"], "rows": [[len(hit)]]})
     for h in state.get("history") or []:
         if not h.get("ok") or h.get("tool") == "execute_sql":
             continue
