@@ -232,6 +232,21 @@ def answer_no_table_dump(cfg: Config) -> bool:
     return bool((cfg.raw.get("agent") or {}).get("answer_no_table_dump", True))
 
 
+def intent_schema_heads(cfg: Config) -> bool:
+    """意图预检喂表头层还是全量 schema。默认表头层。
+
+    2026-09-15 本机标定（真模型 / 真 schema / 12 条探针 / 3 个源，全量与表头层
+    各跑一遍）：判定正确 full 11/12 → heads 12/12，输入 token −51%。唯一一条翻转
+    是「统计一下仓库总数」问 ragforge —— **全量判成可答（错），表头层判成越域
+    （对）**。方向与 INTENT_SYSTEM 自己的判据一致：它要的是"有没有承载这个实体
+    的表"，列名正是它被明确要求忽略的那类证据，摆上去只会喂给它攀附的材料。
+
+    **12 条探针不是那份 120 条生产拒答集的替代品。** 切生产前仍要跑那份回归，
+    拒答率不达 100% 就把这个旋钮关掉 —— 这正是它存在的理由。
+    """
+    return bool((cfg.raw.get("agent") or {}).get("intent_schema_heads", True))
+
+
 def sql_consolidation(cfg: Config) -> bool:
     """核对列要不要并进同一条 SQL。默认开。
 

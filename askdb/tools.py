@@ -86,6 +86,11 @@ def search_schema(question: str, cfg: Config) -> ToolResult:
             "tables": r.table_names,
             "metrics": [m.name for m in r.metrics],
             "prompt": r.prompt,
+            # 同一次召回的**表头层**（表名 + 一行描述 + 别名，不含列）。
+            # 意图预检只需要"有没有承载这个实体的表"，喂列名反而是它被要求
+            # 忽略的那类证据 —— 见 schema_rag.table_head。与 prompt 同源渲染，
+            # 保证两者选的是同一批表。
+            "prompt_heads": schema_rag.render_heads(r.tables, r.metrics),
             "blind": bool(r.blind),
             "degraded": bool(getattr(r, "degraded_from", None)),
             "truncated": list(r.truncated),

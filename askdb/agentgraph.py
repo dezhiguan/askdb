@@ -38,6 +38,11 @@ class AgentState(TypedDict, total=False):
     thread_id: str
 
     schema_prompt: str
+    #: 同一批表的**表头层**（表名 + 一行描述 + 别名，不含列），只给意图预检。
+    #: 单列一个字段而不是在 _n_intent 里现渲染：那里拿不到召回挑中的那批
+    #: Table 对象，从 tables_hit 反查 cfg.tables 会在运行时源改名/裁表时
+    #: 悄悄对不上 —— 与 schema_prompt 同源产出才保证两者是同一批表。
+    schema_heads: str
     tables_hit: list[str]
     #: 召回是否"足够完整"：没盲选、没因预算裁表。为真时 schema_prompt 里每张表
     #: 都是全列原值，get_table_schema 对它们一无所加 —— 决策时据此收窄工具暴露面
@@ -274,6 +279,7 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     rec = tools.search_schema(state["question"], d.cfg)
     tables_hit = rec.data.get("tables", [])
     schema_prompt = rec.data.get("prompt", "")
+    schema_heads = rec.data.get("prompt_heads", "") or schema_prompt
     # 输出必须是**喂进提示词的表结构全文**：排查"模型为什么没用那张表"时，
     # 召回对了但结构没渲染出某一列，与压根没召回那张表，在"召回 N 张表"
     # 这句 note 上完全一样，只有全文分得开。
@@ -284,20 +290,27 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     complete = bool(schema_prompt) and not rec.data.get("blind") \
         and not rec.data.get("truncated")
     return {"tables_hit": tables_hit, "schema_prompt": schema_prompt,
-            "schema_complete": complete}
+            "schema_heads": schema_heads, "schema_complete": complete}
 
 
 def _n_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     """意图 / 可答性预检。超出这个库的范围就别开始烧 token。"""
-    from .agent import INTENT_SYSTEM, INTENT_USER, IntentCheck, _sys
+    from .agent import (INTENT_SYSTEM, INTENT_USER, IntentCheck, _sys,
+                        intent_schema_heads)
 
     d = _deps(config)
     t = d.tracer.start()
     try:
         intent, u = d.llm.structured(
             IntentCheck, _sys(INTENT_SYSTEM, d.cfg),
-            INTENT_USER.format(schema=state.get("schema_prompt", ""),
-                               question=state["question"]))
+            # **喂表头层，不喂列级明细。** 预检要判的是"有没有承载这个实体的
+            # 表"，列名是它被明确要求忽略的那类证据（见 INTENT_SYSTEM 第 2 条
+            # 与 schema_rag.table_head）。4bac5ce7f21b 上这一段从 5,103 字符
+            # 降到约 900。取不到表头层时退回全量 —— 少喂不如多喂。
+            INTENT_USER.format(
+                schema=(state.get("schema_heads") if intent_schema_heads(d.cfg) else "")
+                       or state.get("schema_prompt", ""),
+                question=state["question"]))
     except QuotaExceeded as e:
         # 异常分支也要取流水：不取，这一步失败的尝试会顺延到下一个节点被取走，
         # 落成挂在别人名下的 span —— 比不记还坏。
@@ -1128,7 +1141,7 @@ def initial_state(question: str, org: int, trace_id: str, thread_id: str,
     return {
         "question": question, "org_id": org,
         "trace_id": trace_id, "thread_id": thread_id,
-        "schema_prompt": "", "tables_hit": [],
+        "schema_prompt": "", "schema_heads": "", "tables_hit": [],
         "history": history, "exec_results": [],
         "last_exec": None, "scan_blocked": None, "last_error": "",
         "answer": "", "answer_step": 0, "converged": "", "step": 0, "step_count": 0,

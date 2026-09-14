@@ -271,9 +271,24 @@ def test_side_effect_blocked_from_llm_but_runs_when_approved(tmp_path):
 # agent 循环
 # --------------------------------------------------------------------------
 def _patch_recall(monkeypatch):
-    monkeypatch.setattr(tools, "search_schema", lambda q, c: tools.ToolResult(
-        ok=True, tool="search_schema",
-        data={"tables": ["documents"], "prompt": "【可用的表】documents", "blind": False}))
+    """召回桩。**两份注入都要给**：prompt 是带列的全量，prompt_heads 是表头层。
+
+    用 schema_rag 真的渲染一遍，而不是写死一句"【可用的表】documents" ——
+    意图预检喂哪一份（agent.intent_schema_heads）的区别就在"有没有列名"上，
+    桩里两份长得一样的话，那个旋钮的测试什么都验不到。
+    """
+    from askdb import schema_rag
+
+    def fake(q, c):
+        tbls = list(c.tables.values())
+        return tools.ToolResult(
+            ok=True, tool="search_schema",
+            data={"tables": [t.name for t in tbls],
+                  "prompt": schema_rag._render(tbls, []),
+                  "prompt_heads": schema_rag.render_heads(tbls, []),
+                  "blind": False})
+
+    monkeypatch.setattr(tools, "search_schema", fake)
 
 
 def _patch_exec_invoke(monkeypatch, result=None, rejected_by=None):
@@ -1108,3 +1123,44 @@ def test_exec_results_carry_step_and_full_payload(tmp_path, monkeypatch):
     assert "as_of" in got[0] and "row_count" in got[0]
     # 接地校验只读 columns/rows，多出来的键不该改变它的判定
     assert grounding.ungrounded("一共 42 个", got) == []
+
+
+def test_table_head_is_the_header_layer_only(tmp_path):
+    """表头层 = 表名 + 描述 + 别名，一个列都不带。"""
+    from askdb import schema_rag
+    cfg = _cfg(tmp_path)
+    t = cfg.tables["documents"]
+    head = schema_rag.table_head(t)
+    assert "表 documents —— 文档" in head and "别名：文件" in head
+    for col in t.columns:
+        assert col not in head, f"表头层不该出现列名 {col}"
+    # 全量那份必须仍然带列 —— 两者不是一回事，别把 table_doc 也瘦下去
+    assert "chunk_type" in schema_rag.table_doc(t)
+
+
+def test_intent_schema_heads_knob(tmp_path, monkeypatch):
+    """预检喂表头层还是全量，由 agent.intent_schema_heads 决定。"""
+    cfg = _cfg(tmp_path, agent={"max_steps": 2})
+    assert A.intent_schema_heads(cfg) is True          # 缺配置默认开
+    cfg.raw["agent"]["intent_schema_heads"] = False
+    assert A.intent_schema_heads(cfg) is False
+
+    seen = {}
+
+    class Rec(_FakeLLM):
+        def structured(self, schema, system, human):
+            if schema is A.IntentCheck:
+                seen.setdefault("intent", human)
+            return super().structured(schema, system, human)
+
+    _patch_recall(monkeypatch)
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    for heads_on, want_col in ((True, False), (False, True)):
+        seen.clear()
+        cfg.raw["agent"]["intent_schema_heads"] = heads_on
+        A.run_agent("有多少文档", cfg, 316, executor=_FakeExec(),
+                    llm=Rec([{"finish": True, "answer": "42 个。"}]))
+        assert "intent" in seen, "预检一次都没跑"
+        # 列名在不在预检的输入里，就是这个旋钮唯一的区别
+        assert ("chunk_type" in seen["intent"]) is want_col, \
+            f"intent_schema_heads={heads_on} 时列名不该是 {'缺席' if want_col else '在场'}"
