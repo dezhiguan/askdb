@@ -347,10 +347,21 @@ def _render_history(history: list[dict[str, Any]]) -> str:
             # 模型会拿看得见的那几行去断言整列：2026-09-11 复测里它按
             # is_active DESC 排序取回 18 行，看到开头全是 true 就说"18 家全部在用"
             # （实际 13 家）。
+            partial = isinstance(total, int) and total > len(pv)
             head = (f"仅前 {len(pv)} 行（本次共返回 {total} 行，**其余未展示，"
                     f"不得据此断言整列的分布**）"
-                    if isinstance(total, int) and total > len(pv) else "全部行")
+                    if partial else "全部行")
             line += f"\n    列：{cols}\n    {head}：{rows}"
+            # 列级统计**只在预览不全时**回灌。
+            #
+            # 行全给到了的时候，模型看着那几行自己就能数，多贴一份是纯占位；
+            # 而预览被裁掉时，它手上确实没有整列的分布 —— 硬约束第 6 条正是为
+            # 这种时候写的（"禁止据此断言全部都是…"），可它此前只有"别外推"这句
+            # 禁令，没有替代品，于是要么老实不说、要么多跑一轮去查。
+            # 现在统计随 execute_sql 一起回来（tools.column_stats，零 IO），
+            # 直接摆在它面前。
+            if partial and h.get("stats"):
+                line += f"\n    整列统计（全部 {total} 行，非仅上面几行）：{h['stats']}"
         elif h.get("columns"):
             line += f"\n    列：{'、'.join(h['columns'])}"
         out.append(line)

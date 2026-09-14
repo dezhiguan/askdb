@@ -772,9 +772,13 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         #    执行的现场；续跑时从 history 重建不了，那两个工具因此只在
         #    同一次执行内可用 —— 与改造前一致。
         d.ctx.last_result = res.data
+        pv = planner.preview_rows(res.data.get("rows", []))
         item["preview"] = {"columns": res.data.get("columns", []),
-                           "rows": planner.preview_rows(res.data.get("rows", [])),
+                           "rows": pv,
                            "row_count": res.data.get("row_count")}
+        # 预览被裁掉时才带统计 —— 行全给到了就不必再贴一份（见 _render_history）。
+        if len(pv) < int(res.data.get("row_count") or 0):
+            item["stats"] = _stats_line(res.data.get("column_stats") or [])
     elif res.ok and tool_name == "get_table_schema":
         item["columns"] = [c["name"] for c in res.data.get("columns", [])]
         # 查的是上文已经逐字列出的表 —— 这一步没带来任何新信息，白花了一轮决策。
@@ -823,6 +827,25 @@ def _answer_exec(state: AgentState) -> dict[str, Any] | None:
         if hit is not None:
             return hit
     return state.get("last_exec")
+
+
+#: 一行统计最多占多少字符。宽结果（几十列）上整份统计能顶掉大半个预览预算，
+#: 而回灌它的目的只是"别让模型对看不见的行瞎猜"，不是给它一份完整报表。
+_STATS_CHARS = 400
+
+
+def _stats_line(stats: list[dict[str, Any]]) -> str:
+    """列级统计压成一行。只留对"整列长什么样"真正有用的那几项。"""
+    bits = []
+    for st in stats:
+        parts = [f"非空 {st.get('count', 0)}", f"去重 {st.get('distinct', 0)}"]
+        if "min" in st:
+            parts.append(f"min {st['min']:g}/max {st['max']:g}/均值 {st['mean']:g}")
+        if st.get("note"):
+            parts.append(st["note"])
+        bits.append(f"{st.get('column', '')}[{'，'.join(parts)}]")
+    line = "；".join(bits)
+    return line if len(line) <= _STATS_CHARS else line[:_STATS_CHARS] + " …（统计已截断）"
 
 
 def _meta_evidence(state: AgentState) -> list[dict[str, Any]]:

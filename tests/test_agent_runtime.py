@@ -123,8 +123,12 @@ def test_unknown_tool_and_missing_arg(tmp_path):
 
 def test_tool_specs_default_excludes_side_effect():
     names = {s["name"] for s in tools.tool_specs()}
-    assert {"search_schema", "get_table_schema", "execute_sql", "analyze_result"} <= names
-    assert "export_result" not in names  # 副作用默认不暴露
+    assert {"search_schema", "get_table_schema", "execute_sql"} <= names
+    assert "export_result" not in names      # 副作用默认不暴露
+    # analyze_result 也不暴露：它算的东西现在随 execute_sql 一起回来了，
+    # 规格表里留一行只会诱导模型花一轮决策换一份它已经有的东西。
+    # REGISTRY 里仍在 —— 见 test_analyze_result_is_off_spec_but_still_callable。
+    assert "analyze_result" not in names
 
 
 # --------------------------------------------------------------------------
@@ -1164,3 +1168,56 @@ def test_intent_schema_heads_knob(tmp_path, monkeypatch):
         # 列名在不在预检的输入里，就是这个旋钮唯一的区别
         assert ("chunk_type" in seen["intent"]) is want_col, \
             f"intent_schema_heads={heads_on} 时列名不该是 {'缺席' if want_col else '在场'}"
+
+
+def test_execute_sql_returns_column_stats(tmp_path, monkeypatch):
+    """execute_sql 的返回自带列级统计 —— 模型不必再为它单花一轮决策。"""
+    _stub_guard(monkeypatch)
+    r = tools.execute_sql("SELECT 1", _cfg(tmp_path), 0, executor=_FakeExec())
+    assert r.ok
+    stats = r.data["column_stats"]
+    assert stats == [{"column": "n", "count": 1, "distinct": 1,
+                      "min": 42.0, "max": 42.0, "mean": 42.0, "sum": 42.0}]
+
+
+def test_column_stats_skips_masked_columns():
+    """打码值不参与数值统计 —— 它本来就不是真值。"""
+    d = {"columns": ["phone", "n"], "rows": [["***", 3], ["***", 5]],
+         "masked_columns": ["phone"]}
+    by = {s["column"]: s for s in tools.column_stats(d)}
+    assert by["phone"]["note"] and "min" not in by["phone"]
+    assert by["n"]["min"] == 3.0 and by["n"]["sum"] == 8.0
+
+
+def test_analyze_result_is_off_spec_but_still_callable(tmp_path):
+    """撤出规格表，但 REGISTRY 里还在 —— 收暴露面不是能力阉割。"""
+    assert "analyze_result" not in {s["name"] for s in tools.tool_specs()}
+    assert "analyze_result" in tools.REGISTRY
+
+    cfg = _cfg(tmp_path)
+    ctx = tools.ToolContext(cfg=cfg, org_id=0)
+    ctx.last_result = {"columns": ["n"], "rows": [[1], [2]], "masked_columns": []}
+    r = tools.invoke("analyze_result", {}, ctx)
+    assert r.ok and r.data["n_rows"] == 2
+
+
+def test_stats_are_fed_back_only_when_the_preview_is_partial():
+    """行全给到了就不贴统计；被裁掉了才贴 —— 那时模型手上确实没有整列分布。"""
+    from askdb import agentgraph as G
+
+    full = [{"tool": "execute_sql", "args": {"sql": "SELECT 1"}, "brief": "返回 2 行",
+             "preview": {"columns": ["n"], "rows": [[1], [2]], "row_count": 2},
+             "stats": "n[非空 2，去重 2]"}]
+    assert "整列统计" not in A._render_history(full)
+
+    partial = [{"tool": "execute_sql", "args": {"sql": "SELECT 1"}, "brief": "返回 200 行",
+                "preview": {"columns": ["n"], "rows": [[1]], "row_count": 200},
+                "stats": "n[非空 200，去重 137，min 1/max 900/均值 12]"}]
+    text = A._render_history(partial)
+    assert "整列统计（全部 200 行，非仅上面几行）" in text
+    assert "去重 137" in text
+
+    # 统计行有上限：宽结果上整份统计会顶掉大半个预览预算
+    long = G._stats_line([{"column": f"c{i}", "count": i, "distinct": i}
+                          for i in range(200)])
+    assert len(long) <= G._STATS_CHARS + 20 and "统计已截断" in long

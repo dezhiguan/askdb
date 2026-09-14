@@ -222,35 +222,41 @@ def execute_sql(sql: str, cfg: Config, org_id: int,
             ok=False, tool="execute_sql", error=str(e),
             data={"sql_final": final},
         )
-    return ToolResult(
-        ok=True, tool="execute_sql",
-        data={
-            "sql_final": final, "columns": list(q.columns), "rows": q.rows,
-            "row_count": q.row_count, "truncated": q.truncated, "as_of": q.as_of,
-            "elapsed_ms": q.elapsed_ms, "masked_columns": list(q.masked_columns),
-            "mask_degraded": q.mask_degraded, "rules_fired": list(g.rules_fired),
-            "rewrites": list(g.rewrites), "explain_rows": explain_rows,
-        },
-    )
+    data = {
+        "sql_final": final, "columns": list(q.columns), "rows": q.rows,
+        "row_count": q.row_count, "truncated": q.truncated, "as_of": q.as_of,
+        "elapsed_ms": q.elapsed_ms, "masked_columns": list(q.masked_columns),
+        "mask_degraded": q.mask_degraded, "rules_fired": list(g.rules_fired),
+        "rewrites": list(g.rewrites), "explain_rows": explain_rows,
+    }
+    # 列级统计随返回一起给。零 IO —— 算的全是刚拿到的这些行。
+    #
+    # 为什么非做不可：analyze_result 的设计意图是"不回库、省一次数据库往返"，
+    # 但在这条链路上这笔账是**恒亏**的 —— 生产 trace 4bac5ce7f21b 里 4 次 SQL
+    # 执行合计 90ms，而让模型**选中**一个工具要付一整轮决策（2-3 秒、四五千
+    # token）。花几秒去省几十毫秒，怎么用都是负收益。把结果直接给它，
+    # 那一轮就不必存在。
+    data["column_stats"] = column_stats(data)
+    return ToolResult(ok=True, tool="execute_sql", data=data)
 
 
 # --------------------------------------------------------------------------
 # 第 2 层：分析（对已过闸结果计算，无对外副作用）
 # --------------------------------------------------------------------------
-def analyze_result(ctx: ToolContext) -> ToolResult:
-    """对上一步 execute_sql 的**已脱敏**结果做汇总统计 —— 只吃 ctx.last_result，
-    不再回库。脱敏列跳过数值统计（打码值本就不该参与计算）。"""
-    d = ctx.last_result
-    if not d or not d.get("rows"):
-        return ToolResult(ok=False, tool="analyze_result",
-                          error="没有可分析的结果，请先用 execute_sql 取数")
-    cols = d.get("columns", [])
-    rows = d.get("rows", [])
-    masked = set(d.get("masked_columns", []))
-    stats = []
+def column_stats(d: dict[str, Any]) -> list[dict[str, Any]]:
+    """一份**已脱敏**结果的列级统计：计数/去重/min-max-mean-sum。
+
+    纯 CPU、零 IO —— 算的全是已经在内存里的行。抽出来是为了让 execute_sql
+    的返回自带这份统计（见 _with_stats），模型不必再为它单花一轮决策。
+
+    脱敏列跳过数值统计：打码值本就不该参与计算。
+    """
+    cols = d.get("columns") or []
+    rows = d.get("rows") or []
+    masked = set(d.get("masked_columns") or [])
+    stats: list[dict[str, Any]] = []
     for i, c in enumerate(cols):
-        vals = [r[i] for r in rows if i < len(r)]
-        nonnull = [v for v in vals if v is not None]
+        nonnull = [r[i] for r in rows if i < len(r) and r[i] is not None]
         entry: dict[str, Any] = {"column": c, "count": len(nonnull),
                                  "distinct": len({str(v) for v in nonnull})}
         if c in masked:
@@ -268,8 +274,24 @@ def analyze_result(ctx: ToolContext) -> ToolResult:
                 entry.update(min=min(nums), max=max(nums),
                              mean=round(sum(nums) / len(nums), 4), sum=round(sum(nums), 4))
         stats.append(entry)
+    return stats
+
+
+def analyze_result(ctx: ToolContext) -> ToolResult:
+    """对上一步 execute_sql 的**已脱敏**结果做汇总统计 —— 只吃 ctx.last_result，
+    不再回库。
+
+    **仍在 REGISTRY 里，但已撤出 tool_specs()**（见那里的说明）：它算的东西
+    现在由 execute_sql 的返回直接带出来，模型不必为它单花一轮决策。留着是因为
+    撤出规格表只是收窄暴露面，不是能力阉割 —— 旧检查点续跑时模型仍可能点到它。
+    """
+    d = ctx.last_result
+    if not d or not d.get("rows"):
+        return ToolResult(ok=False, tool="analyze_result",
+                          error="没有可分析的结果，请先用 execute_sql 取数")
     return ToolResult(ok=True, tool="analyze_result",
-                      data={"n_rows": len(rows), "stats": stats})
+                      data={"n_rows": len(d.get("rows") or []),
+                            "stats": column_stats(d)})
 
 
 # --------------------------------------------------------------------------
@@ -375,13 +397,27 @@ REGISTRY: dict[str, Tool] = {
 }
 
 
+#: 规格表里不摆、但 REGISTRY 里仍在的工具。
+#:
+#: analyze_result：它算的每一项（计数/去重/min-max-mean-sum）现在都随
+#: execute_sql 的返回一起给了（见那里的 column_stats 注释），规格表里再留一行
+#: 只会诱导模型花一整轮决策去换一份它手上已经有的东西 —— 而在这条链路上，
+#: 一轮决策（2-3 秒、四五千 token）换的是几十毫秒的库往返，恒亏。
+#:
+#: **撤出规格表不等于摘掉**（与 agentgraph._hidden_tools 同一套纪律）：
+#: invoke 走的是 REGISTRY，模型硬要调仍然调得到，旧检查点续跑也不会撞上
+#: "未知工具"的死胡同。
+_OFF_SPEC = frozenset({"analyze_result"})
+
+
 def tool_specs(tiers: tuple[Tier, ...] = (Tier.READ, Tier.ANALYZE)) -> list[dict[str, Any]]:
     """列出可暴露给 LLM 选择的工具规格。默认只给只读原子。
 
     工具太多会拉低选择准确率、挤爆上下文预算，所以按层级/任务上下文控制暴露面
     —— 副作用工具默认不出现，需要时由 Runtime 显式挂出并强制人工确认。
     """
-    return [t.spec() for t in REGISTRY.values() if t.tier in tiers]
+    return [t.spec() for t in REGISTRY.values()
+            if t.tier in tiers and t.name not in _OFF_SPEC]
 
 
 def invoke(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
