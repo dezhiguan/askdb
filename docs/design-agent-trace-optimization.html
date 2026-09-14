@@ -804,17 +804,53 @@ execute_sql 的返回行，你抄一遍既不会更准，也会让读的人看�
   </div>
 
   <div class="fix">
-    <div class="fix-head"><span class="prio p2">P2-2</span><span class="ti">schema 分层注入：前 3 张给全列，其余只给表头</span><span class="kind">结构性 · 必须影子标定</span></div>
+    <div class="fix-head"><span class="prio p2" style="background:var(--waste);color:#fff;border:0">已否决</span><span class="ti" style="text-decoration:line-through;text-decoration-thickness:1px;opacity:0.65">P2-2 · schema 分层注入：前 3 张给全列，其余只给表头</span><span class="kind">2026-09-15 · 基准已跑，判据成立</span></div>
     <div class="fix-body">
-      <p>本次召回 12 张表 / 5,103 字符，<strong>真正用到的只有 <code>carrier_scores</code> 和 <code>carriers</code>，合计 648 字符 —— 87% 是陪跑的</strong>。这份 schema 被灌进了 7 次模型调用。</p>
-      <p>分层方案：相似度前 3 名给完整列级明细，其余只给"表名 + 一行描述 + 别名"，并在 <code>schema_complete</code> 判定上把这类表标成"未展开"，让 <code>get_table_schema</code> 对它们重新可用。</p>
-      <p><strong>但这条直接撞上已经论证过的召回率取舍。</strong><code>config/public.yaml</code> 里记着：5 张表 / 1500 token 时 recall@k 只有 90.4%，漏的全是"表在白名单里、模型却说库里没这类数据"；放宽到 8 张 / 4000 token 才升到 99.1%。而且那份基准量的是关键词回落路径，<strong>现在走的向量路径下的召回率至今没有实测数</strong>。所以这条必须先补基准再动，不能凭"看起来浪费"就改。</p>
-      <p>收益也要说实话：这 5,103 字符里绝大部分是<strong>命中缓存</strong>的，按 ¥0.00008/千计，砍掉全部陪跑表的直接省钱只有约 ¥0.0012。真正的收益在 prefill 时延和缓存 1024-token 量化带来的边角损耗。</p>
+      <p>原提法：本次召回 12 张表 / 5,103 字符，真正用到的只有 <code>carrier_scores</code> 和 <code>carriers</code>（648 字符），87% 是陪跑的；那就只给相似度前 3 名完整列级明细，其余只给表头。原文已把它列为"前置：先在向量路径上补一份 recall@k 基准，否则这个改动没有判据"。</p>
+      <p><strong>基准跑完了，判据是否定的 —— 这条不做。</strong>见 <a href="./test-report-schema-recall.md"><code>test-report-schema-recall.md</code></a>（97 条 / 12 源，向量路径首次实测）：</p>
+<pre>主表口径 recall@k（96 条，问题里不含表名）
+  k=1    40.6%
+  k=2    65.6%
+  k=3    <span class="cm">74.0%  ← 分层注入要押的就是这一格</span>
+  k=5    86.5%
+  k=8    95.8%   <span class="cm">← 现行 top_k，曲线到这里才进平台区</span>
+  k=12   97.9%   <span class="cm">← 现行 max_k，收益已递减</span></pre>
+      <p><strong>按前 3 名分层，四分之一的问题里真正要写进 SQL 的那张表拿不到列名。</strong>放宽到前 5 名也还有 13.5%。而<strong>现行的 <code>top_k=8</code> / <code>max_k=12</code> 恰好落在曲线转平的位置 —— 这组参数是对的，不要往下调。</strong></p>
+      <p>更要紧的是落榜的形状：主表排不进前 3 的 25 条里，<strong>25 条的主表全部是各自领域的枢纽表 / 主实体表</strong>（<code>documents</code>×8、<code>knowledge_bases</code>×3、<code>retrieval_logs</code>×3、<code>resumes</code>×3、<code>agent_sessions</code>×2，以及 <code>users</code>、<code>organizations</code>、<code>skus</code>、<code>payments</code>、<code>purchase_orders</code> 等），没有一条是冷僻表。<strong>分层注入会精确地砍掉最该保留的那一批。</strong></p>
       <dl class="spec">
-        <dt>改哪儿</dt><dd><code>askdb/schema_rag.py</code> · render 分层；<code>config</code> 新增旋钮</dd>
-        <dt>省多少</dt><dd class="gain">约 −¥0.0012 · prefill 时延若干（未实测）</dd>
-        <dt>风险</dt><dd class="risk">高。直接影响召回率，失败形态是"假称库里没有这类数据"——最坏的一种错。</dd>
-        <dt>前置</dt><dd>先在向量路径上补一份 recall@k 基准，否则这个改动没有判据。</dd>
+        <dt>结论</dt><dd class="risk">不做。同时确认 <code>top_k=8</code> / <code>max_k=12</code> / <code>token_budget=4000</code> 维持不动。</dd>
+        <dt>依据</dt><dd><code>evals/recall.py</code> · 原始结果 <code>evals/results/recall.json</code> · 报告 <code>docs/test-report-schema-recall.md</code></dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="fix-head"><span class="prio p2">P2-3</span><span class="ti">召回基准顺带挖出来的三件事</span><span class="kind">新增 · 由 P2-2 的基准派生</span></div>
+    <div class="fix-body">
+      <p>基准不只是否掉了一个提案，它把召回的三种失败形态各钉出了实探。<strong>这三条都不是性能问题，是答案正确性问题</strong>，优先级应当高于本方案里的任何一条省钱改动。</p>
+      <h4 style="margin-top:1rem">① 2.1% 的题，主表连注入集都进不去</h4>
+<pre>【careermate】有多少用户创建过简历但从没发起过会话   → users 第 <span class="cm">27</span> 名
+   1. resume_generation_run  0.7048
+   2. agent_pending_actions  0.6353
+   3. interview_sessions     0.6344
+  ...
+  27. users                  0.4397</pre>
+      <p>问题里的名词是"简历""会话"，描述里复述这些名词的卫星表全部压过 <code>users</code> —— 而 <code>users</code> 才是被计数的主体。<strong>第 27 名意味着它根本不会出现在提示词里</strong>，模型只能在给它的 12 张里硬凑。同类还有 <code>ra-j11</code>（<code>organizations</code> 第 16 名、相似度 0.32，低于 <code>min_score</code>）。这是<strong>静默答错的风险位</strong>。</p>
+      <h4>② 预聚合表压过明细表 —— 已有现成解法没铺开</h4>
+<pre>【shop_supply】逐个供应商统计采购金额并排序   → purchase_orders 第 7 名
+   1. purchase_stats_daily   0.7243
+   2. suppliers              0.6899</pre>
+      <p><strong>这个坑在 <code>shop_logistics</code> 上已经填过</strong>：<code>logistics_stats_daily</code> 的表注释里写着"只用于看趋势；要查哪些运单…用 <code>shipments</code>"，<code>shipments</code> 也写了反向指路 —— 而 <code>shop_logistics</code> 两条用例的主表 @1 都是 100%。把这句话照抄到 <code>purchase_stats_daily</code> 等同构表上，成本极低。（n=2，方向明确但不构成因果证明。）</p>
+      <h4>③ 向量召回没有字面锚点</h4>
+<pre>【ragforge】JD 文档数是多少            → documents 第 7 名
+   1. judge_metrics_daily  0.4476   <span class="cm">← "JD" 被吸到了 "judge"</span>
+
+【ragforge】documents 表一共有多少行   → documents 第 <span class="cm">2</span> 名
+   1. document_chunks      0.4915   <span class="cm">← 问题里逐字写着表名，仍被压过</span></pre>
+      <p>问题里原样写出表名也不保证第一名。第一例正是生产上那条已知缺陷（「JD 数」恒 0）的召回侧证据 —— 此前只知道列注释缺失让模型选错了列，现在看到<strong>召回这一层就已经把主表排到第 7 了</strong>。建议：问题命中表名或别名时给一个确定性加权，别让向量单打独斗。</p>
+      <dl class="spec">
+        <dt>改哪儿</dt><dd>① 与 ③ 在 <code>askdb/schema_rag.py</code> 的排序与兜底；② 在各源的库 COMMENT，不改代码</dd>
+        <dt>怎么验</dt><dd>改完重跑 <code>python -m evals.recall</code>，与 <code>recall.prev.json</code> 对比 —— 这份基准本身就是它的验收口径</dd>
       </dl>
     </div>
   </div>
@@ -889,12 +925,15 @@ python -m evals.baseline --compare</pre>
 </section>
 
 <footer>
-  <p><strong>文档</strong>　askdb 单链路提效方案 · V1.0<br>
+  <p><strong>文档</strong>　askdb 单链路提效方案 · V1.1<br>
   <strong>拟制日期</strong>　2026-09-15<br>
   <strong>依据</strong>　生产 trace <code>4bac5ce7f21b</code>（2026-09-14 16:10 UTC，14 个 span 完整输入输出，取自 <code>/api/trace</code>）；代码对照 <code>askdb@0c159f5</code> 的 <code>agentgraph.py</code> / <code>agent.py</code> / <code>tools.py</code> / <code>llm.py</code>；单价对照 <code>config/public.yaml</code>（qwen3.8-flash 输入 ¥0.0008/千、命中缓存 ¥0.00008/千、输出 ¥0.0027/千，2026-09-06 核对）；分布口径取自执行追踪页当日读数（P50 1.46s / P95 16.14s / 6,931 样本）<br>
   <strong>数字口径</strong>　<span style="color:var(--accent)">本文档内所有指标均为实测值</span>，逐条可回溯到上述 trace 的 span 明细或配置里的单价 —— <strong>不适用 <code>docs/README.md</code> 中「设计文档数字均为占位值」那条说明</strong>。改造后的预估值已在正文中明确标注为预估，并注明哪些是确定性的、哪些是概率性的。<br>
   <strong>阶段目标</strong>　P0 三条落地并影子跑完两轮：2026-09-22　·　P0 切 enforce 并生产验证：2026-09-26　·　P1 两条：2026-09-30　·　P2 立项评审：2026-10-10<br>
-  <strong>修订记录</strong>　V1.0 / 2026-09-15 / 首版，基于单条 trace 剖析</p>
+  <strong>修订记录</strong>　V1.0 / 2026-09-15 / 首版，基于单条 trace 剖析<br>
+  　　　　　　　V1.1 / 2026-09-15 / 补跑向量路径 recall@k 基准（<code>docs/test-report-schema-recall.md</code>）：
+  <span style="color:var(--waste)">P2-2「schema 分层注入」据此否决</span>，同时确认 <code>top_k=8</code>/<code>max_k=12</code> 维持不动；
+  新增 P2-3（召回的三种失败形态，均为正确性问题，优先级高于本方案任何一条省钱改动）</p>
 </footer>
 
 </div>
