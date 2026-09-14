@@ -64,6 +64,12 @@ class AgentAction(BaseModel):
     answer: str = Field(default="", description="finish=true 时的最终结论（含口径与归因）")
     tool: str = Field(default="", description="finish=false 时选的工具名")
     args: dict[str, Any] = Field(default_factory=dict, description="该工具的参数")
+    answer_step: int = Field(
+        default=0,
+        description="finish=true 时，结论依据的是**第几步**的执行结果 —— 填"
+                    "【已完成的工具调用与结果】里的那个序号。界面据此渲染结果表。"
+                    "0 = 最后一次执行。多步链路里最后一次往往是探查或核对，"
+                    "不是回答问题的那一条，所以这一位要填准。")
 
 
 INTENT_SYSTEM = """你是数据查询的意图预检。已给你「可用的表与业务口径」，据此判断四件事：
@@ -104,7 +110,10 @@ AGENT_SYSTEM = """你是一个可信查数 Agent。你不能直接写库，只�
 - 一步只做一件事。看到工具结果后再决定下一步。
 - 证据已经足以回答用户问题时，finish=true 并在 answer 写出结论——**结论要说明口径**，
   并且只基于工具真正返回的数据，不得编造。
-- 若发现问题无法用现有表回答，也 finish=true，在 answer 如实说明无法回答及原因。
+- **finish=true 时必须填 answer_step**：结论依据的是第几步的执行结果（【已完成的
+  工具调用与结果】里的序号）。界面按它渲染结果表；不填就默认取最后一次执行，
+  而多步链路里最后一次往往是探查或核对，不是回答问题的那一条。
+- 若发现问题无法用现有表回答，也 finish=true，在 answer 如实说明无法回答及原因。{answer_style}
 
 结论里的数字，以下五条是硬约束（违反即为错答，且事后可核）：
 1. **没跑过就不许写。** 结论里出现的每一个数字，都必须是某次 execute_sql 真正返回过的值，
@@ -189,6 +198,40 @@ _RULES = {
 }
 
 
+#: answer 要不要把结果集整表抄一遍 —— 由 agent.answer_no_table_dump 选。
+#:
+#: 生产 trace 4bac5ce7f21b 的收敛那一次输出 1,415 个 token，主体是一张
+#: 18 行 × 6 列的 Markdown 表 —— 而这张表的数据就在 last_exec 里、界面本来就在
+#: 渲染它。按实测解码速率（1,415 tok / 18.1s ≈ 78 tok/s）算，光这张表就是十几秒；
+#: 按单价算是 ¥0.0038，占整条链路成本的 29.8%。而且 with_structured_output
+#: 走的是 function_calling，Markdown 的换行全被转义成 \\n，还额外胀一成。
+#:
+#: **这条有一个前置依赖，必须同时成立**：界面渲染的得是"回答问题那一条"的结果，
+#: 不是"最后执行"那一条。否则答案里不再有表、而界面上的表还是错的 —— 比改之前
+#: 更坏。前置由 AgentAction.answer_step + agentgraph._answer_exec 解决，
+#: 两者是一个整体，别只关其中一个。
+_ANSWER_STYLE = {
+    True: '''
+- **answer 里不要把结果集整表抄一遍。** 完整结果表由界面直接渲染你指定的那一步的
+  返回行，你再抄一遍既不会更准，也会让读的人看到两份。answer 只写三件事：
+  ① 口径说明（数据来自哪张表哪一列、怎么算的、覆盖范围）；② 结论；
+  ③ 要点 —— 最多列 Top/Bottom 各 3 条，点名时写名称与数值即可。
+  结果超过 3 行时尤其如此。**这不是让你少说**：口径与结论要写足，省的只是那张
+  界面已经有的表。''',
+    False: "",
+}
+
+
+def answer_no_table_dump(cfg: Config) -> bool:
+    """收敛轮要不要停止复述结果表。默认开。
+
+    与 sql_consolidation 同理，这是改模型输出长度的概率分布、不是判定改动，
+    旋钮既是标定手段也是回滚位。**关掉它之前先想清楚**：answer_step 那套
+    结果区取数是独立的正确性修复，不受这个旋钮影响，关掉这里不会把它一起关掉。
+    """
+    return bool((cfg.raw.get("agent") or {}).get("answer_no_table_dump", True))
+
+
 def sql_consolidation(cfg: Config) -> bool:
     """核对列要不要并进同一条 SQL。默认开。
 
@@ -206,6 +249,7 @@ def render_agent_system(cfg: Config, hide: frozenset[str] = frozenset()) -> str:
     （工具规格、旋钮档位），绝不能插入随请求变的值。
     """
     return AGENT_SYSTEM.format(tools=_render_specs(hide),
+                               answer_style=_ANSWER_STYLE[answer_no_table_dump(cfg)],
                                **_RULES[sql_consolidation(cfg)])
 
 

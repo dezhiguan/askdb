@@ -1025,3 +1025,86 @@ def test_sql_consolidation_keeps_the_grounding_rules_intact(tmp_path):
     assert "1. **没跑过就不许写。**" in on
     assert "3. **被截断的结果不能用来说总量。**" in on
     assert "不放松第 1、2、3 条" in on
+
+
+def test_answer_no_table_dump_knob(tmp_path):
+    """P0-3 的措辞按 agent.answer_no_table_dump 开关，且不影响 answer_step 那条。"""
+    cfg = _cfg(tmp_path, agent={"max_steps": 2})
+
+    cfg.raw["agent"]["answer_no_table_dump"] = True
+    on = A.render_agent_system(cfg)
+    assert "answer 里不要把结果集整表抄一遍" in on
+
+    cfg.raw["agent"]["answer_no_table_dump"] = False
+    off = A.render_agent_system(cfg)
+    assert "answer 里不要把结果集整表抄一遍" not in off
+
+    # answer_step 是独立的正确性修复，两档都必须在场 —— 关掉复述那条旋钮时，
+    # 结果区仍然要按指认取数，否则两边会各错一半。
+    for text in (on, off):
+        assert "必须填 answer_step" in text
+        assert "{answer_style}" not in text
+
+    cfg.raw["agent"].pop("answer_no_table_dump")
+    assert A.answer_no_table_dump(cfg) is True
+
+
+def test_answer_exec_follows_the_step_the_model_pointed_at():
+    """结果区取"回答问题那一条"，不是"最后执行"那一条。"""
+    from askdb import agentgraph as G
+    first = {"columns": ["n"], "rows": [[7]], "step": 2}
+    probe = {"columns": ["c"], "rows": [[1]], "step": 4}
+    st = {"exec_results": [first, probe], "last_exec": probe}
+
+    assert G._answer_exec({**st, "answer_step": 2}) is first
+    assert G._answer_exec({**st, "answer_step": 4}) is probe
+
+
+def test_answer_exec_falls_back_to_last_exec_unchanged():
+    """没指认 / 指错 / 越界 —— 一律退回改动前的行为（最后一次执行）。"""
+    from askdb import agentgraph as G
+    first = {"columns": ["n"], "rows": [[7]], "step": 2}
+    probe = {"columns": ["c"], "rows": [[1]], "step": 4}
+    st = {"exec_results": [first, probe], "last_exec": probe}
+
+    assert G._answer_exec(st) is probe                       # 没填
+    assert G._answer_exec({**st, "answer_step": 0}) is probe  # 显式 0
+    assert G._answer_exec({**st, "answer_step": 3}) is probe  # 那一步不是成功执行
+    assert G._answer_exec({**st, "answer_step": 99}) is probe  # 越界
+    assert G._answer_exec({**st, "answer_step": -1}) is probe  # 负数
+    # 一次都没执行成功时不该抛
+    assert G._answer_exec({"exec_results": [], "last_exec": None}) is None
+
+
+def test_exec_results_carry_step_and_full_payload(tmp_path, monkeypatch):
+    """exec_results 要带步号与完整返回，接地校验对多出来的键透明。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    _stub_guard(monkeypatch)
+    from askdb import agentgraph as G
+
+    captured = {}
+    real = G._n_finalize
+
+    def spy(state, config):
+        captured["exec_results"] = list(state.get("exec_results") or [])
+        return real(state, config)
+
+    monkeypatch.setattr(G, "_n_finalize", spy)
+    G.reset_graph()
+    try:
+        A.run_agent("有多少文档", _cfg(tmp_path, agent={"max_steps": 3}), 316,
+                    executor=_FakeExec(),
+                    llm=_FakeLLM([{"finish": False, "tool": "execute_sql",
+                                   "args": {"sql": "SELECT 1"}},
+                                  {"finish": True, "answer": "42 个。", "answer_step": 1}]))
+    finally:
+        G.reset_graph()
+
+    got = captured.get("exec_results") or []
+    assert got, "一次成功执行都没落进 exec_results"
+    assert got[0]["step"] == 1, got[0]
+    # 完整返回：AskResult 要的这些字段不能只留 columns/rows
+    assert "as_of" in got[0] and "row_count" in got[0]
+    # 接地校验只读 columns/rows，多出来的键不该改变它的判定
+    assert grounding.ungrounded("一共 42 个", got) == []

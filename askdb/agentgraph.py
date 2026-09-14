@@ -65,6 +65,9 @@ class AgentState(TypedDict, total=False):
     action: dict[str, Any]
 
     answer: str
+    #: 模型指认的"结论依据的是第几步的执行结果"（AgentAction.answer_step）。
+    #: 0 = 没指认，按最后一次执行取。**必须声明在这里**，理由同 action 那条。
+    answer_step: int
     converged: str # 为什么提前收敛，空串=正常收尾
     step: int
     step_count: int
@@ -510,6 +513,9 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     }
     if finish:
         out["answer"] = action.answer or ""
+        # 越界/负数在 _answer_exec 里退回"最后一次"，这里不做校验 —— 模型填错
+        # 一个序号不该让整条链路失败。
+        out["answer_step"] = int(getattr(action, "answer_step", 0) or 0)
     _check_handoff(d, state, step=step, tok_used=out["tok_used"])
     return out
 
@@ -737,9 +743,18 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     #    大量正确答案判成编造。
     if res.ok and tool_name == "execute_sql":
         out["last_exec"] = dict(res.data or {})
+        # 带上**步号与完整返回**：结果区要按模型指认的 answer_step 回头取某一步的
+        # 结果（见 _answer_exec），只留 columns/rows 拼不回 as_of / explain_rows /
+        # masked_columns 这些 AskResult 要的字段。
+        # 接地校验只读 columns/rows（grounding.values_of / _subset_sum_keys /
+        # _text_digit_keys 三处都只取 r["rows"]），多出来的键对它是透明的。
         out["exec_results"] = list(state.get("exec_results") or []) + [
-            {"columns": list(res.data.get("columns") or []),
-             "rows": list(res.data.get("rows") or [])}]
+            {**dict(res.data or {}),
+             "columns": list(res.data.get("columns") or []),
+             "rows": list(res.data.get("rows") or []),
+             # history 是 1 起数的（_render_history 用 enumerate(history, 1)），
+             # 而这条记录是 append 之后的那一项 —— 与提示词里模型看到的序号对齐。
+             "step": len(state.get("history") or []) + 1}]
         # ④ 供 analyze_result / export_result 用。ctx 不进检查点，它是本次
         #    执行的现场；续跑时从 history 重建不了，那两个工具因此只在
         #    同一次执行内可用 —— 与改造前一致。
@@ -764,6 +779,37 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                    explain_rows=int(res.data.get("explain_rows") or 0)
                                 if isinstance(res.data, dict) else 0)
     return out
+
+
+def _answer_exec(state: AgentState) -> dict[str, Any] | None:
+    """结果区该渲染**哪一次**执行的结果。
+
+    此前恒取 last_exec，也就是"最后执行"那一条 —— 而多步链路里最后执行的往往是
+    探查或核对，不是回答问题的那一条。生产 trace 4bac5ce7f21b 就是这个形状：
+    第 5 步那条 GROUP BY 才是答案，第 11 步那条加了"近 3 月均值"的改写版只是
+    顺手多给的，结果区却渲染后者。evals/baseline.py 的注释里也记着同一件事的
+    另一面 —— 审计里的 rows_returned 取的是最后执行那条，拿它反查答案 SQL
+    会选中探查语句。
+
+    **改提示词修不好它**（试过），因为这不是模型不懂，是消费端一直没问过它。
+    所以让它在 finish 那一次直接指认：AgentAction.answer_step 填
+    【已完成的工具调用与结果】里的序号，这里按号回取。
+
+    三种情况一律退回"最后一次执行"，因为那正是改动前的行为 —— 这条改动**只在
+    模型明确指认且指认得到时**改变结果，其余时刻逐字不变：
+      · 没填（0）；
+      · 填了但那一步不是成功的 execute_sql（探查失败、或指到工具调用上）；
+      · 越界 / 负数。
+    """
+    execs = state.get("exec_results") or []
+    if not execs:
+        return state.get("last_exec")
+    want = int(state.get("answer_step") or 0)
+    if want > 0:
+        hit = next((e for e in execs if int(e.get("step") or 0) == want), None)
+        if hit is not None:
+            return hit
+    return state.get("last_exec")
 
 
 def _meta_evidence(state: AgentState) -> list[dict[str, Any]]:
@@ -1085,7 +1131,7 @@ def initial_state(question: str, org: int, trace_id: str, thread_id: str,
         "schema_prompt": "", "tables_hit": [],
         "history": history, "exec_results": [],
         "last_exec": None, "scan_blocked": None, "last_error": "",
-        "answer": "", "converged": "", "step": 0, "step_count": 0,
+        "answer": "", "answer_step": 0, "converged": "", "step": 0, "step_count": 0,
         "ungrounded": [], "grounding_retried": False,
         "rejected_by": None, "error": "", "hint": "", "reasoning": "",
         "max_steps": max_steps, "cost_cap": cost_cap, "tok_used": 0,
@@ -1108,7 +1154,9 @@ def to_result(state: AgentState, cfg: Config, tracer: Tracer):
         int(state.get("org_id", 0)), tracer,
         ok=not state.get("rejected_by"),
         reasoning=state.get("answer") or state.get("reasoning") or "",
-        last_exec=state.get("last_exec"),
+        # **不是 state["last_exec"]** —— 结果区要渲染的是"回答问题那一条"的结果，
+        # 不是"最后执行"那一条。没指认时 _answer_exec 退回 last_exec，行为不变。
+        last_exec=_answer_exec(state),
         rejected_by=state.get("rejected_by"),
         error=state.get("error", ""), hint=state.get("hint", ""),
         tables_hit=state.get("tables_hit") or [],
