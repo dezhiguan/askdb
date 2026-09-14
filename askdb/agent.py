@@ -47,6 +47,12 @@ class IntentCheck(BaseModel):
                     "严禁攀附同名列硬答 —— 这种情况填 true。")
     clarify: str = Field(default="", description="answerable=false 且非越域时，说明缺什么、要澄清什么")
     multi_step: bool = Field(default=False, description="是否需要多步（先探分布/结果驱动分支）")
+    metadata_only: bool = Field(
+        default=False,
+        description="问的是**库/表/字段本身**（有哪些表、某张表有哪些字段、这个库能查什么），"
+                    "而不是表里的数据 → true。"
+                    "只要答案需要读任何一行业务数据（计数、求和、分组、列举记录），"
+                    "哪怕问法里带着表名，也是 false。")
     reason: str = Field(default="", description="一句话判断依据")
 
 
@@ -60,7 +66,7 @@ class AgentAction(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict, description="该工具的参数")
 
 
-INTENT_SYSTEM = """你是数据查询的意图预检。已给你「可用的表与业务口径」，据此判断三件事：
+INTENT_SYSTEM = """你是数据查询的意图预检。已给你「可用的表与业务口径」，据此判断四件事：
 1. answerable：用这些表能不能回答用户问题；
 2. out_of_scope：问题里的业务实体是否在库中根本不存在——若不存在，**必须**判 true，
    严禁把它攀附到某个名字相近的列上硬answer（例如库里没有「供应商」实体，就不能拿
@@ -71,7 +77,12 @@ INTENT_SYSTEM = """你是数据查询的意图预检。已给你「可用的表�
    然后照样拿同名列数出一个数交差；**写得出这句话就说明该判 true**。
    同一个问题换个问法（"我们有多少 X"／"X 的数量是多少"／"统计一下 X 总数"）
    判定必须一致，不能因为措辞不同就一会儿拒答一会儿攀附；
-3. multi_step：是否需要多步（先看取值分布、或第一步结果决定第二步查哪张表）。
+3. multi_step：是否需要多步（先看取值分布、或第一步结果决定第二步查哪张表）；
+4. metadata_only：问的是**库/表/字段本身**（"有哪些表""某张表有哪些字段""这个库能查什么"），
+   还是表里的**数据**。只要答案需要读任何一行业务数据——计数、求和、分组、列举记录——
+   就是 false，哪怕问法里写着表名（"documents 表一共有多少行"问的是数据，不是元数据）。
+   这一位决定后面的循环要不要把 schema 检索工具摆上桌，判宽了只是多花一轮，
+   判窄了会让元数据问题无工具可用，所以**拿不准就填 true**。
 可答就 answerable=true；缺查询对象（纯指代、没主语）answerable=false 并在 clarify 写清缺什么。"""
 
 INTENT_USER = """{schema}
@@ -136,12 +147,15 @@ AGENT_SYSTEM = """你是一个可信查数 Agent。你不能直接写库，只�
 #: 从"系统提示"往后延了一段。改动它要留意这一点：插一个随请求变的值进来，
 #: 就把这段前缀作废了。
 #:
-#: **这里有意不写"不要再调 search_schema"**，尽管那一轮确实是纯重复（线上
-#: trace 3f16cd49baec：3,318ms + 4,022 token + 一次 embedding 计费，换回
-#: 同一批表）。原因在 agentgraph._hidden_tools 的说明里：元数据问题
+#: **这里仍然不写"不要再调 search_schema"** —— 那一轮确实是纯重复（线上 trace
+#: 3f16cd49baec：3,318ms + 4,022 token + 一次 embedding 计费，换回同一批表；
+#: 4bac5ce7f21b 又重演一次），但这份表头对**所有**问题生效，而元数据问题
 #: （"这个库里有哪些表"）全靠模型自己调一次 search_schema 才能过 NO_EVIDENCE
-#: 那道闸，劝它别调等于把一个潜伏的误杀推成常态。那一轮要省，得先把闸的
-#: 判据换成"这个数是不是只由 schema 解释得了"，那是另一个改动。
+#: 那道闸。在这里一刀切地劝它别调，等于把一个潜伏的误杀推成常态。
+#:
+#: 2026-09-15 起这一轮改由 agentgraph._hidden_tools 按问题类型收：数据问题把
+#: search_schema 整个撤出规格表，元数据问题照旧留着。**收暴露面比劝措辞可靠**
+#: —— 措辞是概率，规格表里没有这一行才是确定的。
 AGENT_USER = """【本次 schema 召回已经完成，下面这份就是召回结果】
 每张表的列名、类型、枚举取值都是**完整原值**，不是摘要，可以直接照它写 SQL。
 因此：下面已经列出的表不要再调 get_table_schema —— 它返回的与下面逐字相同，

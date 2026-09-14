@@ -43,6 +43,11 @@ class AgentState(TypedDict, total=False):
     #: 都是全列原值，get_table_schema 对它们一无所加 —— 决策时据此收窄工具暴露面
     #: （见 _hidden_tools）。**必须声明在这里**，理由同下面 action 那条。
     schema_complete: bool
+    #: 预检判定的"问的是元数据还是数据"。同样**必须声明在这里**，否则 LangGraph
+    #: 按 State 字段过滤节点返回值时会把它静默丢掉，_hidden_tools 永远读到
+    #: 默认的 False —— 而那个方向恰好是"看起来正常、只是一直多花一轮"，
+    #: 不会有任何报错把它暴露出来。
+    metadata_only: bool
 
     history: list[dict[str, Any]] # 回灌进下一轮提示词
     exec_results: list[dict[str, Any]] #每一次执行成功；接地校验要看全部
@@ -305,7 +310,11 @@ def _n_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     d.tracer.add("intent", t, intent.reason, **_sp_kw(sp))
 
     out: dict[str, Any] = {
-        "tok_used": state.get("tok_used", 0) + u.input_tokens + u.output_tokens}
+        "tok_used": state.get("tok_used", 0) + u.input_tokens + u.output_tokens,
+        # 供 _hidden_tools 决定第一轮要不要把 search_schema 摆上桌。
+        # 这一位**只由预检产出**：循环里没有任何一处比这次调用更清楚用户问的是
+        # 元数据还是数据，而预检本来就要跑，多这一个字段约 10 个输出 token。
+        "metadata_only": bool(intent.metadata_only)}
     # 两种不可答分开报：越界是"这个库里没有这种东西"（补充再多也没用），
     # 缺主体是"你问得不够具体"（补一句就能跑）。下一步该谁动手完全不同。
     if intent.out_of_scope:
@@ -388,11 +397,39 @@ def _hidden_tools(state: AgentState) -> frozenset[str]:
     所以这里只收 get_table_schema：它与闸 ① 无关（元数据的依据来自 search_schema），
     撤掉零风险。search_schema 那一轮改由提示词劝阻（AGENT_USER 表头）+ 下面
     _n_act 的 ⓪′ 兜底 —— 劝不住时至少不重跑 embedding，并在回灌里点破。
+
+    2026-09-15 补：**search_schema 也收，但只对数据问题收。**
+
+    上面那段留下的缺口，生产 trace 4bac5ce7f21b 又原样重演了一次：第 2 轮决策
+    选了 search_schema，⓪′ 把它挡下、返回 reused=true、耗时 0ms —— embedding
+    是省下了，可那一轮决策本身（2,940ms + 4,355 输入 / 225 输出 token
+    ≈ ¥0.0011）已经花掉了。劝阻是概率，而概率会以固定比例失败。
+
+    绕开"改闸 ① 判据"那条难走的路：闸 ① 保护的只是**元数据问题**（"这个库里有
+    哪些表"），那类问题唯一能调的工具就是 search_schema。所以按问题类型分开：
+
+      · metadata_only=True  —— 照旧摆上桌。闸 ① 要保护的正是这一类，行为与
+        改动前逐字相同，上面那段论证护住的不变量原样成立。
+      · metadata_only=False —— 收掉。数据问题必然要跑 execute_sql，闸 ① 天然
+        满足，不存在"零工具调用直接作答"的情形。
+
+    metadata_only 由预检产出（agent.IntentCheck），而且**判不准时它被要求填
+    true**：误判成 true 的代价是多花一轮（退回改动前），误判成 false 的代价是
+    元数据问题无工具可用。两个方向不对称，所以默认值与措辞都偏向 true。
+
+    预检没跑（异常早退）时 state 里没有这一位，读到 False。那种情况下链路根本
+    走不到 decide，不必为它单开一条分支。
     """
     if not state.get("schema_prompt"):
         return frozenset()                     # 召回什么都没给，该让它自己去搜
-    return frozenset({"get_table_schema"}) if state.get("schema_complete") \
-        else frozenset()
+    if not state.get("schema_complete"):
+        # 盲选 / 有表被预算裁掉：提示词里那份**不是**全部可用的表，
+        # 两个检索工具都还有用武之地，一个都不撤。
+        return frozenset()
+    hide = {"get_table_schema"}
+    if not state.get("metadata_only"):
+        hide.add("search_schema")
+    return frozenset(hide)
 
 
 def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
@@ -613,8 +650,10 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     #
     #    _n_recall 调的就是 tools.search_schema(question)，结果全文已注入提示词。
     #    模型再调一次 search_schema 时，重跑的是一次 **embedding 计费调用 + 向量
-    #    检索**，换回的是逐字相同的一份东西。_hidden_tools 已经把它从规格表里
-    #    撤了，这里是硬兜底 —— 规格表是引导，这一条才是保证。
+    #    检索**，换回的是逐字相同的一份东西。数据问题上 _hidden_tools 已经把它
+    #    从规格表里撤了，这里是硬兜底 —— 规格表是引导，这一条才是保证。
+    #    元数据问题上它仍在桌上（闸 ① 要它），那一类正是这条兜底唯一还会
+    #    真正拦到的场景。
     #
     #    不走上面那道 ⓪：那道闸按 (工具, 参数) 完全相同判，而召回这一次压根不在
     #    history 里，且模型填的 question 往往是自己的改写，字面对不上。

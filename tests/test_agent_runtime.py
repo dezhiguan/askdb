@@ -835,35 +835,73 @@ def test_history_preview_says_how_many_rows_are_hidden(tmp_path):
 # 而三条 tool_call span 的耗时全是 0ms —— 后者是计时器起反了，不是真的快。
 # --------------------------------------------------------------------------
 def test_hidden_tools_drops_get_table_schema_only_when_recall_complete():
-    """召回完整 → 撤 get_table_schema；盲选/裁表 → 留着；没召回 → 一个都不撤。
-
-    **search_schema 任何时候都不撤**：元数据问题全靠模型自己调它一次才能过
-    NO_EVIDENCE 那道闸（见 _hidden_tools 的说明）。
-    """
+    """召回完整 → 撤 get_table_schema；盲选/裁表 → 留着；没召回 → 一个都不撤。"""
     from askdb import agentgraph as G
-    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": True}) \
-        == frozenset({"get_table_schema"})
-    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": False}) == frozenset()
+    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": True,
+                            "metadata_only": True}) == frozenset({"get_table_schema"})
+    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": False,
+                            "metadata_only": True}) == frozenset()
     assert G._hidden_tools({}) == frozenset()
 
 
-def test_decide_prompt_hides_get_table_schema_but_keeps_search_schema(tmp_path, monkeypatch):
-    """规格表要真的少一行 —— 只测 _hidden_tools 的返回值管不住接线。"""
+def test_hidden_tools_keeps_search_schema_only_for_metadata_questions():
+    """数据问题撤 search_schema，元数据问题留着。
+
+    留着那一档是 NO_EVIDENCE 闸 ① 的命根子：元数据问题（"这个库里有哪些表"）
+    唯一能调的工具就是它，撤掉之后模型只能零工具调用直接作答，闸 ① 一刀切拒。
+    撤掉那一档省的是 trace 4bac5ce7f21b 里第 2 轮那次纯重复的决策。
+
+    盲选/裁表时**两个都不撤** —— 那时提示词里的不是全部可用的表，
+    模型确实需要自己再检索一次。
+    """
+    from askdb import agentgraph as G
+    base = {"schema_prompt": "x", "schema_complete": True}
+    assert G._hidden_tools({**base, "metadata_only": False}) \
+        == frozenset({"get_table_schema", "search_schema"})
+    assert G._hidden_tools({**base, "metadata_only": True}) \
+        == frozenset({"get_table_schema"})
+    # 预检没跑到（异常早退）时读到的就是缺省 False，按数据问题收 —— 那条路
+    # 根本走不到 decide，这里只钉住"不抛"。
+    assert "search_schema" in G._hidden_tools(base)
+    assert G._hidden_tools({**base, "schema_complete": False,
+                            "metadata_only": False}) == frozenset()
+
+
+def _seen_decide_prompts(tmp_path, monkeypatch, question, *, metadata_only):
+    """跑一趟 agent，把 decide 那几次的 system 提示词收回来。"""
     monkeypatch.setattr(A, "build_quota", lambda c: _Q())
     _patch_recall(monkeypatch)
     seen = []
 
     class Rec(_FakeLLM):
         def structured(self, schema, system, human):
-            if schema is not A.IntentCheck:
-                seen.append(system)
+            if schema is A.IntentCheck:
+                u = A.LlmUsage(input_tokens=1, output_tokens=1)
+                return schema(answerable=True, out_of_scope=False, reason="可答",
+                              metadata_only=metadata_only), u
+            seen.append(system)
             return super().structured(schema, system, human)
 
-    A.run_agent("有哪些表", _cfg(tmp_path, agent={"max_steps": 2}), 316,
-                executor=_FakeExec(), llm=Rec([{"finish": True, "answer": "只有 documents。"}]))
+    A.run_agent(question, _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                executor=_FakeExec(),
+                llm=Rec([{"finish": True, "answer": "只有 documents。"}]))
     assert seen, "decide 一次都没跑，这条测试什么都没验到"
+    return seen
+
+
+def test_decide_prompt_keeps_search_schema_for_metadata_questions(tmp_path, monkeypatch):
+    """规格表要真的少一行 —— 只测 _hidden_tools 的返回值管不住接线。"""
+    seen = _seen_decide_prompts(tmp_path, monkeypatch, "有哪些表", metadata_only=True)
     assert "- get_table_schema：" not in seen[0]
     assert "- search_schema：" in seen[0]
+    assert "- execute_sql：" in seen[0]
+
+
+def test_decide_prompt_drops_search_schema_for_data_questions(tmp_path, monkeypatch):
+    """数据问题的规格表里不该再有 search_schema —— 省掉那一轮纯重复的决策。"""
+    seen = _seen_decide_prompts(tmp_path, monkeypatch, "有多少文档", metadata_only=False)
+    assert "- search_schema：" not in seen[0]
+    assert "- get_table_schema：" not in seen[0]
     assert "- execute_sql：" in seen[0]
 
 
