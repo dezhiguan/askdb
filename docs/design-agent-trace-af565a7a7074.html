@@ -351,8 +351,8 @@ blockquote{margin:0; padding:14px 18px; background:var(--surface-2); border-left
 </section>
 
 <section>
-  <div class="shead"><span class="n">04</span><h2>四个缺陷</h2></div>
-  <p class="lede">按"确定性 &gt; 概率性"、"改代码 &gt; 改措辞"排序。前三条互不依赖、都是确定性改动，可以并行落；第四条要按既定纪律先影子跑两轮再切。</p>
+  <div class="shead"><span class="n">04</span><h2>五个缺陷</h2></div>
+  <p class="lede">按"确定性 &gt; 概率性"、"改代码 &gt; 改措辞"排序。前三条互不依赖、都是确定性改动，可以并行落；第四条要按既定纪律先影子跑两轮再切。第五条是本文写完当天在生产上抓到的同形状故障，已一并修掉。</p>
 
   <div class="stack">
 
@@ -425,11 +425,73 @@ ORDER BY 1, 3 DESC</pre>
         </div>
         <p>而 <code>pyproject.toml</code> 是 <code>sqlglot&gt;=25.0</code> <strong>无上界</strong>，Dockerfile 里 <code>pip install ".[web,redis,postgres]"</code>、没有 lock 文件，每次构建装当时的最新版。<code>_select_flags</code> 里已有一条同类漂移的注释（「sqlglot 30 把 with 改成了 with_」），说明线上跑的就是 30.x。<strong>没人改过这条规则，是依赖自己变了</strong> —— 这正是最坏的失效方向：不报错，只是判定悄悄换了一侧。</p>
         <p>放行不是放宽：EXCEPT / INTERSECT 与 UNION 一样是只读集合运算，下游一条护栏都不漏 —— R-10 租户谓词注入走 <code>root.find_all(exp.Select)</code>，递归覆盖每一支（实测三分支注入 3 次）；LIMIT 回写走 <code>root.limit()</code>，SetOperation 同样支持。</p>
+
+        <h3 style="margin-top:10px">生产复验（2026-09-15，部署后）</h3>
+        <p>同一组 SQL、同一个数据源，与部署前对打：</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>用例</th><th>部署前</th><th>部署后</th></tr></thead>
+            <tbody>
+              <tr><td>三段 UNION ALL（第 07 步原文）</td><td><span class="pill p-block">P03 拒</span></td><td><span class="pill p-ok">ok · 23 行</span></td></tr>
+              <tr><td>两段 UNION ALL（对照）</td><td>ok · 12 行</td><td><span class="pill p-ok">ok · 12 行</span></td></tr>
+              <tr><td>EXCEPT</td><td><span class="pill p-block">R-02「实际是 EXCEPT」</span></td><td><span class="pill p-ok">ok</span></td></tr>
+              <tr><td>INTERSECT</td><td><span class="pill p-block">R-02「实际是 INTERSECT」</span></td><td><span class="pill p-ok">ok · 200 行</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:12px">脱敏没松，拿会员中心真实敏感列（<code>email</code> / <code>phone</code>）逐形状验：</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>形状</th><th><code>masked_columns</code></th><th>返回样本</th></tr></thead>
+            <tbody>
+              <tr><td>三段 UNION，敏感列在<strong>中间</strong>那支</td><td><code>["v"]</code></td><td><code>["a","*"]</code></td></tr>
+              <tr><td>三段 UNION，敏感列在<strong>最后</strong>那支（递归到底才判得出来）</td><td><code>["v"]</code></td><td><code>["a","*"]</code></td></tr>
+              <tr><td>三段 UNION，三支<strong>都不敏感</strong></td><td><code>[]</code></td><td><code>["a","1"]</code>　← 不误伤</td></tr>
+              <tr><td>四段 UNION，敏感列在第 3 支</td><td><code>["v"]</code></td><td><code>["a","*"]</code></td></tr>
+              <tr><td>EXCEPT 带 <code>phone</code></td><td><code>["phone"]</code></td><td><code>1*********4</code></td></tr>
+              <tr><td>INTERSECT 带 <code>email</code></td><td><code>["email"]</code></td><td><code>u****************d</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 style="margin-top:22px">A/B 实测推翻了这一条的收益口径</h3>
+        <p>V1.0 把 C2 记在"提效"名下（「≥ −1 轮补救决策 · 多步链路均摊 −0.2 s」）。为验证这个数，做了一次受控 A/B：<strong>同一个问题、同一个模型（deepseek-v4-flash, temperature=0）、同一个库、同一份配置，唯一变量是这处 guard 改动，各跑 5 轮</strong>。</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>指标（中位数，n=5）</th><th class="n">改动前</th><th class="n">改动后</th><th class="n">Δ</th></tr></thead>
+            <tbody>
+              <tr><td>步数 <code>step_count</code></td><td class="n">3</td><td class="n">1</td><td class="n">−67%</td></tr>
+              <tr><td>模型调用次数</td><td class="n">4</td><td class="n">3</td><td class="n">−25%</td></tr>
+              <tr><td>被 P03 拦截</td><td class="n">5/5</td><td class="n">0/5</td><td class="n">−100%</td></tr>
+              <tr><td>输入 token</td><td class="n">11,844</td><td class="n">8,595</td><td class="n">−27%</td></tr>
+              <tr><td>输出 token</td><td class="n">618</td><td class="n">801</td><td class="n" style="color:var(--waste)">+30%</td></tr>
+              <tr class="total"><td>端到端耗时 ms</td><td class="n">5,771</td><td class="n">5,720</td><td class="n">−1%</td></tr>
+              <tr class="total"><td>单次成本 ¥</td><td class="n">0.008808</td><td class="n">0.009914</td><td class="n" style="color:var(--waste)">+13%</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:12px"><strong>轮数确实 −1，但耗时没兑现，成本反而涨了。</strong>省下的那一轮（约 1.8 s）被更长的答案吃掉了 —— 输出 +183 token，按 §03 那条 <code>ms ≈ 1170 + 14.4 × out</code> 正好抵消。所以 V1.0 记的"−0.2 s"是错的，V1.2 已改。</p>
+
+        <h3 style="margin-top:22px">而真正的收益，是这条链路交不交得出答案</h3>
+        <p><strong>改动前 5/5 全部交了兜底句。</strong>逐 span 看得很清楚 —— 拦截把预算烧光了：</p>
+        <pre class="err">02 decide·select   模型写出三段 UNION ALL          ← 决策本身是对的
+03 tool_call       ✗ P03 脱敏判定无法解析该 SQL
+04 decide·assess   "被脱敏解析拒绝，改成三条独立 GROUP BY"
+05 tool_call       返回 4 行
+06 decide·assess   "改为分别查 file_type 和 error_code"
+07 tool_call       返回 6 行
+08 finalize        累计 token 超预算 12000，收敛作答   ← 预算被拆查烧光</pre>
+        <p>用户拿到的是<strong>和本文开篇那条 trace 一模一样的兜底句</strong>，外加 6 行残表（<code>status</code> 那一列在拆查过程中丢了）。改动后 0/5 交兜底句，一次拿全 16 行并正常收敛，答案里还带着自洽核对（<code>error_code</code> 非空合计 7,799 与 <code>status=FAILED</code> 的 7,799 一致）。</p>
+        <div class="callout" style="margin-top:14px">
+          <h3>C2 是 C1 的成因 —— 这次跑出来了</h3>
+          <p style="font-size:14px; color:var(--ink-2)">V1.0 写 C1 时只是推测"拦截吃掉预算"。现在是 5/5 可复现的因果链：<strong>P03 误杀 → 拆成 3 条查 → 多烧 3,249 输入 token → R-17 触顶 → 交兜底句</strong>。C1（草稿答案兜底 + 最后一轮强制收尾）是给这类链路兜底的，C2 则是从源头少让它发生一次。两者不是并列的四分之一，是同一条故障链的两端。</p>
+        </div>
+        <p class="cap" style="margin-top:12px">口径说明：A/B 用的是 deepseek-v4-flash（本机无 DashScope key），不是生产的 qwen3.8-flash，样例库也远小于生产库。<strong>轮数 / token / 拦截率 / 交不交兜底句这几项是结构性的、可迁移；绝对耗时与成本不可直接套到生产。</strong></p>
       </div>
       <dl class="dmeta">
         <div><dt>改了哪儿</dt><dd><code>askdb/guard.py</code> 新增 <code>set_op_leaves</code>（有序递归展平，含 <code>exp.Subquery</code> 解包与 <code>SetOperation</code> 向下兼容），<code>sensitive_output_columns</code> 与 R-02 白名单各改一处；<code>pyproject.toml</code> 钉上界 <code>sqlglot&gt;=25.0,&lt;31</code></dd></div>
         <div><dt>为什么不用 find_all</dt><dd><code>root.find_all(exp.Select)</code> 是遍历序不是源码序（实测三段 UNION 返回 C、A、B）。这一层判的就是「第几个返回列」，顺序错了脱敏会打在别的列上</dd></div>
-        <div><dt>验收</dt><dd>线上第 07 步那条原文 SQL 现在解析为 <code>set()</code>（放行）；把中间那支换成敏感列 <code>file_name</code> 后正确判出 <code>{1}</code> —— 少误杀，没放宽。全量 <strong>1,088 passed / 0 failed</strong>，覆盖率 82.01%（门槛 81%）。7 条新用例在改动前逐条红、改动后全绿</dd></div>
+        <div><dt>验收</dt><dd>已部署（CI <code>34934388805</code>）并在生产逐条复验，见下方对照表。全量 <strong>1,088 passed / 0 failed</strong>，覆盖率 82.01%（门槛 81%）。7 条新用例在改动前逐条红、改动后全绿</dd></div>
         <div><dt>还要看的</dt><dd>部署后扫审计里 <code>rejected_by=P03</code> 与 <code>R-02</code>「实际是 EXCEPT」两项是否归零</dd></div>
       </dl>
     </div>
@@ -502,6 +564,64 @@ ORDER BY 1, 3 DESC</pre>
       </dl>
     </div>
 
+
+    <!-- C5 -->
+    <div class="defect">
+      <div class="dhead">
+        <span class="dtag">C5</span>
+        <h3>提示词让它别查，闸①又因为它没查而拒答</h3>
+        <span class="cls"><span class="pill p-ok">已落地 · 2026-09-15</span></span>
+      </div>
+      <div class="dbody">
+        <p>本文写完当天在生产上抓到的第二条同形状故障 —— trace <code>f9d0a062165a</code>（会员中心）。问「会员表字段结构」，12.88 秒、¥0.0069、<strong>0 次工具调用</strong>，最后一句「本轮一次工具都没调用成功，结论里的数字没有来源，不给出这个答案」。</p>
+        <p>而这条链路每一步都做对了：</p>
+        <pre class="err">00 schema_recall   召回 13 张表；沿外键补入 points_ledger
+01 intent          "属元数据问题，无需读取业务数据行"  → metadata_only=True
+02 decide·converge "schema 召回已给出 customers 与 member_levels 的完整列
+                    定义，直接据此回答"  → 585 个输出 token 的完整答案
+03 finalize        BLOCKED / NO_EVIDENCE</pre>
+        <p>闸①（<code>_n_finalize</code> 里那条 NO_EVIDENCE）的判据是一行：</p>
+        <pre class="err">ran_tool = any(h.get("ok") for h in (state.get("history") or []))
+if not ran_tool:   # → 一刀切拒</pre>
+        <p>它读的是 <code>history</code> —— <strong>模型自己动没动手</strong>。而 <code>_n_recall</code> 那次召回调的就是 <code>tools.search_schema</code>，是真跑过的工具返回，只是执行者是图不是模型，所以永远不在 <code>history</code> 里。</p>
+        <p>同时提示词在两个地方明确劝它别动手 —— <code>AGENT_SYSTEM</code> 第一条「<strong>不要为了"确认一下"再查一遍它已经写明的东西</strong>」，<code>AGENT_USER</code> 开头「下面已经列出的表不要再调 <code>get_table_schema</code>」。<strong>提示词让它别查，闸①又因为它没查而拒答</strong>；模型这次老老实实听了话，就挨了打。</p>
+        <p><code>_hidden_tools</code> 里「<code>metadata_only=True</code> 照旧把 <code>search_schema</code> 摆上桌」那句留的是<strong>概率</strong>逃生口 —— 桌上有这个工具，不等于模型会去调，何况提示词正在劝它别调。</p>
+        <p>改法是把判据从「模型动没动手」换成「有没有依据」，<strong>但口子按预检的 <code>metadata_only</code> 收窄</strong>。<code>_meta_evidence</code> 的注释里记着当初为什么没让召回顶替闸①：会放过「大约有 120 万条订单」那种小于 <code>grounding.MIN_ABS</code> 的编造，<code>test_agent_no_evidence_blocks_fabricated_number</code> 盯着这条。那个理由今天仍然成立 —— 而那条用例问的是「订单总数」，<code>metadata_only=False</code>，数据问题一步没松。<code>metadata_only</code> 这个信号是 2026-09-15 才有的（V1.4 的 P0-1 顺带产出），当初试这条路时它还不存在。</p>
+        <p>而且只放行闸①：元数据问题接着落进闸②逐个大额数字追溯，闸②自己还有 <code>grounding_no_evidence</code> 的 off/shadow/enforce 兜着。顺带把召回回来的<strong>列清单</strong>也折进 <code>_meta_evidence</code> —— 少了它，闸①放行的问题会原地落进闸②再被拒一次，拒答位置从第①道挪到第②道，用户看到的还是拒答。补进去的正是 <code>get_table_schema</code> 本该返回的那份，而那个工具正是提示词劝模型别调的。</p>
+
+        <h3 style="margin-top:14px">生产复验（部署后，同一问题同一数据源）</h3>
+        <div class="tw">
+          <table>
+            <thead><tr><th>Span</th><th>部署前 <code>f9d0a062165a</code></th><th>部署后 <code>d4d732f186b4</code></th></tr></thead>
+            <tbody>
+              <tr><td>00 schema_recall</td><td>召回 13 张表</td><td>召回 14 张表</td></tr>
+              <tr><td>01 intent</td><td>判元数据问题</td><td>判元数据问题</td></tr>
+              <tr><td>02 decide·converge</td><td>完整答案 585 tok</td><td>完整答案 715 tok</td></tr>
+              <tr><td>03 finalize</td><td><span class="pill p-waste">BLOCKED / NO_EVIDENCE</span><br>「本轮一次工具都没调用成功……」</td><td><span class="pill p-ok">ok</span><br>「没跑 SQL，但结论里的数都来自工具返回（表清单 / 字段清单），放行」</td></tr>
+              <tr class="total"><td>用户拿到</td><td>什么都没有</td><td><strong>15 个字段完整答出</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:12px">答案核对过：15 个字段与直查 <code>SELECT *</code> 返回的列名逐字一致。护栏的反向也验了 —— <strong>数据问题没有走进新开的口子</strong>：</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>问题</th><th>类型</th><th class="n">工具调用</th><th>finalize</th></tr></thead>
+            <tbody>
+              <tr><td>会员等级表有哪些字段？</td><td>元数据</td><td class="n">0</td><td><span class="pill p-ok">放行（新路径）</span></td></tr>
+              <tr><td><strong>一共有多少个会员？</strong></td><td><strong>数据</strong></td><td class="n"><strong>1</strong></td><td><strong>真跑了 SQL 才作答</strong>（老路径「已附最终结果与口径」）</td></tr>
+              <tr><td>这个库里有哪些表？</td><td>元数据</td><td class="n">2</td><td><span class="pill p-ok">放行</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <dl class="dmeta">
+        <div><dt>改了哪儿</dt><dd><code>askdb/agentgraph.py</code> · <code>_n_finalize</code>（闸①判据）与 <code>_meta_evidence</code>（补列清单）；<code>askdb/agent.py</code> 新增旋钮 <code>metadata_recall_is_evidence</code>（默认 <code>true</code>）</dd></div>
+        <div><dt>为什么默认开</dt><dd>与 <code>intent_schema_heads</code> 那条<strong>相反</strong>，理由也相反：那条改的是一道可能多拒的门，证据不足时默认值该站在"不改变现有行为"那侧；这条拆的是一个<strong>已经在拒</strong>的误杀，默认关等于明知故犯地把它留在生产上</dd></div>
+        <div><dt>收益口径</dt><dd><strong>不是提效，是"答不答得出来"。</strong>这类问题原来 100% 被拒</dd></div>
+        <div><dt>验收</dt><dd>3 条新用例（误杀修掉 / 旋钮能真回滚 / 预检判错成 <code>metadata_only</code> 时编出来的业务数字仍被闸②拒）；第一条在改动前复现了线上那句原话。全量 <strong>1,117 passed / 0 failed</strong>，覆盖率 82.35%。已部署（CI <code>34939062077</code>）并生产复验，见上表</dd></div>
+      </dl>
+    </div>
+
   </div>
 </section>
 
@@ -543,12 +663,13 @@ ORDER BY 1, 3 DESC</pre>
     <table>
       <thead><tr><th>顺序</th><th>改动</th><th>性质</th><th class="n">本条链路</th><th class="n">多步链路均摊</th></tr></thead>
       <tbody>
-        <tr><td class="n">1</td><td>C2　修 P03 多分支 UNION　<span class="pill p-ok">已落地</span></td><td>代码 · 确定</td><td class="n">≥ −1 轮</td><td class="n">−0.2 s</td></tr>
+        <tr><td class="n">1</td><td>C2　修 P03 多分支 UNION　<span class="pill p-ok">已落地</span></td><td>代码 · 确定</td><td class="n">−1 轮 · 耗时 <strong>−1%</strong></td><td class="n" title="A/B 实测">兜底句 <strong>5/5 → 0/5</strong></td></tr>
         <tr><td class="n">2</td><td>C3　提示词声明方言</td><td>提示词 · 确定</td><td class="n">重叠计</td><td class="n">−0.45 s</td></tr>
         <tr><td class="n">3</td><td>C1(b)　最后一轮不摆工具</td><td>代码 · 确定</td><td class="n">−3,106 ms</td><td class="n">−1.3 s</td></tr>
         <tr><td class="n">4</td><td>C1(a)　草稿答案兜底</td><td>代码 · 确定</td><td class="n">0 ms</td><td class="n">0 s</td></tr>
         <tr><td class="n">5</td><td>C4　窄修复 + 拦截不计步</td><td>结构 · 影子</td><td class="n">重叠计</td><td class="n">−1.3 s</td></tr>
-        <tr class="total"><td colspan="3">合计</td><td class="n">45.9 s → 39.2 s（−14.5%）</td><td class="n">−3.2 s（−12%）</td></tr>
+        <tr><td class="n">—</td><td>C5　闸①认召回为依据　<span class="pill p-ok">已落地</span></td><td>代码 · 确定</td><td class="n">不适用</td><td class="n">该类问题 <strong>100% 被拒 → 放行</strong></td></tr>
+        <tr class="total"><td colspan="3">合计（仅计未落地的 C1 / C3 / C4）</td><td class="n">45.9 s → 39.2 s（−14.5%）</td><td class="n">−3.1 s（−12%）</td></tr>
       </tbody>
     </table>
   </div>
@@ -558,14 +679,34 @@ ORDER BY 1, 3 DESC</pre>
     多步链路均摊来自：拦截补救 3.26 s/条 × C2+C3 削掉的 19% 拦截数 + C4 对剩余部分砍半；跑满上限的 29% 链路末段浪费 4,566 ms × C1(b)。
     <strong>这些是估算，验收一律以 <code>evals/baseline.py</code> 那 23 条对照组的实测为准，一条改动跑一轮，不叠着上。</strong>
   </p>
+  <div class="callout" style="margin-top:20px">
+    <h3>一条被自己实测证伪的估算</h3>
+    <p style="font-size:14px; color:var(--ink-2)">
+      C2 落地后做了受控 A/B（见 §04 · C2），结果与 V1.0 的估算<strong>不一致</strong>：轮数确实 −1，但端到端耗时 <strong>−1%</strong>、成本 <strong>+13%</strong> ——
+      省下的那一轮被更长的答案吃掉了。原先记的"多步链路均摊 −0.2 s"是错的，V1.2 已改成实测口径。
+      <strong>这件事对上表其余各行同样适用：它们都还是估算，没有一条被实测验证过。</strong>
+      尤其 C1(b)「最后一轮不摆工具」——那一轮省下来之后，模型很可能拿它去写一个更长的收尾答案，
+      按 §03 的公式，这完全可能把省下的时间再花回去。<strong>C1 的价值在"交不交得出答案"，不在秒数；
+      按秒数立项会立错。</strong>
+    </p>
+  </div>
 
   <div class="callout" style="margin-top:26px">
-    <h3>真正的收益不在这张表里</h3>
+    <h3>真正的收益不在这张表里 —— 而且现在有实测撑着</h3>
     <p style="font-size:14px; color:var(--ink-2)">
-      −14.5% 不算大。这份方案值得做的理由是 C1：
-      <strong>29% 的多步链路今天交付的是一句"未在预算内完成归因"加一张裸表，而审计面板上它们全记 <code>ok=true</code></strong>。
-      本条更极端 —— 一份写得很好的答案已经生成出来了，被一行 <code>if finish:</code> 丢掉。
-      这是质量缺陷，顺带才是延迟缺陷。
+      −14.5% 不算大，而 C2 的 A/B 进一步证明连这个数都可能兑现不了。<strong>这份方案值得做的理由从来不是秒数。</strong>
+    </p>
+    <p style="font-size:14px; color:var(--ink-2); margin-top:10px">
+      五个缺陷里有三个是同一个形状 —— <strong>链路每一步都做对了，用户却拿不到答案</strong>：
+    </p>
+    <ul style="margin:8px 0 0; padding-left:20px; font-size:14px; color:var(--ink-2); display:flex; flex-direction:column; gap:6px">
+      <li><strong>C1</strong>：模型写出了 815 字的完整答案，被一行 <code>if finish:</code> 丢掉 —— 29% 的多步链路交的是兜底句，而审计面板上它们全记 <code>ok=true</code>。</li>
+      <li><strong>C2</strong>：一条合法的三段 UNION 被 P03 误杀，拆查烧光预算 —— A/B 里 <strong>5/5</strong> 交兜底句。</li>
+      <li><strong>C5</strong>：提示词让它别查，闸①又因为它没查而拒答 —— 这类元数据问题 <strong>100%</strong> 被拒。</li>
+    </ul>
+    <p style="font-size:14px; color:var(--ink-2); margin-top:12px">
+      三条的共同根因是<strong>两条规则互相打架，而挨打的是用户</strong>：提示词要它写答案 / 代码不收，提示词要它少跑一轮 / 护栏解析不了，提示词要它别查 / 闸门因它没查而拒。
+      这类缺陷在延迟看板上一个像素都占不到，在审计里还常常是绿的 —— 只有逐 span 读才看得见。
     </p>
   </div>
 
@@ -602,11 +743,11 @@ ORDER BY 1, 3 DESC</pre>
 </section>
 
 <div class="foot">
-  <div><dt>文档</dt><dd>askdb 链路提效 · af565a7a7074 专项 · <strong>V1.1</strong></dd></div>
+  <div><dt>文档</dt><dd>askdb 链路提效 · af565a7a7074 专项 · <strong>V1.2</strong></dd></div>
   <div><dt>拟制日期</dt><dd>2026-09-15</dd></div>
   <div><dt>依据</dt><dd>生产 trace <code>af565a7a7074</code>（15 个 span 完整输入输出，取自 <code>/api/trace</code>）；分布数据取自 <code>/api/audit</code> 最近 600 条与 63 条多步链路的逐 span 聚合；代码对照 <code>askdb@bdbaa32</code> 的 <code>agentgraph.py</code> / <code>agent.py</code> / <code>guard.py</code> / <code>executor.py</code>；UNION 解析行为经本机 sqlglot 30.18 复现</dd></div>
   <div><dt>分阶段目标</dt><dd>C1 + C2 + C3 落地：<strong>2026-09-17</strong>　·　对照组验收：<strong>2026-09-18</strong>　·　C4 影子跑两轮：<strong>2026-09-24</strong>　·　C4 切 enforce 并生产验证：<strong>2026-09-29</strong></dd></div>
-  <div><dt>修订记录</dt><dd class="rev"><span>V1.0 / 2026-09-15 / 首版，基于单条 trace 剖析 + 600 条分布抽样</span><span>V1.1 / 2026-09-15 / C2 落地。落地时查出同根因的第二个受害点 —— sqlglot 25→30 把 Except / Intersect 从 Union 的子类改挂 SetOperation，R-02 白名单因此已在生产上把 EXCEPT / INTERSECT 判成非法语句。一并修复，并给 sqlglot 钉上界 + 一条 AST 形状护栏测试。C1 / C3 / C4 未动</span></dd></div>
+  <div><dt>修订记录</dt><dd class="rev"><span>V1.0 / 2026-09-15 / 首版，基于单条 trace 剖析 + 600 条分布抽样</span><span>V1.1 / 2026-09-15 / C2 落地。落地时查出同根因的第二个受害点 —— sqlglot 25→30 把 Except / Intersect 从 Union 的子类改挂 SetOperation，R-02 白名单因此已在生产上把 EXCEPT / INTERSECT 判成非法语句。一并修复，并给 sqlglot 钉上界 + 一条 AST 形状护栏测试。C1 / C3 / C4 未动</span><span>V1.2 / 2026-09-15 / 三件事。①<strong>更正一条被自己实测证伪的估算</strong>：C2 的受控 A/B（同问题同模型各 5 轮）显示轮数确实 −1，但耗时 −1%、成本 +13%，V1.0 记的"均摊 −0.2 s"作废；真实收益是交兜底句 5/5 → 0/5，并由此坐实<strong>C2 是 C1 的成因</strong>而非并列项。②两条改动的生产复验数据入档（C2 四形状 + 六项脱敏；C5 前后 span 对照 + 三条反向回归）。③新增 <strong>C5</strong>：本文写完当天生产抓到的 f9d0a062165a —— 提示词让模型别查、闸①又因它没查而拒答，元数据问题 100% 被拒，已修并复验</span></dd></div>
   <div><dt>数字来源</dt><dd>全部实测，可逐条回溯到 span 明细或审计接口。不适用 <code>docs/README.md</code> 里「设计文档数字均为占位值」那条</dd></div>
 </div>
 
