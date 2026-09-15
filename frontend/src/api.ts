@@ -951,6 +951,69 @@ export const askQuestion = (question: string, source = '', orgId?: number,
     approval_id: approvalId,
   })
 
+/** 链路进度的一步。同步窗口内由 /api/ask/stream 实时推来。 */
+export interface AskStep {
+  step: string
+  stage?: string
+  note?: string
+  ms?: number
+  status?: string
+  tool?: string
+  tables?: string[]
+}
+
+/** 发起提问，**同步窗口内实时推进度**；越过阈值转后台时与 askQuestion 完全一样。
+ *
+ *  返回值与 askQuestion 逐字相同（AskResult | AsyncReceipt），所以拿到之后
+ *  的处理一行都不用改 —— 这是有意的：两条路只要有一处分叉，就会长出
+ *  "流式与非流式答得不一样"。这里多出来的只有 onStep 回调。
+ *
+ *  **交接之后不再推进度**：后台结果走 /api/tasks/{id}，那条路有自己的登录门与
+ *  归属校验，让这条流跨过交接去追，等于把那套校验再实现一遍（见服务端
+ *  ask_stream 的说明）。拿到 AsyncReceipt 就回到既有的轮询，与从前一致。
+ *
+ *  流中断（网络断、代理超时）按失败抛，调用方可以退回 askQuestion 重来 ——
+ *  不静默吞掉：一次"什么都没发生"比一个错误更难排查。 */
+export async function askQuestionStream(
+  question: string, source = '', onStep?: (s: AskStep) => void, orgId?: number,
+): Promise<AskResult | AsyncReceipt> {
+  const response = await request('/api/ask/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, source, org_id: orgId ?? null,
+                           as_task: false, approval_id: '' }),
+  })
+  if (!response.ok || !response.body) throw new Error(`/api/ask/stream ${response.status}`)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  let done: AskResult | AsyncReceipt | null = null
+  for (;;) {
+    const { value, done: eof } = await reader.read()
+    if (eof) break
+    buf += decoder.decode(value, { stream: true })
+    // SSE 按空行分帧。**必须留住最后一段**：一帧可能横跨两次 read，
+    // 直接按行切会把半个 JSON 交给 parse。
+    const frames = buf.split('\n\n')
+    buf = frames.pop() ?? ''
+    for (const frame of frames) {
+      const line = frame.split('\n').find((l) => l.startsWith('data: '))
+      if (!line) continue
+      const event = JSON.parse(line.slice(6)) as
+        { type: string; data?: unknown; status?: number; detail?: string } & AskStep
+      if (event.type === 'step') onStep?.(event)
+      else if (event.type === 'result' || event.type === 'handoff') {
+        done = event.data as AskResult | AsyncReceipt
+      } else if (event.type === 'error') {
+        throw new Error(event.detail || `/api/ask/stream ${event.status ?? ''}`)
+      }
+    }
+  }
+  if (!done) throw new Error('流已结束但没有收到结果')
+  return done
+}
+
 /** 交接回执：这次执行超过了软阈值（生产 10s），已经转到后台。
  *
  *  **不是失败，也不是结果。** 拿到它的正确做法是就地轮询 fetchTask(thread_id)，

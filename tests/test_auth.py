@@ -309,8 +309,14 @@ def test_anonymous_reads_are_paid_for_by_a_locked_write_face():
     """
     from askdb.server import _WRITE_EXEMPT_PATHS
 
+    # 查询那几条的明单：/api/ask 与它的同档变体 /api/ask/stream（跑的就是 ask
+    # 那个函数，只是把 span 边推边送）、/api/sql、/api/resume。
+    # **按明单判，不按前缀判** —— 写成 startswith("/api/ask") 的话，将来一个
+    # /api/ask/export 之类真会改动状态的接口会自动获得豁免，而这条测试的全部
+    # 意义就是不让那种事悄悄发生。
+    query_paths = {"/api/ask", "/api/ask/stream", "/api/sql", "/api/resume"}
     for path in _WRITE_EXEMPT_PATHS:
-        assert path.startswith("/api/auth/") or path in {"/api/ask", "/api/sql", "/api/resume"}, (
+        assert path.startswith("/api/auth/") or path in query_paths, (
             f"{path} 出现在写入豁免表里。只有认证与查询能豁免 —— "
             f"任何会改动状态的接口都不行"
         )

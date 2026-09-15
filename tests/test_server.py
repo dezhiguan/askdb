@@ -697,3 +697,53 @@ def test_eval_cases_mark_unrun_as_null_not_pass(client):
     for c in cases:
         if c["passed"] is not None:
             assert c["in_blind"], f"{c['id']} 有结果却不在盲测集里"
+
+
+def test_ask_stream_is_gated_exactly_like_ask(client):
+    """/api/ask/stream 必须与 /api/ask 同档 —— 两张门表里都要有它。
+
+    它跑的就是 ask 那个函数。鉴权只要有一处不一样，就等于给同一条链路开了
+    两扇门，而宽的那扇会被先找到。这条测试钉的是**登记**，不是行为：
+    新增查询接口忘了进这两张表，症状是"写门放行"或"登录门漏掉"，
+    两个方向都不会在功能测试里露头。
+    """
+    from askdb import server as _srv
+    assert "/api/ask/stream" in _srv._WRITE_EXEMPT_PATHS
+    assert "/api/ask/stream" in _srv._QUERY_PATHS
+    # 被拦时要说得出这是"发起查询"，而不是笼统的"会改动配置的操作"
+    assert _srv._write_action_name("POST", "/api/ask/stream") == "发起查询"
+
+
+def test_ask_stream_emits_steps_then_the_same_payload(client):
+    """流里最后那份 data 必须与 /api/ask 的响应体同形 —— 不是另一套结果。"""
+    import json as _json
+
+    with client.stream("POST", "/api/ask/stream",
+                       json={"question": "有多少文档"}) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        events = [_json.loads(line[6:]) for line in r.iter_lines()
+                  if line.startswith("data: ")]
+
+    assert events and events[0]["type"] == "open", events[:2]
+    kinds = {e["type"] for e in events}
+    # 未配模型密钥时链路在预检就停下，所以这里只钉住"终局事件恰好一条"
+    final = [e for e in events if e["type"] in ("result", "handoff", "error")]
+    assert len(final) == 1, kinds
+    if final[0]["type"] == "result":
+        # 与同步那一路同形：step_count 是标量（见 test_step_count_is_a_scalar…）
+        assert isinstance(final[0]["data"].get("step_count"), int)
+
+
+def test_tracer_on_span_never_breaks_the_chain():
+    """进度回调抛异常也不许影响查询本身 —— 送达方式不该成为失败的原因。"""
+    from askdb.trace import Tracer
+
+    seen = []
+    t = Tracer(on_span=lambda st: seen.append(st.step))
+    t.add("schema_recall", t.start(), "召回 12 张表")
+    assert seen == ["schema_recall"]
+
+    boom = Tracer(on_span=lambda st: 1 / 0)
+    boom.add("decide", boom.start(), "x")      # 不抛
+    assert len(boom.steps) == 1

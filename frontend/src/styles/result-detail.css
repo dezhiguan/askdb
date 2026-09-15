@@ -146,3 +146,21 @@
 
 /* 这三格在 720px 的弹窗里横排绰绰有余，不跟页面那条 1180 断点走 ——
    跟着走的结果是三个两行高的小盒子竖成一条，把折叠区撑到两屏。 */
+
+/* 同步窗口内的链路进度 —— 一行一条 span，跑完即被结果替换 */
+.ask-progress {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.ask-progress li { display: flex; align-items: baseline; gap: 10px; }
+.ask-progress code { flex: 0 0 auto; min-width: 11rem; opacity: 0.85; }
+.ask-progress span { flex: 1 1 auto; opacity: 0.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-progress em { flex: 0 0 auto; font-style: normal; opacity: 0.55; font-variant-numeric: tabular-nums; }

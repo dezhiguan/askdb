@@ -139,6 +139,16 @@ class StepTrace:
 class Tracer:
     steps: list[StepTrace] = field(default_factory=list)
     _t0: float = field(default_factory=time.perf_counter)
+    #: 每落一条 span 就回调一次（同步窗口内的流式进度用）。
+    #:
+    #: 挂在这里而不是各个节点里：add 是**所有** span 的唯一入口，挂一处就全覆盖，
+    #: 将来新增节点不必记得去接线 —— 而"新增节点忘了接线"正是这类观测接线最
+    #: 常见的失效方式（MODEL span 的输入输出就这么丢过一次，采集端还在记、
+    #: 消费端随管道一起被删掉了）。
+    #:
+    #: **任何异常都吞掉**：推送进度失败绝不能把查询本身弄挂。同理由见
+    #: agentgraph._check_handoff —— 送达方式的优化不该成为查询失败的原因。
+    on_span: Any = None
 
     def start(self) -> float:
         return time.perf_counter()
@@ -170,6 +180,11 @@ class Tracer:
             input=clip_io(input), output=clip_io(output),
         )
         self.steps.append(st)
+        if self.on_span is not None:
+            try:
+                self.on_span(st)
+            except Exception:             # noqa: BLE001
+                pass
         return st
 
     @property

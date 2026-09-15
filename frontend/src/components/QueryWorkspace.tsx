@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  askQuestion, fetchSchema, fetchTask, isAsyncReceipt, runSql,
-  type AskResult, type AsyncReceipt, type Me, type Schema, type TaskDetail,
+  askQuestion, askQuestionStream, fetchSchema, fetchTask, isAsyncReceipt, runSql,
+  type AskResult, type AskStep, type AsyncReceipt, type Me, type Schema, type TaskDetail,
 } from '../api'
 import { writeGuard, type WriteGuard } from '../writeGuard'
 import type { ResultTab, View } from '../types'
@@ -47,6 +47,8 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
   // 交接是常态路径而不是异常路径（阈值 10s、实测 p50 9.6s），所以它必须
   // 长在这一页上 —— 换一页去看结果等于把过半查询的体验判死。
   const [handoff, setHandoff] = useState<AsyncReceipt | null>(null)
+  /** 同步窗口内推来的链路进度。交接之后不再增长 —— 那之后由 handoff 卡片接手。 */
+  const [steps, setSteps] = useState<AskStep[]>([])
   const [task, setTask] = useState<TaskDetail | null>(null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<ResultTab>('result')
@@ -236,7 +238,15 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
     try {
       // 用 current.id 而不是 sourceId：选中项被移除（内置源撤掉、运行时源删掉）时
       // current 会回落到第一项，此时 sourceId 还是旧值 —— 照它发就是界面显示 A、实际查 B
-      const value = mode === 'ask' ? await askQuestion(text, current.id) : await runSql(text, current.id)
+      // 提问走流式：同步窗口内把链路进度推出来，省掉那十几秒的空白。
+      // **返回值与 askQuestion 逐字相同**，所以下面一行都不用改；交接之后
+      // 照旧回落到既有的轮询（见 api.askQuestionStream 的说明）。
+      // 流断了就退回非流式重来一次 —— 进度是锦上添花，答案不是。
+      setSteps([])
+      const value = mode === 'ask'
+        ? await askQuestionStream(text, current.id, (s) => setSteps((prev) => [...prev, s]))
+            .catch(() => askQuestion(text, current.id))
+        : await runSql(text, current.id)
       // 交接回执不是结果：它没有 ok 字段，照结果渲染会变成一张空的"已拦截"
       // 结果页，而后台其实跑得好好的。识别出来，就地转成执行中卡片。
       if (isAsyncReceipt(value)) {
@@ -317,6 +327,21 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
         </div>
 
         {error && <div className="audit-error stage-error">{error}</div>}
+
+        {/* 同步窗口内的链路进度。**只在还没有结果时显示** —— 结果出来之后
+            这份进度的完整版在「执行追踪」里，留在这里只会跟结果抢注意力。
+            交接之后 steps 不再增长，由下面的 HandoffCard 接手。 */}
+        {running && !result && steps.length > 0 && (
+          <ol className="ask-progress">
+            {steps.map((s, i) => (
+              <li key={`${s.step}-${i}`}>
+                <code>{s.step}{s.stage ? ` · ${s.stage}` : ''}</code>
+                <span>{s.note || ''}</span>
+                {typeof s.ms === 'number' && s.ms > 0 && <em>{s.ms}ms</em>}
+              </li>
+            ))}
+          </ol>
+        )}
 
         {result
           ? <ResultTabs result={result} active={tab} dialect={current.dialect}

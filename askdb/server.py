@@ -19,7 +19,7 @@ from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import approvals as _approvals
@@ -100,6 +100,10 @@ _P95_TARGET_MS = 4000
 #: 否则它在那种实例上只是无条件豁免，开关对它不生效。
 _WRITE_EXEMPT_PATHS = frozenset({
     "/api/ask",
+    # 同步窗口内的流式版本。**必须与 /api/ask 同档**（两张表里都在）——
+    # 它跑的就是 ask 那个函数，鉴权与登录门只要有一处不一样，就等于给同一条
+    # 链路开了两扇门，而宽的那扇会被先找到。
+    "/api/ask/stream",
     "/api/sql",
     "/api/resume",
     # 登录入口自己必须在豁免里，否则是一扇锁着钥匙的门：要登录才能调登录接口。
@@ -108,7 +112,7 @@ _WRITE_EXEMPT_PATHS = frozenset({
     "/api/auth/logout",
 })
 #: 「会真的去查库」的那几条 POST。auth.query_requires_login 只作用于这张表。
-_QUERY_PATHS = frozenset({"/api/ask", "/api/sql", "/api/resume"})
+_QUERY_PATHS = frozenset({"/api/ask", "/api/ask/stream", "/api/sql", "/api/resume"})
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 #: 被写门拦下时，用来把话说到**这一次点的那个动作**上。
@@ -124,6 +128,7 @@ _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _WRITE_ACTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     # 查询三条只在 auth.query_requires_login 的实例上会被拦到这里
     ("POST", ("api", "ask"), "发起查询"),
+    ("POST", ("api", "ask", "stream"), "发起查询"),
     ("POST", ("api", "sql"), "执行直查 SQL"),
     ("POST", ("api", "resume"), "续跑查询"),
     ("POST", ("api", "eval", "run"), "运行回归评测"),
@@ -3440,7 +3445,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         return out
 
     @app.post("/api/ask")
-    def ask(req: AskRequest, request: Request) -> JSONResponse:
+    def ask(req: AskRequest, request: Request, _on_span: Any = None) -> JSONResponse:
         # 按角色收窄后再进链路。护栏、执行器、Schema 召回全部从配置取值，
         # 所以收窄一次即全链路生效 —— 模型连不可见的表都召回不到。
         _require_login(request)
@@ -3532,7 +3537,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         try:
             r, _notice = _async_runner.run_or_detach(
                 lambda: run_agent(q_text, scoped, org_id=req.org_id,
-                                  trace_id=_tid, thread_id=_tid, handoff=_ho),
+                                  trace_id=_tid, thread_id=_tid, handoff=_ho,
+                                  on_span=_on_span),
                 _thr, _tid, user=scoped.user or "",
                 per_user=_async_per_user(scoped), handoff=_ho,
                 on_detached_done=_settle_detached)
@@ -3560,6 +3566,78 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 and not out.get("approval_id")):
             cache.put(ckey, out, cache.ttl)
         return JSONResponse(out)
+
+    @app.post("/api/ask/stream")
+    def ask_stream(req: AskRequest, request: Request) -> StreamingResponse:
+        """同步窗口内的流式进度。**交接之后回落轮询，不在这里追。**
+
+        为什么只覆盖同步窗口：交接出去之后结果走 /api/tasks/{thread_id}，
+        而那条路有自己的登录门与归属校验（匿名实例上老线程 owner 为空，
+        不设门等于把结果行对所有人开放）。让这条流跨过交接去追后台任务，
+        等于在 SSE 上再实现一遍那套校验 —— 两处判定迟早漂移，而漂移的方向
+        是"别人的结果被推给了你"。所以交接就发一条 handoff 事件、关流，
+        由前端切回它本来就在用的轮询。
+
+        **它不是另一条链路。** 整个请求体走的就是 /api/ask 那个函数，
+        一字不改：鉴权、配额、缓存、角色收窄、R-11 挂审批、票据作废全部
+        原样发生。这里多做的只有两件事 —— 把 span 推出去，把最终那份 JSON
+        包成一个 result 事件。**任何"顺手在流式这边改一点"的念头都要按住**：
+        两条路只要有一处判定不同，就会长出"同一个问题，流式与非流式答得不一样"。
+
+        事件形状（每行一个 JSON，SSE data 帧）：
+          {"type":"step",     ...}  一条 span 落地（step/stage/note/ms/tool/tables）
+          {"type":"handoff",  ...}  越过阈值转后台，带 thread_id，随后关流
+          {"type":"result",   ...}  同步窗口内跑完，data 是 /api/ask 那份 JSON
+          {"type":"error",    ...}  HTTP 异常（含 401/429），带 status
+        """
+        import json as _json
+        import queue as _queue
+        import threading as _threading
+
+        q: _queue.Queue = _queue.Queue(maxsize=256)
+        DONE = object()
+
+        def _push(st: Any) -> None:
+            # 满了就丢，不阻塞主链路 —— 进度事件是可丢的，查询不是。
+            try:
+                q.put_nowait({"type": "step", "step": st.step, "stage": st.stage,
+                              "note": st.note, "ms": st.ms, "status": st.status,
+                              "tool": st.tool, "tables": list(st.tables or [])})
+            except _queue.Full:
+                pass
+
+        def _run() -> None:
+            try:
+                resp = ask(req, request, _on_span=_push)
+                body = _json.loads(bytes(resp.body).decode("utf-8"))
+                kind = "handoff" if body.get("async") else "result"
+                q.put({"type": kind, "data": body})
+            except HTTPException as e:
+                q.put({"type": "error", "status": e.status_code, "detail": e.detail})
+            except Exception as e:                      # noqa: BLE001
+                q.put({"type": "error", "status": 500, "detail": str(e)})
+            finally:
+                q.put(DONE)
+
+        _threading.Thread(target=_run, daemon=True).start()
+
+        def _gen():
+            # 先吐一帧，让代理与浏览器立刻把连接建起来 —— 不吐的话，
+            # 第一条 span 之前的那几秒（召回 + 预检）在客户端看仍是空白。
+            yield "data: " + _json.dumps({"type": "open"}, ensure_ascii=False) + "\n\n"
+            while True:
+                item = q.get()
+                if item is DONE:
+                    break
+                yield "data: " + _json.dumps(item, ensure_ascii=False,
+                                             default=str) + "\n\n"
+
+        return StreamingResponse(
+            _gen(), media_type="text/event-stream",
+            # 关掉中间层缓冲，否则 nginx 会把整条流攒到最后一次性吐出来，
+            # 那就等于没做流式（而且更难发现 —— 本机直连时一切正常）。
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                     "Connection": "keep-alive"})
 
     @app.post("/api/sql")
     def sql(req: SqlRequest, request: Request) -> JSONResponse:

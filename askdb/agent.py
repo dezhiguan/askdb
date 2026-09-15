@@ -504,7 +504,8 @@ def _result(cfg: Config, question: str, trace_id: str, thread_id: str, org: int,
 def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
               executor: Executor | None = None, llm: LlmClient | None = None,
               trace_id: str | None = None, thread_id: str | None = None,
-              clarification: str = "", handoff: Any = None) -> AskResult:
+              clarification: str = "", handoff: Any = None,
+              on_span: Any = None) -> AskResult:
     """自主决策入口。返回与 graph.ask 同一套 AskResult，并写审计（收尾）。
 
     clarification 是发起人事后补上的条件（「补充条件」「换个问法」走这里）。
@@ -517,7 +518,7 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
     """
     result = _drive(question, cfg, org_id, executor=executor, llm=llm,
                     trace_id=trace_id, thread_id=thread_id,
-                    clarification=clarification, handoff=handoff)
+                    clarification=clarification, handoff=handoff, on_span=on_span)
     try:                                  # 审计不该成为查询失败的原因
         write_audit(cfg, _audit_of(result, cfg, "ask"))
     except Exception:
@@ -528,7 +529,8 @@ def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
 def _drive(question: str, cfg: Config, org_id: int | None = None, *,
            executor: Executor | None = None, llm: LlmClient | None = None,
            trace_id: str | None = None, thread_id: str | None = None,
-           clarification: str = "", handoff: Any = None) -> AskResult:
+           clarification: str = "", handoff: Any = None,
+           on_span: Any = None) -> AskResult:
     """跑一次 agent 图。
 
     2026-09-12 从 `for step in range(...)` 改成 LangGraph（见 agentgraph）。
@@ -542,7 +544,7 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
     thread_id = thread_id or trace_id
     org = org_id if org_id is not None else int(
         cfg.raw.get("tenant", {}).get("default_ctx", 0) or 0)
-    tracer = Tracer()
+    tracer = Tracer(on_span=on_span)
 
     # 每日配额快速失败（与管道同一口径）。**进图之前判**，一个 token 都不花。
     dq = build_quota(cfg)
