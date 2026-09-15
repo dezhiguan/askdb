@@ -1,0 +1,602 @@
+
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>askdb 链路提效 · af565a7a7074 专项</title>
+
+<!-- 单文件、无外部依赖（含字体）：与 docs/ 下其它设计稿同一条纪律，
+     下载后用浏览器直接打开即可，离线也不掉版。 -->
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body, h1, h2, h3, h4, p, dl, dd, ul, figure, pre { margin: 0; }
+  ul { padding: 0; }
+  img, svg { max-width: 100%; display: block; }
+  table { border-collapse: collapse; }
+</style>
+
+<style>
+:root{
+  --ground:#F5F6F8; --surface:#FFFFFF; --surface-2:#EDEFF3; --surface-3:#E4E8EE;
+  --ink:#14181F; --ink-2:#3C4552; --muted:#6B7685; --rule:#DDE1E8; --rule-2:#C9D0DA;
+  --accent:#2B5FAE; --accent-ink:#1C4A8A; --accent-soft:rgba(43,95,174,.09);
+  --ok:#2F7A62; --waste:#B04A2F; --block:#96681C; --idle:#98A0AD;
+  --ok-soft:rgba(47,122,98,.12); --waste-soft:rgba(176,74,47,.12); --block-soft:rgba(150,104,28,.13);
+  --shadow:0 1px 2px rgba(20,24,31,.05), 0 8px 24px -16px rgba(20,24,31,.22);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0E1116; --surface:#161A20; --surface-2:#1D232B; --surface-3:#252C36;
+    --ink:#E7EBF1; --ink-2:#B7C0CC; --muted:#868F9E; --rule:#29303A; --rule-2:#39424E;
+    --accent:#77A8EA; --accent-ink:#A8C7F2; --accent-soft:rgba(119,168,234,.13);
+    --ok:#52B394; --waste:#E4866A; --block:#D6A852; --idle:#69727F;
+    --ok-soft:rgba(82,179,148,.14); --waste-soft:rgba(228,134,106,.14); --block-soft:rgba(214,168,82,.15);
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0E1116; --surface:#161A20; --surface-2:#1D232B; --surface-3:#252C36;
+  --ink:#E7EBF1; --ink-2:#B7C0CC; --muted:#868F9E; --rule:#29303A; --rule-2:#39424E;
+  --accent:#77A8EA; --accent-ink:#A8C7F2; --accent-soft:rgba(119,168,234,.13);
+  --ok:#52B394; --waste:#E4866A; --block:#D6A852; --idle:#69727F;
+  --ok-soft:rgba(82,179,148,.14); --waste-soft:rgba(228,134,106,.14); --block-soft:rgba(214,168,82,.15);
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.7);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  font-size:15.5px; line-height:1.75; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1000px; margin:0 auto; padding:0 28px 96px}
+.prose{max-width:68ch}
+h1,h2,h3{font-family:Georgia,"Songti SC","Noto Serif CJK SC","Source Han Serif SC",serif; text-wrap:balance; margin:0}
+h1{font-size:clamp(30px,4.4vw,46px); font-weight:700; line-height:1.24; letter-spacing:-.01em}
+h2{font-size:24px; font-weight:600; line-height:1.4}
+h3{font-size:17.5px; font-weight:600; line-height:1.5}
+p{margin:0}
+a{color:var(--accent); text-decoration:underline; text-underline-offset:2px; text-decoration-thickness:1px}
+code,.mono,.num{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; font-variant-numeric:tabular-nums}
+code{font-size:.88em; background:var(--surface-2); padding:.08em .34em; border-radius:3px; color:var(--ink-2)}
+strong{font-weight:600; color:var(--ink)}
+:focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:2px}
+
+/* ── masthead ── */
+.mast{border-bottom:1px solid var(--rule); background:var(--surface); margin-bottom:44px}
+.mast .wrap{padding-top:34px; padding-bottom:34px}
+.eyebrow{font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); font-weight:500;
+  font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+.eyebrow .dot{width:3px;height:3px;border-radius:50%;background:var(--rule-2)}
+.mast h1{margin:14px 0 0}
+.dek{margin-top:14px; color:var(--ink-2); font-size:17px; line-height:1.68; max-width:62ch}
+.facts{display:grid; grid-template-columns:repeat(auto-fit,minmax(178px,1fr)); gap:1px; background:var(--rule);
+  border:1px solid var(--rule); margin-top:30px; border-radius:5px; overflow:hidden}
+.fact{background:var(--surface); padding:12px 14px}
+.fact dt{font-size:11px; letter-spacing:.09em; text-transform:uppercase; color:var(--muted); font-weight:500}
+.fact dd{margin:4px 0 0; font-size:14px; font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; color:var(--ink); word-break:normal; overflow-wrap:break-word}
+
+/* ── headline stats ── */
+.stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:16px; margin:0 0 52px}
+.stat{background:var(--surface); border:1px solid var(--rule); border-radius:6px; padding:20px 20px 18px; box-shadow:var(--shadow)}
+.stat .k{font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); font-weight:500}
+.stat .v{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; font-size:33px; font-weight:500; line-height:1.15; margin-top:10px; letter-spacing:-.02em}
+.stat .s{font-size:13px; color:var(--muted); margin-top:8px; line-height:1.55}
+.stat.warn .v{color:var(--waste)}
+
+/* ── sections ── */
+section{margin-bottom:60px; scroll-margin-top:20px}
+.shead{display:flex; align-items:baseline; gap:14px; padding-bottom:12px; border-bottom:2px solid var(--ink); margin-bottom:26px}
+.shead .n{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; font-size:12px; color:var(--muted); font-weight:500; letter-spacing:.08em}
+.lede{color:var(--ink-2); margin-bottom:26px; max-width:68ch}
+.stack{display:flex; flex-direction:column; gap:16px}
+
+/* ── waterfall ── */
+.wf{background:var(--surface); border:1px solid var(--rule); border-radius:6px; padding:8px 0; box-shadow:var(--shadow); overflow-x:auto}
+.wfrow{display:grid; grid-template-columns:34px 172px 1fr 82px; align-items:center; gap:12px; padding:3px 18px; min-width:660px}
+.wfrow:hover{background:var(--surface-2)}
+.wfrow .i{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; font-size:11.5px; color:var(--idle); text-align:right}
+.wfrow .nm{font-size:13px; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.wfrow .nm em{font-style:normal; color:var(--muted); font-size:12px}
+.wfrow .ms{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; font-size:12px; text-align:right; color:var(--ink-2); font-variant-numeric:tabular-nums}
+.track{position:relative; height:17px}
+.bar{position:absolute; top:2px; height:13px; border-radius:2px; min-width:2px}
+.b-ok{background:var(--ok)} .b-idle{background:var(--idle)} .b-block{background:var(--block)}
+.b-waste{background:var(--waste)} .b-sql{background:var(--accent)}
+.bar.hatch{background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.32) 0 3px,transparent 3px 6px)}
+.wfnote{display:grid; grid-template-columns:34px 172px 1fr 82px; gap:12px; padding:0 18px 8px; min-width:660px}
+.wfnote span{grid-column:3; font-size:12px; color:var(--muted); line-height:1.5}
+.legend{display:flex; flex-wrap:wrap; gap:18px; margin-top:14px; font-size:12.5px; color:var(--muted)}
+.legend b{display:inline-block; width:22px; height:9px; border-radius:2px; margin-right:7px; vertical-align:middle}
+
+/* ── tables ── */
+.tw{overflow-x:auto; border:1px solid var(--rule); border-radius:6px; background:var(--surface); box-shadow:var(--shadow)}
+table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:560px}
+th,td{padding:9px 14px; text-align:left; border-bottom:1px solid var(--rule); vertical-align:top}
+thead th{font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600;
+  background:var(--surface-2); border-bottom:1px solid var(--rule-2); white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+tbody tr.total td{background:var(--surface-2); font-weight:600}
+td.n,th.n{text-align:right; font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; font-variant-numeric:tabular-nums; white-space:nowrap}
+tbody tr:hover td{background:var(--surface-2)}
+tbody tr.total:hover td{background:var(--surface-3)}
+
+/* ── pills ── */
+.pill{display:inline-block; font-size:11px; font-weight:600; padding:1.5px 7px; border-radius:3px; white-space:nowrap;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif; letter-spacing:.02em}
+.p-ok{background:var(--ok-soft); color:var(--ok)}
+.p-waste{background:var(--waste-soft); color:var(--waste)}
+.p-block{background:var(--block-soft); color:var(--block)}
+.p-idle{background:var(--surface-3); color:var(--muted)}
+
+/* ── defect cards ── */
+.defect{background:var(--surface); border:1px solid var(--rule); border-radius:6px; box-shadow:var(--shadow); overflow:hidden}
+.dhead{padding:18px 22px 16px; border-bottom:1px solid var(--rule); display:flex; gap:14px; align-items:flex-start}
+.dtag{flex:none; font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; font-size:11px; font-weight:600; letter-spacing:.06em;
+  padding:3px 8px; border-radius:3px; background:var(--accent-soft); color:var(--accent); margin-top:3px}
+.dhead h3{flex:1}
+.dhead .cls{flex:none; font-size:11.5px; color:var(--muted); margin-top:4px; white-space:nowrap}
+.dbody{padding:18px 22px 4px; display:flex; flex-direction:column; gap:14px}
+.dbody p{max-width:70ch}
+.dbody ul{margin:0; padding-left:20px; max-width:70ch; display:flex; flex-direction:column; gap:7px}
+.dmeta{display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:1px; background:var(--rule);
+  border-top:1px solid var(--rule); margin-top:18px}
+.dmeta div{background:var(--surface-2); padding:12px 22px}
+.dmeta dt{font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); font-weight:600}
+.dmeta dd{margin:5px 0 0; font-size:13px; color:var(--ink-2); line-height:1.6}
+
+pre{margin:0; background:var(--surface-2); border:1px solid var(--rule); border-left:3px solid var(--rule-2);
+  border-radius:4px; padding:12px 15px; overflow-x:auto; font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  font-size:12.5px; line-height:1.65; color:var(--ink-2)}
+pre.err{border-left-color:var(--waste)}
+pre.good{border-left-color:var(--ok)}
+blockquote{margin:0; padding:14px 18px; background:var(--surface-2); border-left:3px solid var(--accent);
+  border-radius:0 4px 4px 0; font-size:14px; color:var(--ink-2); max-width:70ch}
+.cap{font-size:12.5px; color:var(--muted); line-height:1.6; max-width:70ch}
+
+.callout{background:var(--surface); border:1px solid var(--rule); border-left:3px solid var(--waste);
+  border-radius:0 6px 6px 0; padding:18px 22px; display:flex; flex-direction:column; gap:10px; box-shadow:var(--shadow)}
+.callout.calm{border-left-color:var(--accent)}
+.callout h3{font-size:16px}
+
+.formula{background:var(--surface); border:1px solid var(--rule); border-radius:6px; padding:22px 24px;
+  box-shadow:var(--shadow); display:flex; flex-direction:column; gap:12px}
+.formula .eq{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace; font-size:19px; color:var(--ink); letter-spacing:-.01em}
+.formula .eq b{color:var(--accent); font-weight:500}
+
+.foot{border-top:1px solid var(--rule); padding-top:26px; margin-top:8px; display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:22px}
+.foot div{font-size:12.5px; color:var(--muted); line-height:1.65}
+.foot dt{font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; font-weight:600; color:var(--ink-2); margin-bottom:5px}
+.foot dd{margin:0}
+.rev{display:flex; flex-direction:column; gap:3px}
+
+@media (max-width:640px){
+  .wrap{padding:0 18px 72px}
+  .dhead{flex-wrap:wrap}
+  .dmeta div{padding:12px 18px}
+  .dbody{padding:16px 18px 4px}
+  .dhead{padding:16px 18px 14px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<header class="mast">
+  <div class="wrap">
+    <div class="eyebrow">
+      <span>askdb · 执行追踪</span><span class="dot"></span>
+      <span>单链路剖析</span><span class="dot"></span>
+      <span>af565a7a7074</span>
+    </div>
+    <h1>未在预算内完成归因</h1>
+    <p class="dek">
+      一条 45.9 秒的多步问答。模型在第 08 步写出了一份完整、口径清楚、结论正确的答案 ——
+      代码把它丢掉了，用户拿到的是一句「未在预算内完成归因」和一张裸表。
+      剩下的 6.7 秒花在最后一次成功查询<em>之后</em>。
+    </p>
+    <dl class="facts">
+      <div class="fact"><dt>时间</dt><dd>2026-09-15 03:26 UTC</dd></div>
+      <div class="fact"><dt>数据源</dt><dd>ragforge 生产库 · PG</dd></div>
+      <div class="fact"><dt>模型</dt><dd>qwen3.8-flash</dd></div>
+      <div class="fact"><dt>耗时 / 成本</dt><dd>45,913 ms · ¥0.015478</dd></div>
+      <div class="fact"><dt>步数</dt><dd>6 / 6　用满</dd></div>
+      <div class="fact"><dt>审计判定</dt><dd>ok=true · 无拒答</dd></div>
+    </dl>
+    <p class="dek" style="margin-top:22px; font-size:15px">
+      问题：<strong>哪个组织的知识库最多，它下面各类型文档分别多少？</strong>
+    </p>
+  </div>
+</header>
+
+<div class="wrap">
+
+<div class="stats">
+  <div class="stat">
+    <div class="k">模型占全链路</div><div class="v">99.2%</div>
+    <div class="s">8 次模型调用 45,557 ms；6 次 SQL 执行合计 211 ms（0.46%）。数据库不是瓶颈。</div>
+  </div>
+  <div class="stat warn">
+    <div class="k">末次成功查询之后</div><div class="v">6,673<span style="font-size:17px"> ms</span></div>
+    <div class="s">占 14.5%。这段时间里发生的三件事：两次被护栏拦下的 SQL、两轮没有改动答案的决策。</div>
+  </div>
+  <div class="stat warn">
+    <div class="k">被丢弃的答案</div><div class="v">815<span style="font-size:17px"> 字</span></div>
+    <div class="s">第 08 步写出，693 个输出 token、约 10 秒解码。因为 <code>finish=false</code>，一个字都没进 state。</div>
+  </div>
+</div>
+
+<section>
+  <div class="shead"><span class="n">01</span><h2>这条链路实际跑了什么</h2></div>
+  <p class="lede">按 span 开始时间排的真实瀑布，宽度与耗时成正比。绿色为答案贡献了信息；灰色跑完之后答案没有任何变化；琥珀色是被护栏拦下的工具调用；红色那一段是被代码丢弃的产出。</p>
+
+  <div class="wf">
+    <div class="wfrow"><span class="i">00</span><span class="nm">schema_recall</span>
+      <span class="track"><span class="bar b-ok" style="left:0%;width:4.95%"></span></span><span class="ms">2,268</span></div>
+    <div class="wfrow"><span class="i">01</span><span class="nm">intent</span>
+      <span class="track"><span class="bar b-ok" style="left:4.95%;width:5.93%"></span></span><span class="ms">2,715</span></div>
+    <div class="wfrow"><span class="i">02</span><span class="nm">decide <em>· select</em></span>
+      <span class="track"><span class="bar b-ok" style="left:10.89%;width:21.17%"></span></span><span class="ms">9,689</span></div>
+    <div class="wfrow"><span class="i">03</span><span class="nm">tool <em>· execute_sql</em></span>
+      <span class="track"><span class="bar b-sql" style="left:32.06%;width:0.4%"></span></span><span class="ms">37</span></div>
+    <div class="wfrow"><span class="i">04</span><span class="nm">decide <em>· assess</em></span>
+      <span class="track"><span class="bar b-ok" style="left:32.14%;width:13.90%"></span></span><span class="ms">6,361</span></div>
+    <div class="wfrow"><span class="i">05</span><span class="nm">tool <em>· execute_sql</em></span>
+      <span class="track"><span class="bar b-sql" style="left:46.04%;width:0.4%"></span></span><span class="ms">12</span></div>
+    <div class="wfrow"><span class="i">06</span><span class="nm">decide <em>· assess</em></span>
+      <span class="track"><span class="bar b-ok" style="left:46.06%;width:6.71%"></span></span><span class="ms">3,072</span></div>
+    <div class="wfrow"><span class="i">07</span><span class="nm">tool <em>· execute_sql</em></span>
+      <span class="track"><span class="bar b-block" style="left:52.77%;width:0.5%"></span></span><span class="ms">119</span></div>
+    <div class="wfnote"><span>P03 脱敏判定无法解析该 SQL，从严拒绝返回　—— 三段 UNION ALL 的枚举探查</span></div>
+    <div class="wfrow"><span class="i">08</span><span class="nm">decide <em>· assess</em></span>
+      <span class="track"><span class="bar b-ok" style="left:53.03%;width:17.85%"></span><span class="bar b-waste hatch" style="left:57.56%;width:13.32%"></span></span><span class="ms">14,793</span></div>
+    <div class="wfnote"><span>后段是 693 个输出 token 中那份 815 字的完整答案 —— <strong>finish=false，代码不收</strong></span></div>
+    <div class="wfrow"><span class="i">09</span><span class="nm">tool <em>· execute_sql</em></span>
+      <span class="track"><span class="bar b-sql" style="left:85.36%;width:0.4%"></span></span><span class="ms">29</span></div>
+    <div class="wfrow"><span class="i">10</span><span class="nm">decide <em>· assess</em></span>
+      <span class="track"><span class="bar b-idle" style="left:85.42%;width:7.77%"></span></span><span class="ms">3,556</span></div>
+    <div class="wfrow"><span class="i">11</span><span class="nm">tool <em>· execute_sql</em></span>
+      <span class="track"><span class="bar b-block" style="left:93.19%;width:0.4%"></span></span><span class="ms">11</span></div>
+    <div class="wfnote"><span>column "k2.status" must appear in the GROUP BY clause　—— 库侧报错</span></div>
+    <div class="wfrow"><span class="i">12</span><span class="nm">decide <em>· assess</em></span>
+      <span class="track"><span class="bar b-idle" style="left:93.21%;width:6.78%"></span></span><span class="ms">3,103</span></div>
+    <div class="wfrow"><span class="i">13</span><span class="nm">tool <em>· execute_sql</em></span>
+      <span class="track"><span class="bar b-block" style="left:99.99%;width:0.4%"></span></span><span class="ms">3</span></div>
+    <div class="wfnote"><span>R-04 字段不存在：org_id（表 documents 无此列）</span></div>
+    <div class="wfrow"><span class="i">14</span><span class="nm">finalize</span>
+      <span class="track"></span><span class="ms">0</span></div>
+    <div class="wfnote"><span>已附最终结果与口径；达步数上限 6，收敛作答</span></div>
+  </div>
+
+  <div class="legend">
+    <span><b class="b-ok"></b>为答案做了贡献</span>
+    <span><b class="b-waste hatch"></b>产出被丢弃</span>
+    <span><b class="b-idle"></b>跑完答案没变</span>
+    <span><b class="b-block"></b>工具被拦</span>
+    <span><b class="b-sql"></b>SQL 执行</span>
+    <span style="margin-left:auto">全宽 = 45,768 ms</span>
+  </div>
+</section>
+
+<section>
+  <div class="shead"><span class="n">02</span><h2>逐 span 账目</h2></div>
+
+  <div class="tw">
+    <table>
+      <thead><tr>
+        <th>#</th><th>Span</th><th>阶段</th><th class="n">耗时 ms</th>
+        <th class="n">tok in</th><th class="n">命中缓存</th><th class="n">tok out</th><th>判定</th>
+      </tr></thead>
+      <tbody>
+        <tr><td class="n">00</td><td>schema_recall</td><td>—</td><td class="n">2,268</td><td class="n">15</td><td class="n">0</td><td class="n">0</td><td><span class="pill p-ok">必要</span></td></tr>
+        <tr><td class="n">01</td><td>intent</td><td>—</td><td class="n">2,715</td><td class="n">3,410</td><td class="n">0</td><td class="n">110</td><td><span class="pill p-ok">必要</span></td></tr>
+        <tr><td class="n">02</td><td>decide</td><td>select</td><td class="n">9,689</td><td class="n">4,755</td><td class="n">0</td><td class="n">107</td><td><span class="pill p-ok">必要</span></td></tr>
+        <tr><td class="n">03</td><td>tool</td><td>execute_sql</td><td class="n">37</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td><span class="pill p-ok">返回 10 行</span></td></tr>
+        <tr><td class="n">04</td><td>decide</td><td>assess</td><td class="n">6,361</td><td class="n">4,956</td><td class="n">4,096</td><td class="n">169</td><td><span class="pill p-ok">必要</span></td></tr>
+        <tr><td class="n">05</td><td>tool</td><td>execute_sql</td><td class="n">12</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td><span class="pill p-ok">返回 5 行</span></td></tr>
+        <tr><td class="n">06</td><td>decide</td><td>assess</td><td class="n">3,072</td><td class="n">5,175</td><td class="n">4,096</td><td class="n">140</td><td><span class="pill p-ok">必要</span></td></tr>
+        <tr><td class="n">07</td><td>tool</td><td>execute_sql</td><td class="n">119</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td><span class="pill p-block">P03 拒答</span></td></tr>
+        <tr><td class="n">08</td><td>decide</td><td>assess</td><td class="n">14,793</td><td class="n">5,277</td><td class="n">5,120</td><td class="n">693</td><td><span class="pill p-waste">答案被丢弃</span></td></tr>
+        <tr><td class="n">09</td><td>tool</td><td>execute_sql</td><td class="n">29</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td><span class="pill p-idle">11 行，未入答案</span></td></tr>
+        <tr><td class="n">10</td><td>decide</td><td>assess</td><td class="n">3,556</td><td class="n">5,817</td><td class="n">5,120</td><td class="n">149</td><td><span class="pill p-idle">空转</span></td></tr>
+        <tr><td class="n">11</td><td>tool</td><td>execute_sql</td><td class="n">11</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td><span class="pill p-block">GROUP BY 报错</span></td></tr>
+        <tr><td class="n">12</td><td>decide</td><td>assess</td><td class="n">3,103</td><td class="n">5,957</td><td class="n">5,120</td><td class="n">169</td><td><span class="pill p-idle">空转</span></td></tr>
+        <tr><td class="n">13</td><td>tool</td><td>execute_sql</td><td class="n">3</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td><span class="pill p-block">R-04 拒答</span></td></tr>
+        <tr><td class="n">14</td><td>finalize</td><td>—</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td><span class="pill p-waste">兜底句</span></td></tr>
+        <tr class="total"><td colspan="3">合计</td><td class="n">45,768</td><td class="n">35,362</td><td class="n">23,552</td><td class="n">1,537</td><td>¥0.015478</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="cap" style="margin-top:14px">
+    前缀缓存整体命中 66.6%，但 <strong>第 01、02 两次调用命中 0</strong>（8,165 token 全价 prefill）——
+    intent 与 decide 是两套 system 前缀，同一份召回 schema 在厂商侧被缓存两份，而 schema 随问题变、又排在前面。
+    这一条见 §05，不建议现在动。
+  </p>
+</section>
+
+<section>
+  <div class="shead"><span class="n">03</span><h2>一条可用来估算的延迟公式</h2></div>
+  <p class="lede">对最近 32 条链路按 stage 聚合（intent / select / assess / converge / reflect 五类，共 104 次调用）做最小二乘，得到一条拟合很紧的直线。它决定了后面每条改动值不值得做。</p>
+
+  <div class="formula">
+    <div class="eq">调用耗时 ms ≈ <b>1,170</b> + <b>14.4</b> × 输出 token</div>
+    <div class="cap">
+      即：每次模型调用有约 <strong>1.2 秒</strong>的固定开销，解码速率约 <strong>69 token/秒</strong>。
+      推论有三条 ——
+    </div>
+    <ul style="margin:0; padding-left:20px; color:var(--ink-2); font-size:14px; display:flex; flex-direction:column; gap:6px; max-width:70ch">
+      <li>砍掉一次往返 = 省 1.2 秒 + 那次的解码时间。<strong>轮数是第一杠杆。</strong></li>
+      <li>少写 100 个输出 token = 省 1.44 秒。<strong>输出长度是第二杠杆。</strong></li>
+      <li>输入 token 几乎不进这条式子（本条 66.6% 命中缓存，命中价是全价的 1/10）。<strong>"提示词太长"不是这条链路的问题。</strong></li>
+    </ul>
+  </div>
+
+  <div class="tw" style="margin-top:20px">
+    <table>
+      <thead><tr><th>阶段</th><th class="n">次数</th><th class="n">均耗时 ms</th><th class="n">均输出 tok</th><th class="n">均输入 tok</th><th class="n">均命中缓存</th><th class="n">缓存命中率</th></tr></thead>
+      <tbody>
+        <tr><td>schema_recall <em style="color:var(--muted);font-style:normal">· embedding</em></td><td class="n">30</td><td class="n">925</td><td class="n">0</td><td class="n">10</td><td class="n">0</td><td class="n">—</td></tr>
+        <tr><td>intent</td><td class="n">30</td><td class="n">2,424</td><td class="n">111</td><td class="n">3,415</td><td class="n">1,075</td><td class="n">31%</td></tr>
+        <tr><td>decide · select</td><td class="n">27</td><td class="n">3,408</td><td class="n">114</td><td class="n">4,790</td><td class="n">1,934</td><td class="n">40%</td></tr>
+        <tr><td>decide · assess</td><td class="n">50</td><td class="n">4,351</td><td class="n">196</td><td class="n">5,630</td><td class="n">4,726</td><td class="n">84%</td></tr>
+        <tr><td>decide · converge</td><td class="n">23</td><td class="n">7,189</td><td class="n">428</td><td class="n">5,383</td><td class="n">4,280</td><td class="n">80%</td></tr>
+        <tr><td>tool_call <em style="color:var(--muted);font-style:normal">· 含 SQL 执行</em></td><td class="n">79</td><td class="n">184</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="shead"><span class="n">04</span><h2>四个缺陷</h2></div>
+  <p class="lede">按"确定性 &gt; 概率性"、"改代码 &gt; 改措辞"排序。前三条互不依赖、都是确定性改动，可以并行落；第四条要按既定纪律先影子跑两轮再切。</p>
+
+  <div class="stack">
+
+    <!-- C1 -->
+    <div class="defect">
+      <div class="dhead">
+        <span class="dtag">C1</span>
+        <h3>写好的答案被丢掉，用户拿到的是兜底句</h3>
+        <span class="cls">代码 · 确定性</span>
+      </div>
+      <div class="dbody">
+        <p>第 08 步花了 14,793 ms / 693 个输出 token，其中 815 字是一份完整答案 —— 口径说明、结论、要点三段齐全，还主动点出了库里存在多个同名「个人组织」、必须靠 <code>org_id</code> 区分：</p>
+        <blockquote>知识库最多的组织是 <strong>org_id=313「个人组织」，共 35 个知识库</strong>，明显领先第二名（66「米果科技有限公司」13 个）……注意库里存在多个同名"个人组织"，靠 org_id 区分，不能只看名称。</blockquote>
+        <p>模型把它填进了 <code>AgentAction.answer</code>，但同时还填了 <code>tool=execute_sql</code>、<code>finish=false</code>。而 <code>agentgraph._n_decide</code> 只在 finish 为真时回写 state：</p>
+        <pre class="err">if finish:
+    out["answer"] = action.answer or ""
+    out["answer_step"] = int(getattr(action, "answer_step", 0) or 0)</pre>
+        <p>于是这 815 字从未进入 state。链路随后跑满 6 步，<code>_n_finalize</code> 落到 <code>if not answer</code> 分支，用户看到的是：</p>
+        <pre class="err">（未在预算内完成归因）达步数上限 6，收敛作答。以下为最后一次查询执行的原始结果，请直接看结果表。</pre>
+        <p>外加第 09 步那张 11 行的裸表。审计里这条记 <code>ok=true</code>、<code>rejected_by=null</code> —— <strong>从任何一个面板上都看不出用户其实没拿到答案。</strong></p>
+        <p>"答案被丢弃"这个形态在抽样的 35 条多步链路里目前只见到这一条，但它的上游 —— <strong>跑满上限、没有 converge 收尾</strong> —— 出现了 10 条（29%），全部落到同一句兜底。这 10 条在最后一次成功查询之后还合计烧掉 45,655 ms / 69,618 token。</p>
+        <ul>
+          <li><strong>(a) 草稿答案也要收下。</strong><code>_n_decide</code> 在 finish=false 但 <code>action.answer</code> 非空时，把它写进 state 的一个 <code>draft_answer</code> 字段；<code>_n_finalize</code> 的兜底分支优先用它，而不是那句"请直接看结果表"。今天这段文字是被丢掉的，用它只会严格更好；接地校验照常读 answer，不放宽任何判定。</li>
+          <li><strong>(b) 最后一轮不摆工具。</strong><code>_hidden_tools</code> 增加一条：<code>_step_cap(state) - step &lt;= 1</code> 时把全部工具撤出规格表，并把 <code>AGENT_USER</code> 的 <code>steps_left</code> 那行改成"这是最后一轮，只能作答"。跑满上限从"没有归因"变成"有一轮明确的收尾"。</li>
+        </ul>
+      </div>
+      <dl class="dmeta">
+        <div><dt>改哪儿</dt><dd><code>askdb/agentgraph.py</code> · <code>_n_decide</code> / <code>_n_finalize</code> / <code>_hidden_tools</code> / <code>AgentState</code>；<code>askdb/agent.py</code> · <code>AGENT_USER</code></dd></div>
+        <div><dt>省多少</dt><dd>本条 −3,106 ms（第 12+13 步）。抽样里跑满上限的链路均摊 −4,566 ms</dd></div>
+        <div><dt>质量方向</dt><dd><strong>升</strong>。消灭"未在预算内完成归因"这个输出形态</dd></div>
+        <div><dt>怎么验</dt><dd><code>evals/baseline.py</code> 那 23 条对照组：断言 <code>step_count=max_steps</code> 的链路最后一个 decide 的 stage 为 converge；生产上扫"未在预算内完成归因"的出现次数应趋近 0</dd></div>
+      </dl>
+    </div>
+
+    <!-- C2 -->
+    <div class="defect">
+      <div class="dhead">
+        <span class="dtag">C2</span>
+        <h3>三段以上的 UNION 一律拒答 —— 脱敏判定的解析 bug</h3>
+        <span class="cls">代码 · 确定性</span>
+      </div>
+      <div class="dbody">
+        <p>第 07 步这条枚举探查被 P03 从严拒绝，代价是 119 ms 加上第 08 步里重新规划的那一段：</p>
+        <pre>SELECT 'kb_status' AS dim, status AS val, COUNT(*) AS n FROM knowledge_bases GROUP BY status
+UNION ALL SELECT 'doc_file_type', file_type, COUNT(*) FROM documents GROUP BY file_type
+UNION ALL SELECT 'doc_chunk_type', chunk_type, COUNT(*) FROM documents GROUP BY chunk_type
+ORDER BY 1, 3 DESC</pre>
+        <p>SQL 本身完全合法。根因在 <code>guard.sensitive_output_columns</code> —— 它只拆<strong>二元</strong> Union：</p>
+        <pre class="err">if isinstance(root, exp.Union):
+    sides = [root.this, root.expression]
+    for s in sides:
+        if not isinstance(s, exp.Select):
+            return None          # ← 三分支时 root.this 是 Union，从这里出去</pre>
+        <p>而 sqlglot 把 <code>A ∪ B ∪ C</code> 解析成 <code>Union(Union(A, B), C)</code>。本机 sqlglot 30.18 复现（pin 是 <code>&gt;=25.0</code>）：</p>
+        <pre class="good">3-branch | root= Union | this= Union   | expression= Select
+2-branch | root= Union | this= Select  | expression= Select</pre>
+        <p>返回 <code>None</code> → <code>Executor._mask</code> 抛 <code>MaskUnresolved</code> → 整条查询拒答。<strong>也就是说，任何数据源上任何三段及以上的 UNION 查询都必然被拒</strong>，与是否真的涉及个人信息无关。而"先用一条 UNION 把几个枚举列的分布一次查清"正是多步链路最常用的探查写法。</p>
+        <p>修法是把 Union / Except / Intersect 递归展平到叶子 Select，再按位置对齐取并集。方向是<strong>变严不是变松</strong>：从"整条拒答"变成"该打码的照常打码"。</p>
+      </div>
+      <dl class="dmeta">
+        <div><dt>改哪儿</dt><dd><code>askdb/guard.py</code> · <code>sensitive_output_columns</code>（约 1220 行）</dd></div>
+        <div><dt>省多少</dt><dd>本条至少 −1 轮补救决策；抽样 43 次拦截里 P03 占 2 次</dd></div>
+        <div><dt>质量方向</dt><dd><strong>升</strong>。今天的行为是对合法查询的系统性误杀</dd></div>
+        <div><dt>怎么验</dt><dd>加一条三分支 UNION 的单测，断言返回 set 而非 None，且敏感列位置判对；扫审计里 <code>rejected_by=P03</code> 改后归零</dd></div>
+      </dl>
+    </div>
+
+    <!-- C3 -->
+    <div class="defect">
+      <div class="dhead">
+        <span class="dtag">C3</span>
+        <h3>提示词从不告诉模型这是什么方言</h3>
+        <span class="cls">提示词 · 确定性</span>
+      </div>
+      <div class="dbody">
+        <p><code>askdb/agent.py</code> 全文没有 <code>dialect</code>、<code>PostgreSQL</code>、<code>MySQL</code> 任何一个字样。模型在写 SQL 时不知道自己面对的是哪个方言，只能在执行时才发现。</p>
+        <p>抽样 63 条多步链路的 43 次拦截里，<strong>6 次（14%）是方言 / 语法错</strong>：</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>错误</th><th class="n">次数</th><th>来源</th></tr></thead>
+            <tbody>
+              <tr><td><code>DISTINCT is not implemented for window functions</code></td><td class="n">2</td><td>DuckDB</td></tr>
+              <tr><td><code>(1064, "You have an error in your SQL syntax…")</code></td><td class="n">2</td><td>MySQL</td></tr>
+              <tr><td><code>column "…" must appear in the GROUP BY clause</code></td><td class="n">2</td><td>PostgreSQL（含本条第 11 步）</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>本条第 11 步就是这一类 —— <code>SUM(COUNT(*)) FILTER (…) OVER ()</code> 在 PG 上非法。代价 11 ms 的拦截 + 3,103 ms 的补救决策。</p>
+        <p>修法：<code>render_agent_system</code> 里加一行「本次数据源方言：{dialect}，只写该方言合法的 SQL」。约 15 个 token，而且<strong>按源固定、不随请求变</strong> —— 缓存条目数从 1 变成 2~3，不是每请求一份，前缀缓存的纪律不破。</p>
+      </div>
+      <dl class="dmeta">
+        <div><dt>改哪儿</dt><dd><code>askdb/agent.py</code> · <code>AGENT_SYSTEM</code> / <code>render_agent_system</code>（需把 <code>cfg.dialect</code> 传进去）</dd></div>
+        <div><dt>省多少</dt><dd>抽样中这一类占拦截的 14%，按每次拦截均摊 4,772 ms 算，多步链路均摊约 −0.45 s</dd></div>
+        <div><dt>质量方向</dt><dd>中性偏升。不放松任何护栏，只是让模型知道靶子在哪</dd></div>
+        <div><dt>怎么验</dt><dd>MySQL 源（宠物医疗）与 DuckDB 源各跑一轮对照组，看 1064 / DISTINCT 两类错误是否归零</dd></div>
+      </dl>
+    </div>
+
+    <!-- C4 -->
+    <div class="defect">
+      <div class="dhead">
+        <span class="dtag">C4</span>
+        <h3>每一次拦截都要付一整轮完整决策</h3>
+        <span class="cls">结构 · 须影子标定</span>
+      </div>
+      <div class="dbody">
+        <p>抽样 63 条多步链路、230 次工具调用，<strong>拦下 43 次（18.7%）</strong>。拦截之后那一轮补救决策均摊 <strong>4,772 ms</strong>，63 条合计 205 秒 —— 平均每条多步链路要为"写错 SQL"付 3.3 秒。</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>拦截原因</th><th class="n">次数</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>R-04 字段不存在</td><td class="n">11</td><td>列名逐字写在提示词里，guard 还把正确列表打印了回去</td></tr>
+              <tr><td>R-11 扫描量超限</td><td class="n">11</td><td>护栏本身是对的，代价在补救方式</td></tr>
+              <tr><td>R-08 笛卡尔积 / ON 恒真</td><td class="n">5</td><td>同上</td></tr>
+              <tr><td>方言 / 语法错</td><td class="n">6</td><td>见 C3</td></tr>
+              <tr><td>P03 脱敏无法解析</td><td class="n">2</td><td>见 C2</td></tr>
+              <tr><td>R-05 / R-03 / R-23 / DATASOURCE</td><td class="n">8</td><td>—</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>今天的补救路径是：拦截 → 结束这一轮 → 下一轮带着<strong>全量 schema + 全部 history</strong> 重新决策（约 6,000 输入 token、4.8 秒），而它实际要做的只是改一条 SQL。</p>
+        <ul>
+          <li><strong>窄上下文修复调用。</strong>只带失败的 SQL、错误原文、guard 给的 hint、涉及表的 DDL —— 不带 history、不带全量 schema，输出只要一条 SQL。按 §03 的公式约 <code>1,170 + 14.4 × 90 ≈ 2.5 s</code>，对 4.77 s 省掉一半。</li>
+          <li><strong>这一轮不计入 <code>max_steps</code>。</strong>今天一次拦截扣掉六分之一的探索预算，等于用预算惩罚模型犯错，最后交一份证据不全的答案 —— 本条第 07 步就是这么把预算耗掉的。另设 <code>max_repairs=2</code> 防死循环，上界仍然确定。</li>
+        </ul>
+        <p>这一条同时改了行为分布，按既定纪律必须 <code>off / shadow / enforce</code> 三档，先影子跑两轮标定。影子期要盯的是：修复后的 SQL 与被拦那条的 AST 表集合是否一致（防止窄上下文把意图改掉）、<code>R-11</code> 拦截率、接地校验 <code>ungrounded</code> 命中率。</p>
+      </div>
+      <dl class="dmeta">
+        <div><dt>改哪儿</dt><dd><code>askdb/agentgraph.py</code> · <code>_n_act</code> / <code>_after_act</code> / <code>_step_cap</code>；<code>askdb/agent.py</code> 新增窄修复提示词；<code>config</code> 新增旋钮</dd></div>
+        <div><dt>省多少</dt><dd>多步链路均摊约 −1.6 s（拦截次数不变时）；C2+C3 先削掉 19% 的拦截后还有 −1.3 s</dd></div>
+        <div><dt>风险</dt><dd>中。窄上下文修出来的 SQL 可能偏离原意图；"不计步"会让个别链路跑得更久 —— 与 C1(b) 配套后上界仍受 <code>cost_cap_tokens</code> 封顶</dd></div>
+        <div><dt>怎么验</dt><dd>影子跑两轮，对比 <code>step_count</code> 分布、拦截率、<code>ungrounded</code> 命中率三个数；23 条对照组的 L2 正确率不得下降</dd></div>
+      </dl>
+    </div>
+
+  </div>
+</section>
+
+<section>
+  <div class="shead"><span class="n">05</span><h2>这条链路在分布里的位置</h2></div>
+  <p class="lede">最近 600 条 <code>kind=ask</code> 审计记录。45.9 秒这条在 p99 附近 —— 它是多步自主循环的长尾，不是中位数。下面的改动移动的是 p90 以上那一段和多步问答的单价。</p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th class="n">p50</th><th class="n">p75</th><th class="n">p90</th><th class="n">p95</th><th class="n">p99</th><th class="n">max</th></tr></thead>
+      <tbody><tr>
+        <td class="n">9,552</td><td class="n">18,499</td><td class="n">30,494</td><td class="n">38,138</td><td class="n">59,134</td><td class="n">120,526</td>
+      </tr></tbody>
+    </table>
+  </div>
+
+  <div class="tw" style="margin-top:18px">
+    <table>
+      <thead><tr><th>步数</th><th class="n">1</th><th class="n">2</th><th class="n">3</th><th class="n">4</th><th class="n">5</th><th class="n">6</th><th class="n">7</th></tr></thead>
+      <tbody>
+        <tr><td>条数</td><td class="n">407</td><td class="n">74</td><td class="n">48</td><td class="n">31</td><td class="n">23</td><td class="n">16</td><td class="n">1</td></tr>
+        <tr><td>均耗时 ms</td><td class="n">6,804</td><td class="n">18,666</td><td class="n">25,425</td><td class="n">32,899</td><td class="n">31,981</td><td class="n">38,333</td><td class="n">49,925</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="cap" style="margin-top:12px"><strong>每多一步约 +6 秒</strong>，与 §03 的公式一致（一轮 = 一次 decide + 一次工具，decide 均 4.4 s、工具 0.2 s，加上被拦时的补救）。多步链路占 32%（193/600），均值 26,012 ms；单步 407 条，均值 6,804 ms。</p>
+
+  <div class="callout calm" style="margin-top:22px">
+    <h3>30 天口径（<code>/api/audit/stats</code>）</h3>
+    <p style="font-size:14px; color:var(--ink-2)">6,960 次调用 · 拦截率 21.75% · 8,832 次模型调用中失败 793 次（9.0%）· 累计 ¥12.58。
+    <strong>模型调用失败率 9% 值得单独看一次</strong> —— 每一次失败都要重试，重试的时间全部计在用户感知里，而本文的数据里看不出它的分布。</p>
+  </div>
+</section>
+
+<section>
+  <div class="shead"><span class="n">06</span><h2>预估、顺序与不做的事</h2></div>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>顺序</th><th>改动</th><th>性质</th><th class="n">本条链路</th><th class="n">多步链路均摊</th></tr></thead>
+      <tbody>
+        <tr><td class="n">1</td><td>C2　修 P03 多分支 UNION</td><td>代码 · 确定</td><td class="n">≥ −1 轮</td><td class="n">−0.2 s</td></tr>
+        <tr><td class="n">2</td><td>C3　提示词声明方言</td><td>提示词 · 确定</td><td class="n">重叠计</td><td class="n">−0.45 s</td></tr>
+        <tr><td class="n">3</td><td>C1(b)　最后一轮不摆工具</td><td>代码 · 确定</td><td class="n">−3,106 ms</td><td class="n">−1.3 s</td></tr>
+        <tr><td class="n">4</td><td>C1(a)　草稿答案兜底</td><td>代码 · 确定</td><td class="n">0 ms</td><td class="n">0 s</td></tr>
+        <tr><td class="n">5</td><td>C4　窄修复 + 拦截不计步</td><td>结构 · 影子</td><td class="n">重叠计</td><td class="n">−1.3 s</td></tr>
+        <tr class="total"><td colspan="3">合计</td><td class="n">45.9 s → 39.2 s（−14.5%）</td><td class="n">−3.2 s（−12%）</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="cap" style="margin-top:14px">
+    本条链路的 −6,673 ms 是第 09–13 步整段消失（C1(b) 确定省掉第 12+13 步；C2 让第 07 步拿到枚举分布，第 10/11 步那轮"再确认 status"大概率不再发生 —— 后半段是概率，标为保守口径）。
+    多步链路均摊来自：拦截补救 3.26 s/条 × C2+C3 削掉的 19% 拦截数 + C4 对剩余部分砍半；跑满上限的 29% 链路末段浪费 4,566 ms × C1(b)。
+    <strong>这些是估算，验收一律以 <code>evals/baseline.py</code> 那 23 条对照组的实测为准，一条改动跑一轮，不叠着上。</strong>
+  </p>
+
+  <div class="callout" style="margin-top:26px">
+    <h3>真正的收益不在这张表里</h3>
+    <p style="font-size:14px; color:var(--ink-2)">
+      −14.5% 不算大。这份方案值得做的理由是 C1：
+      <strong>29% 的多步链路今天交付的是一句"未在预算内完成归因"加一张裸表，而审计面板上它们全记 <code>ok=true</code></strong>。
+      本条更极端 —— 一份写得很好的答案已经生成出来了，被一行 <code>if finish:</code> 丢掉。
+      这是质量缺陷，顺带才是延迟缺陷。
+    </p>
+  </div>
+
+  <h3 style="margin-top:36px; margin-bottom:14px">不建议做的</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>提案</th><th>为什么不做</th></tr></thead>
+      <tbody>
+        <tr><td>继续压提示词长度</td><td>V1.4 已论证输入不是成本大头；本条 66.6% 命中缓存、命中价 1/10。§03 的公式里输入几乎不出现。</td></tr>
+        <tr><td>调 <code>answer_cache</code></td><td>TTL 已是 600 s，600 条抽样只命中 5 条（0.8%）—— 是重复提问本身少，不是 TTL 短。</td></tr>
+        <tr><td>让 intent 只喂表头层</td><td>已经上过一次，被 23 条对照组抓出一条可复现的误拒，<code>52f2de9</code> 回滚。要重上得先补召回基准。</td></tr>
+        <tr><td>换更快的模型 / 全局压输出</td><td>会动质量，不在"不降低输出质量"这个前提内。</td></tr>
+        <tr><td>修前两次调用的缓存 0 命中</td><td>方向对（intent 与 decide 两套前缀、schema 排在前面），但收益只在 prefill 时延，且与上面那条回滚的改动纠缠。留到召回基准补完再一起评。</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section style="margin-bottom:24px">
+  <div class="shead"><span class="n">07</span><h2>与 V1.4 的关系</h2></div>
+  <p class="lede" style="max-width:70ch">
+    <code>docs/design-agent-trace-optimization.html</code>（V1.4，依据 trace <code>4bac5ce7f21b</code>）的六条改动已全部部署，本条链路上逐条确认生效：
+    工具轮没有 <code>search_schema</code>、没有 <code>analyze_result</code>、embedding 用量已进 span。
+    V1.4 在生产实测里已经指出过一句话 ——
+  </p>
+  <blockquote style="margin-bottom:18px">
+    「模型连撞三次护栏，把步数耗光。这跟这次的改动无关，但它说明一件对本方案不利的事：
+    P0-2『一轮一条 SQL』在这种反复撞墙的链路上省不下什么 —— 步数是被失败重试吃掉的，不是被冗余核对吃掉的。」
+  </blockquote>
+  <p class="lede" style="max-width:70ch">
+    本文是那句话的后续：<strong>第二例出现了，而且这次量化了它</strong> —— 拦截率 18.7%、每次拦截 4,772 ms、29% 的多步链路因此跑满预算而交不出归因。
+    C2 / C3 削的是拦截<em>发生率</em>，C4 削的是每次拦截的<em>单价</em>，C1 兜的是<em>已经发生之后</em>不要把答案一起丢掉。三层各管一段，互不替代。
+  </p>
+</section>
+
+<div class="foot">
+  <div><dt>文档</dt><dd>askdb 链路提效 · af565a7a7074 专项 · <strong>V1.0</strong></dd></div>
+  <div><dt>拟制日期</dt><dd>2026-09-15</dd></div>
+  <div><dt>依据</dt><dd>生产 trace <code>af565a7a7074</code>（15 个 span 完整输入输出，取自 <code>/api/trace</code>）；分布数据取自 <code>/api/audit</code> 最近 600 条与 63 条多步链路的逐 span 聚合；代码对照 <code>askdb@bdbaa32</code> 的 <code>agentgraph.py</code> / <code>agent.py</code> / <code>guard.py</code> / <code>executor.py</code>；UNION 解析行为经本机 sqlglot 30.18 复现</dd></div>
+  <div><dt>分阶段目标</dt><dd>C1 + C2 + C3 落地：<strong>2026-09-17</strong>　·　对照组验收：<strong>2026-09-18</strong>　·　C4 影子跑两轮：<strong>2026-09-24</strong>　·　C4 切 enforce 并生产验证：<strong>2026-09-29</strong></dd></div>
+  <div><dt>修订记录</dt><dd class="rev"><span>V1.0 / 2026-09-15 / 首版，基于单条 trace 剖析 + 600 条分布抽样</span></dd></div>
+  <div><dt>数字来源</dt><dd>全部实测，可逐条回溯到 span 明细或审计接口。不适用 <code>docs/README.md</code> 里「设计文档数字均为占位值」那条</dd></div>
+</div>
+
+</div>
+
+</body>
+</html>
