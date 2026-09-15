@@ -260,10 +260,15 @@ datasources:
 # 任一不满足则整层自动不可用，/api/health 的 semantic_cache.degraded 会说原因。
 semantic_cache:
   mode: shadow
-  # θ_hi —— 直答门槛。宁可判不中，不可判错：这一档返回的是一份**旧数字**。
-  answer_threshold: 0.93
-  # θ_lo —— 复用 SQL 重跑的门槛。可以比上面松，因为它每次都真去查。
-  plan_threshold: 0.88
+  # 两条门槛都是 2026-09-15 用 text-embedding-v4 **实测**定的，不是拍的。
+  # 13 组真实问法对的结果是：同义 0.755–0.889，会答错的那批 0.596–0.908 ——
+  # 两个分布重叠，而且最危险的一对（商品总数 ⇄ 订单总数 0.9083）比所有同义对
+  # 都高。所以**单靠相似度没有安全阈值可选**，真正的判据是 semcache
+  # .lexically_same（去掉功能词后内容词必须完全相同，实测 12/13、危险对 8/8 全拦）。
+  #
+  # 这两个数因此只负责"把候选缩小到一条"，取值贴着实测的同义下界：
+  answer_threshold: 0.82
+  plan_threshold: 0.75
   answer_ttl_seconds: 600
   plan_ttl_seconds: 86400
   # 每个 scope（源 × 组织 × 角色 × 配置指纹）最多留几条。按条数收而不是

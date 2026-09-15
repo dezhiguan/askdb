@@ -268,8 +268,8 @@ def lookup(cfg: Config, question: str, vec: list[float] | None, *,
             _c.misses += 1
         return None
 
-    th_ans = _f(cfg, "answer_threshold", 0.93)
-    th_plan = _f(cfg, "plan_threshold", 0.88)
+    th_ans = _f(cfg, "answer_threshold", 0.82)
+    th_plan = _f(cfg, "plan_threshold", 0.75)
     ttl_ans = _f(cfg, "answer_ttl_seconds", 600)
     ttl_plan = _f(cfg, "plan_ttl_seconds", 86400)
     timed = _is_time_sensitive(question)
@@ -286,6 +286,15 @@ def lookup(cfg: Config, question: str, vec: list[float] | None, *,
 
     # L2：门槛最高的一档。三个条件缺一不可，缺哪个都记在 why 里 ——
     # 影子档要靠这个分布判断 θ 该往哪边挪。
+    # **两条路都要过这一道。** 相似度只负责把候选缩小到一条，
+    # 真正决定"是不是同一个问题"的是内容词（见 lexically_same 的实测）。
+    same = lexically_same(question, q)
+    if not same:
+        _note_reject(score, "内容词不同")
+        with _lock:
+            _c.misses += 1
+        return None
+
     if score >= th_ans and not timed and age <= ttl_ans:
         with _lock:
             _c.answer_hits += 1
@@ -301,13 +310,86 @@ def lookup(cfg: Config, question: str, vec: list[float] | None, *,
             _c.plan_hits += 1
         return Candidate("plan", score, q, payload, sql, age, why)
 
+    _note_reject(score, "相似度低于重跑门槛" if score < th_plan else
+                 "这条计划不可复用（含字面日期）" if not plan_ok else "超过重跑 TTL")
     with _lock:
         _c.misses += 1
     return None
 
 
+def _note_reject(score: float, why: str) -> None:
+    """**近邻够不着时也要留痕。** 影子档的全部意义是标定，而只记命中的话，
+    "差一点就命中"的那一片分布一个数都拿不到 —— θ 就只能继续靠拍。
+
+    分数按 0.05 分桶，理由同上：要的是分布形状，不是每一条的精确值。
+    """
+    bucket = f"{int(score * 20) / 20:.2f}"
+    with _lock:
+        _c.shadow[f"reject:{why}"] = _c.shadow.get(f"reject:{why}", 0) + 1
+        _c.shadow[f"top1:{bucket}"] = _c.shadow.get(f"top1:{bucket}", 0) + 1
+
+
 def _is_time_sensitive(question: str) -> bool:
     return any(w in question for w in _TIME_WORDS)
+
+
+#: 功能词。去掉它们之后剩下的就是"这个问题在问什么"。
+#:
+#: **只收数量词、疑问词、量词与套话**，绝不收任何能区分问题的词 ——
+#: 「数量」「销售额」「新增」「在售」「本月」都必须留着，它们正是判据要看的。
+#: 按长度倒序替换，否则「一共」会先被「共」吃掉半截。
+_STOP_WORDS = sorted([
+    "请问", "我想知道", "帮我", "给我", "查一下", "看一下", "统计一下", "统计",
+    "查询", "一下", "总共有", "总共", "一共有", "一共", "总数", "总量", "数目",
+    "加起来", "分别是", "分别", "各自", "是多少", "有多少", "多少", "几条",
+    "几个", "多少条", "的数量", "条记录", "行数据", "记录数", "记录", "数据",
+    "表里", "表中", "表", "里", "中", "有", "是", "了", "吗", "呢", "啊",
+    "的", "条", "个", "行", "共", "请", "把", "来", "下",
+], key=len, reverse=True)
+
+_PUNCT = re.compile(r"[\s，。？?、,.!！:：;；\"'“”‘’()（）【】\[\]]")
+
+
+def _content(question: str) -> frozenset[str]:
+    """一句提问的**内容词集合**：去掉功能词，剩下的切成中文二元组 / 英文整词。
+
+    切二元组而不是分词，是因为这套部署里没有中文分词器，而二元组对本判据
+    足够 —— 它要判的不是"这句话讲了什么"，只是"两句话剩下的字是不是同一批"。
+    """
+    s = _PUNCT.sub("", question.lower())
+    for w in _STOP_WORDS:
+        s = s.replace(w, "|")
+    out: set[str] = set()
+    for part in (p for p in s.split("|") if p):
+        if re.fullmatch(r"[0-9a-z_]+", part) or len(part) == 1:
+            out.add(part)
+        else:
+            out.update(part[i:i + 2] for i in range(len(part) - 1))
+    return frozenset(out)
+
+
+def lexically_same(a: str, b: str) -> bool:
+    """两句提问在**内容词**上是不是同一个问题。相似度只缩小候选，这里才是判据。
+
+    为什么必须有这一道 —— 2026-09-15 用 text-embedding-v4 实测 13 组问法对
+    （真实模型、真实问法），两个分布**重叠**：
+
+        0.9083  换了实体   商品总共有多少条记录 ⇄ 订单总共有多少条记录
+        0.8888  同义       会员总数是多少     ⇄ 一共有多少会员
+        0.8806  换时间窗   本月新增商品数     ⇄ 上月新增商品数
+        0.8508  换了聚合   各品类商品数量分布 ⇄ 各品类商品销售额分布
+        0.7552  同义       商品总共有多少条记录 ⇄ 统计一下商品的数量
+
+    同义 0.755–0.889，会答错的那批 0.596–0.908 —— **最危险的那一对比所有同义对
+    都高**。也就是说没有任何一条 θ 能把两者分开：调高则一条都不命中，调低就会
+    拿订单的数去答商品。方案 V1.2 里那两个 θ（0.93 / 0.88）是拍的，实测把它们
+    证伪了；而证伪的不只是取值，是"单靠相似度"这个做法本身。
+
+    这一道判据在同一份探针上 12/13，且**八条危险对全部拦下**。唯一一处错判
+    （「各品类商品数量分布」⇄「按品类统计商品数量」被拦）是漏收，不是错答 ——
+    方向是对的：漏收只是多花一次钱，错答是给出一个错的数字且不报错。
+    """
+    return _content(a) == _content(b)
 
 
 # --------------------------------------------------------------------------

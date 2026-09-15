@@ -296,3 +296,173 @@ def test_shadow_verdict_compares_numbers_not_wording():
     assert semcache.note_shadow_verdict(c, {"reasoning": "查不到"}) == "unknown"
     sh = semcache.stats()["shadow"]
     assert sh["answer_agree"] == 1 and sh["answer_disagree"] == 1
+
+
+# ------------------------------------------------ 语义层的确定性判据
+def test_similarity_alone_cannot_separate_these_pairs():
+    """**这条用例钉的是一个设计结论，不是一个函数。**
+
+    2026-09-15 用 text-embedding-v4 实测 13 组真实问法对：同义 0.755–0.889，
+    会答错的那批 0.596–0.908 —— 最危险的一对（商品总数 ⇄ 订单总数，0.9083）
+    比所有同义对都高。没有任何一条 θ 能把两者分开。所以相似度只用来缩小候选，
+    判据是内容词。下面每一对都取自那份实测。
+    """
+    same = [("商品总共有多少条记录", "商品一共有多少条"),
+            ("商品总共有多少条记录", "统计一下商品的数量"),
+            ("商品总共有多少条记录", "商品表里有多少行数据"),
+            ("会员总数是多少", "一共有多少会员")]
+    for a, b in same:
+        assert semcache.lexically_same(a, b), (a, b)
+
+    # 八条会答错的。**换了实体那一条的相似度是 0.9083 —— 全场最高。**
+    danger = [("商品总共有多少条记录", "订单总共有多少条记录"),   # 换实体
+              ("会员总数是多少", "商户总数是多少"),               # 换实体
+              ("本月新增商品数", "上月新增商品数"),               # 换时间窗
+              ("各品类商品数量分布", "各品类商品销售额分布"),     # 换聚合
+              ("有多少商品在售", "有多少商品已下架"),             # 取反
+              ("商品总共有多少条记录", "已下架的商品有多少条"),   # 加过滤
+              ("商品总共有多少条记录", "今天新增了多少商品"),     # 加过滤
+              ("商品总共有多少条记录", "评价平均分是多少")]       # 完全不同
+    for a, b in danger:
+        assert not semcache.lexically_same(a, b), (a, b)
+
+
+def test_stop_words_never_swallow_a_discriminator():
+    """功能词表只许收数量词/疑问词/套话。收进一个能区分问题的词，
+    这道判据就会把两个不同的问题判成同一个 —— 而且不报错。"""
+    for w in ("数量", "销售额", "新增", "在售", "下架", "本月", "上月", "商品", "订单"):
+        assert w not in semcache._STOP_WORDS, w
+
+
+def test_rejects_are_recorded_so_theta_can_be_calibrated():
+    """够不着也要留痕：只记命中的话，"差一点就命中"那一片分布一个数都拿不到。"""
+    semcache.reset()
+    semcache._note_reject(0.86, "内容词不同")
+    semcache._note_reject(0.83, "内容词不同")
+    sh = semcache.stats()["shadow"]
+    assert sh["reject:内容词不同"] == 2
+    assert sh["top1:0.85"] == 1 and sh["top1:0.80"] == 1
+
+
+# ------------------------------------------------ L2/L3 存储（连真库）
+@pytest.fixture
+def sem_store(_no_ambient_store, monkeypatch):
+    """一个独立 schema 的语义缓存库。**不 skip** —— 与向量索引那组同一条口径：
+    跳过等于这组一条都不跑，而报告还是绿的。"""
+    import uuid as _uuid
+
+    import psycopg
+
+    from askdb import pgstore, vectors
+    from tests.conftest import _test_store_dsn
+
+    dsn = _test_store_dsn()
+    if not dsn:
+        pytest.fail("语义缓存用例需要一个可写的 PostgreSQL：设置 ASKDB_TEST_SOURCES_DSN")
+    schema = f"askdb_sem_t_{_uuid.uuid4().hex[:8]}"
+    with psycopg.connect(dsn, autocommit=True) as con:
+        con.execute(f"CREATE SCHEMA {schema}")
+    monkeypatch.setenv(pgstore.DSN_ENV, dsn)
+    monkeypatch.setenv(pgstore.SCHEMA_ENV, schema)
+    pgstore.reset_pool()
+    vectors.reset_cache()
+    semcache.reset()
+    try:
+        yield schema
+    finally:
+        pgstore.reset_pool()
+        vectors.reset_cache()
+        semcache.reset()
+        with psycopg.connect(dsn, autocommit=True) as con:
+            con.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+
+
+def _payload(reasoning="共 1,234,567 行", sql="SELECT count(*) FROM skus", **kw):
+    return {"ok": True, "rejected_by": None, "reasoning": reasoning,
+            "caliber": "按 skus 全表计数", "sql_final": sql,
+            "columns": ["n"], "rows": [[1234567]], "row_count": 1,
+            "cost_cny": 0.0051, "elapsed_ms": 19840, **kw}
+
+
+def test_remember_then_find_the_same_question(cfg, sem_store):
+    v = [1.0, 0.0, 0.0]
+    semcache.remember(cfg, "商品总共有多少条记录", v, _payload(),
+                      org_id=0, role="DEV")
+    got = semcache.lookup(cfg, "商品一共有多少条", v, org_id=0, role="DEV")
+    assert got is not None and got.kind == "answer"
+    assert got.question == "商品总共有多少条记录"
+    assert semcache.stats()["stored"] == 1
+
+
+def test_a_different_entity_is_rejected_even_at_similarity_1(cfg, sem_store):
+    """**同一个向量**下换个实体也必须拦下 —— 相似度在这里已经没有话语权了，
+    判据是内容词。这正是 0.9083 那一对的形状。"""
+    v = [1.0, 0.0, 0.0]
+    semcache.remember(cfg, "商品总共有多少条记录", v, _payload(),
+                      org_id=0, role="DEV")
+    assert semcache.lookup(cfg, "订单总共有多少条记录", v,
+                           org_id=0, role="DEV") is None
+    sh = semcache.stats()["shadow"]
+    assert sh.get("reject:内容词不同") == 1
+    assert any(k.startswith("top1:") for k in sh), "近邻分数要留痕，否则 θ 没法标定"
+
+
+def test_another_role_or_org_never_sees_the_entry(cfg, sem_store):
+    """scope 少一维就是跨身份串结果。"""
+    v = [1.0, 0.0, 0.0]
+    semcache.remember(cfg, "商品总共有多少条记录", v, _payload(),
+                      org_id=0, role="DEV")
+    assert semcache.lookup(cfg, "商品一共有多少条", v,
+                           org_id=0, role="QA") is None
+    assert semcache.lookup(cfg, "商品一共有多少条", v,
+                           org_id=9, role="DEV") is None
+
+
+def test_masking_change_invalidates_the_entry(cfg, sem_store):
+    """脱敏列一改，scope 指纹跟着变，旧条目自动看不见 —— 与 L1 同一条口径。"""
+    v = [1.0, 0.0, 0.0]
+    semcache.remember(cfg, "商品总共有多少条记录", v, _payload(),
+                      org_id=0, role="DEV")
+    col = next(iter(next(iter(cfg.tables.values())).columns.values()))
+    col.sensitive = not col.sensitive
+    assert semcache.lookup(cfg, "商品一共有多少条", v,
+                           org_id=0, role="DEV") is None
+
+
+def test_time_sensitive_question_can_only_take_the_plan_lane(cfg, sem_store):
+    v = [1.0, 0.0, 0.0]
+    semcache.remember(cfg, "今天新增了多少商品", v,
+                      _payload(reasoning="共 12 行", sql="SELECT count(*) FROM s"),
+                      org_id=0, role="DEV")
+    got = semcache.lookup(cfg, "今天新增了多少商品", v, org_id=0, role="DEV")
+    assert got is not None and got.kind == "plan", "涉及时间的问题不许直答"
+    assert got.why == "问题涉及时间"
+
+
+def test_a_plan_with_a_literal_date_is_stored_but_never_reused(cfg, sem_store):
+    v = [1.0, 0.0, 0.0]
+    semcache.remember(
+        cfg, "七月二十七日的商品数", v,
+        _payload(reasoning="共 5 行",
+                 sql="SELECT count(*) FROM s WHERE d = DATE '2026-07-27'"),
+        org_id=0, role="DEV")
+    # 直答那一路仍然走得通（它返回的是那天的旧结果，本来就是对的）；
+    # 不可复用指的是**不许拿这条 SQL 去重跑**。
+    got = semcache.lookup(cfg, "七月二十七日的商品数", v, org_id=0, role="DEV")
+    assert got is None or got.kind == "answer"
+
+
+def test_a_dirty_result_never_enters_the_store(cfg, sem_store):
+    v = [1.0, 0.0, 0.0]
+    semcache.remember(cfg, "商品总共有多少条记录", v,
+                      _payload(truncated=True), org_id=0, role="DEV")
+    assert semcache.stats()["stored"] == 0
+    assert semcache.lookup(cfg, "商品一共有多少条", v,
+                           org_id=0, role="DEV") is None
+
+
+def test_lookup_without_a_vector_is_a_miss_not_an_error(cfg, sem_store):
+    assert semcache.lookup(cfg, "商品一共有多少条", None,
+                           org_id=0, role="DEV") is None
+    semcache.remember(cfg, "q", None, _payload(), org_id=0, role="DEV")
+    assert semcache.stats()["stored"] == 0
