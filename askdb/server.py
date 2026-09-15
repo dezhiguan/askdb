@@ -3526,6 +3526,34 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             """
             _stash_handoff(scoped, _tid, res)
             _open_approval_bg(scoped, res, who=_who, kind="ask", question=q_text)
+            # 应答缓存也必须发生在这一路，理由与上面那两件事完全相同。
+            #
+            # 2026-09-15 查出来的：`cache.put` 原来只写在同步返回那一段，而交接
+            # 出去的执行走不到 —— 函数在上面 `if _notice is not None` 就返回了。
+            # 于是**任何越过交接判据的提问都结构性地不可能进缓存**，问一百遍
+            # 命中零次。而交接不只看 10 秒那条软阈值：async_runner.Handoff.check
+            # 在每个节点边界还判"多步 / token 过半 / 预估扫描过半"，
+            # 「商品总共有多少条记录」这类全表 COUNT 在大表上第三条几乎必中，
+            # 连 10 秒都不用等就交接了。
+            #
+            # 后果不只是少省一次钱，还有两条：
+            #   · **被漏掉的正是最贵的那批。** 能同步跑完的是便宜的短链路，
+            #     交接出去的是多步、高 token、大扫描那一批 —— 缓存本该在它们
+            #     身上省得最多。
+            #   · **命中率这个数系统性偏乐观。** 分母里没有这批，看板上的
+            #     73% 说的是"短链路的命中率"，而不是全站的。
+            #
+            # 交接那一路的结果原本只落进 _stash_handoff 那个按 thread_id 编的
+            # 临时 key，而 thread_id 每次都是新 uuid —— 别人再问同一句话取不到。
+            #
+            # 判据与同步那一路逐字相同：干净的成功才进（ok 且没被任何规则拦）。
+            # 不必再判"有没有挂审批"——挂审批的前提是 rejected_by == "R-11"
+            # （见 _open_approval_bg 第一行），已经被 rejected_by is None 挡掉。
+            # ckey 为 None 的那几种（缓存关闭 / as_task / 凭票重跑）在入口就已经
+            # 决定不缓存，这里照旧跳过。
+            if (ckey is not None and res is not None and res.ok
+                    and res.rejected_by is None):
+                cache.put(ckey, res.to_dict(), cache.ttl)
             # 票是一次性的，作废也必须发生在这一路。
             # 2026-09-13 生产复验抓到：作废原来只写在同步返回那一段，凭票重跑
             # 又恒定立即交接（A-2）—— 于是那张票**永远走不到作废那一行**，
@@ -3566,6 +3594,10 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             _approvals.consume(cfg, req.approval_id)
         # 只缓存"干净的成功"：ok 且无任何拦截、无挂起审批。失败/被拦/挂起都是
         # 有状态或一次性的，缓存它们即错误（详见 qcache 模块头注）。
+        #
+        # **这一段有一个孪生体在 _settle_detached 里**，管交接出去那一路。
+        # 改这里的判据就要一起改那边 —— 两边不一致的后果是"同一句话，
+        # 跑得快的进了缓存、跑得慢的没进"，而那恰好是最难从现象上看出来的。
         if (ckey is not None and r.ok and r.rejected_by is None
                 and not out.get("approval_id")):
             cache.put(ckey, out, cache.ttl)
