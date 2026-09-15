@@ -333,9 +333,11 @@ llm:
   model: qwen3.8-flash
   temperature: 0
   api_key_env: DASHSCOPE_API_KEY
-  price_input_per_1k: 0.0008        # 0.8 元/百万 Token（2026-09-06 核对官方单价）
+  price_input_per_1k: 0.0008        # 0.8 元/百万 Token（2026-09-15 核对官方单价）
   price_output_per_1k: 0.0027       # 2.7 元/百万 Token
-  # 命中前缀缓存的输入按标准输入价的 10% 计。
+  # 命中前缀缓存的输入价：官方明码 **0.1 元/百万 Token**，是标准输入价的
+  # 1/8。此前按"10%"推算写成 0.08，2026-09-15 核对官方模型页更正 —— 生产
+  # 链路 91% 的输入都命中缓存，这个单价几乎决定整张账单。
   #
   # 2026-09-13 实测更正：**百炼对 qwen3.8-flash 是隐式缓存，自动生效，
   # 不需要显式创建**。同前缀连打三次，第 2、3 次 cache_read=2048/2247
@@ -345,7 +347,7 @@ llm:
   # 生产上到底命不命中是另一回事：两次 decide 之间隔着工具调用与几秒钟，
   # 而缓存有 TTL。cached_in 自本次起随 /api/trace 出接口（audit.STEP_FIELDS），
   # 看 Span 明细的输入摘要里有没有"（缓存 N）"即可判定，别再凭猜。
-  price_cached_input_per_1k: 0.00008
+  price_cached_input_per_1k: 0.0001
   # 百炼无峰谷计费 —— 不配 peak_windows，倍率恒为 1.0。
   thinking: false                   # 该模型默认开思考，必须显式关（见 llm.py _build）
 
@@ -379,12 +381,12 @@ llm:
     base_url: "https://api.deepseek.com"
     model: deepseek-v4-flash
     api_key_env: DEEPSEEK_API_KEY
-    # DeepSeek 直连单价（官网 2026-09-06 核对）。备选的单价必须写全：
+    # DeepSeek 直连单价（官网 2026-09-15 核对，含 09-10 那轮降价）。单价必须写全：
     # 兜底触发时按**这里**结算，不再沿用主模型的价。
     # 按高峰填，空闲由 offpeak_multiplier 向下打折 —— 漏配时偏贵不偏便宜。
-    price_input_per_1k: 0.003          # 未命中：高峰 3 元/1M（空闲 1.5）
-    price_output_per_1k: 0.009         # 高峰 9 元/1M（空闲 4.5）
-    price_cached_input_per_1k: 0.0001  # 命中：高峰 0.10 元/1M（空闲 0.05）
+    price_input_per_1k: 0.002          # 未命中：高峰 2 元/1M（空闲 1）
+    price_output_per_1k: 0.008         # 高峰 8 元/1M（空闲 4）
+    price_cached_input_per_1k: 0.00004 # 命中：高峰 0.04 元/1M（空闲 0.02）
     offpeak_multiplier: 0.5
     peak_windows: ["09:00-12:00", "14:00-18:00"]   # 北京时间
     peak_weekdays_only: true
