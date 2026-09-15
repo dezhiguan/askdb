@@ -876,7 +876,8 @@ def _stats_line(stats: list[dict[str, Any]]) -> str:
     return line if len(line) <= _STATS_CHARS else line[:_STATS_CHARS] + " …（统计已截断）"
 
 
-def _meta_evidence(state: AgentState) -> list[dict[str, Any]]:
+def _meta_evidence(state: AgentState, cfg: Config | None = None,
+                   ) -> list[dict[str, Any]]:
     """把**非 execute_sql** 的成功工具返回也折成可核对的证据。
 
     search_schema 返回表清单、get_table_schema 返回列清单 —— 这些是模型回答
@@ -893,13 +894,30 @@ def _meta_evidence(state: AgentState) -> list[dict[str, Any]]:
     # 提示词改过之后模型更可能直接照注入的 schema 作答，而 _n_act 的 ⓪′ 又会把
     # 重复召回折成复用。少了这一条，"库里有哪些表"的依据就只剩运气。
     #
-    # **注意这不影响闸 ①**：那道闸判的是 history（模型自己动没动手），不读这里。
-    # 理由见 _hidden_tools 的说明 —— 让召回顶替闸 ① 试过，会放过"大约 120 万条
-    # 订单"这种小于 grounding.MIN_ABS 的编造。
+    # **2026-09-15 起这一条也参与闸 ①，但只对 metadata_only 那一类**（见
+    # _n_finalize 里 meta_backed 那段）。原来这里写的是"不影响闸 ①"，理由是
+    # 让召回顶替闸 ① 会放过"大约 120 万条订单"那种编造 —— 那个理由今天仍然
+    # 成立，所以放开的口子按预检的 metadata_only 收窄，数据问题一步没松。
     hit = list(state.get("tables_hit") or [])
     if hit:
         out.append({"columns": ["name"], "rows": [[n] for n in hit]})
         out.append({"columns": ["count"], "rows": [[len(hit)]]})
+        # 召回回来的**列清单**也是证据，而且是这一类问题最常引用的那份。
+        #
+        # 少了它，闸 ① 放行的元数据问题会原地落进闸 ② 再被拒一次 —— 拒答的
+        # 位置从第 ① 道挪到第 ② 道，用户看到的还是拒答。会踩到的是答案里引用了
+        # 列定义里某个 ≥ MIN_ABS 的数的场合（VARCHAR(2048)、DECIMAL 精度、
+        # 枚举取值），不常见但不是不会有。
+        #
+        # 取的就是 get_table_schema 本该返回的那份 —— 而那个工具正是提示词
+        # 劝模型别调的。劝它别调，就得把它的返回值替它补上，否则又是一次
+        # "规则打架、用户挨打"。
+        for name in hit:
+            spec = (cfg.tables.get(name.lower()) if cfg else None)
+            cols = list(spec.columns) if spec else []
+            if cols:
+                out.append({"columns": ["name"], "rows": [[c] for c in cols]})
+                out.append({"columns": ["count"], "rows": [[len(cols)]]})
     for h in state.get("history") or []:
         if not h.get("ok") or h.get("tool") == "execute_sql":
             continue
@@ -925,7 +943,8 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     判据与 _after_act 共用一份，见那个函数的说明。
     """
     from .agent import (_grounding_mode, _grounding_no_evidence_mode,
-                        _has_number, _io_json, _known_constants)
+                        _has_number, _io_json, _known_constants,
+                        metadata_recall_is_evidence)
 
     d = _deps(config)
     t = d.tracer.start()
@@ -1012,7 +1031,38 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         #
         # 收紧成两档：
         ran_tool = any(h.get("ok") for h in (state.get("history") or []))
-        if not ran_tool:
+        # 元数据问题的依据是**图自己那次召回**，不是模型有没有再调一遍。
+        #
+        # 2026-09-15 线上 f9d0a062165a：问"会员表字段结构"，预检判
+        # metadata_only=True，召回把 13 张表的完整列定义注进了提示词，模型据此
+        # 逐列答出来 —— 一个数据数字都没编，照样被闸 ① 一刀切拒。它的
+        # thought 写得明明白白："schema 召回已给出 customers 与 member_levels
+        # 的完整列定义，直接据此回答。"
+        #
+        # 这不是模型偷懒，**是提示词要求它这么做的**：AGENT_SYSTEM 第一条写着
+        # "不要为了'确认一下'再查一遍它已经写明的东西"，AGENT_USER 开头再写一遍
+        # "下面已经列出的表不要再调 get_table_schema"。提示词让它别查，闸 ① 又
+        # 因为它没查而拒答 —— 两条规则互相打架，而挨打的是用户。
+        #
+        # _hidden_tools 里"metadata_only=True 照旧把 search_schema 摆上桌"那句
+        # 留的是**概率**逃生口：桌上有这个工具，不等于模型会去调它，何况提示词
+        # 正在劝它别调。这次就是劝住了。所以判据要从"模型动没动手"改成
+        # "有没有依据"。
+        #
+        # **收窄到 metadata_only 这一类，不是普遍放开。** _meta_evidence 的注释
+        # 里记着为什么当初没让召回顶替闸 ①：会放过"大约有 120 万条订单"这种
+        # 小于 grounding.MIN_ABS 的编造（tests/test_agent_runtime.py::
+        # test_agent_no_evidence_blocks_fabricated_number 盯着这条）。那条用例的
+        # 问题是"订单总数"，预检判 metadata_only=False —— 数据问题一步都没放松，
+        # 闸 ① 照旧一刀切。metadata_only 这个信号是 2026-09-15 才有的，当初
+        # 试这条路时它还不存在。
+        #
+        # 放行的也只是**闸 ①**：元数据问题接着落到下面的闸 ②，每个大额数字仍要
+        # 在 _meta_evidence 里逐个追溯，追不到照样拒。
+        meta_backed = (metadata_recall_is_evidence(d.cfg)
+                       and bool(state.get("metadata_only"))
+                       and bool(state.get("tables_hit")))
+        if not ran_tool and not meta_backed:
             # ① 一次工具都没成功调用过 —— 纯凭空作答，照旧一刀切拒。
             #    2026-09-13 d09d099a2209 正是这样：零次工具调用，直接编出一张
             #    退款表（WECHAT 10,432 笔 / 1,978,562.34 元），还写着"通过
@@ -1029,7 +1079,7 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         #    不可误"标定过（只查大额数、跳过年份占比、允许一次算术），
         #    这里再写一套迟早两边漂开。
         ne_mode = _grounding_no_evidence_mode(d.cfg)
-        bad = (grounding.ungrounded(answer, _meta_evidence(state),
+        bad = (grounding.ungrounded(answer, _meta_evidence(state, d.cfg),
                                     known=_known_constants(d.cfg))
                if ne_mode != "off" else [])
         if bad and ne_mode == "enforce":

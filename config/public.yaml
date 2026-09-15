@@ -199,6 +199,19 @@ agent:
   # 但**不要在 answer_step 没生效的部署上单独打开这里**：答案里没有表、
   # 界面上的表又是错的，比不改更坏。
   answer_no_table_dump: true
+  # 元数据问题（"某张表有哪些字段"）上，图自己那次 schema 召回算不算"有依据"。
+  #
+  # 判据：线上 f9d0a062165a（2026-09-15，会员中心）。预检判 metadata_only=True，
+  # 召回把 13 张表的完整列定义注进了提示词，模型据此逐列答出来、一个数据数字都
+  # 没编，闸 ①（NO_EVIDENCE）照样一刀切拒 —— 因为那道闸判的是"模型自己动没动手"。
+  # 而提示词正要求它别动手：AGENT_SYSTEM 第一条"不要为了'确认一下'再查一遍它
+  # 已经写明的东西"，AGENT_USER 开头"下面已经列出的表不要再调 get_table_schema"。
+  # 两条规则互相打架，挨打的是用户。
+  #
+  # 放开的面按 metadata_only 收窄，数据问题一步没松（"订单总数"那类仍然
+  # 零工具调用即拒，tests/test_agent_runtime.py 盯着）；而且只放行闸 ①，
+  # 答案里的大额数字接着过闸 ②，那一层还有 grounding_no_evidence 兜底。
+  metadata_recall_is_evidence: true
   max_steps: 6                       # R-16 循环步数上限，超则收敛作答并标注
   cost_cap_tokens: 32000             # R-17 累计 token 上限。32000 而非 20000：
                                      # "先 SELECT DISTINCT 查证枚举再统计"、以及撞到
