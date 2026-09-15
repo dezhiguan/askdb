@@ -47,7 +47,8 @@ from pathlib import Path
 from typing import Any
 
 
-from .config import Column, Config, Table, mark_cached_counters
+from .config import (Column, Config, Table, infer_foreign_keys,
+                     mark_cached_counters)
 
 # 只有这三种后端有真正的执行与护栏实现（见 executor 的 _DuckBackend /
 # _PgBackend / _MySqlBackend 与 Config.dialect）。列出别的类型就是在承诺
@@ -482,12 +483,21 @@ def build(*, name: str, type_: str, dsn: str, env: str = "test",
 
 
 def whitelist_from_scan(columns: dict[str, list[dict[str, Any]]],
-                        picked: list[str]) -> list[dict[str, Any]]:
+                        picked: list[str],
+                        fks: list[dict[str, str]] | None = None,
+                        ) -> list[dict[str, Any]]:
     """把扫描到的字段落成白名单条目。
 
     带上字段名与类型是硬要求：R-04（字段真实性）与 R-05（展开 SELECT *）
     靠它判定，缺了会退化成放行。
     """
+    # (表, 列) → "目标表.目标列"。只收两端都在本次白名单里的边，
+    # 指向白名单外的表那条边给了也用不上，见 Executor.foreign_keys。
+    want = set(picked)
+    fk_map = {(f["table"], f["column"]): f"{f['ref_table']}.{f['ref_column']}"
+              for f in (fks or [])
+              if f.get("table") in want and f.get("ref_table") in want}
+
     out = []
     for name in picked:
         cols = columns.get(name)
@@ -509,8 +519,12 @@ def whitelist_from_scan(columns: dict[str, list[dict[str, Any]]],
             # 取值（枚举）跟着一起存：模型猜错取值的大小写，得到的是一条
             # 语法正确、结果恒空的 SQL —— 页面上看不出任何异常。取值来自
             # 列注释或 pg_stats，两者都拿不到时是空列表，行为与从前一致。
+            # 外键跟着列一起存下来：库里**声明过**的关联是最硬的一份 JOIN 依据，
+            # 而它只有在扫描的这一刻取得到 —— 之后谁也不会为了补一条边去重扫。
             "columns": {c["name"]: {"type": c["type"], "desc": c.get("desc", ""),
-                                    **({"enum": c["enum"]} if c.get("enum") else {})}
+                                    **({"enum": c["enum"]} if c.get("enum") else {}),
+                                    **({"fk": fk_map[(name, c["name"])]}
+                                       if (name, c["name"]) in fk_map else {})}
                         for c in cols},
         })
     return out
@@ -561,6 +575,10 @@ def derive_config(base: Config, src: Source) -> Config:
             columns={
                 cname: Column(name=cname, type=spec.get("type", ""),
                               desc=spec.get("desc", ""),
+                              # 扫描时存下的声明边。没有就是空串，随后由
+                              # infer_foreign_keys 按命名补一批推断边。
+                              fk=spec.get("fk", "") or "",
+                              fk_kind="FOREIGN_KEY" if spec.get("fk") else "",
                               # 扫描时存下来的取值优先；没有就从注释里现解析，
                               # 这样**已经注册好的源不必重新扫描**也能享受到。
                               enum=list(spec.get("enum") or [])
@@ -574,6 +592,10 @@ def derive_config(base: Config, src: Source) -> Config:
     # 而线上全是运行时源，不在这里推一遍，`cached_counter` 就只在手写白名单上
     # 生效，等于对生产完全没作用（2026-09-10 上线后实测到的正是这个）。
     mark_cached_counters(tables)
+    # 声明边之外，按命名再推一批。**已注册的源不必重扫也能享受到** —— 与
+    # 上面 enum 那条兜底同一个道理：线上的白名单是几个月前扫出来的，
+    # 要求重扫才能用上新能力，等于这个能力对存量源不存在。
+    infer_foreign_keys(tables)
 
     return Config(root=base.root, raw=raw, tables=tables, metrics=[],
                   path=f"{base.path}#{src.id}", role=base.role,

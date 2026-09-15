@@ -72,14 +72,15 @@ class ToolResult:
 # --------------------------------------------------------------------------
 # 三个只读原子
 # --------------------------------------------------------------------------
-def search_schema(question: str, cfg: Config) -> ToolResult:
+def search_schema(question: str, cfg: Config,
+                  backend: Any = None) -> ToolResult:
     """向量召回与问题相关的表/字段/业务口径。
 
     包装 schema_rag.recall：top_k / token_budget / mode 等仍从 cfg.raw['schema_rag']
     读，与管道一致。返回 .prompt（可直接注入的 schema 文本）与命中表名，并把
     盲选 / 降级两个可信度信号如实带出。
     """
-    r = schema_rag.recall(question, cfg)
+    r = schema_rag.recall(question, cfg, backend=backend)
     return ToolResult(
         ok=True, tool="search_schema",
         data={
@@ -92,6 +93,12 @@ def search_schema(question: str, cfg: Config) -> ToolResult:
             # 保证两者选的是同一批表。
             "prompt_heads": schema_rag.render_heads(r.tables, r.metrics),
             "blind": bool(r.blind),
+            # 三项新链路各自留痕。**必须分开报** —— 一张表是靠语义召回进来的、
+            # 靠外键补进来的、还是靠"张三就在这张表里"进来的，排查时走的是
+            # 三条完全不同的路，混成一个 tables 列表就全看不出来了。
+            "fk_added": list(r.fk_added),
+            "value_hits": [str(h) for h in r.value_hits],
+            "coverage_gaps": list(r.coverage_gaps),
             "degraded": bool(getattr(r, "degraded_from", None)),
             "truncated": list(r.truncated),
             "mode": r.mode,
@@ -350,7 +357,8 @@ def _t_search(args: dict[str, Any], ctx: ToolContext) -> ToolResult:
     q = (args or {}).get("question")
     if not q:
         return ToolResult(ok=False, tool="search_schema", error="缺少参数 question")
-    return search_schema(str(q), ctx.cfg)
+    return search_schema(str(q), ctx.cfg,
+                         getattr(ctx.executor, "backend", None))
 
 
 def _t_get(args: dict[str, Any], ctx: ToolContext) -> ToolResult:

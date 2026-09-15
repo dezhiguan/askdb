@@ -280,6 +280,18 @@ schema_rag:
   # 并把 recall_blind 置为 true。
   top_k: 8
   max_k: 12
+  # --- Schema Linking（2026-09-15）。三项都可单独关掉，关掉即回到原有行为。
+  # 沿外键补回 JOIN 对端与桥接表，最多补几张。0 = 关闭。
+  # 打的是基线里那道 11 个点的缝：recall_primary@8=95.8% 而
+  # recall_strict@8=84.4%，差的几乎全是 JOIN 对端那张表。
+  fk_expand_max: 3
+  # 值检索：把提问里的取值（"张三"）定位到具体的列。false = 关闭。
+  # 代价见 askdb/valuelink.py 模块头：小表随便探，大表只探有索引的列，
+  # 整条探测 SQL 自带 1.5 秒预算，任何异常都当没命中。
+  value_link: true
+  # 多实体覆盖度判定：off | shadow | enforce。
+  # shadow = 只记录不向用户发声，先在生产流量里标定这条判据的真实误判形状。
+  coverage_check: shadow
   # token_budget 4000 这一项两条线独立得到同一个结论：
   # 124 条线上用例的离线召回基准显示，5 张表 / 1500 token 下 recall@k 只有
   # 90.4%，漏掉的全是「表在白名单里、模型却回答『库里没有这类数据』」。

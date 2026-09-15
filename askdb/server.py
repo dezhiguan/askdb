@@ -1658,7 +1658,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     raise HTTPException(status_code=400,
                                         detail=f"库里没有这些表：{'、'.join(unknown)}")
                 columns = ex.describe(req.tables)
-            src.tables = _sources.whitelist_from_scan(columns, req.tables)
+                # 外键跟着结构一起取。**失败不算失败** —— Executor.foreign_keys
+                # 自己吞异常返回空列表，没有外键的库（本机 shop_* 全部如此）
+                # 走的就是这条路，随后由 derive_config 按命名推断兜底。
+                fks = ex.foreign_keys(req.tables)
+            src.tables = _sources.whitelist_from_scan(columns, req.tables, fks)
         except _sources.SourceError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         except DataSourceError as e:

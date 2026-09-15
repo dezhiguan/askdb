@@ -199,7 +199,10 @@ def derive(base: Any, source: str) -> Any:
     with Executor(sources.derive_config(base, src)) as ex:
         names = sorted(t["name"] for t in ex.introspect())
         cols = ex.describe(names)
-    src.tables = sources.whitelist_from_scan(cols, names)
+        # 外键跟着结构一起取 —— 生产那条路径（server.py 的 /tables）现在也这么做，
+        # 这里不取就等于拿一份没有关联信息的白名单去测有关联信息的链路。
+        fks = ex.foreign_keys(names)
+    src.tables = sources.whitelist_from_scan(cols, names, fks)
     return sources.derive_config(base, src), names
 
 
@@ -222,7 +225,7 @@ def rank_tables(cfg: Any, question: str) -> tuple[list[tuple[str, float]], int]:
 # --------------------------------------------------------------------------
 # 打分
 # --------------------------------------------------------------------------
-def injected(cfg: Any, question: str) -> list[str]:
+def injected(cfg: Any, question: str, backend: Any = None) -> Any:
     """**真正被注入提示词的**那几张表 —— 走完整条 schema_rag.recall()。
 
     与 rank_tables 是两个口径，都要量：
@@ -231,8 +234,12 @@ def injected(cfg: Any, question: str) -> list[str]:
       · 这里量的是**最终结果**（主表到底进没进提示词），后处理正是冲它去的。
     2026-09-15 加这一项，起因是字面锚点上线后基准一个数都没动 —— 不是改动没用，
     是这份基准**评不了后处理**。一个评不了自己要评的东西的基准，比没有更坏。
+
+    **返回整个 Recall 而不只是表名**：同一次召回要同时喂两个口径（上面那两位
+    注入命中，和下面 score_linking 的 precision 与留痕），调两次就是白烧一遍
+    embedding、白跑一次值检索，而且两份结果还可能不一致。
     """
-    return list(schema_rag.recall(question, cfg).table_names)
+    return schema_rag.recall(question, cfg, backend=backend)
 
 
 def score(case: dict[str, Any], ranked: list[tuple[str, float]],
@@ -264,6 +271,47 @@ def score(case: dict[str, Any], ranked: list[tuple[str, float]],
         "all_injected": (all(t in (injected_names or []) for t in case["want"])
                          if injected_names is not None else None),
     }
+
+
+def score_linking(case: dict[str, Any], rec: Any) -> dict[str, Any]:
+    """Schema Linking 三条新链路的账。
+
+    **只报 injected 那两位没有的东西** —— 主表/全部 want 有没有进提示词，
+    上面的 primary_injected / all_injected 已经在报了，这里再算一遍就是
+    两个名字量同一件事，迟早对不上。
+
+    precision 是这里最要紧的一位：召回率靠多塞表就能刷上去，而上下文预算
+    是真金白银 —— 只报召回不报 precision 的基准会奖励一个把全库塞进去的
+    实现。avg_picked 是它的绝对量版本，两者一起看才知道涨的召回是"补对了"
+    还是"补多了"。
+    """
+    picked = set(rec.table_names)
+    want = set(case["want"])
+    return {
+        "id": case["id"], "source": case["source"],
+        "name_in_q": case["name_in_q"],
+        "n_picked": len(picked),
+        "precision": round(len(want & picked) / max(len(picked), 1), 4),
+        "fk_added": list(rec.fk_added),
+        "value_hits": [str(h) for h in rec.value_hits],
+        "coverage_gaps": list(rec.coverage_gaps),
+    }
+
+
+def summarize_linking(items: list[dict[str, Any]]) -> dict[str, Any]:
+    def agg(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        n = max(len(rows), 1)
+        return {
+            "n": len(rows),
+            "precision": round(sum(x["precision"] for x in rows) / n, 4),
+            "avg_picked": round(sum(x["n_picked"] for x in rows) / n, 2),
+            "fk_added_rate": round(sum(1 for x in rows if x["fk_added"]) / n, 4),
+            "value_hit_rate": round(sum(1 for x in rows if x["value_hits"]) / n, 4),
+            "coverage_gap_rate": round(sum(1 for x in rows if x["coverage_gaps"]) / n, 4),
+        }
+    return {"all": agg(items),
+            "no_table_name_in_question": agg([x for x in items
+                                              if not x["name_in_q"]])}
 
 
 def _rate(items: list[dict[str, Any]], key: str, k: int) -> float:
@@ -333,6 +381,13 @@ def report(data: dict[str, Any]) -> None:
         print(head)
         print("    严格     " + "".join(f"{b['recall_strict'][str(k)]*100:>7.1f}%" for k in ks))
         print("    主表     " + "".join(f"{b['recall_primary'][str(k)]*100:>7.1f}%" for k in ks))
+        lk = (data.get("summary_linking") or {}).get(name) or {}
+        if lk.get("n"):
+            print(f"    **Schema Linking** precision {lk['precision']:.4f} · "
+                  f"平均注入 {lk['avg_picked']} 张 · FK 补表 "
+                  f"{lk['fk_added_rate']*100:.1f}% · 值命中 "
+                  f"{lk['value_hit_rate']*100:.1f}% · 覆盖缺口 "
+                  f"{lk['coverage_gap_rate']*100:.1f}%")
         print(f"    **注入命中** 主表 {b['primary_injected_rate']*100:.1f}% · "
               f"全部 want {b['all_injected_rate']*100:.1f}%")
         print(f"    盲选率 {b['blind_rate']*100:.1f}% · "
@@ -358,6 +413,11 @@ def main() -> int:
     ap.add_argument("--sources", default="", help="只跑这几个源，逗号分隔")
     ap.add_argument("--report", action="store_true", help="不跑，只读已有结果")
     ap.add_argument("--note", default="", help="记进结果里的一句话")
+    # 对照实验的开关。同一份代码、同一批用例，开与关各跑一次 —— 这是唯一
+    # 能把"新链路带来的变化"与"用例集本身的性质"分开的办法。改配置文件
+    # 也能达到同样效果，但那样跑出来的两份结果不写在命令里，事后没人能复现。
+    ap.add_argument("--no-linking", action="store_true",
+                    help="关掉 FK 扩展与值检索，跑出改造前的端到端对照")
     args = ap.parse_args()
 
     out_path = HERE / "results" / "recall.json"
@@ -385,9 +445,15 @@ def main() -> int:
         print("没有用例")
         return 1
 
+    if args.no_linking:
+        rag["fk_expand_max"] = 0
+        rag["value_link"] = False
+        print("  [对照组] FK 扩展与值检索已关闭")
+
     min_score = float(rag.get("min_score", 0.35))
     ks = [1, 2, 3, 5, 8, 12]
     items: list[dict[str, Any]] = []
+    linking: list[dict[str, Any]] = []
     embed_tokens = 0
     t0 = time.time()
 
@@ -399,6 +465,14 @@ def main() -> int:
             print(f"  {src}: 派生失败，跳过 —— {str(e).splitlines()[0]}")
             continue
         print(f"  {src}: {len(names)} 张表 / {len(mine)} 条用例", flush=True)
+        # 值检索要连库（拿提问里的取值去真实数据里探一次）。连不上就传 None，
+        # 那一路自然跳过，其余口径照测 —— 基准不该因为一档增量能力而跑不起来。
+        try:
+            ex_link = Executor(cfg).__enter__()
+        except Exception as e:                 # noqa: BLE001
+            print(f"    ! {src} 执行器建不起来，值检索这一路跳过："
+                  f"{str(e).splitlines()[0]}")
+            ex_link = None
         for c in mine:
             unknown = [t for t in c["want"] if t not in cfg.tables]
             if unknown:
@@ -413,11 +487,15 @@ def main() -> int:
                 continue
             embed_tokens += tok
             try:
-                names = injected(cfg, c["question"])
+                rec = injected(cfg, c["question"],
+                               ex_link.backend if ex_link else None)
             except Exception as e:             # noqa: BLE001
                 print(f"    ! {c['id']} 注入口径失败：{str(e).splitlines()[0]}")
-                names = None
-            items.append(score(c, ranked, min_score, names))
+                rec = None
+            items.append(score(c, ranked, min_score,
+                               list(rec.table_names) if rec else None))
+            if rec is not None:
+                linking.append(score_linking(c, rec))
 
     data = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -435,7 +513,14 @@ def main() -> int:
         "n_cases": len(items),
         "ks": ks,
         "summary": summarize(items, ks),
+        # 开关状态一起落盘：同一份代码开关一开一关跑出来的两份结果，
+        # 不记开关就分不出谁是谁。
+        "switches": {"fk_expand_max": rag.get("fk_expand_max"),
+                     "value_link": rag.get("value_link"),
+                     "coverage_check": rag.get("coverage_check")},
+        "summary_linking": summarize_linking(linking),
         "items": items,
+        "items_linking": linking,
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_path.exists():

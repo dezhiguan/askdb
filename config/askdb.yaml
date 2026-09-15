@@ -135,6 +135,18 @@ schema_rag:
   mode: all                        # keyword（P0）| all | vector（P1）
   top_k: 3
   max_k: 5
+  # --- Schema Linking（2026-09-15）。三项都可单独关掉，关掉即回到原有行为。
+  # 沿外键补回 JOIN 对端与桥接表，最多补几张。0 = 关闭。
+  # 打的是基线里那道 11 个点的缝：recall_primary@8=95.8% 而
+  # recall_strict@8=84.4%，差的几乎全是 JOIN 对端那张表。
+  fk_expand_max: 3
+  # 值检索：把提问里的取值（"张三"）定位到具体的列。false = 关闭。
+  # 代价见 askdb/valuelink.py 模块头：小表随便探，大表只探有索引的列，
+  # 整条探测 SQL 自带 1.5 秒预算，任何异常都当没命中。
+  value_link: true
+  # 多实体覆盖度判定：off | shadow | enforce。
+  # shadow = 只记录不向用户发声，先在生产流量里标定这条判据的真实误判形状。
+  coverage_check: shadow
   token_budget: 12000
   # 以下仅 mode: vector 生效
   embedding_model: text-embedding-v4

@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import valuelink
 from .config import Config, Metric, Table
 from .trace import embed_cost_cny
 
@@ -105,6 +106,15 @@ class Recall:
     degrade_error: str = ""     # 回落原因的原始消息
     degrade_code: str = ""      # 异常类名，当错误码用
     degrade_ms: int = 0         # 失败那次尝试自己烧掉的时间
+    #: 提问里没有被任何一张选中表兜住的实体词。空 = 每个都兜住了。
+    #: 与 blind 是两回事：blind 是"一张都没命中"，这个是"命中了但漏了一个"。
+    coverage_gaps: list[str] = field(default_factory=list)
+    #: 值检索命中：提问里的取值在库里被定位到了哪一列。**不只是选表的依据** ——
+    #: 它同时是模型写 WHERE 的依据，所以要一路带到提示词里，见 valuelink.hint。
+    value_hits: list[Any] = field(default_factory=list)
+    #: 沿 FK 关联图补进来的表。**必须单独记**：它们不是相关度选出来的，
+    #: 排查"为什么这张表在上下文里"时，走的是与召回完全不同的一条路。
+    fk_added: list[str] = field(default_factory=list)
     #: 这次召回真正烧掉的 embedding 输入 token 与金额（vector 模式才有）。
     #: 全是厂商回传的实测值，取不到就是 0 —— 不估。
     embed_tokens: int = 0
@@ -123,7 +133,16 @@ def _est_tokens(text: str) -> int:
 
 
 def table_doc(t: Table) -> str:
-    """把一张表渲染成提示词片段。召回与注入共用，保证两者一致。"""
+    """把一张表渲染成提示词片段。召回与注入共用，保证两者一致。
+
+    **列上带关联。** 在这之前，提示词里没有任何一个字说过表与表怎么连 ——
+    模型只能照列名猜，猜出来的东西会被当作依据写进 SQL（线上出现过"通过
+    payment_no 关联 payments.channel_code"这种根本不存在的关联）。
+
+    声明边与推断边**必须在措辞上分开**：前者是库里的约束，可以直接用；
+    后者只是命名像，写着"疑似"才能让模型知道自己该核对。把两者渲染成
+    同一句话，等于把一条猜测升级成事实。
+    """
     lines = [f"表 {t.name} —— {t.desc}"]
     if t.aliases:
         lines.append(f"  别名：{'、'.join(t.aliases)}")
@@ -135,6 +154,9 @@ def table_doc(t: Table) -> str:
             bits.append(f"取值：{'/'.join(c.enum)}")
         if c.tenant:
             bits.append("【租户隔离列，系统会强制注入，不要自己写】")
+        if c.fk:
+            bits.append(f"[外键 → {c.fk}]" if c.fk_kind == "FOREIGN_KEY"
+                        else f"[疑似外键 → {c.fk}，按命名推断，用前请核对]")
         lines.append("  ".join(bits))
     return "\n".join(lines)
 
@@ -270,6 +292,50 @@ CN_HINTS: dict[str, tuple[str, ...]] = {
     "时间": ("time", "date", "at"),
     "数量": ("count", "num", "total"),
     "金额": ("amount", "money", "cost"),
+    # --- 电商域（2026-09-15 补）。
+    # 这本词典 2026-09-06 是为 careermate / ragforge 两个源写的，而线上后来
+    # 接进来 12 个 shop_* 源，词典一个电商词都没有 —— 于是"订单""退款""物流"
+    # 这些中文提问里最常见的实体，在英文标识符上一律得 0 分，整整一批源退回到
+    # 词典存在之前的状态。补词的收益不止在打分：coverage_gaps 判"这个实体有没有
+    # 表兜住"用的也是这份词典，词典里没有的实体，缺口判定对它同样是瞎的。
+    "订单": ("order", "orders"),
+    "下单": ("order", "place"),
+    "商品": ("product", "goods", "item", "sku", "spu"),
+    "货品": ("goods", "product", "item"),
+    "类目": ("category", "catalog"),
+    "品牌": ("brand",),
+    "客户": ("customer", "client", "buyer"),
+    "买家": ("buyer", "customer"),
+    "卖家": ("seller", "merchant", "vendor"),
+    "店铺": ("shop", "store", "merchant"),
+    "支付": ("payment", "pay", "transaction"),
+    "付款": ("payment", "pay"),
+    "退款": ("refund",),
+    "退货": ("return", "refund"),
+    "售后": ("aftersale", "service", "ticket"),
+    "物流": ("logistics", "shipment", "shipping", "delivery"),
+    "发货": ("shipment", "delivery", "dispatch"),
+    "运单": ("waybill", "shipment", "tracking"),
+    "承运": ("carrier",),
+    "仓库": ("warehouse", "stock"),
+    "库存": ("inventory", "stock"),
+    "购物车": ("cart",),
+    "优惠券": ("coupon", "voucher"),
+    "优惠": ("discount", "promotion", "coupon"),
+    "促销": ("promotion", "campaign", "marketing"),
+    "活动": ("campaign", "activity", "promotion"),
+    "发票": ("invoice", "billing"),
+    "评价": ("review", "rating", "comment"),
+    "评分": ("rating", "score", "review"),
+    "积分": ("point", "points", "credit"),
+    "价格": ("price", "amount"),
+    "结算": ("settlement", "settle"),
+    "对账": ("reconcile", "settlement", "statement"),
+    "渠道": ("channel", "source"),
+    "异常": ("exception", "error", "abnormal"),
+    "取消": ("cancel", "cancellation"),
+    "拆单": ("split",),
+    "合单": ("merge",),
 }
 
 
@@ -468,9 +534,112 @@ def _desc_words(desc: str) -> list[str]:
             if len(w) >= 2]
 
 
+def coverage_gaps(question: str, cfg: Config, picked: list[Table]) -> list[str]:
+    """提问里哪些**实体**没有任何一张选中表兜得住。
+
+    补的是 blind 判定的一个洞：它的判据是 `not any(strong)` —— 全场只要有
+    **一张**表拿到强信号就算召回成功。"查一下张三的订单数"里"订单"一命中，
+    blind 当场为 False，哪怕 users 和 departments 一张都没召到，链路照样
+    一路往下跑，最后给出一个语气笃定、JOIN 缺了一半的答案。
+
+    多实体提问上，"任意一个命中"和"每个都命中"是两件完全不同的事，而原来
+    只有前者。这里按后者再判一次。
+
+    只认中文词典里的实体词（泛词除外）—— 它们是**人在提问里指名道姓提到的
+    东西**，每一个都该有一张表对应。英文词不进来：用户直接写表名的情况
+    blind 那一档已经管住了。
+    """
+    gaps: list[str] = []
+    for cn, ens in CN_HINTS.items():
+        if cn not in question or cn in WEAK_HINTS:
+            continue
+        want = set(ens)
+        covered = False
+        for t in picked:
+            if _tokens(t.name) & want or cn in (t.desc or ""):
+                covered = True
+                break
+            if any(_tokens(c.name) & want or cn in (c.desc or "")
+                   for c in t.columns.values()):
+                covered = True
+                break
+        if not covered:
+            gaps.append(cn)
+    return gaps
+
+
+def fk_graph(cfg: Config) -> dict[str, set[str]]:
+    """表之间的关联图（无向）。节点是表名，边来自列上的 `fk`。
+
+    无向是有意的：召回要回答的是"这两张表连不连得上"，而 JOIN 两个方向都
+    走得通。方向信息留在 Column.fk 上，写 SQL 时模型自己看得到。
+    """
+    g: dict[str, set[str]] = {n: set() for n in cfg.tables}
+    for t in cfg.tables.values():
+        for c in t.columns.values():
+            if not c.fk:
+                continue
+            tgt = c.fk.split(".", 1)[0]
+            if tgt in g and tgt != t.name:
+                g[t.name].add(tgt)
+                g[tgt].add(t.name)
+    return g
+
+
+def fk_expand(picked: list[Table], cfg: Config, order: list[str],
+              max_add: int) -> list[Table]:
+    """沿关联图把**连接已选表**的那几张补回来。返回新增的表。
+
+    存在的理由，是基线里那道 11 个点的缝：recall_primary@8 = 95.8% 而
+    recall_strict@8 = 84.4% —— 差的几乎全是 JOIN 对端那张表。承载被问那个量
+    的主表（orders）语义上与提问贴得很近，一召一个准；而被用来做条件的那张
+    （users，"张三的"订单）在语义上离"订单数"很远，向量看不见它。**连接关系
+    是它唯一的线索**。
+
+    两档，都必须克制 —— "表之间有关联"绝不足以构成加进来的理由，否则一张
+    orders 能把全库拖进上下文：
+
+      桥接（强）  一张未选中的表同时连着**两张及以上**已选表。它多半是
+                  多对多的中间表，JOIN 少了它根本写不出来，而它自己往往
+                  没有业务语义、注释是空的，任何语义召回都找不到它。
+      邻接（弱）  只连着一张已选表。**必须同时还在相关度排名的前段** ——
+                  排名窗口是这一档唯一的刹车：完全召不到的表拉进来是猜，
+                  排名靠前只是被 max_k 截掉的那种，拉回来是补。
+
+    两档合计不超过 max_add 张。
+    """
+    if max_add <= 0 or len(picked) >= len(cfg.tables):
+        return []
+    g = fk_graph(cfg)
+    chosen = {t.name for t in picked}
+    # 邻接档的窗口只罩**刚刚被截断的那一小段** —— 选中了 N 张，就再往下看
+    # 2×max_add 名。宽到 2N 会退化成"有边就加"：一张 orders 的邻居能有十几张
+    # order_* 附属表，窗口一宽它们就全部够得着，而 max_add 只是在这堆里随便
+    # 挑三张。向量排在很后面的表不归这一档救 —— 那是语义压根没认出来，
+    # 该由值检索去认，不该由"有一条边"来认。
+    window = {n for n in order[: max(len(chosen) + max_add * 2, 8)]}
+    bridge, near = [], []
+    for name in cfg.tables:
+        if name in chosen:
+            continue
+        hit = len(g.get(name, set()) & chosen)
+        if hit >= 2:
+            bridge.append(name)
+        elif hit == 1 and name in window:
+            near.append(name)
+    # 桥接优先，各自内部按相关度排名；排名外的排在最后但不丢
+    rank = {n: i for i, n in enumerate(order)}
+    bridge.sort(key=lambda n: rank.get(n, 10**6))
+    near.sort(key=lambda n: rank.get(n, 10**6))
+    return [cfg.tables[n] for n in (bridge + near)[:max_add]]
+
+
 def _keyword_pick(question: str, cfg: Config, top_k: int, max_k: int,
-                  ) -> tuple[list[Table], bool]:
-    """按关键词挑表。第二个返回值 = **这次挑选是不是瞎猜**。
+                  ) -> tuple[list[Table], bool, list[str]]:
+    """按关键词挑表。第二个返回值 = **这次挑选是不是瞎猜**，第三个是完整排名。
+
+    排名要整份带出来：FK 扩展的"邻接"那一档拿它当刹车（见 fk_expand），
+    只知道挑中了哪几张是不够的。
 
     瞎猜（全表 0 分）与"挑出了 3 张相关的表"在返回值上原来长得一模一样，
     于是链路把一次盲选当成一次正常召回接着往下跑，最后给出一个语气笃定的
@@ -490,10 +659,11 @@ def _keyword_pick(question: str, cfg: Config, top_k: int, max_k: int,
                 picked.append(t)
             if len(picked) >= top_k:
                 break
-    return picked, blind
+    return picked, blind, [t.name for _, t in scored]
 
 
-def recall(question: str, cfg: Config, index: Any = None) -> Recall:
+def recall(question: str, cfg: Config, index: Any = None,
+           backend: Any = None) -> Recall:
     mode = cfg.raw["schema_rag"].get("mode", "keyword")
     budget = int(cfg.raw["schema_rag"].get("token_budget", 4000))
     top_k = int(cfg.raw["schema_rag"].get("top_k", 3))
@@ -514,9 +684,11 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
     degrade_ms = 0
     embed_tokens, embed_cost, embed_model = 0, 0.0, ""
 
+    order: list[str] = []
     if mode == "all":
         note_healthy("all")
         picked = all_tables
+        order = [t.name for t in all_tables]
     elif mode == "vector":
         from .vectors import EmbeddingUnavailable, get_index
 
@@ -544,7 +716,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
             degraded_from, degrade_error = "vector", str(e)
             degrade_code = type(e).__name__
             degrade_ms = int((time.perf_counter() - _t_vec) * 1000)
-            picked, blind = _keyword_pick(question, cfg, top_k, max_k)
+            picked, blind, order = _keyword_pick(question, cfg, top_k, max_k)
             mode, note = "keyword", f"向量召回不可用，已回落关键词：{e}"
         else:
             note_healthy("vector")
@@ -558,6 +730,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
             # 上限 5）表」。因此 min_score **不是硬阈值** —— 过线表不足 top_k
             # 时，低于阈值的表会被补齐进来。配置注释已同步说明这一点；
             # 若要让它成为硬阈值，须先改设计文档里的 Top-K 约定。
+            order = [t.name for _, t in ranked]
             over = [t for s, t in ranked if s >= min_score]
             picked = over[:max_k]
             # **一条都没过线 = 这次也是盲选。**
@@ -590,7 +763,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
                         break
     else:
         note_healthy("keyword")
-        picked, blind = _keyword_pick(question, cfg, top_k, max_k)
+        picked, blind, order = _keyword_pick(question, cfg, top_k, max_k)
 
     # 一张表都没命中 = 这次召回是**盲选**，挑出来的只是白名单前几张。
     #
@@ -663,6 +836,31 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         if _est_tokens(_render(picked + rest, metrics)) <= eff_budget:
             picked = picked + rest
 
+    # 值检索：把提问里的取值定位到列，命中的表**插到最前面**。
+    #
+    # 插最前而不是追加，是冲着下面那个从尾部裁的预算循环去的：一张靠"张三
+    # 就在这张表里"进来的表，是这次提问最硬的一条证据，绝不该因为排在末尾
+    # 而被预算挤掉。给不出 backend 的调用方（离线基准、单元测试）自然跳过。
+    value_hits: list[Any] = []
+    if backend is not None and cfg.raw["schema_rag"].get("value_link", True):
+        value_hits = valuelink.probe(question, cfg, backend)
+        for h in value_hits:
+            t = cfg.tables.get(h.table)
+            if t is not None and t not in picked:
+                picked.insert(0, t)
+
+    # 沿关联图补回 JOIN 对端与桥接表。
+    #
+    # 放在这里而不是挑表那一步里：扩展的输入是**最终选中的那批表**，
+    # keyword 的白名单补全若已经把全库都给了，就没有可扩展的余地了。
+    # 全量注入（mode=all / 盲选兜底）同理直接跳过 —— 表已经全在上下文里。
+    fk_added: list[str] = []
+    fk_max = int(cfg.raw["schema_rag"].get("fk_expand_max", 3))
+    if fk_max > 0 and len(picked) < len(all_tables):
+        extra = fk_expand(picked, cfg, order or [t.name for t in picked], fk_max)
+        if extra:
+            picked = picked + extra
+            fk_added = [t.name for t in extra]
 
     # 命中口径涉及的表必须一并注入，否则口径表达式引用的列不可见
     by_name = {t.name: t for t in picked}
@@ -681,7 +879,17 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         truncated.append(picked[-1].name)
         picked = picked[:-1]
 
-    prompt = _render(picked, metrics)
+    # 覆盖度判定。**默认只观测不发声**（shadow）—— 这条判据会改变用户看到的
+    # 可信度提示，而"什么样的提问算漏了实体"在本机样例上想不出真实形状，
+    # 必须先在生产流量里标定过再让它说话。三档的用法与接地校验那次相同。
+    gaps = coverage_gaps(question, cfg, picked)
+    cov_mode = str(cfg.raw["schema_rag"].get("coverage_check", "shadow"))
+    if gaps and cov_mode == "enforce":
+        said = (f"提问里的「{'、'.join(gaps)}」没有对应的表被召回，"
+                "结果可能只答了其中一部分，请核对 SQL")
+        note = f"{note}；{said}" if note else said
+
+    prompt = _render(picked, metrics) + valuelink.hint(value_hits)
     return Recall(
         tables=picked,
         metrics=metrics,
@@ -691,6 +899,9 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         mode=mode,
         note=note,
         blind=blind,
+        coverage_gaps=gaps if cov_mode != "off" else [],
+        value_hits=value_hits,
+        fk_added=fk_added,
         degraded_from=degraded_from,
         degrade_error=degrade_error,
         degrade_code=degrade_code,

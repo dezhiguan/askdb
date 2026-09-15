@@ -66,7 +66,8 @@ def run(cfg, monkeypatch):
             return tool_result
 
         monkeypatch.setattr(tools, "invoke", _invoke)
-        monkeypatch.setattr(tools, "search_schema", lambda q, c: tools.ToolResult(
+        monkeypatch.setattr(tools, "search_schema",
+                            lambda q, c, backend=None: tools.ToolResult(
             ok=True, tool="search_schema", data={"tables": ["documents"], "prompt": "表"}))
         tracer = Tracer()
         deps = agentgraph.Deps(cfg=cfg, llm=llm, executor=None, tracer=tracer,

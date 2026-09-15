@@ -187,6 +187,14 @@ class _Backend:
     def fetch(self, sql: str, cap: int) -> tuple[list[str], list[list[Any]], str]: ...  # pragma: no cover
     def env_checks(self) -> list[tuple[str, bool, str]]: ...          # pragma: no cover
 
+    def foreign_keys(self, names: list[str]) -> list[dict[str, str]]:
+        """库里**声明过的**外键。取不到就是空列表 —— 这一档缺失不是错误。
+
+        默认空实现而不是抽象方法：DuckDB 这类后端没有可查的约束目录，
+        逼每个后端都实现一遍，只会逼出三个 `return []` 和一次漏改。
+        """
+        return []
+
     @contextlib.contextmanager
     def metadata_window(self):
         """元数据窗口：接入向导扫表期间放宽超时预算。
@@ -549,6 +557,42 @@ class _PgBackend(_Backend):
             """)
             return [{"name": r[0], "rows": int(r[1] or 0), "cols": int(r[2]),
                      "tenant": bool(r[3])} for r in cur.fetchall()]
+
+    def foreign_keys(self, names: list[str]) -> list[dict[str, str]]:
+        """声明过的外键，**只报两端都在 names 里的那些**。
+
+        指向白名单外的表那条边给不得：模型看见 `REFERENCES x.id` 就会去
+        JOIN x，而 x 不在可见范围内 —— 换来的是一条必然被 R-04 拒掉的 SQL，
+        以及一句"这个库里没有 x 表"的错误断言。
+
+        走 pg_constraint 而不是 information_schema 那套三表 JOIN：后者的
+        constraint_column_usage 不带列序，复合外键 (a,b)→(x,y) 会被摊成四条
+        两两组合，其中两条是**根本不存在的关联**。这里的 unnest(conkey,
+        confkey) 按下标对齐，复合键的每一对都是真的。一条编造的 JOIN 边比
+        没有边危险得多：没有边模型知道自己在猜，有假边它会以为自己有依据。
+        """
+        if not names:
+            return []
+        with self.connect().cursor() as cur:
+            cur.execute("""
+                SELECT src.relname, sa.attname, tgt.relname, ta.attname
+                FROM pg_constraint con
+                JOIN pg_class src ON src.oid = con.conrelid
+                JOIN pg_class tgt ON tgt.oid = con.confrelid
+                JOIN pg_namespace n ON n.oid = src.relnamespace
+                JOIN LATERAL unnest(con.conkey, con.confkey) AS u(s_att, t_att)
+                  ON TRUE
+                JOIN pg_attribute sa
+                  ON sa.attrelid = con.conrelid AND sa.attnum = u.s_att
+                JOIN pg_attribute ta
+                  ON ta.attrelid = con.confrelid AND ta.attnum = u.t_att
+                WHERE con.contype = 'f' AND n.nspname = 'public'
+                  AND src.relname = ANY(%s) AND tgt.relname = ANY(%s)
+                ORDER BY src.relname, sa.attname
+            """, (names, names))
+            return [{"table": r[0], "column": r[1],
+                     "ref_table": r[2], "ref_column": r[3]}
+                    for r in cur.fetchall()]
 
     def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
         """字段清单，**连库里的注释一起取**。
@@ -947,6 +991,29 @@ class _MySqlBackend(_Backend):
                 hint="确认这个账号能读 information_schema，且连接仍然可用。",
             ) from e
 
+    def foreign_keys(self, names: list[str]) -> list[dict[str, str]]:
+        """同 _PgBackend，取自 KEY_COLUMN_USAGE。
+
+        **一条查询、不 JOIN、筛选放 Python 侧** —— 理由与 describe 那段完全
+        相同：information_schema 在 5.7 上不是真表。REFERENCED_TABLE_NAME
+        非空即外键，这一个条件就够，不必再连 TABLE_CONSTRAINTS 去认类型。
+        """
+        if not names:
+            return []
+        want = {n.lower() for n in names}
+        rows = self._meta_query("""
+            SELECT TABLE_NAME, COLUMN_NAME,
+                   REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND REFERENCED_TABLE_NAME IS NOT NULL
+            ORDER BY TABLE_NAME, COLUMN_NAME
+        """)
+        return [{"table": str(r[0]), "column": str(r[1]),
+                 "ref_table": str(r[2]), "ref_column": str(r[3])}
+                for r in rows
+                if str(r[0]).lower() in want and str(r[2]).lower() in want]
+
     def describe(self, names: list[str]) -> dict[str, list[dict[str, Any]]]:
         """字段清单，**连注释与枚举取值一起取**。
 
@@ -1312,6 +1379,22 @@ class Executor:
             return {}
         with self.backend.metadata_window():
             return self.backend.describe(names)
+
+    def foreign_keys(self, names: list[str]) -> list[dict[str, str]]:
+        """声明过的外键，同样走元数据窗口。取不到一律当"这个库没有"。
+
+        **任何异常都吞掉。** 外键是锦上添花的一档语义，缺了只是回到从前；
+        而它挂在加数据源这条路径上 —— 让一次约束查询失败把整个接入流程带崩，
+        是把增量能力变成了新的故障点。
+        """
+        if not names:
+            return []
+        try:
+            with self.backend.metadata_window():
+                return self.backend.foreign_keys(names)
+        except Exception as e:                      # noqa: BLE001
+            log.warning("外键采集失败，按无外键处理：%s", e)
+            return []
 
     def set_org(self, org_id: int) -> None:
         """把租户上下文同步给引擎（PostgreSQL 的 RLS 依赖它）。"""

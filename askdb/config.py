@@ -90,6 +90,19 @@ class Column:
     #: 靠列 desc 里写"⚠️ 可能漂移"是不够的：那句话只有模型看得见，
     #: 而恰恰是模型没当回事。
     cached_counter: bool = False
+    #: 这一列指向的另一张表，形如 `"orders.order_id"`。空串 = 不是外键。
+    #:
+    #: 存在的理由：召回把表挑对了，JOIN 仍然可能是编的 —— 提示词里从来没有
+    #: 一个字说过表与表怎么连，模型只能从列名猜（线上真出现过"通过 payment_no
+    #: 关联 payments.channel_code"这种不存在的关联）。
+    fk: str = ""
+    #: 这条关联是**怎么来的**：
+    #:   FOREIGN_KEY —— 库里声明的约束，可以当事实用；
+    #:   INFERRED    —— 按命名推断，只是一条像样的猜测。
+    #:
+    #: 两者必须分开标而不是合成一个 bool：推断边会被渲染成"疑似"，
+    #: 让模型知道它该核对；混在一起等于把猜测升级成事实，那比没有边更糟。
+    fk_kind: str = ""
 
     def __post_init__(self) -> None:
         # 内置模式命中即敏感，**配置只能往上加、不能往下摘**（`sensitive: false`
@@ -146,6 +159,54 @@ def _fk_stems(table_name: str) -> set[str]:
     if n == "organization":
         out |= {"org"}
     return out
+
+
+def infer_foreign_keys(tables: dict[str, "Table"]) -> int:
+    """没有声明外键的库，按命名推一批出来。返回推出的条数。
+
+    **为什么必须有这一步。** 本机 12 个源里 shop_* 全部零外键约束（业务库
+    为了写入性能不建 FK 是常态），真正声明了约束的只有 ragforge(14) 与
+    careermate(25)。只认声明过的边，等于对线上大多数源什么都没做。
+
+    判据刻意比 mark_cached_counters 那套**更严**，只认三条同时成立：
+      · 列名形如 `<词根>_id`；
+      · 存在一张表名**恰好等于** `<词根>` 的某个变体（不认 `xxx_<词根>`
+        这种后缀匹配 —— cached_counter 那边认，是因为它猜错只多一句说明，
+        而这里猜错会变成一条写进 SQL 的 JOIN）；
+      · 那张表里确实有可以被连上的列（同名列优先，其次 `id`）。
+
+    自环一律排除：`carts.cart_id` 的词根正是本表，它是主键不是外键。
+    已经有声明边的列不动 —— 声明永远压过推断。
+    """
+    names = {n.lower(): n for n in tables}
+    found = 0
+    for tname, t in tables.items():
+        for col in t.columns.values():
+            if col.fk:                       # 声明过的边，不覆盖
+                continue
+            low = col.name.lower()
+            if not low.endswith("_id") or len(low) <= 3:
+                continue
+            stem = low[:-3]
+            for v in _stem_variants(stem):
+                target_key = names.get(v)
+                if not target_key or target_key == tname:
+                    continue                 # 不存在，或指回自己（主键）
+                target = tables[target_key]
+                # 连到哪一列：同名列优先（orders.order_id），其次主键惯例 id。
+                # 两个都没有就不推 —— 编一个列名出来，模型会照着写。
+                hit = next((c.name for c in target.columns.values()
+                            if c.name.lower() == low), "")
+                if not hit:
+                    hit = next((c.name for c in target.columns.values()
+                                if c.name.lower() == "id"), "")
+                if not hit:
+                    continue
+                col.fk = f"{target.name}.{hit}"
+                col.fk_kind = "INFERRED"
+                found += 1
+                break
+    return found
 
 
 def mark_cached_counters(tables: dict[str, "Table"]) -> None:

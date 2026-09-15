@@ -283,7 +283,7 @@ def _patch_recall(monkeypatch):
     """
     from askdb import schema_rag
 
-    def fake(q, c):
+    def fake(q, c, backend=None):
         tbls = list(c.tables.values())
         return tools.ToolResult(
             ok=True, tool="search_schema",
@@ -932,7 +932,7 @@ def test_model_rerunning_search_schema_reuses_the_recall(tmp_path, monkeypatch):
         ok=True, tool="search_schema",
         data={"tables": ["documents"], "prompt": "【可用的表】documents", "blind": False})
 
-    def counting(q, c):
+    def counting(q, c, backend=None):
         calls["n"] += 1
         return real
 
@@ -1233,7 +1233,8 @@ def test_schema_recall_span_books_the_embedding_cost(tmp_path, monkeypatch):
     tok_in=0 / cost=0，看上去像"这一步不花钱"。
     """
     monkeypatch.setattr(A, "build_quota", lambda c: _Q())
-    monkeypatch.setattr(tools, "search_schema", lambda q, c: tools.ToolResult(
+    monkeypatch.setattr(tools, "search_schema",
+                        lambda q, c, backend=None: tools.ToolResult(
         ok=True, tool="search_schema",
         data={"tables": ["documents"], "prompt": "【可用的表】documents",
               "prompt_heads": "【可用的表】\n表 documents —— 文档", "blind": False,

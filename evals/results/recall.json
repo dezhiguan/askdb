@@ -1,16 +1,16 @@
 {
- "ts": "2026-09-15T10:22:37",
- "build": "8f08996",
- "note": "别名从 desc 解析出来之后（进了嵌入向量）",
+ "ts": "2026-09-15T12:08:52",
+ "build": "24bdb74",
+ "note": "Schema Linking 定版：外键注入+图扩展+值检索",
  "config": "config/public.yaml",
  "mode": "vector",
  "top_k": 8,
  "max_k": 12,
  "min_score": 0.35,
  "embedding_model": "text-embedding-v4",
- "embed_tokens": 50373,
- "embed_cost_cny": 0.025187,
- "elapsed_s": 241.4,
+ "embed_tokens": 52984,
+ "embed_cost_cny": 0.026492,
+ "elapsed_s": 145.3,
  "n_cases": 97,
  "ks": [
   1,
@@ -24,54 +24,54 @@
   "all": {
    "n": 97,
    "recall_strict": {
-    "1": 0.3093,
-    "2": 0.5258,
-    "3": 0.5979,
-    "5": 0.6907,
-    "8": 0.8454,
-    "12": 0.9485
+    "1": 0.3299,
+    "2": 0.5361,
+    "3": 0.5773,
+    "5": 0.8351,
+    "8": 0.9072,
+    "12": 0.9588
    },
    "recall_primary": {
-    "1": 0.4021,
-    "2": 0.6598,
-    "3": 0.7526,
-    "5": 0.866,
-    "8": 0.9588,
+    "1": 0.4124,
+    "2": 0.6186,
+    "3": 0.732,
+    "5": 0.9278,
+    "8": 0.9794,
     "12": 0.9794
    },
-   "primary_injected_rate": 0.9691,
-   "all_injected_rate": 0.9381,
+   "primary_injected_rate": 1.0,
+   "all_injected_rate": 1.0,
    "blind_rate": 0.0,
-   "primary_below_min_rate": 0.0206
+   "primary_below_min_rate": 0.0103
   },
   "no_table_name_in_question": {
    "n": 96,
    "recall_strict": {
-    "1": 0.3125,
-    "2": 0.5208,
-    "3": 0.5938,
-    "5": 0.6875,
-    "8": 0.8438,
-    "12": 0.9479
+    "1": 0.3333,
+    "2": 0.5417,
+    "3": 0.5729,
+    "5": 0.8333,
+    "8": 0.9062,
+    "12": 0.9583
    },
    "recall_primary": {
-    "1": 0.4062,
-    "2": 0.6562,
-    "3": 0.75,
-    "5": 0.8646,
-    "8": 0.9583,
+    "1": 0.4167,
+    "2": 0.625,
+    "3": 0.7292,
+    "5": 0.9271,
+    "8": 0.9792,
     "12": 0.9792
    },
-   "primary_injected_rate": 0.9688,
-   "all_injected_rate": 0.9375,
+   "primary_injected_rate": 1.0,
+   "all_injected_rate": 1.0,
    "blind_rate": 0.0,
-   "primary_below_min_rate": 0.0208
+   "primary_below_min_rate": 0.0104
   },
   "table_name_in_question": {
    "n": 1,
    "recall_strict": {
     "1": 0.0,
-    "2": 1.0,
+    "2": 0.0,
     "3": 1.0,
     "5": 1.0,
     "8": 1.0,
@@ -79,7 +79,7 @@
    },
    "recall_primary": {
     "1": 0.0,
-    "2": 1.0,
+    "2": 0.0,
     "3": 1.0,
     "5": 1.0,
     "8": 1.0,
@@ -94,48 +94,48 @@
    "careermate": {
     "n": 23,
     "recall_strict": {
-     "1": 0.4348,
+     "1": 0.3913,
      "2": 0.6087,
-     "3": 0.6087,
-     "5": 0.7391,
-     "8": 0.7826,
+     "3": 0.6522,
+     "5": 0.7826,
+     "8": 0.8261,
      "12": 0.8696
     },
     "recall_primary": {
-     "1": 0.5652,
+     "1": 0.5217,
      "2": 0.6957,
-     "3": 0.6957,
-     "5": 0.8696,
-     "8": 0.913,
+     "3": 0.7391,
+     "5": 0.913,
+     "8": 0.9565,
      "12": 0.9565
     },
-    "primary_injected_rate": 0.9565,
-    "all_injected_rate": 0.8696,
+    "primary_injected_rate": 1.0,
+    "all_injected_rate": 1.0,
     "blind_rate": 0.0,
     "primary_below_min_rate": 0.0
    },
    "ragforge": {
     "n": 55,
     "recall_strict": {
-     "1": 0.2182,
-     "2": 0.4,
-     "3": 0.5091,
-     "5": 0.5818,
-     "8": 0.8182,
-     "12": 0.9636
-    },
-    "recall_primary": {
      "1": 0.2727,
-     "2": 0.5818,
-     "3": 0.7273,
-     "5": 0.8364,
-     "8": 0.9636,
+     "2": 0.4182,
+     "3": 0.4545,
+     "5": 0.8182,
+     "8": 0.9091,
      "12": 0.9818
     },
-    "primary_injected_rate": 0.9636,
-    "all_injected_rate": 0.9455,
+    "recall_primary": {
+     "1": 0.3091,
+     "2": 0.5091,
+     "3": 0.6727,
+     "5": 0.9273,
+     "8": 0.9818,
+     "12": 0.9818
+    },
+    "primary_injected_rate": 1.0,
+    "all_injected_rate": 1.0,
     "blind_rate": 0.0,
-    "primary_below_min_rate": 0.0364
+    "primary_below_min_rate": 0.0182
    },
    "shop_aftersale": {
     "n": 2,
@@ -369,6 +369,29 @@
    }
   }
  },
+ "switches": {
+  "fk_expand_max": 3,
+  "value_link": true,
+  "coverage_check": "shadow"
+ },
+ "summary_linking": {
+  "all": {
+   "n": 97,
+   "precision": 0.1022,
+   "avg_picked": 13.49,
+   "fk_added_rate": 0.8969,
+   "value_hit_rate": 0.0,
+   "coverage_gap_rate": 0.0103
+  },
+  "no_table_name_in_question": {
+   "n": 96,
+   "precision": 0.1025,
+   "avg_picked": 13.49,
+   "fk_added_rate": 0.8958,
+   "value_hit_rate": 0.0,
+   "coverage_gap_rate": 0.0104
+  }
+ },
  "items": [
   {
    "id": "b01",
@@ -383,17 +406,17 @@
    "primary": "users",
    "name_in_q": false,
    "ranks": {
-    "users": 27,
-    "resumes": 14,
-    "agent_sessions": 13
+    "users": 29,
+    "resumes": 13,
+    "agent_sessions": 11
    },
-   "k_strict": 27,
-   "k_primary": 27,
-   "primary_score": 0.4398,
+   "k_strict": 29,
+   "k_primary": 29,
+   "primary_score": 0.4397,
    "any_over_min": true,
    "primary_over_min": true,
-   "primary_injected": false,
-   "all_injected": false
+   "primary_injected": true,
+   "all_injected": true
   },
   {
    "id": "b02",
@@ -410,7 +433,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.5912,
+   "primary_score": 0.5966,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -427,10 +450,10 @@
    "primary": "users",
    "name_in_q": false,
    "ranks": {
-    "users": 1
+    "users": 2
    },
-   "k_strict": 1,
-   "k_primary": 1,
+   "k_strict": 2,
+   "k_primary": 2,
    "primary_score": 0.5296,
    "any_over_min": true,
    "primary_over_min": true,
@@ -452,7 +475,7 @@
    },
    "k_strict": 4,
    "k_primary": 4,
-   "primary_score": 0.5655,
+   "primary_score": 0.5709,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -473,7 +496,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.628,
+   "primary_score": 0.6189,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -494,7 +517,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6721,
+   "primary_score": 0.6615,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -515,7 +538,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.6299,
+   "primary_score": 0.6274,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -536,7 +559,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.5771,
+   "primary_score": 0.5787,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -553,11 +576,11 @@
    "primary": "career_tasks",
    "name_in_q": false,
    "ranks": {
-    "career_tasks": 5
+    "career_tasks": 3
    },
-   "k_strict": 5,
-   "k_primary": 5,
-   "primary_score": 0.473,
+   "k_strict": 3,
+   "k_primary": 3,
+   "primary_score": 0.4865,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -578,7 +601,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6313,
+   "primary_score": 0.6127,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -596,16 +619,16 @@
    "primary": "resumes",
    "name_in_q": false,
    "ranks": {
-    "resumes": 9,
-    "users": 23
+    "resumes": 8,
+    "users": 24
    },
-   "k_strict": 23,
-   "k_primary": 9,
-   "primary_score": 0.5536,
+   "k_strict": 24,
+   "k_primary": 8,
+   "primary_score": 0.5792,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
-   "all_injected": false
+   "all_injected": true
   },
   {
    "id": "ca-cm-j02",
@@ -619,16 +642,16 @@
    "primary": "resumes",
    "name_in_q": false,
    "ranks": {
-    "resumes": 5,
-    "users": 22
+    "resumes": 4,
+    "users": 24
    },
-   "k_strict": 22,
-   "k_primary": 5,
-   "primary_score": 0.5401,
+   "k_strict": 24,
+   "k_primary": 4,
+   "primary_score": 0.5608,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
-   "all_injected": false
+   "all_injected": true
   },
   {
    "id": "ca-cm-j03",
@@ -647,7 +670,7 @@
    },
    "k_strict": 2,
    "k_primary": 1,
-   "primary_score": 0.7349,
+   "primary_score": 0.7297,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -670,7 +693,7 @@
    },
    "k_strict": 10,
    "k_primary": 1,
-   "primary_score": 0.7277,
+   "primary_score": 0.7192,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -691,7 +714,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6552,
+   "primary_score": 0.6222,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -712,7 +735,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6175,
+   "primary_score": 0.6147,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -733,7 +756,7 @@
    },
    "k_strict": 4,
    "k_primary": 4,
-   "primary_score": 0.489,
+   "primary_score": 0.5045,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -796,7 +819,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6556,
+   "primary_score": 0.6596,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -814,12 +837,12 @@
    "primary": "agent_sessions",
    "name_in_q": false,
    "ranks": {
-    "agent_sessions": 7,
+    "agent_sessions": 5,
     "agent_messages": 1
    },
-   "k_strict": 7,
-   "k_primary": 7,
-   "primary_score": 0.5094,
+   "k_strict": 5,
+   "k_primary": 5,
+   "primary_score": 0.5174,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -838,11 +861,11 @@
    "name_in_q": false,
    "ranks": {
     "job_matches": 1,
-    "resumes": 12
+    "resumes": 8
    },
-   "k_strict": 12,
+   "k_strict": 8,
    "k_primary": 1,
-   "primary_score": 0.694,
+   "primary_score": 0.7039,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -865,7 +888,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.6616,
+   "primary_score": 0.6482,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -885,12 +908,12 @@
    "name_in_q": false,
    "ranks": {
     "knowledge_bases": 1,
-    "organizations": 8,
+    "organizations": 11,
     "documents": 7
    },
-   "k_strict": 8,
+   "k_strict": 11,
    "k_primary": 1,
-   "primary_score": 0.5585,
+   "primary_score": 0.5879,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -907,10 +930,10 @@
    "primary": "model_config",
    "name_in_q": false,
    "ranks": {
-    "model_config": 1
+    "model_config": 2
    },
-   "k_strict": 1,
-   "k_primary": 1,
+   "k_strict": 2,
+   "k_primary": 2,
    "primary_score": 0.5706,
    "any_over_min": true,
    "primary_over_min": true,
@@ -928,11 +951,11 @@
    "primary": "documents",
    "name_in_q": true,
    "ranks": {
-    "documents": 2
+    "documents": 3
    },
-   "k_strict": 2,
-   "k_primary": 2,
-   "primary_score": 0.4348,
+   "k_strict": 3,
+   "k_primary": 3,
+   "primary_score": 0.4359,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -949,11 +972,11 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 1
+    "documents": 4
    },
-   "k_strict": 1,
-   "k_primary": 1,
-   "primary_score": 0.4588,
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.4543,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -974,7 +997,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.4792,
+   "primary_score": 0.4656,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -991,11 +1014,11 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 2
+    "documents": 1
    },
-   "k_strict": 2,
-   "k_primary": 2,
-   "primary_score": 0.5054,
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5114,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1016,7 +1039,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.488,
+   "primary_score": 0.4878,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1037,7 +1060,7 @@
    },
    "k_strict": 6,
    "k_primary": 6,
-   "primary_score": 0.5208,
+   "primary_score": 0.5443,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1054,11 +1077,11 @@
    "primary": "retrieval_logs",
    "name_in_q": false,
    "ranks": {
-    "retrieval_logs": 2
+    "retrieval_logs": 1
    },
-   "k_strict": 2,
-   "k_primary": 2,
-   "primary_score": 0.552,
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.592,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1079,7 +1102,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.4908,
+   "primary_score": 0.5302,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1096,11 +1119,11 @@
    "primary": "retrieval_logs",
    "name_in_q": false,
    "ranks": {
-    "retrieval_logs": 7
+    "retrieval_logs": 4
    },
-   "k_strict": 7,
-   "k_primary": 7,
-   "primary_score": 0.4022,
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.4415,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1117,11 +1140,11 @@
    "primary": "retrieval_logs",
    "name_in_q": false,
    "ranks": {
-    "retrieval_logs": 3
+    "retrieval_logs": 1
    },
-   "k_strict": 3,
-   "k_primary": 3,
-   "primary_score": 0.4378,
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.4668,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1142,7 +1165,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.5935,
+   "primary_score": 0.6093,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1163,7 +1186,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.5777,
+   "primary_score": 0.5648,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1184,7 +1207,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.4885,
+   "primary_score": 0.4856,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1201,11 +1224,11 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 2
+    "documents": 4
    },
-   "k_strict": 2,
-   "k_primary": 2,
-   "primary_score": 0.3815,
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.3649,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1222,11 +1245,11 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 5
+    "documents": 4
    },
-   "k_strict": 5,
-   "k_primary": 5,
-   "primary_score": 0.3963,
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.3937,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1244,12 +1267,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 2,
-    "documents": 7
+    "knowledge_bases": 3,
+    "documents": 5
    },
-   "k_strict": 7,
-   "k_primary": 2,
-   "primary_score": 0.554,
+   "k_strict": 5,
+   "k_primary": 3,
+   "primary_score": 0.5727,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1267,12 +1290,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 3,
-    "documents": 2
+    "knowledge_bases": 5,
+    "documents": 1
    },
-   "k_strict": 3,
-   "k_primary": 3,
-   "primary_score": 0.534,
+   "k_strict": 5,
+   "k_primary": 5,
+   "primary_score": 0.5471,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1290,11 +1313,11 @@
    "primary": "organizations",
    "name_in_q": false,
    "ranks": {
-    "organizations": 3,
-    "knowledge_bases": 2
+    "organizations": 7,
+    "knowledge_bases": 1
    },
-   "k_strict": 3,
-   "k_primary": 3,
+   "k_strict": 7,
+   "k_primary": 7,
    "primary_score": 0.516,
    "any_over_min": true,
    "primary_over_min": true,
@@ -1314,11 +1337,11 @@
    "name_in_q": false,
    "ranks": {
     "knowledge_bases": 1,
-    "documents": 12
+    "documents": 8
    },
-   "k_strict": 12,
+   "k_strict": 8,
    "k_primary": 1,
-   "primary_score": 0.5598,
+   "primary_score": 0.5796,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1336,12 +1359,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 3,
-    "documents": 7
+    "knowledge_bases": 4,
+    "documents": 5
    },
-   "k_strict": 7,
-   "k_primary": 3,
-   "primary_score": 0.5236,
+   "k_strict": 5,
+   "k_primary": 4,
+   "primary_score": 0.5466,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1360,11 +1383,11 @@
    "name_in_q": false,
    "ranks": {
     "knowledge_bases": 2,
-    "documents": 6
+    "documents": 4
    },
-   "k_strict": 6,
+   "k_strict": 4,
    "k_primary": 2,
-   "primary_score": 0.5324,
+   "primary_score": 0.5487,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1382,12 +1405,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 2,
-    "documents": 10
+    "knowledge_bases": 3,
+    "documents": 5
    },
-   "k_strict": 10,
-   "k_primary": 2,
-   "primary_score": 0.5388,
+   "k_strict": 5,
+   "k_primary": 3,
+   "primary_score": 0.5569,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1405,12 +1428,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 2,
-    "documents": 11
+    "knowledge_bases": 3,
+    "documents": 9
    },
-   "k_strict": 11,
-   "k_primary": 2,
-   "primary_score": 0.5596,
+   "k_strict": 9,
+   "k_primary": 3,
+   "primary_score": 0.5727,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1428,12 +1451,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 2,
-    "documents": 10
+    "knowledge_bases": 3,
+    "documents": 4
    },
-   "k_strict": 10,
-   "k_primary": 2,
-   "primary_score": 0.5193,
+   "k_strict": 4,
+   "k_primary": 3,
+   "primary_score": 0.5274,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1451,12 +1474,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 5,
-    "documents": 6
+    "knowledge_bases": 3,
+    "documents": 5
    },
-   "k_strict": 6,
-   "k_primary": 5,
-   "primary_score": 0.4848,
+   "k_strict": 5,
+   "k_primary": 3,
+   "primary_score": 0.5004,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1474,16 +1497,16 @@
    "primary": "organizations",
    "name_in_q": false,
    "ranks": {
-    "organizations": 16,
+    "organizations": 18,
     "retrieval_logs": 1
    },
-   "k_strict": 16,
-   "k_primary": 16,
+   "k_strict": 18,
+   "k_primary": 18,
    "primary_score": 0.32,
    "any_over_min": true,
    "primary_over_min": false,
-   "primary_injected": false,
-   "all_injected": false
+   "primary_injected": true,
+   "all_injected": true
   },
   {
    "id": "ra-j12",
@@ -1502,7 +1525,7 @@
    },
    "k_strict": 3,
    "k_primary": 3,
-   "primary_score": 0.416,
+   "primary_score": 0.4161,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1520,12 +1543,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 5,
+    "knowledge_bases": 4,
     "documents": 9
    },
    "k_strict": 9,
-   "k_primary": 5,
-   "primary_score": 0.4419,
+   "k_primary": 4,
+   "primary_score": 0.4565,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1543,12 +1566,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 1,
-    "documents": 10
+    "knowledge_bases": 2,
+    "documents": 5
    },
-   "k_strict": 10,
-   "k_primary": 1,
-   "primary_score": 0.6406,
+   "k_strict": 5,
+   "k_primary": 2,
+   "primary_score": 0.6539,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1567,11 +1590,11 @@
    "name_in_q": false,
    "ranks": {
     "knowledge_bases": 3,
-    "documents": 6
+    "documents": 4
    },
-   "k_strict": 6,
+   "k_strict": 4,
    "k_primary": 3,
-   "primary_score": 0.5371,
+   "primary_score": 0.5539,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1588,11 +1611,11 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 1
+    "knowledge_bases": 2
    },
-   "k_strict": 1,
-   "k_primary": 1,
-   "primary_score": 0.5346,
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.5535,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1609,11 +1632,11 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 7
+    "documents": 6
    },
-   "k_strict": 7,
-   "k_primary": 7,
-   "primary_score": 0.3766,
+   "k_strict": 6,
+   "k_primary": 6,
+   "primary_score": 0.3849,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1634,7 +1657,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.4385,
+   "primary_score": 0.4153,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1655,7 +1678,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6114,
+   "primary_score": 0.6115,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1672,11 +1695,11 @@
    "primary": "retrieval_logs",
    "name_in_q": false,
    "ranks": {
-    "retrieval_logs": 2
+    "retrieval_logs": 1
    },
-   "k_strict": 2,
-   "k_primary": 2,
-   "primary_score": 0.3658,
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.4062,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1693,11 +1716,11 @@
    "primary": "retrieval_logs",
    "name_in_q": false,
    "ranks": {
-    "retrieval_logs": 4
+    "retrieval_logs": 1
    },
-   "k_strict": 4,
-   "k_primary": 4,
-   "primary_score": 0.4341,
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.4925,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1714,15 +1737,15 @@
    "primary": "retrieval_logs",
    "name_in_q": false,
    "ranks": {
-    "retrieval_logs": 12
+    "retrieval_logs": 5
    },
-   "k_strict": 12,
-   "k_primary": 12,
-   "primary_score": 0.3475,
+   "k_strict": 5,
+   "k_primary": 5,
+   "primary_score": 0.3994,
    "any_over_min": true,
-   "primary_over_min": false,
-   "primary_injected": false,
-   "all_injected": false
+   "primary_over_min": true,
+   "primary_injected": true,
+   "all_injected": true
   },
   {
    "id": "ra-m08",
@@ -1739,7 +1762,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.5029,
+   "primary_score": 0.4909,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1760,7 +1783,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.5274,
+   "primary_score": 0.5183,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1778,12 +1801,12 @@
    "primary": "knowledge_bases",
    "name_in_q": false,
    "ranks": {
-    "knowledge_bases": 2,
-    "documents": 9
+    "knowledge_bases": 3,
+    "documents": 6
    },
-   "k_strict": 9,
-   "k_primary": 2,
-   "primary_score": 0.527,
+   "k_strict": 6,
+   "k_primary": 3,
+   "primary_score": 0.543,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1800,11 +1823,11 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 3
+    "documents": 2
    },
-   "k_strict": 3,
-   "k_primary": 3,
-   "primary_score": 0.5007,
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.5042,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1821,11 +1844,11 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 5
+    "documents": 4
    },
-   "k_strict": 5,
-   "k_primary": 5,
-   "primary_score": 0.4865,
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.49,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1842,11 +1865,11 @@
    "primary": "retrieval_logs",
    "name_in_q": false,
    "ranks": {
-    "retrieval_logs": 3
+    "retrieval_logs": 1
    },
-   "k_strict": 3,
-   "k_primary": 3,
-   "primary_score": 0.4438,
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.477,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1867,7 +1890,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.5817,
+   "primary_score": 0.5642,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1888,7 +1911,7 @@
    },
    "k_strict": 5,
    "k_primary": 5,
-   "primary_score": 0.3997,
+   "primary_score": 0.4034,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1906,12 +1929,12 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 8,
-    "knowledge_bases": 1
+    "documents": 4,
+    "knowledge_bases": 2
    },
-   "k_strict": 8,
-   "k_primary": 8,
-   "primary_score": 0.507,
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.5641,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1929,12 +1952,12 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 6,
+    "documents": 4,
     "knowledge_bases": 2
    },
-   "k_strict": 6,
-   "k_primary": 6,
-   "primary_score": 0.4963,
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.543,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1955,7 +1978,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.4298,
+   "primary_score": 0.4615,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1976,7 +1999,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6363,
+   "primary_score": 0.6208,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -1993,11 +2016,11 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 6
+    "documents": 5
    },
-   "k_strict": 6,
-   "k_primary": 6,
-   "primary_score": 0.4971,
+   "k_strict": 5,
+   "k_primary": 5,
+   "primary_score": 0.5033,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2015,12 +2038,12 @@
    "primary": "documents",
    "name_in_q": false,
    "ranks": {
-    "documents": 8,
-    "knowledge_bases": 6
+    "documents": 4,
+    "knowledge_bases": 5
    },
-   "k_strict": 8,
-   "k_primary": 8,
-   "primary_score": 0.4957,
+   "k_strict": 5,
+   "k_primary": 4,
+   "primary_score": 0.5369,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2041,7 +2064,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.4599,
+   "primary_score": 0.4995,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2060,15 +2083,15 @@
    "name_in_q": false,
    "ranks": {
     "knowledge_bases": 2,
-    "documents": 13
+    "documents": 9
    },
-   "k_strict": 13,
+   "k_strict": 9,
    "k_primary": 2,
-   "primary_score": 0.5721,
+   "primary_score": 0.5851,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
-   "all_injected": false
+   "all_injected": true
   },
   {
    "id": "b10",
@@ -2129,7 +2152,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.6687,
+   "primary_score": 0.6769,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2150,7 +2173,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.595,
+   "primary_score": 0.5952,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2173,7 +2196,7 @@
    },
    "k_strict": 2,
    "k_primary": 1,
-   "primary_score": 0.6375,
+   "primary_score": 0.6374,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2196,7 +2219,7 @@
    },
    "k_strict": 4,
    "k_primary": 1,
-   "primary_score": 0.7516,
+   "primary_score": 0.7542,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2217,7 +2240,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6233,
+   "primary_score": 0.6191,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2259,7 +2282,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6797,
+   "primary_score": 0.6821,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2282,7 +2305,7 @@
    },
    "k_strict": 2,
    "k_primary": 1,
-   "primary_score": 0.7512,
+   "primary_score": 0.7513,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2303,7 +2326,7 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.6141,
+   "primary_score": 0.614,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2324,7 +2347,7 @@
    },
    "k_strict": 2,
    "k_primary": 2,
-   "primary_score": 0.596,
+   "primary_score": 0.5961,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2452,7 +2475,7 @@
    },
    "k_strict": 6,
    "k_primary": 6,
-   "primary_score": 0.5975,
+   "primary_score": 0.6128,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
@@ -2473,11 +2496,1272 @@
    },
    "k_strict": 1,
    "k_primary": 1,
-   "primary_score": 0.7273,
+   "primary_score": 0.7239,
    "any_over_min": true,
    "primary_over_min": true,
    "primary_injected": true,
    "all_injected": true
+  }
+ ],
+ "items_linking": [
+  {
+   "id": "b01",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.2,
+   "fk_added": [
+    "resumes",
+    "agent_messages",
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b02",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-s01",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "job_matches",
+    "agent_sessions",
+    "agent_tool_calls"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-s02",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "agent_sessions",
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-s03",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "agent_sessions",
+    "resumes",
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-s04",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "agent_sessions",
+    "resumes",
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-s05",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "resumes",
+    "users",
+    "agent_sessions"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-s06",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "agent_tool_calls",
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-s07",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "users",
+    "agent_messages"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-s08",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "resumes",
+    "users",
+    "agent_tool_calls"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-j01",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.1538,
+   "fk_added": [
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-j02",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.1538,
+   "fk_added": [
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-j03",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.1333,
+   "fk_added": [
+    "resumes",
+    "users",
+    "agent_tool_calls"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-j04",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.1538,
+   "fk_added": [
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-j05",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "agent_sessions",
+    "users",
+    "interview_sessions"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-j06",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "agent_task_states",
+    "agent_tool_calls",
+    "interview_questions"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-w01",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "interview_questions",
+    "agent_tool_calls",
+    "job_matches"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-w02",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "agent_sessions",
+    "agent_tool_calls",
+    "interview_questions"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-w03",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "agent_task_states",
+    "agent_tool_calls",
+    "interview_questions"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-w04",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-m01",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "agent_tool_calls",
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-m02",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.1538,
+   "fk_added": [
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ca-cm-m03",
+   "source": "careermate",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.1333,
+   "fk_added": [
+    "agent_messages",
+    "resumes",
+    "users"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b03",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.2143,
+   "fk_added": [
+    "org_members",
+    "judge_results"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b04",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "documents",
+    "organizations",
+    "eval_questions"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s01",
+   "source": "ragforge",
+   "name_in_q": true,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "organizations",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s02",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "eval_questions",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s03",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "organizations",
+    "judge_results",
+    "clean_profiles"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s04",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "eval_experiments",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s05",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "eval_datasets",
+    "organizations",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s06",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "eval_questions",
+    "organizations",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s07",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "documents",
+    "eval_questions",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s08",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "knowledge_bases",
+    "organizations",
+    "documents"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s09",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.0833,
+   "fk_added": [
+    "eval_datasets",
+    "organizations",
+    "document_chunks"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s10",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 11,
+   "precision": 0.0909,
+   "fk_added": [
+    "eval_questions",
+    "eval_datasets",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s11",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "eval_datasets",
+    "documents",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s12",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 11,
+   "precision": 0.0909,
+   "fk_added": [
+    "eval_questions",
+    "documents",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s13",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "eval_questions",
+    "documents",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s14",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 11,
+   "precision": 0.0909,
+   "fk_added": [
+    "judge_results",
+    "organizations",
+    "eval_results"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-s15",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "organizations",
+    "eval_questions"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j01",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "organizations",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j02",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.1333,
+   "fk_added": [
+    "organizations",
+    "eval_results",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j03",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.1538,
+   "fk_added": [
+    "documents"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j04",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.1538,
+   "fk_added": [
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j05",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.1538,
+   "fk_added": [
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j06",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.1333,
+   "fk_added": [
+    "organizations",
+    "eval_results",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j07",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "eval_experiments",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j08",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "organizations",
+    "eval_results"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j09",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "eval_questions",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j10",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "eval_questions",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j11",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.1333,
+   "fk_added": [
+    "eval_questions",
+    "eval_datasets",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j12",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 10,
+   "precision": 0.2,
+   "fk_added": [
+    "api_keys",
+    "eval_datasets"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j13",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "organizations",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": [
+    "岗位"
+   ]
+  },
+  {
+   "id": "ra-j14",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.1333,
+   "fk_added": [
+    "organizations",
+    "eval_results",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-j15",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "organizations",
+    "eval_results"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m01",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "eval_questions",
+    "organizations",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m02",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "organizations",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m03",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 11,
+   "precision": 0.0909,
+   "fk_added": [
+    "knowledge_bases",
+    "eval_results",
+    "eval_datasets"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m04",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "eval_datasets",
+    "organizations",
+    "document_chunks"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m05",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 11,
+   "precision": 0.0909,
+   "fk_added": [
+    "documents",
+    "eval_datasets",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m06",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "eval_datasets",
+    "organizations",
+    "document_chunks"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m07",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "documents",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m08",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "eval_datasets",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m09",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "judge_results",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-m10",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "organizations",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-w01",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "judge_results",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-w02",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-w03",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "eval_datasets",
+    "organizations",
+    "document_chunks"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-w04",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 11,
+   "precision": 0.0909,
+   "fk_added": [
+    "eval_questions",
+    "eval_datasets",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-w05",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.0833,
+   "fk_added": [
+    "organizations",
+    "eval_datasets"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-h01",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "eval_experiments",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-h02",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "organizations",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-h03",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 11,
+   "precision": 0.0909,
+   "fk_added": [
+    "knowledge_bases",
+    "organizations",
+    "judge_results"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-h04",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "eval_datasets",
+    "documents",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-h05",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "organizations",
+    "kb_acl",
+    "eval_experiments"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-h06",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "eval_questions",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-h07",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.0714,
+   "fk_added": [
+    "eval_datasets",
+    "documents",
+    "organizations"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "ra-h08",
+   "source": "ragforge",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "organizations",
+    "eval_results"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b10",
+   "source": "shop_aftersale",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.0833,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b11",
+   "source": "shop_aftersale",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.0833,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b12",
+   "source": "shop_catalog",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "product_images",
+    "shelf_logs"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b13",
+   "source": "shop_catalog",
+   "name_in_q": false,
+   "n_picked": 15,
+   "precision": 0.0667,
+   "fk_added": [
+    "brands",
+    "skus",
+    "category_attrs"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b06",
+   "source": "shop_customer",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.1538,
+   "fk_added": [
+    "customer_devices"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b07",
+   "source": "shop_customer",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "account_deletions",
+    "customer_tag_refs"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b16",
+   "source": "shop_inventory",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "batches"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b17",
+   "source": "shop_inventory",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "warehouses"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b14",
+   "source": "shop_logistics",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.0833,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b15",
+   "source": "shop_logistics",
+   "name_in_q": false,
+   "n_picked": 14,
+   "precision": 0.1429,
+   "fk_added": [
+    "shipment_tracks",
+    "shipment_pickups"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b20",
+   "source": "shop_marketing",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.0833,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b21",
+   "source": "shop_marketing",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "flash_sales"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b05",
+   "source": "shop_order",
+   "name_in_q": false,
+   "n_picked": 13,
+   "precision": 0.0769,
+   "fk_added": [
+    "order_items"
+   ],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b18",
+   "source": "shop_payment",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.0833,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b19",
+   "source": "shop_payment",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.0833,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b22",
+   "source": "shop_review",
+   "name_in_q": false,
+   "n_picked": 8,
+   "precision": 0.125,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b23",
+   "source": "shop_review",
+   "name_in_q": false,
+   "n_picked": 8,
+   "precision": 0.125,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b08",
+   "source": "shop_supply",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.1667,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
+  },
+  {
+   "id": "b09",
+   "source": "shop_supply",
+   "name_in_q": false,
+   "n_picked": 12,
+   "precision": 0.0833,
+   "fk_added": [],
+   "value_hits": [],
+   "coverage_gaps": []
   }
  ]
 }

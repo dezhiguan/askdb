@@ -276,7 +276,10 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
 
     d = _deps(config)
     t = d.tracer.start()
-    rec = tools.search_schema(state["question"], d.cfg)
+    # backend 递下去，值检索才跑得起来（它要拿提问里的取值去真实数据里探一次）。
+    # 复用链路已有的那个只读执行器，不另开连接。
+    rec = tools.search_schema(state["question"], d.cfg,
+                              getattr(d.executor, "backend", None))
     tables_hit = rec.data.get("tables", [])
     schema_prompt = rec.data.get("prompt", "")
     schema_heads = rec.data.get("prompt_heads", "") or schema_prompt
