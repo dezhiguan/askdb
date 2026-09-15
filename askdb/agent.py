@@ -72,6 +72,82 @@ class AgentAction(BaseModel):
                     "不是回答问题的那一条，所以这一位要填准。")
 
 
+class FastSql(BaseModel):
+    """快路径的一次性产出：预检结论 + 那条 SQL，**合并成一次调用**。
+
+    这是 IntentCheck 与第一轮 AgentAction 的并集，字段语义逐条对齐两者 ——
+    合并的是"什么时候问模型"，不是"问什么"。预检那三道门（越域 / 不可答 /
+    需要多步）一个都没少，只是不再单开一次往返去问。
+
+    为什么值得合并：2026-09-15 生产实测 11 条单表问题，链路恒定跑
+    intent → decide → act → decide 三次模型调用，均值 15.9 秒，而其中
+    真正在库里查数的时间是 52 毫秒（0.3%）。预检那一次恒定占 2.1~2.7 秒，
+    且耗时对问题难度毫无反应 —— 它不挑活，简单题和复杂题一样收这笔钱。
+    """
+
+    out_of_scope: bool = Field(
+        default=False,
+        description="问题涉及的业务实体在库里根本不存在 → true。判据与口径见系统提示。")
+    answerable: bool = Field(
+        default=True, description="用当前可用的表能不能回答这个问题")
+    clarify: str = Field(
+        default="", description="answerable=false 且非越域时，说明缺什么、要澄清什么")
+    too_complex: bool = Field(
+        default=False,
+        description="需要多表关联、分组对比、先探分布再决定下一步，或任何"
+                    "一条 SELECT 说不清的情况 → true，交回完整链路去跑。"
+                    "**拿不准一律填 true** —— 见系统提示里那条不对称。")
+    sql: str = Field(
+        default="",
+        description="上面三位都为 false 时，回答这个问题的那一条只读 SQL。"
+                    "必须是单条 SELECT，不带分号。")
+    label: str = Field(
+        default="",
+        description="这条 SQL 查的是什么，一个短名词（如「商品总数」「在售商品数」），"
+                    "用来组织结论那句话。")
+    caliber: str = Field(
+        default="",
+        description="一句话口径：数据取自哪张表、有没有过滤条件、按什么算。"
+                    "用户看到的就是这句，要能独立读懂。")
+    reason: str = Field(default="", description="一句话判断依据")
+
+
+FAST_SYSTEM = """你是数据查询的快速通道。给你「可用的表与业务口径」和一个用户问题，
+你要一次性判断它能不能用**一条 SELECT** 直接答掉，能就把那条 SQL 写出来。
+
+先判三道门，任何一道成立就不写 SQL：
+
+1. out_of_scope：问题里的业务实体是否在库中根本不存在——若不存在，**必须**判 true，
+   严禁把它攀附到某个名字相近的列上硬答（例如库里没有「供应商」实体，就不能拿
+   model_config.vendor 之类同名列冒充）。
+   判据是**有没有承载这个实体的表**，不是"有没有名字像的列"：一个属性列
+   （vendor / type / category / source / ref_type）哪怕名字完全对上，也不等于
+   那个实体存在。实测反复出现的错法是——先在口径里写明"表中没有独立的 X 实体表"，
+   然后照样拿同名列数出一个数交差；**写得出这句话就说明该判 true**。
+   同一个问题换个问法（"我们有多少 X"／"X 的数量是多少"／"统计一下 X 总数"）
+   判定必须一致，不能因为措辞不同就一会儿拒答一会儿攀附。
+2. answerable：缺查询对象（纯指代、没主语）就填 false，并在 clarify 写清缺什么。
+3. too_complex：需要多表关联、分组后对比、先看取值分布再决定下一步、或者
+   一条 SELECT 写不清楚的，填 true。
+
+**三道门的不对称**：误判成 too_complex 的代价只是回到完整链路多跑两轮（用户
+只是等得久一点，答案照旧）；误判成"简单"的代价是给出一个不完整的答案。
+两者差着量级，所以**拿不准一律 too_complex=true**。
+
+三道门都不成立时写 sql：
+- 只读单条 SELECT，不带分号，不要 UNION、不要多条语句。
+- 列名、类型、枚举取值一律以下方【可用的表】为准，**不要猜**。
+- 口径遵循表与列上的说明（软删除列、状态枚举、时间列含义）。
+- 结果要能直接回答问题：问总数就 COUNT(*)，问最大值就 MAX(...)，
+  问"列出前 N 个"就带 ORDER BY 与 LIMIT。不要额外多选无关列。
+- label 填这条 SQL 查的是什么（短名词），caliber 用一句话讲清口径 ——
+  这两项会原样呈现给用户，不是给你自己看的。"""
+
+FAST_USER = """{schema}
+
+【用户问题】
+{question}"""
+
 INTENT_SYSTEM = """你是数据查询的意图预检。已给你「可用的表与业务口径」，据此判断四件事：
 1. answerable：用这些表能不能回答用户问题；
 2. out_of_scope：问题里的业务实体是否在库中根本不存在——若不存在，**必须**判 true，
@@ -480,6 +556,36 @@ def _known_constants(cfg: Config) -> list[float]:
             if isinstance(v, (int, float)):
                 out.append(float(v))
     return out
+
+
+def _fastpath_mode(cfg: Config) -> str:
+    """简单问题快路径的档位：off / shadow / on。**默认 shadow。**
+
+    这是一道**分流判定**，不是拦截判定，但它误判的形状与拦截同样难看：把一个
+    需要多跑两轮的问题判成"一条 SELECT 就够"，用户拿到的是一个看起来完整、
+    实际少了一半口径的答案 —— 而链路上三行全绿，没有任何红色提示它走短了。
+    这正是"会误伤正确结果的新判定必须先影子跑"那条要防的形状。
+
+    所以三档：
+      · off    —— 完全不判，链路与改动前逐字相同。
+      · shadow —— 判据照跑、结论落一条 span（"本可走快路径"），但**仍走完整
+                  链路**。用来在真实流量上量误判率：命中的那些回头比对完整
+                  链路的答案，看短路会不会把口径答少。
+      · on     —— 命中就走快路径。
+
+    默认 shadow 而不是 on：本机样例想不到真实误判的形状，离线重放也不作数
+    （命中与否取决于召回到的那批表，而召回本身随库变）。切 on 之前该有一轮
+    影子数据。**这一条与 grounding 默认 shadow 是同一个理由。**
+    """
+    raw = (cfg.raw.get("agent", {}) or {}).get("fastpath", "shadow")
+    # **YAML 1.1 把裸写的 on / off 解析成布尔**，不是字符串。不接住这一步，
+    # `fastpath: on` 到这里是 True → "true" → 不在合法档里 → 静默退回 shadow，
+    # 而部署方以为自己打开了。`fastpath: off` 同样会退成 shadow —— 那个方向更糟：
+    # 想关的人没关掉。两个都要接，且要在**转字符串之前**接。
+    if isinstance(raw, bool):
+        return "on" if raw else "off"
+    mode = str(raw).lower()
+    return mode if mode in ("off", "shadow", "on") else "shadow"
 
 
 def _grounding_mode(cfg: Config) -> str:
