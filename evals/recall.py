@@ -222,8 +222,21 @@ def rank_tables(cfg: Any, question: str) -> tuple[list[tuple[str, float]], int]:
 # --------------------------------------------------------------------------
 # 打分
 # --------------------------------------------------------------------------
+def injected(cfg: Any, question: str) -> list[str]:
+    """**真正被注入提示词的**那几张表 —— 走完整条 schema_rag.recall()。
+
+    与 rank_tables 是两个口径，都要量：
+      · rank_tables 量的是**排序质量**（向量检索把主表排在第几），
+        它绕过 recall() 的后处理，所以任何"召回后兜底"在它上面都看不出来；
+      · 这里量的是**最终结果**（主表到底进没进提示词），后处理正是冲它去的。
+    2026-09-15 加这一项，起因是字面锚点上线后基准一个数都没动 —— 不是改动没用，
+    是这份基准**评不了后处理**。一个评不了自己要评的东西的基准，比没有更坏。
+    """
+    return list(schema_rag.recall(question, cfg).table_names)
+
+
 def score(case: dict[str, Any], ranked: list[tuple[str, float]],
-          min_score: float) -> dict[str, Any]:
+          min_score: float, injected_names: list[str] | None = None) -> dict[str, Any]:
     order = [t for t, _ in ranked]
     by_score = dict(ranked)
     ranks = {t: (order.index(t) + 1 if t in order else None) for t in case["want"]}
@@ -243,6 +256,13 @@ def score(case: dict[str, Any], ranked: list[tuple[str, float]],
         #: 两种失败，排查方向不同，所以单独出一位。
         "any_over_min": any(s >= min_score for _, s in ranked),
         "primary_over_min": by_score.get(case["primary"], 0.0) >= min_score,
+        #: 主表 / 全部 want 有没有真的进提示词。**这才是答错与否直接依赖的那一位**
+        #: —— 排第 27 名和"根本没被注入"是两件事，前者只是排序差，后者是模型
+        #: 手上压根没有那张表。
+        "primary_injected": (case["primary"] in (injected_names or [])
+                             if injected_names is not None else None),
+        "all_injected": (all(t in (injected_names or []) for t in case["want"])
+                         if injected_names is not None else None),
     }
 
 
@@ -261,6 +281,10 @@ def summarize(items: list[dict[str, Any]], ks: list[int]) -> dict[str, Any]:
             "n": len(xs),
             "recall_strict": {str(k): _rate(xs, "k_strict", k) for k in ks},
             "recall_primary": {str(k): _rate(xs, "k_primary", k) for k in ks},
+            "primary_injected_rate": round(
+                sum(1 for x in xs if x.get("primary_injected")) / max(1, len(xs)), 4),
+            "all_injected_rate": round(
+                sum(1 for x in xs if x.get("all_injected")) / max(1, len(xs)), 4),
             "blind_rate": round(sum(1 for x in xs if not x["any_over_min"])
                                 / max(1, len(xs)), 4),
             "primary_below_min_rate": round(
@@ -309,6 +333,8 @@ def report(data: dict[str, Any]) -> None:
         print(head)
         print("    严格     " + "".join(f"{b['recall_strict'][str(k)]*100:>7.1f}%" for k in ks))
         print("    主表     " + "".join(f"{b['recall_primary'][str(k)]*100:>7.1f}%" for k in ks))
+        print(f"    **注入命中** 主表 {b['primary_injected_rate']*100:.1f}% · "
+              f"全部 want {b['all_injected_rate']*100:.1f}%")
         print(f"    盲选率 {b['blind_rate']*100:.1f}% · "
               f"主表未过 min_score {b['primary_below_min_rate']*100:.1f}%")
 
@@ -386,7 +412,12 @@ def main() -> int:
                 print(f"    ! {c['id']} 召回失败：{str(e).splitlines()[0]}")
                 continue
             embed_tokens += tok
-            items.append(score(c, ranked, min_score))
+            try:
+                names = injected(cfg, c["question"])
+            except Exception as e:             # noqa: BLE001
+                print(f"    ! {c['id']} 注入口径失败：{str(e).splitlines()[0]}")
+                names = None
+            items.append(score(c, ranked, min_score, names))
 
     data = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),

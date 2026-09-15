@@ -663,6 +663,7 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         if _est_tokens(_render(picked + rest, metrics)) <= eff_budget:
             picked = picked + rest
 
+
     # 命中口径涉及的表必须一并注入，否则口径表达式引用的列不可见
     by_name = {t.name: t for t in picked}
     for m in metrics:
@@ -698,6 +699,10 @@ def recall(question: str, cfg: Config, index: Any = None) -> Recall:
         embed_cost=embed_cost,
         embed_model=embed_model,
     )
+
+
+
+
 
 
 def _render(tables: list[Table], metrics: list[Metric]) -> str:

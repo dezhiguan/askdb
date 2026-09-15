@@ -496,11 +496,14 @@ def whitelist_from_scan(columns: dict[str, list[dict[str, Any]]],
         # 库里的注释直接当白名单里的说明用。手工填是填不完的（一个源 33 张表、
         # 几百个列），而"没有说明"不是一件中性的事：Schema 召回靠它给中文提问
         # 打分，全空就等于召回失灵。
+        desc = next((c.get("table_desc", "") for c in cols
+                     if c.get("table_desc")), "")
         out.append({
             "name": name,
-            "desc": next((c.get("table_desc", "") for c in cols
-                          if c.get("table_desc")), ""),
-            "aliases": [],
+            "desc": desc,
+            # 注释里的"别名：…"要解析出来。硬编码成 [] 的那几年里，
+            # schema_rag 渲染不出别名行、字面锚点也认不出表 —— 见 aliases_from_desc。
+            "aliases": aliases_from_desc(desc),
             # 运行时添加的数据源按单租户处理，见 derive_config 的说明
             "tenant_exempt": True,
             # 取值（枚举）跟着一起存：模型猜错取值的大小写，得到的是一条
@@ -587,6 +590,33 @@ _ENUM_STOP = frozenset({
     "PDF", "UUID", "MD5", "IP", "SLA", "ROI", "NULL", "TRUE", "FALSE",
     "EAN", "UPC", "CNY", "USD", "KB", "MB", "AI", "JD", "RAG", "QA",
 })
+
+
+#: 表注释里"别名："后面那一串。全角/半角冒号都认，用顿号或逗号分隔。
+_ALIAS_RE = re.compile(r"别名[：:]\s*([^\n。]+)")
+_ALIAS_SPLIT = re.compile(r"[、,，/]")
+
+
+def aliases_from_desc(desc: str) -> list[str]:
+    """从表注释里把"别名：快递公司、物流商"抠出来。
+
+    存在的理由与 enum_from_desc 一模一样：**约定已经写在数据里，只是从来没人
+    解析它**。whitelist_from_scan 里 aliases 硬编码成 []，于是所有运行时源的
+    Table.aliases 恒空 —— 而 schema_rag.table_doc 渲染"别名：…"那一行、
+    以及字面锚点认表，靠的都是这个字段。
+
+    2026-09-15 实测：97 条召回基准上字面锚点一条都没命中，就是因为它。
+    真实注释里写着"表 shipments —— 运单。…别名：包裹、快递单、运单"，
+    而代码看到的 aliases 是空列表。
+
+    宁可少认不可错认：单字别名一律丢掉（"单""表"会把任何问题都命中），
+    并且去掉与表名重复的那些。
+    """
+    m = _ALIAS_RE.search(str(desc or ""))
+    if not m:
+        return []
+    out = [a.strip() for a in _ALIAS_SPLIT.split(m.group(1))]
+    return list(dict.fromkeys(a for a in out if len(a) >= 2))
 
 
 def enum_from_desc(desc: str) -> list[str]:
