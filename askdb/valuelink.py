@@ -159,6 +159,18 @@ class ValueHit:
         return f'"{self.value}" → {self.table}.{self.column}'
 
 
+#: 注释里的**取值示例**段。
+#:
+#: 2026-09-15 生产实测逼出来的：customer_tags 的表注释写着"用于圈人做营销，
+#: 如高价值、流失预警、价格敏感"，于是"高价""价值"这些 2-gram 全部进了
+#: known，问"高价值客户这个标签下有多少人"时整个候选被判成元数据词、
+#: 一个值都抽不出来 —— 而"高价值客户"**正是**库里的一行数据。
+#:
+#: 注释里举的例子是**值**，不是描述这张表的词。把它们收进 known，等于用
+#: "这个库提到过这个值"去证明"这不是个值"，方向正好反了。
+_EXAMPLE_SEG = re.compile(r"(?:如|例如|比如|取值|包括|枚举)[:：]?[^。；;\n]*")
+
+
 def _schema_words(cfg: Config) -> set[str]:
     """schema 文本里出现过的中文 2-gram。
 
@@ -174,21 +186,30 @@ def _schema_words(cfg: Config) -> set[str]:
         texts = [t.desc or "", *(t.aliases or [])]
         texts += [c.desc or "" for c in t.columns.values()]
         for text in texts:
+            text = _EXAMPLE_SEG.sub("", text)
             for run in re.findall(r"[一-鿿]{2,}", text):
                 out.update(run[i:i + 2] for i in range(len(run) - 1))
     return out
 
 
-def _segments(run: str, known: set[str]) -> list[str]:
-    """把一串连续汉字切成"可能是值"的片段。
+def _segments(run: str, known: set[str]) -> list[tuple[str, bool]]:
+    """把一串连续汉字切成候选片段，附带"它像不像个元数据词"。
 
-    没有分词器，也不需要 —— 要找的不是词，是**剩下的那部分**：把虚词
-    （"查一下"）和 schema 里出现过的词（"订单""金额"）都划掉，还立着的
-    就是元数据解释不了的那几个字，"张三"正是这么露出来的。
+    **只按虚词切，不按 schema 词切。** 这里原来两种都切，2026-09-15 生产
+    实测证明那个方向是错的：customer_tags 的注释写着"用于圈人做营销，如
+    高价值、流失预警、价格敏感"，customer_stats_daily 的注释写着"要查
+    「哪些用户」（高价值的、沉睡的…）"—— 于是"高价""价值"全进了 known，
+    问"高价值客户这个标签下有多少人"抽不出任何候选，而那正是库里的一行数据。
 
-    不这么切会出什么事，实测过：整串"查一下张先生"被当成一个值拿去探，
-    36 列一个都匹配不上；而"本月订单总金额是多少"切出个"额是多少"，
-    是纯粹的噪声。
+    根子在于**这个区分本身做不可靠**：注释里既会写表是什么，也会举例说明
+    值长什么样，两者混在同一句话里，没有哪条规则分得开。
+
+    所以改成不对称的处理 —— 两种错的代价根本不对等：
+      · 误探一个元数据词：一次白跑的 EXISTS（列已限制在 name/code 那几档，
+        大表还有索引闸门），几十毫秒，且多半不会命中；
+      · 漏探一个真值：整个能力对这次提问失效，而且失效得毫无声息。
+    于是 schema 词只用来**降权**（排在后面，超出 MAX_VALUES 时先被丢掉），
+    不再用来排除。
     """
     n = len(run)
     mask = [False] * n
@@ -197,20 +218,29 @@ def _segments(run: str, known: set[str]) -> list[str]:
             if run[i:i + length] in _STOP:
                 for j in range(i, i + length):
                     mask[j] = True
-    for i in range(n - 1):
-        if run[i:i + 2] in known:
-            mask[i] = mask[i + 1] = True
-    out, cur = [], ""
+    out: list[tuple[str, bool]] = []
+    cur = ""
     for i, ch in enumerate(run):
         if mask[i]:
             if len(cur) >= 2:
-                out.append(cur)
+                out.append((cur, _metaish(cur, known)))
             cur = ""
         else:
             cur += ch
     if len(cur) >= 2:
-        out.append(cur)
+        out.append((cur, _metaish(cur, known)))
     return out
+
+
+def _metaish(seg: str, known: set[str]) -> bool:
+    """这个片段整体看着像个元数据词吗。**只用于排序，不用于排除。**
+
+    判据是"全部 2-gram 都在 schema 里出现过"：'文档'（documents 表到处
+    都是）为真，'高价值客户'因为'值客'这一格在任何注释里都没出现过而为假 ——
+    恰好是想要的那条线。判错了也不要紧，代价只是候选的先后顺序。
+    """
+    grams = {seg[i:i + 2] for i in range(len(seg) - 1)} or {seg}
+    return grams <= known
 
 
 def candidates(question: str, cfg: Config) -> list[str]:
@@ -230,13 +260,16 @@ def candidates(question: str, cfg: Config) -> list[str]:
 
     for m in _QUOTED.finditer(question):        # 引号最强，不做任何过滤
         add(m.group(1))
+    strong, weak = [], []
     for run in re.findall(r"[一-鿿]+", question):
-        for seg in _segments(run, known):
+        for seg, metaish in _segments(run, known):
             # 昵称常是"中文+数字"（库里实有 `大榆1`），而汉字串到数字就断了。
             # 切出"大榆"后回原句看一眼后面跟没跟数字，跟了就连上 ——
             # 差这一位，等值匹配就是必然落空。
             m = re.search(re.escape(seg) + r"\d+", question)
-            add(m.group(0) if m else seg)
+            (weak if metaish else strong).append(m.group(0) if m else seg)
+    for v in strong + weak:
+        add(v)
     for m in _IDENT.finditer(question):
         add(m.group(0))
     return out[:MAX_VALUES]

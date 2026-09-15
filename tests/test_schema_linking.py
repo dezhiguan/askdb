@@ -132,16 +132,30 @@ def test_expand_disabled_by_zero(cfg):
 # --------------------------------------------------------------------------
 # 三、值检索
 # --------------------------------------------------------------------------
-def test_candidates_strips_stopwords_and_schema_words(cfg):
-    """"查一下张三的订单数" 里，只有"张三"是值。"""
-    got = valuelink.candidates("查一下张三的文档数和文档大小", cfg)
-    assert "张三" in got
-    assert not any("文档" in g for g in got)
+def test_candidates_strip_stopwords(cfg):
+    """虚词划掉，剩下的才是值。"张三"必须抽得出来。"""
+    got = valuelink.candidates("查一下张三的会话数", cfg)
+    assert any("张三" in g for g in got)
 
 
-def test_candidates_ignore_pure_metric_question(cfg):
-    """全是元数据词的提问不该探测 —— 一次白跑的查询，还可能撞出无关命中。"""
-    assert valuelink.candidates("本月文档总数是多少", cfg) == []
+def test_metadata_words_are_demoted_not_dropped(cfg):
+    """元数据词**降权而不排除**。
+
+    排除过一版，生产上栽了：customer_tags 的注释举例写着"如高价值、流失
+    预警"，于是"高价值客户"整体被判成元数据词、一个候选都抽不出来 ——
+    而它正是库里的一行数据。两种错的代价不对等，见 _segments 的说明。
+    """
+    got = valuelink.candidates("本月文档总数是多少", cfg)
+    # 抽得出来（允许探一次），但必须排在后面
+    if got:
+        assert valuelink._metaish(got[-1], valuelink._schema_words(cfg))
+
+
+def test_value_like_phrase_survives_example_in_comment(cfg):
+    """注释里举过例的词，不能因此就不算值了。"""
+    known = valuelink._schema_words(cfg)
+    segs = dict(valuelink._segments("高价值客户", known))
+    assert "高价值客户" in segs
 
 
 def test_candidates_keep_trailing_digits(cfg):

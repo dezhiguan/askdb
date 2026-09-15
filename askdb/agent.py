@@ -325,7 +325,20 @@ def _brief(res: tools.ToolResult) -> str:
         return f"{res.tool} 未通过：{res.rejected_by or ''} {res.error}".strip()
     d = res.data
     if res.tool == "search_schema":
-        return f"召回 {len(d.get('tables', []))} 张表" + ("（盲选）" if d.get("blind") else "")
+        # 三条新链路各自留一句。**一张表是怎么进上下文的，排查时走的是三条
+        # 完全不同的路**：语义召回进来的看排名、外键补进来的看关联图、靠
+        # "这个值就在这张表里"进来的看值检索。只报一个"召回 N 张表"，
+        # 线上再想分辨就只能去读提示词全文逐行猜。
+        out = f"召回 {len(d.get('tables', []))} 张表"
+        if d.get("blind"):
+            out += "（盲选）"
+        if d.get("fk_added"):
+            out += f"；沿外键补入 {'、'.join(d['fk_added'])}"
+        if d.get("value_hits"):
+            out += f"；取值定位 {'，'.join(d['value_hits'])}"
+        if d.get("coverage_gaps"):
+            out += f"；未被覆盖的实体「{'、'.join(d['coverage_gaps'])}」"
+        return out
     if res.tool == "get_table_schema":
         return f"{d.get('table')}：{len(d.get('columns', []))} 列"
     if res.tool == "execute_sql":
