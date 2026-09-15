@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 import sqlglot
 from sqlglot import exp
@@ -45,6 +46,14 @@ class GuardResult:
     #: "这条 SQL 本身有个不该忽略的地方"。混在一起会让"我们动了手"和
     #: "你得自己核对"变成同一句话，而这两件事的责任方不同。
     notes: list[str] = field(default_factory=list)
+    #: 改写完成、**渲染成字符串之前**的那棵 AST。只在本次调用内有效，不进审计、
+    #: 不进检查点 —— 它是现场，不是结论。
+    #:
+    #: 存在的理由只有一个：sqlglot 渲染得出、却解析不回来。`GROUP BY GROUPING
+    #: SETS (...) LIMIT n`（R-09 一定会注入那个 LIMIT）在任何方言下都 ParseError，
+    #: 于是下游拿 sql 字符串重新解析的判定会静默退化。把树交出去，
+    #: round-trip 这一环就不存在了（见 is_bounded_aggregate 与 tools._scan_cap）。
+    tree: Any = None
 
     @property
     def out_of_scope(self) -> bool:
@@ -530,6 +539,7 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb",
         rules_fired=fired,
         rewrites=rewrites,
         notes=notes,
+        tree=root,
     )
 
 
@@ -1152,20 +1162,67 @@ def _aggregates(node: exp.Expression) -> bool:
     return isinstance(node, exp.Filter) and isinstance(node.this, exp.AggFunc)
 
 
-def is_bounded_aggregate(sql: str, dialect: str = "duckdb") -> bool:
+def _group_key_columns(root: exp.Select, dialect: str) -> tuple[set[str], set[str]]:
+    """GROUP BY 里出现的 (整段表达式文本, 涉及的列名) 两个集合。
+
+    **必须连 grouping_sets / rollup / cube 一起收。** sqlglot 把这三种写法放在
+    Group 节点的同名 args 里，不在 expressions 里 —— 原来只读 expressions，
+    于是 `GROUP BY GROUPING SETS ((channel_code), ())` 的分组键集合是空的，
+    投影里的 channel_code 自然"对不上任何分组键"，整条掉出聚合专档。
+    而"各渠道 X 并给出总计"这类问题，GROUPING SETS 正是标准写法。
+    """
+    group = root.args.get("group")
+    if not group:
+        return set(), set()
+    nodes = list(group.expressions)
+    for k in ("grouping_sets", "rollup", "cube"):
+        nodes.extend(group.args.get(k) or [])
+    texts, cols = set(), set()
+    for n in nodes:
+        try:
+            texts.add(re.sub(r"\s+", " ", n.sql(dialect=dialect)).strip().lower())
+        except Exception:
+            pass
+        for c in n.find_all(exp.Column):
+            try:
+                cols.add(re.sub(r"\s+", " ", c.sql(dialect=dialect)).strip().lower())
+            except Exception:
+                pass
+    texts.discard("")
+    cols.discard("")
+    return texts, cols
+
+
+def is_bounded_aggregate(sql: str, dialect: str = "duckdb",
+                         tree: exp.Expression | None = None) -> bool:
     """这条 SQL 是不是"扫得多、吐得少"的纯聚合查询。
 
     用途见 tools._scan_cap：R-11 的扫描阈值对这类查询单列一档。判定从严 ——
     只要有一列明细能逃出去，或者行数没被 LIMIT 封顶，就返回 False。
     解析失败一律 False（阈值不放宽），与本模块其余判定同一个失败方向。
+
+    **tree 传进来就不再解析 sql。** 这不是省一次解析那么简单：调用方拿到的
+    sql 是 guard.check 渲染出来的字符串，而 sqlglot 30.16.0 渲染得出、却解析
+    不回来 —— `GROUP BY GROUPING SETS ((a), ()) LIMIT 200` 在 postgres /
+    duckdb / mysql / 默认方言下全部 ParseError（R-09 一定会注入那个 LIMIT）。
+    于是上面那句"解析失败一律 False"被静默触发，任何用 GROUPING SETS / ROLLUP
+    / CUBE 写的聚合都永远拿不到专档。线上实测：payments 按渠道统计支付笔数，
+    预估扫描 1,122,911 行，夹在 200,000 与 3,000,000 两档之间，本该放行，
+    却因为这一条被按 200,000 拦下挂审批。
+    传 AST 进来，round-trip 这一环就不存在了。
     """
-    try:
-        stmts = [x for x in sqlglot.parse(sql, dialect=dialect) if x is not None]
-    except Exception:
-        return False
-    if len(stmts) != 1 or not isinstance(stmts[0], exp.Select):
-        return False
-    root = stmts[0]
+    if tree is not None:
+        root = tree
+        if not isinstance(root, exp.Select):
+            return False
+    else:
+        try:
+            stmts = [x for x in sqlglot.parse(sql, dialect=dialect) if x is not None]
+        except Exception:
+            return False
+        if len(stmts) != 1 or not isinstance(stmts[0], exp.Select):
+            return False
+        root = stmts[0]
     if root.args.get("limit") is None:      # 行数没有上界，不放宽
         return False
     if list(_iter_samples(root)):           # 抽样让扫描估算失真，一律不放宽
@@ -1177,9 +1234,7 @@ def is_bounded_aggregate(sql: str, dialect: str = "duckdb") -> bool:
         except Exception:
             return ""
 
-    group = root.args.get("group")
-    keys = {_key(e) for e in (group.expressions if group else [])}
-    keys.discard("")
+    keys, key_cols = _group_key_columns(root, dialect)
 
     for i, proj in enumerate(root.expressions, 1):
         inner = proj.unalias() if isinstance(proj, exp.Alias) else proj
@@ -1195,8 +1250,18 @@ def is_bounded_aggregate(sql: str, dialect: str = "duckdb") -> bool:
         loose = _outside_aggregate(inner)
         if not loose:
             continue                        # 全在聚合里，或是常量
-        # 剩下的必须整段就是 GROUP BY 的分组键（`GROUP BY 1` 这种序号写法也认）
+        # 整段就是 GROUP BY 的分组键（`GROUP BY 1` 这种序号写法也认）
         if _key(inner) in keys or str(i) in keys:
+            continue
+        # 分组键被函数包了一层也算数 —— 判的是**列**，不是 SQL 文本。
+        #
+        # 这一条要解决的是：`SELECT COALESCE(channel_code,'TOTAL'), COUNT(*)
+        # ... GROUP BY channel_code` 按文本比对永远对不上，而它恰恰是"加一行
+        # 总计"的标准写法。语义上它是安全的：松散列全是分组键时，取值在组内
+        # 恒定，**漏不出任何明细**，这正是本判定要守的那条线。
+        # 仍然从严：只要有一个松散列不是分组键（`COALESCE(channel_code,
+        # user_id)` 里的 user_id），照旧 False。
+        if key_cols and all(_key(c) in key_cols for c in loose):
             continue
         return False
     return True

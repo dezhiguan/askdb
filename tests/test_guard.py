@@ -674,3 +674,95 @@ def test_r24_silent_on_queries_without_any_date(cfg):
     r = guard.check("SELECT COUNT(id) FROM documents", cfg, org_id=ORG,
                     question="一共有多少文档？")
     assert r.ok and "R-24" not in r.rules_fired and not r.notes
+
+
+# --------------------------------------------------------------------------
+# R-11 聚合专档：is_bounded_aggregate
+#
+# 线上 payments 按渠道统计支付笔数，预估扫描 1,122,911 行，夹在 max_scan_rows
+# (200,000) 与 max_scan_rows_aggregate (3,000,000) 两档之间 —— 本该走专档放行，
+# 却被按 200,000 拦下挂审批。两个成因，各自单独就足以掉档：
+#   ① sqlglot 渲染得出、却解析不回来：`GROUP BY GROUPING SETS (...) LIMIT n`
+#      （R-09 一定会注入那个 LIMIT）在任何方言下都 ParseError，而本函数
+#      "解析失败一律 False"于是被静默触发；
+#   ② 分组键被 COALESCE 包一层，按 SQL 文本比对就对不上 —— 而那正是
+#      "加一行总计"的标准写法。
+# --------------------------------------------------------------------------
+def _agg(sql: str) -> bool:
+    """按生产路径判定：解析 → R-09 注入 LIMIT → 拿 AST（不是字符串）去判。"""
+    root = sqlglot.parse_one(sql, dialect="postgres")
+    if root.args.get("limit") is None:
+        root = root.limit(200)
+    return guard.is_bounded_aggregate("", "postgres", tree=root)
+
+
+@pytest.mark.parametrize("sql", [
+    # 线上原句：GROUPING SETS + COALESCE 总计行
+    "SELECT COALESCE(p.channel_code,'TOTAL') AS channel_code, COUNT(*) AS c,"
+    " ROUND(CAST(COALESCE(SUM(p.amount),0) AS DECIMAL),2) AS s"
+    " FROM payments AS p WHERE p.status='SUCCESS'"
+    " GROUP BY GROUPING SETS ((p.channel_code),())",
+    "SELECT p.channel_code, COUNT(*) FROM payments p GROUP BY ROLLUP(p.channel_code)",
+    "SELECT p.channel_code, COUNT(*) FROM payments p GROUP BY CUBE(p.channel_code)",
+    # 分组键被函数包一层：组内取值恒定，漏不出明细
+    "SELECT COALESCE(p.channel_code,'TOTAL') c, COUNT(*) n FROM payments p"
+    " GROUP BY p.channel_code",
+    "SELECT p.channel_code, COUNT(*) n FROM payments p GROUP BY p.channel_code",
+    "SELECT COUNT(*) FROM payments",
+])
+def test_bounded_aggregate_allows_pure_aggregates(sql):
+    assert _agg(sql) is True
+
+
+@pytest.mark.parametrize("sql", [
+    # 明细列真的会漏出去 —— 从严的那一侧一个都不能放
+    "SELECT p.user_id, p.channel_code, COUNT(*) FROM payments p GROUP BY p.channel_code",
+    "SELECT COALESCE(p.channel_code,p.user_id) c, COUNT(*) FROM payments p"
+    " GROUP BY p.channel_code",
+    "SELECT * FROM payments p",
+    "SELECT p.user_id, COUNT(*) FROM payments p GROUP BY GROUPING SETS ((p.channel_code),())",
+    "SELECT p.channel_code FROM payments p",
+])
+def test_bounded_aggregate_still_blocks_leaking_detail(sql):
+    assert _agg(sql) is False
+
+
+def test_bounded_aggregate_needs_a_row_cap():
+    """没有 LIMIT 就不放宽 —— 行数没上界时"吐得少"这个前提不成立。"""
+    root = sqlglot.parse_one(
+        "SELECT p.channel_code, COUNT(*) FROM payments p GROUP BY p.channel_code",
+        dialect="postgres")
+    assert guard.is_bounded_aggregate("", "postgres", tree=root) is False
+
+
+def test_bounded_aggregate_reads_grouping_sets_keys():
+    """**这条是那个 bug 的护栏，而且与 sqlglot 版本无关。**
+
+    sqlglot 把 GROUPING SETS / ROLLUP / CUBE 放在 Group 节点的同名 args 里，
+    不在 expressions 里。旧判定只读 expressions，于是这三种写法的分组键集合恒为
+    空集，投影里的任何松散列都"对不上分组键"，整条掉出聚合专档 —— 线上 payments
+    按渠道统计支付笔数（扫描 1,122,911 行，本该走 3,000,000 那档）就是这么被按
+    200,000 拦下挂审批的。
+    """
+    root = sqlglot.parse_one(
+        "SELECT p.channel_code, COUNT(*) FROM payments p"
+        " GROUP BY GROUPING SETS ((p.channel_code),())", dialect="postgres").limit(200)
+    keys, key_cols = guard._group_key_columns(root, "postgres")
+    assert "p.channel_code" in key_cols, "GROUPING SETS 的分组键没被读到"
+    assert guard.is_bounded_aggregate("", "postgres", tree=root) is True
+
+
+def test_bounded_aggregate_does_not_depend_on_a_render_roundtrip():
+    """喂 AST 的结论不受 sqlglot 渲染/解析往返的影响。
+
+    **这条有意只断言 AST 那一路**：字符串那一路的行为是**版本相关**的 ——
+    sqlglot 30.16.0 对 `GROUP BY GROUPING SETS (...) LIMIT n`（R-09 注入 LIMIT
+    之后的必然形状）ParseError，30.18.0 已修。而 pyproject 只写 `sqlglot>=25.0`、
+    没有锁文件，本机与 CI 就跑在不同版本上。
+    把版本相关的行为写进断言，测试会在换版本时无故变红 —— 第一版这么写过，
+    在 CI 上当场挂掉。判定不再经过字符串，所以也不该再对字符串断言什么。
+    """
+    root = sqlglot.parse_one(
+        "SELECT COALESCE(p.channel_code,'TOTAL') c, COUNT(*) n FROM payments p"
+        " GROUP BY GROUPING SETS ((p.channel_code),())", dialect="postgres").limit(200)
+    assert guard.is_bounded_aggregate("", "postgres", tree=root) is True
