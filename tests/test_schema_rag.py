@@ -502,3 +502,32 @@ def test_keyword_mode_is_not_a_degradation(cfg):
     cfg.raw["schema_rag"]["mode"] = "keyword"
     schema_rag.recall("文档", cfg)
     assert schema_rag.degradation()["degraded"] is False
+
+
+def test_aliases_are_parsed_out_of_the_table_comment():
+    """运行时源的别名写在表注释里，要真的解析出来 —— aliases 曾被硬编码成 []。
+
+    约定已经在数据里（"表 shipments —— 运单。…别名：包裹、快递单、运单"），
+    只是 whitelist_from_scan 从来没读它。空 aliases 的后果是 table_doc 渲染
+    不出"别名"那一行 —— 而那一行既进提示词也进嵌入向量。
+    """
+    from askdb.sources import aliases_from_desc as f
+    assert f("运单。一笔已发货订单对应一条主运单。别名：包裹、快递单、运单") \
+        == ["包裹", "快递单", "运单"]
+    assert f("承运商字典，含时效承诺与结算方式。别名：快递公司、物流商") \
+        == ["快递公司", "物流商"]
+    assert f("没有别名这一段的注释") == []
+    assert f("") == [] and f(None) == []
+    # 单字一律丢掉："单""表"会把任何问题都命中，那不是别名是噪声
+    assert f("某表。别名：单、表、运单") == ["运单"]
+    # 半角冒号、逗号分隔也认；重复的去掉
+    assert f("某表。别名: 包裹，快递单、包裹") == ["包裹", "快递单"]
+
+
+def test_whitelist_from_scan_fills_aliases():
+    """接线也要钉住 —— 只测解析函数管不住 aliases 还是被写成 []。"""
+    from askdb import sources
+    cols = {"t": [{"name": "id", "type": "bigint", "desc": "",
+                   "table_desc": "运单。别名：包裹、快递单"}]}
+    got = sources.whitelist_from_scan(cols, ["t"])
+    assert got[0]["aliases"] == ["包裹", "快递单"]
