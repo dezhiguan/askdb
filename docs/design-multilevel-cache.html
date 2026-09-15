@@ -314,7 +314,7 @@
   </p>
   <dl class="meta-strip">
     <div><dt>拟制日期</dt><dd>2026-09-15</dd></div>
-    <div><dt>版本</dt><dd>V1.2 · 部分落地</dd></div>
+    <div><dt>版本</dt><dd>V1.3 · 已上线（shadow）</dd></div>
     <div><dt>适用实例</dt><dd>askdb.ragforge.net</dd></div>
     <div><dt>代码基线</dt><dd>main@b84644a</dd></div>
     <div><dt>数字来源</dt><dd>代码实读 + 生产 trace</dd></div>
@@ -550,8 +550,8 @@ elif explain_rows >= scan_threshold // 2:     <span class="cm"># 预估扫描过
       <tbody>
         <tr><td class="mono">L0</td><td>进程内 LRU</td><td>精确 key</td><td>schema 渲染、前缀拼装、问题向量</td><td>无（本地）</td></tr>
         <tr><td class="mono">L1</td><td>Redis</td><td>问题原文逐字</td><td>全部（模型 / 配额 / SQL）</td><td>fail-open</td></tr>
-        <tr><td class="mono">L2</td><td>pgvector</td><td>相似度 ≥ θ<sub>hi</sub> 且非时间敏感</td><td>全部</td><td>fail-open</td></tr>
-        <tr style="background:var(--accent-dim)"><td class="mono"><strong>L3 ★</strong></td><td>pgvector + PG</td><td>相似度 ≥ θ<sub>lo</sub></td><td><strong>全部模型调用，只付一条 SQL</strong></td><td>fail-open</td></tr>
+        <tr><td class="mono">L2</td><td>pgvector</td><td><strong>内容词相同</strong>且相似度 ≥ θ<sub>hi</sub> 且非时间敏感</td><td>全部</td><td>fail-open</td></tr>
+        <tr style="background:var(--accent-dim)"><td class="mono"><strong>L3 ★</strong></td><td>pgvector + PG</td><td><strong>内容词相同</strong>且相似度 ≥ θ<sub>lo</sub></td><td><strong>全部模型调用，只付一条 SQL</strong></td><td>fail-open</td></tr>
         <tr><td class="mono">L4</td><td>百炼隐式</td><td>前缀逐字相同</td><td>输入按 1/8 计价</td><td>自动</td></tr>
       </tbody>
     </table>
@@ -651,6 +651,63 @@ elif explain_rows >= scan_threshold // 2:     <span class="cm"># 预估扫描过
     <p><strong>参数化槽位替换</strong>（“华为的×” → “腾讯的×”复用同一条 SQL 换参数）：收益诱人，
       但值替换要过实体识别，错一次就是答错人。等 <code>valuelink</code> 在生产跑稳再单独立项。</p>
     <p><strong>跨源共享缓存</strong>：任何情况下都不做。<strong>进程内答案缓存</strong>：见 L1 说明。</p>
+  </div>
+</section>
+
+<!-- ================= 03b ================= -->
+<section id="s3b">
+  <h2><span class="num">03′</span>实测把 θ 证伪了：相似度分不开"换个说法"和"换个实体"</h2>
+  <p class="lede">
+    §03 那两个 θ（0.93 / 0.88）是拍的。上线当天在生产上量了一次，
+    <strong>被证伪的不只是取值，是"靠相似度判同不同"这个做法本身。</strong>
+  </p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th class="num">余弦</th><th>类别</th><th>问法对</th></tr></thead>
+      <tbody>
+        <tr style="background:var(--waste-dim)"><td class="num"><strong>0.9083</strong></td><td><span class="tag t-waste">换了实体</span></td><td>商品总共有多少条记录 ⇄ <strong>订单</strong>总共有多少条记录</td></tr>
+        <tr><td class="num">0.8888</td><td><span class="tag t-keep">同义</span></td><td>会员总数是多少 ⇄ 一共有多少会员</td></tr>
+        <tr><td class="num">0.8806</td><td><span class="tag t-waste">换时间窗</span></td><td>本月新增商品数 ⇄ <strong>上月</strong>新增商品数</td></tr>
+        <tr><td class="num">0.8508</td><td><span class="tag t-waste">换了聚合</span></td><td>各品类商品<strong>数量</strong>分布 ⇄ 各品类商品<strong>销售额</strong>分布</td></tr>
+        <tr><td class="num">0.8363</td><td><span class="tag t-keep">同义</span></td><td>商品总共有多少条记录 ⇄ 商品一共有多少条</td></tr>
+        <tr><td class="num">0.7935</td><td><span class="tag t-keep">同义</span></td><td>商品总共有多少条记录 ⇄ 商品表里有多少行数据</td></tr>
+        <tr><td class="num">0.7655</td><td><span class="tag t-waste">取反</span></td><td>有多少商品<strong>在售</strong> ⇄ 有多少商品<strong>已下架</strong></td></tr>
+        <tr><td class="num">0.7552</td><td><span class="tag t-keep">同义</span></td><td>商品总共有多少条记录 ⇄ 统计一下商品的数量</td></tr>
+        <tr><td class="num">0.5962</td><td><span class="tag t-waste">加过滤</span></td><td>商品总共有多少条记录 ⇄ 今天新增了多少商品</td></tr>
+        <tr><td class="num">0.3736</td><td>不同</td><td>商品总共有多少条记录 ⇄ 评价平均分是多少</td></tr>
+      </tbody>
+      <caption>text-embedding-v4（与生产同一个模型），13 组真实问法对，2026-09-15 实测。此处列出其中 10 组。</caption>
+    </table>
+  </div>
+
+  <p>
+    同义 <span class="n">0.755–0.889</span>，会答错的那批 <span class="n">0.596–0.908</span> ——
+    <strong>最危险的一对比所有同义对都高</strong>。所以没有任何一条 θ 能把两者分开：
+    调高则一条都不命中（生产上看到的正是这个：stored 一直涨、命中恒 0），
+    调低就会拿订单的数去答商品，而且不报错。
+  </p>
+
+  <div class="layer star">
+    <div class="layer-head"><span class="lv">改法</span><span class="ti">相似度只缩小候选，判据交给内容词</span><span class="kind">确定性</span></div>
+    <div class="layer-body">
+      <p><code>semcache.lexically_same</code>：去掉功能词（数量词 / 疑问词 / 量词 / 套话）之后，
+        两句提问剩下的<strong>内容词必须完全相同</strong>。功能词表里绝不收任何能区分问题的词
+        —— 数量、销售额、新增、在售、本月、商品、订单都留着，单测钉住了这一条。</p>
+      <p>同一份探针上这道判据 <strong>12/13</strong>，<strong>八条危险对全部拦下</strong>，
+        包括那条 0.9083 的。唯一一处错判（「各品类商品数量分布」⇄「按品类统计商品数量」被拦下）
+        是<strong>漏收，不是错答</strong> —— 方向正确：漏收只多花一次钱，错答是给出一个错的
+        数字且不报错。</p>
+      <p>θ 顺带按实测下调到 <span class="n">0.82 / 0.75</span>，但它们从此只负责
+        "把候选缩小到一条"。</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <p class="h">影子档原来记漏了最要紧的一半</p>
+    <p>原实现<strong>只在命中时留痕</strong>，够不着的一概不记 —— 于是"差一点就命中"的那一片
+      分布一个数都拿不到，而 θ 恰恰要靠它来标定。影子档的全部意义是标定，这等于把它最该干的
+      事漏掉了。现在每次近邻查找都记 top-1 分数（0.05 分桶）与拒绝理由。</p>
   </div>
 </section>
 
@@ -811,6 +868,10 @@ elif explain_rows >= scan_threshold // 2:     <span class="cm"># 预估扫描过
         <tr><td>三档旋钮 + 影子记录</td><td><span class="tag t-keep">已完成</span></td><td><code>semantic_cache.mode</code> 默认 <code>shadow</code>；记 would_hit 分档与 agree/disagree 判定</td></tr>
         <tr><td>界面区分 L2 / L3 措辞</td><td><span class="tag t-keep">已完成</span></td><td>L3 真查了库，不能说“本次未查库”——<code>ResultTabs.tsx</code> 分两段话</td></tr>
         <tr><td>L3「一键完整重跑」按钮</td><td><span class="tag t-waste">未做</span></td><td>本轮只做了措辞区分。<code>enforce</code> 切档前必须补上</td></tr>
+        <tr><td>确定性内容词判据 + θ 按实测重定</td><td><span class="tag t-keep">已完成</span></td><td><code>semcache.lexically_same</code>，见 §03′。相似度单独用不安全，这是本轮最重要的一个结论</td></tr>
+        <tr><td>影子档记 top-1 分数与拒绝理由</td><td><span class="tag t-keep">已完成</span></td><td>原来只记命中，标定要的那一半数据拿不到</td></tr>
+        <tr><td>pgvector 扩展自建</td><td><span class="tag t-keep">已完成</span></td><td>不建则新部署上这一层永久降级，且只在 health 里留一行字</td></tr>
+        <tr><td>三层计数是进程内的</td><td><span class="tag t-half">已知限制</span></td><td>3 副本各报各的，<code>/api/health</code> 每次随机落到一个 —— 只能看趋势，不能对账</td></tr>
         <tr><td>enforce 切档</td><td><span class="tag t-waste">未做 · 有前置</span></td><td>前置是 §04 的影子标定：两轮 ×130 条 ×13 源。<strong>本轮上线的是 shadow</strong></td></tr>
         <tr><td>§05 首字延迟三档</td><td><span class="tag t-waste">本轮不做</span></td><td>本轮范围是缓存。P0「先出结果表」单独立项</td></tr>
       </tbody>
@@ -899,7 +960,7 @@ elif explain_rows >= scan_threshold // 2:     <span class="cm"># 预估扫描过
 </section>
 
 <footer>
-  askdb · 多级缓存与首字延迟方案 V1.2 · 拟制 2026-09-15<br>V1.2（2026-09-15）L0/L1/L2/L3 落地，语义层以 shadow 上线；新增 §07′ 落地状态。<br>V1.1（2026-09-15）新增 D-6「交接出去的执行永不进缓存」，并据此重排阶段一次序。<br>
+  askdb · 多级缓存与首字延迟方案 V1.3 · 拟制 2026-09-15<br>V1.3（2026-09-15）生产实测把 §03 的两个 θ 证伪，新增 §03′ 与确定性内容词判据。<br>V1.2（2026-09-15）L0/L1/L2/L3 落地，语义层以 shadow 上线；新增 §07′ 落地状态。<br>V1.1（2026-09-15）新增 D-6「交接出去的执行永不进缓存」，并据此重排阶段一次序。<br>
   数字来源：代码实读（main@b84644a）+ 生产 trace 9eefdf7518b6 / 4bac5ce7f21b + 1030 次生产跑测。<br>
   估算项已在正文逐处标注，未标注者为实测。
 </footer>
