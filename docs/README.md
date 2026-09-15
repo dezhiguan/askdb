@@ -13,7 +13,7 @@
 | [`test-report-agent-soak.md`](./test-report-agent-soak.md) | **查询 Agent 生产跑测报告** —— 13 源 × 10 条，基准值由直查 SQL 取得；12 条缺陷已修复上线（错答 19→4、R-11 拦截 26→0），接地校验经两轮生产影子标定后切 enforce | V3.0 · 2026-09-12 |
 | [`design-agent-trace-optimization.html`](./design-agent-trace-optimization.html) | **查询 Agent 链路提效方案** —— 单条生产 trace 逐 span 剖析；六条改动 + 同步窗口流式已部署并在生产实测。**含三条对自己的更正：实测收益远小于按单条 trace 估的 −71%、P0-3 量级未证实、embedding 账面数报大了 100 倍**；P2-3 根因坐实为元数据（生产 ragforge 源一条表注释都没有） | V1.4 · 2026-09-15 |
 | [`test-report-schema-recall.md`](./test-report-schema-recall.md) | **Schema 召回基准 · 向量路径 recall@k** —— 97 条 / 12 源首次实测向量召回（此前只有关键词路径的数）；主表 @3 仅 74.0%、@8 才 95.8%，据此否掉提效方案里的「schema 分层注入」、确认 top_k=8/max_k=12 维持不动；落榜的 25 条全部是枢纽表，三种失败形态各有实探 | V1.0 · 2026-09-15 |
-| [`design-agent-trace-af565a7a7074.html`](./design-agent-trace-af565a7a7074.html) | **链路提效 · af565a7a7074 专项** —— 提效方案落地后的第二条长尾 trace 逐 span 剖析。**主结论是质量缺陷不是延迟缺陷**：模型写好的 815 字答案因 `finish=false` 被代码丢弃，抽样 29% 的多步链路跑满预算后交付「未在预算内完成归因」而审计仍记 `ok=true`；另坐实一个确定性 bug —— 三段及以上的 UNION 一律被 P03 拒答。四条改动，前三条确定性；**C2 已落地**，并在落地时查出同根因的第二个受害点（sqlglot 25→30 的类层次漂移让 R-02 白名单已在生产上把 EXCEPT / INTERSECT 判成非法语句） | V1.1 · 2026-09-15 |
+| [`design-agent-trace-af565a7a7074.html`](./design-agent-trace-af565a7a7074.html) | **链路提效 · af565a7a7074 专项** —— 提效方案落地后的第二条长尾 trace 逐 span 剖析。**主结论是质量缺陷不是延迟缺陷**：模型写好的 815 字答案因 `finish=false` 被代码丢弃，抽样 29% 的多步链路跑满预算后交付「未在预算内完成归因」而审计仍记 `ok=true`；另坐实一个确定性 bug —— 三段及以上的 UNION 一律被 P03 拒答。五条改动。**C2 / C5 已落地并生产复验**；C2 的受控 A/B **推翻了本文自己的估算**（轮数 −1 但耗时 −1%、成本 +13%，真实收益是交兜底句 5/5→0/5），并据此坐实 C2 是 C1 的成因而非并列项。落地时另查出两处同根因故障：sqlglot 25→30 的类层次漂移让 R-02 白名单已在生产上把 EXCEPT / INTERSECT 判成非法语句；以及「提示词让模型别查、闸①又因它没查而拒答」导致元数据问题 100% 被拒 | V1.2 · 2026-09-15 |
 
 HTML 都是单文件、无外部依赖，**下载后用浏览器直接打开**即可。
 GitHub 网页上只会显示源码，不会渲染。

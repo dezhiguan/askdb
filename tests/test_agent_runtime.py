@@ -66,9 +66,10 @@ class _FakeExec:
 class _FakeLLM:
     """脚本化 LLM：intent 可答，之后按 actions 逐个吐。"""
 
-    def __init__(self, actions):
+    def __init__(self, actions, metadata_only=False):
         self._actions = list(actions)
         self._i = 0
+        self._metadata_only = metadata_only
 
     @property
     def model_name(self):
@@ -77,7 +78,8 @@ class _FakeLLM:
     def structured(self, schema, system, human):
         u = LlmUsage(input_tokens=100, output_tokens=20, cost_cny=0.001)
         if schema is A.IntentCheck:
-            return schema(answerable=True, out_of_scope=False, reason="可答"), u
+            return schema(answerable=True, out_of_scope=False, reason="可答",
+                          metadata_only=self._metadata_only), u
         act = self._actions[min(self._i, len(self._actions) - 1)]
         self._i += 1
         return schema(**act), u
@@ -494,6 +496,54 @@ def test_agent_no_evidence_blocks_fabricated_number(tmp_path, monkeypatch):
                     executor=_FakeExec(), llm=llm)
     assert not r.ok and r.rejected_by == "NO_EVIDENCE"
     assert "120" not in (r.reasoning or "") and "120" not in (r.error or "")
+
+
+def test_metadata_answer_from_recall_is_not_no_evidence(tmp_path, monkeypatch):
+    """元数据问题照注入的 schema 作答 → 不该判 NO_EVIDENCE。
+
+    线上 f9d0a062165a：问"会员表字段结构"，预检判 metadata_only=True，召回把
+    完整列定义注进了提示词，模型据此逐列答出来、一个数据数字都没编，闸 ① 照样
+    拒 —— 因为那道闸判的是"模型自己动没动手"，而提示词正要求它别动手。
+    """
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    llm = _FakeLLM([{"finish": True,
+                     "answer": "documents 表有 9 个字段：1. id 2. org_id 3. kb_id"}],
+                   metadata_only=True)
+    r = A.run_agent("documents 表有哪些字段", _cfg(tmp_path, agent={"max_steps": 2}),
+                    316, executor=_FakeExec(), llm=llm)
+    assert r.ok, f"被拒了：{r.rejected_by} / {r.error}"
+    assert "id" in r.reasoning
+
+
+def test_metadata_recall_evidence_knob_restores_old_behaviour(tmp_path, monkeypatch):
+    """旋钮关掉 = 退回 2026-09-15 之前的行为。回滚位要真的能回滚。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    llm = _FakeLLM([{"finish": True,
+                     "answer": "documents 表有 9 个字段：1. id 2. org_id"}],
+                   metadata_only=True)
+    cfg = _cfg(tmp_path, agent={"max_steps": 2,
+                                "metadata_recall_is_evidence": False})
+    r = A.run_agent("documents 表有哪些字段", cfg, 316,
+                    executor=_FakeExec(), llm=llm)
+    assert not r.ok and r.rejected_by == "NO_EVIDENCE"
+
+
+def test_metadata_flag_does_not_excuse_fabricated_data_number(tmp_path, monkeypatch):
+    """**放开的口子只到元数据为止。** 预检判错成 metadata_only 时，编出来的
+    业务数字仍要被闸 ② 按 _meta_evidence 逐个追溯 —— 追不到照样拒。
+
+    没有这一条，上面那条放行就等于"只要 metadata_only 为真就随便编"。
+    """
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    llm = _FakeLLM([{"finish": True, "answer": "大约有 1200000 条订单"}],
+                   metadata_only=True)
+    r = A.run_agent("订单总数", _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                    executor=_FakeExec(), llm=llm)
+    assert not r.ok and r.rejected_by == "NO_EVIDENCE"
+    assert "1200000" not in (r.reasoning or "") and "1200000" not in (r.error or "")
 
 
 def test_agent_no_result_when_empty(tmp_path, monkeypatch):

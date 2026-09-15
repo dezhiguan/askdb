@@ -266,6 +266,27 @@ def sql_consolidation(cfg: Config) -> bool:
     return bool((cfg.raw.get("agent") or {}).get("sql_consolidation", True))
 
 
+def metadata_recall_is_evidence(cfg: Config) -> bool:
+    """元数据问题上，图自己那次 schema 召回算不算"有依据"。默认开。
+
+    关掉 = 退回 2026-09-15 之前的行为：闸 ①（NO_EVIDENCE）只认模型**自己**成功
+    调过的工具，于是"某张表有哪些字段"这类问题，模型照提示词的要求用注入的
+    schema 作答，反被判成凭空编造（线上 f9d0a062165a）。
+
+    默认开而不是默认关 —— 与 intent_schema_heads 那条**相反**，理由也相反：
+    那条改的是一道**可能多拒**的门（判错就误拒一个本来答得了的问题），所以证据
+    不足时默认值要站在"不改变现有行为"那侧；这条拆的是一个**已经在拒**的误杀，
+    默认关等于明知故犯地把它留在生产上。
+
+    放开的面按 IntentCheck.metadata_only 收窄，且只放行闸 ①：答案里的每个大额
+    数字仍要过闸 ②（逐个在 _meta_evidence 里追溯，追不到照样拒），而闸 ② 自己
+    还有 grounding_no_evidence 那个 off/shadow/enforce 旋钮兜着。
+    真出问题就把它关掉 —— 那是它存在的意义。
+    """
+    return bool((cfg.raw.get("agent") or {}).get(
+        "metadata_recall_is_evidence", True))
+
+
 def render_agent_system(cfg: Config, hide: frozenset[str] = frozenset()) -> str:
     """装配 decide 那一次的系统提示。
 
