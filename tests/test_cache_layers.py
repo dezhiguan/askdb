@@ -466,3 +466,15 @@ def test_lookup_without_a_vector_is_a_miss_not_an_error(cfg, sem_store):
                            org_id=0, role="DEV") is None
     semcache.remember(cfg, "q", None, _payload(), org_id=0, role="DEV")
     assert semcache.stats()["stored"] == 0
+
+
+def test_the_extension_is_created_if_it_is_missing(cfg, sem_store):
+    """**扩展要自己建。** schema 索引那条路只在真正触发一次向量召回时才建，
+    而一台新部署完全可能先有人提问（走到这里）再有人触发索引 —— 少了这一步，
+    这一层就永久降级，且只在 /api/health 里留一行字。
+    """
+    from askdb import pgstore
+    assert semcache._ensure(cfg) is True
+    assert pgstore.rows(
+        "SELECT 1 FROM pg_extension WHERE extname = 'vector'"), "扩展没建起来"
+    assert semcache.stats()["degraded"] == ""

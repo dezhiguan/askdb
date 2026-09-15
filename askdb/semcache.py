@@ -205,8 +205,23 @@ def _note_degraded(why: str) -> None:
 # 存储
 # --------------------------------------------------------------------------
 def _ensure(cfg: Config) -> bool:
-    """建表。**失败返回 False 而不是抛** —— 缓存不该成为查询失败的原因。"""
+    """建扩展 + 建表。**失败返回 False 而不是抛** —— 缓存不该成为查询失败的原因。
+
+    扩展这一步不能省，也不能指望别人替我们建：schema 索引那条路只在**真正
+    触发一次向量召回**时才会跑 _ensure_schema，而一台新部署完全可能先有人
+    提一个问题（走到这里）再有人触发索引。少了这一步，表现是这一层永久降级
+    且只在 /api/health 里留一行字 —— 那正是"切了 vector 却一直在跑 keyword"
+    那类故障的形状。
+
+    DDL 跑不通不早退：扩展可能**已经**装好了（多半是权限不足导致这条
+    CREATE 失败）。以目录里到底有没有为准，不以这条语句跑没跑通为准 ——
+    与 vectors._ensure_schema 同一条口径。
+    """
     from . import vectors
+    try:
+        pgstore.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    except Exception as e:                                # noqa: BLE001
+        _log.info("CREATE EXTENSION vector 未执行成功：%s", str(e).splitlines()[0])
     try:
         ns = vectors._vector_type()                       # noqa: SLF001
     except Exception as e:                                # noqa: BLE001
