@@ -136,7 +136,7 @@ def get_table_schema(table: str, cfg: Config) -> ToolResult:
     )
 
 
-def _scan_cap(cfg: Config, sql: str) -> int:
+def _scan_cap(cfg: Config, sql: str, tree: object | None = None) -> int:
     """这条 SQL 适用的 R-11 扫描上限。
 
     R-11 拦的是**扫描量**，防的是"一次把整张大表搬出库"。但一条
@@ -158,7 +158,10 @@ def _scan_cap(cfg: Config, sql: str) -> int:
     agg_cap = int(g.get("max_scan_rows_aggregate", 0) or 0)
     if agg_cap <= base:
         return base
-    return agg_cap if guard.is_bounded_aggregate(sql, cfg.dialect) else base
+    # tree 由 guard.check 带出来，**别拿 sql 字符串重新解析**：R-09 注入 LIMIT
+    # 之后的 GROUPING SETS / ROLLUP / CUBE 在 sqlglot 下解析不回来，
+    # is_bounded_aggregate 会静默退回 False，把纯聚合打回 200k 那档。
+    return agg_cap if guard.is_bounded_aggregate(sql, cfg.dialect, tree=tree) else base
 
 
 def execute_sql(sql: str, cfg: Config, org_id: int,
@@ -193,7 +196,7 @@ def execute_sql(sql: str, cfg: Config, org_id: int,
         )
     except Exception:
         exp = None
-    max_scan = _scan_cap(cfg, final)
+    max_scan = _scan_cap(cfg, final, tree=getattr(g, "tree", None))
     # scan_waiver：审批通过后重投的查询带着放行标记，跳过 R-11（与管道 _n_dry_run 同口径）。
     if (explain_rows is not None and explain_rows > max_scan
             and not getattr(cfg, "scan_waiver", False)):
