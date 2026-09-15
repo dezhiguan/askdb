@@ -1008,9 +1008,13 @@ python -m evals.baseline --compare</pre>
   <ul>
     <li><strong>P0-1</strong>：全部跑测里 <code>tool_call · search_schema</code> 出现 <strong>0 次</strong>。</li>
     <li><strong>P1-2</strong>：<code>analyze_result</code> 出现 <strong>0 次</strong>。</li>
-    <li><strong>账面</strong>：<code>schema_recall</code> 那一格真的有钱了（一次向量召回约
-      <span class="n">3,649</span> token / <span class="n">¥0.0018</span>，记在 <code>text-embedding-v4</code> 名下）。
-      也就是说上表 <code>on</code> 档的成本<strong>含 embedding</strong>，而生产那条 ¥0.012834 不含。</li>
+    <li><strong>账面</strong>：<code>schema_recall</code> 那一格真的有钱了，记在
+      <code>text-embedding-v4</code> 名下。
+      <strong class="n" style="color:var(--waste)">此前这里写的 3,649 token / ¥0.0018 是错的</strong> ——
+      那是本机首次跑、正在**建索引**时量到的。生产稳态下索引早已建好，每次只嵌入问题本身：
+      2026-09-15 线上 trace <code>1661c5593c76</code> 实测 <span class="n">15</span> token、
+      约 <span class="n">¥0.00001</span>。账面缺口是真的（此前记 0），但**比原先报的小约 100 倍**；
+      连带地，"on 档含 embedding 所以真实差距更大"那句话也不成立 —— 这笔钱可以忽略。</li>
     <li><strong>结果区取数</strong>：专项复跑 5 次，4 次链路上存在"返回 1 行 / 20 行 / 200 行"的探查查询，
       <strong>每次渲染的都是那条 18 行的作答查询</strong>；其中一次最后那条 SQL 还执行失败，照样取对。</li>
   </ul>
@@ -1027,8 +1031,75 @@ python -m evals.baseline --compare</pre>
   </div>
 </section>
 
+<section id="prod">
+  <h2><span class="num">10</span>生产实测（2026-09-15，trace <code>1661c5593c76</code>）</h2>
+  <p class="lede">六条改动 + 同步窗口流式已部署（<code>716e108</code>）。在线上真跑一条多步问答，
+  逐条核对每项改动到底生效没有。</p>
+
+  <h3>流式：按设计工作</h3>
+<pre>+4s   schema_recall   召回 12 张表                                    2305ms
++8s   intent          organizations + knowledge_bases(org_id) 可定位…  2641ms
+      decide·select   先确认 organizations 与 knowledge_bases 的关系…  2635ms
+      tool_call       返回 10 行                                        36ms
++13s  ⏸ 后台执行中 · 执行超过阈值 · 第 4/6 步 · execute_sql
++21s  ✅ 查询返回 10 行 · 可信度 100 · 29,200ms · ¥0.0144</pre>
+  <p>三件事都成立：进度<strong>逐条</strong>出现而非一次性全出；交接时进度列表保留、下方接上
+  「后台执行中」卡片；结果就地渲染，没跳页也没闪空白。</p>
+
+  <h3>逐条核对</h3>
+  <div class="tw"><table>
+    <thead><tr><th>项</th><th>线上实测</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>P0-1 不摆 <code>search_schema</code></td><td class="num">工具轮 0 次</td><td><span class="tag t-keep">生效</span></td></tr>
+      <tr><td>P1-2 撤 <code>analyze_result</code></td><td class="num">0 次</td><td><span class="tag t-keep">生效</span></td></tr>
+      <tr><td>账面 embedding 进 span</td><td><code>tok_in=15 · model=text-embedding-v4</code></td><td><span class="tag t-keep">生效</span></td></tr>
+      <tr><td>P1-1 预检表头层</td><td class="num">intent tok_in = 3,410（全量）</td><td><span class="tag t-half">按预期未生效（默认关）</span></td></tr>
+      <tr><td>P2-1 同步窗口流式</td><td>见上</td><td><span class="tag t-keep">生效</span></td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout" style="border-top-color:var(--waste)">
+    <h4>这条链路烧光了 6 步预算，而原因与本方案无关</h4>
+    <p>答案是「（未在预算内完成归因）达步数上限 6，收敛作答」。6 次 SQL 里 <strong>3 次被拦</strong>：</p>
+<pre>DISTINCT is not implemented for …      <span class="cm">← 方言不支持</span>
+R-08 禁止 CROSS JOIN（笛卡尔积）
+R-08 连接 t 的 ON 条件恒真（1 = 1）</pre>
+    <p>模型连撞三次护栏，把步数耗光。这跟这次的改动无关，但它说明一件对本方案不利的事：
+    <strong>P0-2「一轮一条 SQL」在这种反复撞墙的链路上省不下什么</strong> ——
+    步数是被失败重试吃掉的，不是被冗余核对吃掉的。</p>
+  </div>
+
+  <h3>P2-3 的根因，在生产上得到确认</h3>
+  <p><code>schema_recall</code> 的 span 输出就是喂进提示词的表结构全文。拿它逐源核：</p>
+  <div class="tw"><table>
+    <thead><tr><th>源</th><th class="num">别名行</th><th>表头样例</th></tr></thead>
+    <tbody>
+      <tr><td><strong>ragforge 生产库</strong></td><td class="num">0</td>
+        <td><code>表 knowledge_bases —— </code><span style="color:var(--waste)">（破折号后面什么都没有）</span></td></tr>
+      <tr><td>履约物流</td><td class="num">12</td><td><code>表 carrier_scores —— 承运商月度评分。…别名：承运商考核、物流评分</code></td></tr>
+      <tr><td>评价中心</td><td class="num">8</td><td><code>表 reviews —— 商品评价。…别名：评论、买家秀、评分</code></td></tr>
+      <tr><td>营销中心 / 支付结算 / 库存中心</td><td class="num">12</td><td>同上，注释齐全</td></tr>
+    </tbody>
+  </table></div>
+  <p><strong>生产的 ragforge 源一条表注释都没有</strong>，5,862 字符全是列名。这正是 §04 P2-3 形态 A
+  的根因在生产上的样子 —— 嵌入手上只有表名和列名时，<code>documents</code>、<code>knowledge_bases</code>
+  排不进前几名是必然的，而基准里落榜最多的恰好就是这两张。</p>
+  <p><strong>连带一个坦白：别名解析那条改动对生产几乎没有作用。</strong>它落在
+  <code>whitelist_from_scan</code> 里，只在<strong>重新扫描数据源</strong>时跑 ——
+  已登记的源存的仍是旧白名单；而 ragforge 即便重扫，它本来就没有注释可解析。
+  真正有别名的 shop_* 系列，注释里那些别名早就作为 <code>desc</code> 文本进了提示词与嵌入，
+  解析成结构化字段带来的增量，正是基准量到的那 <span class="n">+1.0</span> 个点。</p>
+
+  <div class="callout">
+    <h4>由此确定的待办（不是代码）</h4>
+    <p><strong>给 ragforge 与 careermate 两个源补表注释</strong>，格式照 shop_* 已有的写法
+    （一句话说清这张表是什么 + 什么问题该用它 + <code>别名：…</code>）。补完重扫一次数据源。
+    这是目前对召回质量收益最大的一件事，<strong>而它一行代码都不用改</strong>。</p>
+  </div>
+</section>
+
 <footer>
-  <p><strong>文档</strong>　askdb 单链路提效方案 · V1.3<br>
+  <p><strong>文档</strong>　askdb 单链路提效方案 · V1.4<br>
   <strong>拟制日期</strong>　2026-09-15<br>
   <strong>依据</strong>　生产 trace <code>4bac5ce7f21b</code>（2026-09-14 16:10 UTC，14 个 span 完整输入输出，取自 <code>/api/trace</code>）；代码对照 <code>askdb@0c159f5</code> 的 <code>agentgraph.py</code> / <code>agent.py</code> / <code>tools.py</code> / <code>llm.py</code>；单价对照 <code>config/public.yaml</code>（qwen3.8-flash 输入 ¥0.0008/千、命中缓存 ¥0.00008/千、输出 ¥0.0027/千，2026-09-06 核对）；分布口径取自执行追踪页当日读数（P50 1.46s / P95 16.14s / 6,931 样本）<br>
   <strong>数字口径</strong>　<span style="color:var(--accent)">本文档内所有指标均为实测值</span>，逐条可回溯到上述 trace 的 span 明细或配置里的单价 —— <strong>不适用 <code>docs/README.md</code> 中「设计文档数字均为占位值」那条说明</strong>。改造后的预估值已在正文中明确标注为预估，并注明哪些是确定性的、哪些是概率性的。<br>
@@ -1042,7 +1113,10 @@ python -m evals.baseline --compare</pre>
   <span style="color:var(--waste)">tok_in −16.5% / 成本 −19.0% / tok_out +6.7%</span>，远小于 §02
   按单条 trace 估的 −71%，且 P0-3 的量级未被证实；回归排查 6 条疑似里 5 条是噪声，
   <strong>b23 可复现</strong> → <code>intent_schema_heads</code> 默认改回 false。
-  三张预估卡原样保留不回填</p>
+  三张预估卡原样保留不回填<br>
+  　　　　　　　V1.4 / 2026-09-15 / 部署后生产实测（§10）：流式与五条改动逐条确认生效；
+  <span style="color:var(--waste)">更正 §09 的 embedding 数（3,649 tok/¥0.0018 → 15 tok/¥0.00001，小 100 倍）</span>；
+  生产上确认 ragforge 源一条表注释都没有 —— P2-3 的根因坐实为元数据，待办是补注释不是改代码</p>
 </footer>
 
 </div>
