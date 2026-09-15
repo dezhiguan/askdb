@@ -160,13 +160,22 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
   }, [])
 
   /* 输入即请求会把每个字母都打成一次查询。300ms 防抖后再落到 query 上，
-     筛选条件一变回到第一页 —— 停在第 5 页而结果只剩 3 条会看到一片空白。 */
+     筛选条件一变回到第一页 —— 停在第 5 页而结果只剩 3 条会看到一片空白。
+
+     **回第一页跟着 setter 一起做，不靠一个 useEffect 去追。** 追的写法会先按
+     旧页码请求一次、再按第 1 页请求一次：这一页是滚动追加，第一次请求的结果
+     还会被拼进列表里，于是换条件之后列表顶上先闪一段旧结果。 */
   const [query, setQuery] = useState(focusTrace ?? '')
   useEffect(() => {
-    const timer = setTimeout(() => setQuery(keyword.trim()), 300)
+    const timer = setTimeout(() => { setQuery(keyword.trim()); setPage(1) }, 300)
     return () => clearTimeout(timer)
   }, [keyword])
-  useEffect(() => { setPage(1) }, [query, status, source])
+  const refilter = <T,>(set: (value: T) => void) => (value: T) => {
+    set(value)
+    setPage(1)
+  }
+  const pickStatus = refilter(setStatus)
+  const pickSource = refilter(setSource)
 
   useEffect(() => {
     let alive = true
@@ -305,7 +314,7 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
               />
             </label>
             <div className="trace-filter-row">
-              <select value={status} aria-label="按状态筛选" onChange={event => setStatus(event.target.value)}>
+              <select value={status} aria-label="按状态筛选" onChange={event => pickStatus(event.target.value)}>
                 <option value="">全部状态</option>
                 <option value="ok">已完成</option>
                 <option value="rejected">已拦截</option>
@@ -316,7 +325,7 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
               <select
                 value={source === undefined ? '__all__' : source}
                 aria-label="按数据源筛选"
-                onChange={event => setSource(event.target.value === '__all__' ? undefined : event.target.value)}
+                onChange={event => pickSource(event.target.value === '__all__' ? undefined : event.target.value)}
               >
                 <option value="__all__">全部数据源</option>
                 {sources.map(item => (

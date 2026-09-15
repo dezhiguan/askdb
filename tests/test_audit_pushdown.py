@@ -57,6 +57,7 @@ def _cols(rec):
         "username": str(rec.get("user") or ""),
         "source": str(rec.get("source") or ""),
         "rejected_by": str(rec.get("rejected_by") or ""),
+        "question": str(rec.get("question") or ""),
         "ts": _ts_of(rec),
     }
 
@@ -101,6 +102,17 @@ def _sql_keeps(rec, f) -> bool:
         elif c.startswith("COALESCE(NULLIF(thread_id, ''), trace_id) = ANY("):
             tid = cols["thread_id"] or cols["trace_id"]
             ok = tid in next(it)
+        elif c.startswith("(trace_id ILIKE"):
+            # 关键词那一句：命中面随 q_text 分叉，参数是同一个 %词% 给每一列各
+            # 传一遍。这里按子串比 —— 与 ILIKE 的语义一致，前提是词里没有 LIKE
+            # 元字符（_clauses 转义过，而这份用例的词本来也没有）。
+            searched = ([cols["trace_id"], cols["question"], cols["username"]]
+                        if "question" in c else [cols["trace_id"]])
+            needle = ""
+            for _ in searched:                       # 每一列各消耗一个参数
+                needle = next(it)
+            needle = needle.strip("%").lower()
+            ok = any(needle in v.lower() for v in searched)
         elif c == "false":
             ok = False
         else:                                        # pragma: no cover
@@ -127,6 +139,8 @@ CORPUS = [
     _rec(ts=(T0 - timedelta(days=3)).isoformat()),
     _rec(ts="不是时间"),                              # 解析不出来的时间
     _rec(thread_id=""),                              # 线程退回 trace_id
+    _rec(question="广州有多少岗位"),                   # 关键词命中问题原文
+    _rec(question="", user="amy"),                    # 没有问题原文
 ]
 
 FILTERS = [
@@ -146,6 +160,11 @@ FILTERS = [
     AuditFilter(thread_ids=("th-1",)),
     AuditFilter(thread_ids=()),
     AuditFilter(kind="ask", status="ok", username="amy"),
+    AuditFilter(q="abc"),                            # 命中 trace_id
+    AuditFilter(q="广州"),                            # 命中问题原文
+    AuditFilter(q="amy"),                            # 命中发起人
+    AuditFilter(q="amy", q_text=False),              # 遮蔽内容后只剩 trace_id
+    AuditFilter(q="不会命中的词"),
 ]
 
 

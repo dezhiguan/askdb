@@ -279,12 +279,25 @@ export function TasksPage({ onNavigate, notify, me }: {
   const pages = Math.max(Math.ceil(total / pageSize), 1)
   const current = Math.min(result?.page ?? page, pages)
 
+  /* 换筛选条件就回到第一页，**跟着 setter 一起做**。
+
+     原来这件事挂在一个 useEffect 上（依赖筛选条件、里面 setPage(1)），而取
+     数据的 effect 也依赖同一批条件 —— 于是停在第 3 页改条件时，浏览器先按
+     旧页码发一次请求、再按第 1 页发一次，第一次的结果注定被丢掉。
+     /api/tasks 一次一秒多的时候，这就是白等一倍。
+
+     两个 setState 在同一个事件处理里会被合并成一次渲染，所以请求只发一次。 */
+  const refilter = (apply: () => void) => { apply(); setPage(1) }
+  const search = (value: string) => refilter(() => setKeyword(value))
+  const pickStatus = (value: StatusFilter) => refilter(() => setStatusFilter(value))
+
   /* 已选条件。每个都能单独摘掉 —— 一次只错一个条件时，不该逼人整条重来。 */
-  const patch = (next: Partial<TaskFilters>) => setFilters(current => ({ ...current, ...next }))
+  const patch = (next: Partial<TaskFilters>) =>
+    refilter(() => setFilters(current => ({ ...current, ...next })))
   const chips: FilterChip[] = [
-    keyword ? { label: '关键词', value: keyword, onClear: () => setKeyword('') } : null,
+    keyword ? { label: '关键词', value: keyword, onClear: () => search('') } : null,
     statusFilter !== 'all'
-      ? { label: '状态', value: FILTER_LABEL[statusFilter], onClear: () => setStatusFilter('all') }
+      ? { label: '状态', value: FILTER_LABEL[statusFilter], onClear: () => pickStatus('all') }
       : null,
     filters.risk !== 'all'
       ? { label: '风险', value: filters.risk, onClear: () => patch({ risk: 'all' }) } : null,
@@ -313,14 +326,11 @@ export function TasksPage({ onNavigate, notify, me }: {
       ? { label: '时间', value: SINCE_LABEL[filters.since] ?? filters.since, onClear: () => patch({ since: 'all' }) }
       : null,
   ].filter(Boolean) as FilterChip[]
-  const resetFilters = () => {
+  const resetFilters = () => refilter(() => {
     setStatusFilter('all')
     setFilters(EMPTY_TASK_FILTERS)
     setKeyword('')
-  }
-
-  // 筛选条件一变就回到第一页 —— 停在第 7 页而结果只剩 2 条，会看到一片空白
-  useEffect(() => { setPage(1) }, [statusFilter, filters, keyword, pageSize])
+  })
 
   /* 结果与原因都来自审计回放：没有回放就说没有，不靠状态推断内容 */
   const openDetail = (task: Task, kind: 'result' | 'reason') => {
@@ -548,14 +558,14 @@ export function TasksPage({ onNavigate, notify, me }: {
           <FilterBar>
             <FilterSearch
               value={keyword}
-              onCommit={setKeyword}
+              onCommit={search}
               placeholder="搜索问题 / 线程 ID / trace…"
             />
             <select
               className={statusFilter === 'all' ? '' : 'on'}
               aria-label="按状态筛选"
               value={statusFilter}
-              onChange={event => setStatusFilter(event.target.value as StatusFilter)}
+              onChange={event => pickStatus(event.target.value as StatusFilter)}
             >
               {FILTER_ORDER.map(value => (
                 <option key={value} value={value}>

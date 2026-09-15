@@ -15,15 +15,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import Counter, OrderedDict, deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from .trace import step_failed
+
+log = logging.getLogger("askdb.audit")
 
 # 下面这些入口（list_audits / tasks / stats / quality / get_audit / resumable）
 # 的第一个参数既可以是审计文件的 Path，也可以是 Config —— 由 read_records 决定
@@ -228,6 +231,16 @@ class AuditFilter:
     #: 只要这些线程的记录。任务中心用它把范围收到"最近 N 条线程"上 ——
     #: 见 tasks() 里那段说明。空元组表示"一条线程都不要"，与 None 不同。
     thread_ids: tuple[str, ...] | None = None
+    #: 关键词。同时匹配 trace_id、问题原文与发起人（**大小写不敏感的子串**）。
+    #: 2026-09-15 加，为的是让带关键词的审计翻页也能下推 —— 在这之前它是
+    #: 唯一留在 Python 里的那一维，于是输入框里一有字，这一页就从"取十条"
+    #: 退回"把整份流水拉回来扫一遍"。
+    q: str | None = None
+    #: 关键词能不能搜到内容。False 时只匹配 trace_id ——
+    #: 问题原文与发起人同属"内容"，遮蔽了还能按它搜就是留了一个预言机
+    #: （见 list_audits 的说明）。与 q 分成两维而不是在调用方预先拼好，
+    #: 是因为 SQL 与 matches 两边都要按它分叉。
+    q_text: bool = True
 
 
 def _thread_of(rec: dict[str, Any]) -> str:
@@ -271,6 +284,8 @@ def matches(rec: dict[str, Any], f: AuditFilter) -> bool:
         # 选了"最近 7 天"却混进一条时间不明的记录，比少一条更糟。
         if t is None or t < f.since:
             return False
+    if f.q and not _q_hit(rec, f.q.lower(), f.q_text):
+        return False
     return True
 
 
@@ -468,6 +483,8 @@ def list_audits(
         status=status or None,
         source=source,
         since=_since_cutoff(since, day_tz(path)),
+        q=q.strip() or None,
+        q_text=with_text,
     )
     # user 与 only_user 撞车时，只有两者相等才可能有记录：可见范围是硬边界，
     # 手上的筛选退不出它。不相等直接置一个永远筛不中的条件，而不是让筛选覆盖范围。
@@ -484,12 +501,11 @@ def list_audits(
         total_all = auditstore.count_audit(base)
         if impossible:
             total, items = 0, []
-        elif q:
-            # 关键词只能在 Python 里判，所以这一支流式扫过窄化后的集合，
-            # 同时活着的只有命中的那一页（page_size 条）与两个计数器。
-            total, items = _scan_page(
-                iter_records(path, narrowed), q, with_text, page, page_size)
         else:
+            # 关键词这一维 2026-09-15 起也在 SQL 里（AuditFilter.q）。在那之前
+            # 它是唯一留在 Python 的判据，代价是输入框里一有字，这一页就从
+            # "取十条"退回"把整份流水拉回来扫一遍"—— 生产实测 0.19s → 1.15s，
+            # 而且随记录数线性增长。搜索恰恰是这一页最常用的动作。
             total = auditstore.count_audit(narrowed)
             items = auditstore.page_audit(
                 narrowed, offset=(page - 1) * page_size, limit=page_size)
@@ -1184,11 +1200,261 @@ def _within_since(ts: str, since: str, now: datetime) -> bool:
     return (now - t) <= timedelta(days=days)
 
 
+@dataclass(frozen=True)
+class TaskFold:
+    """把审计记录折算成"任务"所需要的**全部外部输入**。
+
+    审计本身只知道"这次调用怎么收尾的"。要说出"这条任务现在什么状态、
+    该谁动手"，还得知道三件审计管不着的事：三套队列各自的结论、部署侧的
+    几个阈值、以及"现在几点"。凑成一个值对象传下去，是为了让库后端那条
+    SQL 与 Python 这几个纯函数吃到的是**同一份输入** —— 两边输入不同的话，
+    对不上的是状态本身，而页面不会报错，只会显示错的那一档。
+    """
+
+    #: trace → 审批 / 复核 / 运维的结论。空表示"还没有结论"。
+    approval: dict[str, str] = field(default_factory=dict)
+    review: dict[str, str] = field(default_factory=dict)
+    ops: dict[str, str] = field(default_factory=dict)
+    #: 线程 → 已按检查点核实过的状态。只有陈旧线程会进这里（见 settle_stale）。
+    override: dict[str, str] = field(default_factory=dict)
+    max_rows: int = 0
+    max_scan_rows: int = 0
+    async_after_ms: int = 0
+    stale_after_s: int = 0
+    #: 这一次请求的"现在"。**一页里的所有线程共用同一个**，否则翻页时
+    #: 同一条线程会在两次请求之间横跳。
+    now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def settle_stale(items: list[dict[str, Any]],
+                 resolve: Callable[[str], bool | None]) -> list[dict[str, Any]]:
+    """陈旧的「运行中」线程按检查点定档 —— **就地改，返回同一个列表**。
+
+    stage() 对超时未收尾的线程一律先判「可续跑」，因为审计本身不知道现场有
+    没有落盘。真正的分档要问检查点：核得过就是真可续跑，核不过说明进程连
+    检查点都没写成，那是执行期故障，该进运维队列。
+
+    **判定只此一份。** 这段逻辑原先写在 /api/tasks 的端点体里，于是任务中心
+    显示 9 条等待运维、而运维队列只有 1 条 —— 那 8 条僵尸线程在"该去处理
+    它们的那一页"上根本看不见（2026-09-12 线上实测）。resolve 由调用方注入
+    （审计模块不认识检查点库，也不该认识），但判据留在这里。
+    """
+    for it in items:
+        if not it.get("stale"):
+            continue
+        state = resolve(str(it.get("thread_id") or ""))
+        it["resumable"] = bool(state)
+        if state:
+            continue
+        # **已经处置过的不再回到队列**：运维标了「无法恢复」、刷新之后那条
+        # 原样又回到待处置，队列就永远清不空。
+        it["status"] = REJECTED if it.get("ops_status") else NEEDS_OPERATOR
+        it["next_actor"] = next_actor(it["status"], it.get("approval_status") or "")
+    return items
+
+
+def _stale_override(rows: list[tuple[Any, ...]],
+                    resolve: Callable[[str], bool | None]) -> tuple[dict[str, str],
+                                                                    dict[str, bool]]:
+    """库后端的 settle_stale：核实的是**同一件事**，只是发生在折算之前。
+
+    文件后端先把任务算出来再改；库后端做不到 —— 状态一旦进了 SQL 的计数与
+    筛选，事后在 Python 里改就会出现「等待运维」筛不出这几条、而计数把它们
+    记在「可续跑」名下。所以这里先核实，把结论当 override 喂回 SQL，
+    让计数、筛选、分页从一开始就看到核实后的状态。
+    """
+    from . import auditstore
+
+    status: dict[str, str] = {}
+    resumable: dict[str, bool] = {}
+    if len(rows) > auditstore.STALE_PROBE_CAP:
+        log.warning("陈旧线程超过 %d 条，超出的部分这次不核实检查点 —— "
+                    "多半是进程在被批量杀，该查的是那件事",
+                    auditstore.STALE_PROBE_CAP)
+        rows = rows[:auditstore.STALE_PROBE_CAP]
+    for thread_id, _trace_id, ops_status in rows:
+        state = resolve(str(thread_id or ""))
+        resumable[str(thread_id)] = bool(state)
+        if state:
+            status[str(thread_id)] = INTERRUPTED
+            continue
+        status[str(thread_id)] = REJECTED if ops_status else NEEDS_OPERATOR
+    return status, resumable
+
+
+def _picked(value: str) -> str | None:
+    """筛选取值翻给存储层：``all`` 是"不筛"（None），**空串是一档**
+    （未记录数据源 / 匿名发起）。用空串当哨兵的话那两档永远选不中。"""
+    return None if value == FILTER_ANY else value
+
+
+def _since_window(since: str, now: datetime) -> tuple[Any, Any] | None:
+    """发起时间档折算成一个左闭右开区间，好下推成 ts >= a AND ts < b。
+
+    「今日」必须按**声明时区的零点**取（容器时钟是 UTC，直接减 24 小时会把
+    昨天下午的记录也算成今天），所以它有右端；7d / 30d 是"最近多久"，
+    右端为空。与 _within_since 是同一套档位的两种写法。
+    """
+    if since in ("", FILTER_ANY):
+        return None
+    if since == "today":
+        start = datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo)
+        return start, start + timedelta(days=1)
+    days = {"7d": 7, "30d": 30}.get(since, 0)
+    return (now - timedelta(days=days), None) if days else None
+
+
+def tasks_page(path: Any, only_user: str | None = None, *,
+               page: int = 1, page_size: int = 10,
+               status: str = FILTER_ANY, source: str = FILTER_ANY,
+               risk: str = FILTER_ANY, user: str = FILTER_ANY,
+               since: str = FILTER_ANY, task_kind_filter: str = FILTER_ANY,
+               q: str = "", tz: Any = None, fold: TaskFold | None = None,
+               page_size_cap: int = 100,
+               resolve_stale: Callable[[str], bool | None] = lambda _t: None,
+               ) -> dict[str, Any]:
+    """任务中心的一页 —— **库后端在库里分页，文件后端仍走内存那条路**。
+
+    两条路返回的是同一个形状（items / total / total_all / stats / sources /
+    users），差别只在代价：
+
+      · 库后端：聚合、折算、筛选、计数、分面、切页全在一条 SQL 里，出库的
+        只有这一页的十个线程和十条 record。翻页与总量无关。
+      · 文件后端：tasks() + paginate_tasks()，也就是改造之前那条路。它只
+        服务本机开发与样例配置，那里线程数是两位数。
+
+    统计与下拉取值算在筛选之前、分页算在筛选之后 —— 三段顺序两条路一致，
+    理由见 paginate_tasks 的 docstring。
+    """
+    fold = fold or TaskFold()
+    # 页码与页长在这里收口，两条路一个口径（文件那条由 paginate_tasks 再收一次，
+    # 同样的值，收两遍不会有第二种结果）。page_size_cap 默认 100 是给页面的；
+    # 队列那两页要一次列完，由调用方把它抬上去。
+    page = max(int(page), 1)
+    page_size = min(max(int(page_size), 1), max(int(page_size_cap), 1))
+    now = _now_in(tz)
+    cfg, _fpath = _resolve(path)
+    if cfg is None:
+        items = settle_stale(
+            tasks(path, only_user, max_rows=fold.max_rows,
+                  max_scan_rows=fold.max_scan_rows,
+                  approval_status=fold.approval, review_status=fold.review,
+                  ops_status=fold.ops, async_after_ms=fold.async_after_ms,
+                  stale_after_s=fold.stale_after_s),
+            resolve_stale)
+        return paginate_tasks(items, page=page, page_size=page_size, status=status,
+                              source=source, risk=risk, user=user, since=since,
+                              task_kind_filter=task_kind_filter, q=q, tz=tz,
+                              page_size_cap=page_size_cap)
+
+    from . import auditstore
+
+    base = AuditFilter(include_started=True)
+    # **先把"现在"钉死再探**：这一页的每一次查询都按同一个时刻判陈旧与长短
+    # 任务，否则探的时候不陈旧、折算的时候陈旧了，状态与计数会对不上。
+    fold = replace(fold, now=now)
+    # 陈旧线程先核实，结论当 override 喂回折算（见 _stale_override）
+    probe = auditstore.stale_threads(base, fold, owner=only_user)
+    override, resumable = _stale_override(probe, resolve_stale)
+    fold = replace(fold, override=override)
+
+    # 「今日」的日界按声明时区算：容器时钟是 UTC，不折算回来的话「今日完成」
+    # 会到北京时间早上八点才翻页。
+    day_start = datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo)
+    counts = auditstore.thread_counts(
+        base, fold, owner=only_user, day=(day_start, day_start + timedelta(days=1)))
+    facets = auditstore.thread_facets(base, fold, owner=only_user)
+    total, rows = auditstore.thread_page(
+        base, fold, owner=only_user, page=page, page_size=page_size,
+        status=_picked(status), source=_picked(source), risk=_picked(risk),
+        user=_picked(user), task_kind=_picked(task_kind_filter),
+        q=q.strip() or None, since=_since_window(since, now))
+    # 首末两条各取一次原文：状态与风险看最后一条，归属、发起时间与标题看
+    # 第一条（续跑会写新 trace，但发起人与这条线索从哪儿来的不变）。
+    records = auditstore.records_by_id(
+        [int(r["last_id"]) for r in rows] + [int(r["first_id"]) for r in rows])
+    items = [_task_item(r, records.get(int(r["last_id"])) or {},
+                        records.get(int(r["first_id"])) or {}, fold, resumable)
+             for r in rows]
+    return {
+        "items": items,
+        "total": total,
+        "total_all": sum(int(n) for _st, n, _today in counts),
+        "page": page, "page_size": page_size,
+        "stats": _task_stats(counts),
+        "sources": facets["sources"], "users": facets["users"],
+    }
+
+
+def _task_item(row: dict[str, Any], last: dict[str, Any], first: dict[str, Any],
+               fold: TaskFold, resumable: dict[str, bool]) -> dict[str, Any]:
+    """一行折算结果 + 那条 record → 页面上的一条任务。
+
+    **状态 / 风险 / 长短任务取 SQL 算出来的那份**，因为筛选与计数用的就是它：
+    显示一套、筛选另一套的话，会出现"筛「已拦截」筛出一条写着已完成的"。
+    说明性的那几格（risk_why / next_actor / review_why）仍由 audit.py 的纯
+    函数生成 —— 它们本来就只有这一份。
+
+    两边真分叉时记一行 warning：分叉的表现本身是静默的（页面照常渲染），
+    没有这行日志就只能等人肉眼发现。
+    """
+    item = _summary(last)
+    item["thread_id"] = str(row["thread_id"])
+    item["attempts_on_thread"] = int(row["attempts_on_thread"] or 0)
+    # 时间戳与标题**取记录原文**，不取列：列是 timestamptz，isoformat 出来
+    # 会被折算成会话时区，与文件后端（原样那个字符串）对不上。列只负责筛与排。
+    item["first_ts"] = first.get("ts", "") if first else ""
+    item["question"] = first.get("question") or last.get("question") or ""
+    item["owner"] = (first.get("user") or "") if first else (row["owner"] or "")
+    item["approval_status"] = row["approval_status"] or ""
+    item["ops_status"] = row["ops_status"] or ""
+    item["stale"] = bool(row["stale"])
+    item["status"] = str(row["status"])
+    item["risk"] = str(row["risk"])
+    item["task_kind"] = str(row["task_kind"])
+    item["review_why"] = review_reasons(last) if not last.get("rejected_by") else []
+    item["next_actor"] = next_actor(item["status"], item["approval_status"])
+    item["resumable"] = resumable.get(item["thread_id"],
+                                      bool(row["resumable_hint"]))
+    py_risk, why = _risk(last, fold.max_rows, fold.max_scan_rows)
+    item["risk_why"] = why
+    if last and py_risk != item["risk"]:
+        log.warning("风险折算分叉：SQL=%s Python=%s trace=%s",
+                    item["risk"], py_risk, last.get("trace_id"))
+    return item
+
+
+def _task_stats(counts: list[tuple[Any, ...]]) -> dict[str, Any]:
+    """按状态分档的计数 → 四张统计卡。口径与 paginate_tasks 里那段逐字一致。"""
+    by = {str(st): int(n) for st, n, _today in counts}
+    done_today = sum(int(today) for st, _n, today in counts if st == DONE)
+    done = by.get(DONE, 0)
+    # 成功率的分母只算**真收尾**的：等补充、等审批、等运维都还有下一步，
+    # 把它们记成失败，这个数字就会随"有多少人问得含糊"上下浮动，与系统好坏无关。
+    settled = done + by.get(REJECTED, 0)
+    return {
+        "running": by.get(RUNNING, 0),
+        "waiting_input": by.get(WAITING_INPUT, 0),
+        "waiting_approval": by.get(WAITING_APPROVAL, 0),
+        "waiting_review": by.get(WAITING_REVIEW, 0),
+        "review_returned": by.get(REVIEW_RETURNED, 0),
+        "needs_operator": by.get(NEEDS_OPERATOR, 0),
+        "interrupted": by.get(INTERRUPTED, 0),
+        "rejected": by.get(REJECTED, 0),
+        "done": done,
+        "done_today": done_today,
+        # 没有收尾记录时给 None 而不是 0 ——「成功率 0.0%」和"还没有可判的
+        # 样本"是两回事，前者是在报一个没发生过的失败
+        "success_rate": round(done / settled * 100, 1) if settled else None,
+    }
+
+
 def paginate_tasks(
     items: list[dict[str, Any]], *, page: int = 1, page_size: int = 10,
     status: str = FILTER_ANY, source: str = FILTER_ANY,
     risk: str = FILTER_ANY, user: str = FILTER_ANY, since: str = FILTER_ANY,
     task_kind_filter: str = FILTER_ANY, q: str = "", tz: Any = None,
+    page_size_cap: int = 100,
 ) -> dict[str, Any]:
     """把 tasks() 的全量线程筛好、统计好、切好页 —— 一次返回给页面。
 
@@ -1279,7 +1545,7 @@ def paginate_tasks(
         ]
 
     page = max(int(page), 1)
-    page_size = min(max(int(page_size), 1), 100)
+    page_size = min(max(int(page_size), 1), max(int(page_size_cap), 1))
     start = (page - 1) * page_size
     return {
         "items": matched[start:start + page_size],
@@ -1352,8 +1618,100 @@ def _percentile(values: list[int], q: float) -> int | None:
     """
     if not values:
         return None
-    k = max(0, min(len(values) - 1, round((len(values) - 1) * q)))
-    return values[k]
+    return values[_percentile_index(len(values), q)]
+
+
+def _as_float(v: Any) -> float:
+    """读一个可能被写坏的数值字段。**读不出来当 0，不抛。**
+
+    模型偶尔会把金额回成一句话（"贵"），审计如实原样存下来了。这些字段
+    在库里是数值列（写不进去就是 NULL），所以 SQL 那条聚合路径天然当 0；
+    Python 这边不跟着当 0 的话，一条写坏的记录就能让统计页整页 500，
+    而两条后端还会对同一批数据给出不同的答案。
+    """
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _as_int(v: Any) -> int:
+    """同上，整数版。"""
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def step_counters(rec: dict[str, Any]) -> tuple[int, int, bool]:
+    """一条记录贡献给统计的三个计数：模型节点数、其中失败数、有没有节点链。
+
+    **抽出来是为了让它只有一份定义。** 这三个数原先直接写在 stats() 的那个
+    大循环里，而下推到 SQL 之后它们必须在**入库时**就算好（否则统计要为了
+    数三个数把整份 steps 从库里拉回来，那正是这轮要消灭的形状）。
+    入库与文件后端的统计共用这一个函数，两边就不会漂。
+
+    模型调用按**节点**算不按整次调用算，失败按三档口径判 —— 两条理由
+    见 stats() 里保留的那两段注释。
+    """
+    steps = rec.get("steps") or []
+    calls = failed = 0
+    for st in steps:
+        if st.get("step") in MODEL_STEPS:
+            calls += 1
+            if step_failed(str(st.get("status") or "")):
+                failed += 1
+    return calls, failed, bool(steps)
+
+
+def model_contrib(rec: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """这一条记录给「按模型」那张表贡献了什么：{模型名: {calls, cost_cny}}。
+
+    **同样是为了只有一份定义**：入库时算好存进 model_agg 列，统计只做一次
+    SQL 侧的合并；文件后端仍然逐条调它。两条路同一个函数，对账口径不会分叉。
+
+    归因规则一条没改（按 step 归因、带金额无模型名的挂回记录级、
+    命中缓存不计入），逐条理由见下面的注释。
+    """
+    out: dict[str, dict[str, Any]] = {}
+    # 命中应答缓存的那条记录没调过模型：跟着记一笔会在「按模型」里凭空多出
+    # 次数，并把前端拿 by_model 求和当分母的「平均 Token」按未发生的调用摊薄。
+    if rec.get("cached"):
+        return out
+    steps = rec.get("steps") or []
+    # step 上有 model 或有金额，才走按步归因。老记录两样都没有
+    # （model 是 2026-09-10 才落到 step 上的），退回记录级那一条路。
+    by_step = any(st.get("model") or st.get("cost_cny") for st in steps)
+    if by_step:
+        for st in steps:
+            m = st.get("model")
+            c = _as_float(st.get("cost_cny"))
+            # **这一步算不算一次模型调用，看的是节点本身，不是它有没有记下
+            # 模型名。** step 级 cost_cny 早就在落盘，step 级 model 是
+            # 2026-09-10 才加的：中间这段时间的记录，每一条的 generate_sql
+            # 都是"有金额、无模型名"。原来只在 `if m` 时加次数，于是这些记录
+            # 的钱补挂上去了、次数一次都没加 —— 生产上因此长出
+            # 「qwen3.8-flash 6 次 ¥1.64」这种自相矛盾的行。
+            #
+            # 用 MODEL_STEPS 判而不是"有金额就算"：失败的那次调用金额是 0，
+            # 但它确实调过；反过来，将来某个非模型节点若带上金额又没记模型名，
+            # 只补钱不计次，不会虚增。
+            is_call = bool(m) or st.get("step") in MODEL_STEPS
+            if not is_call and not c:
+                continue
+            # **带金额却没记模型的步骤，钱不能凭空消失**：挂回记录级那个模型名。
+            # 成本表必须满足「各行之和 = 总额」，否则它就是一张对不上账的表，
+            # 而对不上账的成本表比没有更坏 —— 看的人不会知道少的是哪一笔。
+            key = str(m) if m else str(rec.get("model") or "（未记录）")
+            e = out.setdefault(key, {"calls": 0, "cost_cny": 0.0})
+            if is_call:
+                e["calls"] += 1
+            e["cost_cny"] = round(e["cost_cny"] + c, 6)
+        return out
+    m = rec.get("model") or ("（未记录）" if rec.get("kind", "ask") == "ask" else None)
+    if m:
+        out[str(m)] = {"calls": 1, "cost_cny": round(_as_float(rec.get("cost_cny")), 6)}
+    return out
 
 
 def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, Any]:
@@ -1388,98 +1746,53 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
     # 现在同时活着的只有几个计数器、几个按天/按模型的小字典，以及 elapsed
     # 这一个 int 列表（分位数要排序，绕不开；但它是 int 不是 dict，
     # 四十几万条也就十几 MB）。
+    f = AuditFilter(since=cutoff, username=only_user)
+    cfg, _fpath = _resolve(path)
+    if cfg is not None:
+        # 库后端：每一维各一条聚合 SQL（见 auditstore 里「统计」那一段）。
+        # 改造前这里是把窗口内每条 record 整条拉回来只为累加几个计数器，
+        # 生产实测 1.1 秒且随天数线性增长。
+        return _stats_sql(f, days, tz)
+
     calls = blocked = with_steps = 0
     cost_total = 0.0
     tok_in_total = tok_out_total = 0
     model_calls = model_failed = 0
     elapsed: list[int] = []
-    for r in iter_records(path, AuditFilter(since=cutoff, username=only_user)):
+    for r in iter_records(path, f):
         calls += 1
         if r.get("rejected_by"):
             blocked += 1
         if r.get("steps"):
             with_steps += 1
-        elapsed.append(int(r.get("elapsed_ms") or 0))
-        cost_total += float(r.get("cost_cny") or 0)
-        tok_in_total += int(r.get("tok_in") or 0)
-        tok_out_total += int(r.get("tok_out") or 0)
+        elapsed.append(_as_int(r.get("elapsed_ms")))
+        cost_total += _as_float(r.get("cost_cny"))
+        tok_in_total += _as_int(r.get("tok_in"))
+        tok_out_total += _as_int(r.get("tok_out"))
 
         # 模型调用的成败按**节点**算，不是按整次调用算：一次提问里模型可能被调
         # 三四次（判定 / 生成 / 自检 / 反思），其中一次失败后重试成功，整次调用
         # 是成功的，但模型确实失败过一次。按调用算会把这些失败全部抹掉。
-        for st in (r.get("steps") or []):
-            if st.get("step") in MODEL_STEPS:
-                model_calls += 1
-                # 按三档口径判，不是"等于 ok"。切备选成功那条 span 的状态是
-                # fallback —— 按等于 ok 判，模型一旦被备选救回来，成功率反而
-                # 往下掉；而它真正的失败（那次超时）现在自己就是一条 span，
-                # 不需要再从成功的这条身上找补。
-                if step_failed(str(st.get("status") or "")):
-                    model_failed += 1
+        # 失败按三档口径判，不是"等于 ok"（见 step_counters / step_failed）。
+        mc, mf, _has = step_counters(r)
+        model_calls += mc
+        model_failed += mf
 
         d0 = _day_of(str(r.get("ts", "")), tz)
         day = d0.isoformat() if d0 else str(r.get("ts", ""))[:10]
         d = daily.setdefault(day, {"date": day, "calls": 0, "cost_cny": 0.0})
         d["calls"] += 1
-        d["cost_cny"] = round(d["cost_cny"] + float(r.get("cost_cny") or 0), 6)
+        d["cost_cny"] = round(d["cost_cny"] + _as_float(r.get("cost_cny")), 6)
         by_kind[r.get("kind", "ask")] = by_kind.get(r.get("kind", "ask"), 0) + 1
         if r.get("rejected_by"):
             by_rule[str(r["rejected_by"])] = by_rule.get(str(r["rejected_by"]), 0) + 1
-        # 直查不经模型（model=None）不计入模型维度；老记录无 model 字段，
-        # 按调用类型如实归为"未记录"而不是猜一个模型名。
-        # 缓存命中同样不进这一维：它的 model 字段写的是 "cache"，那不是一个
-        # 模型，跟着记一笔会在「按模型」里凭空多出一行，并把前端拿 by_model
-        # 求和当分母的「平均 Token」按未发生的调用摊薄。
-        # **按 step 归因，不是按记录**。一条链路可能同时烧了三个模型：
-        # 生成用主模型、召回用嵌入模型、主模型失败时还切过备选。记录级
-        # 只有一个 model 字段，按它分摊的话，嵌入与备选那两笔永远挂在
-        # 主模型头上 —— 成本页上「按模型」那张表因此是错的。
-        #
-        # 老记录的 step 上没有 model（这个字段是 2026-09-10 才落的），
-        # 退回记录级那一个，与改造前一致；两种记录混在同一个窗口里也不会
-        # 重复计 —— 每条记录只走其中一条路。
-        if not r.get("cached"):
-            steps = r.get("steps") or []
-            # step 上有 model 或有金额，才走按步归因。老记录两样都没有
-            # （model 是 2026-09-10 才落到 step 上的），退回记录级那一条路。
-            by_step = any(st.get("model") or st.get("cost_cny") for st in steps)
-            if by_step:
-                for st in steps:
-                    m = st.get("model")
-                    c = float(st.get("cost_cny") or 0)
-                    # **这一步算不算一次模型调用，看的是节点本身，不是它有没有
-                    # 记下模型名。** step 级 cost_cny 早就在落盘，step 级 model
-                    # 是 2026-09-10 才加的：中间这段时间的记录，每一条的
-                    # generate_sql 都是"有金额、无模型名"。原来只在 `if m` 时
-                    # 加次数，于是这些记录的钱补挂上去了、次数一次都没加 ——
-                    # 生产上因此长出「qwen3.8-flash 6 次 ¥1.64」这种自相矛盾的
-                    # 行：¥1.64 实际来自一千二百多次调用，单次成本被算成
-                    # ¥0.27（真实值 ¥0.0013），差两个数量级。
-                    #
-                    # 用 MODEL_STEPS 判而不是"有金额就算"：失败的那次调用金额
-                    # 是 0，但它确实调过；反过来，将来某个非模型节点若带上金额
-                    # 又没记模型名，只补钱不计次，不会虚增。这也让这张表的次数
-                    # 与「模型调用成功率」的分母 model_calls 同源。
-                    is_call = bool(m) or st.get("step") in MODEL_STEPS
-                    if not is_call and not c:
-                        continue
-                    # **带金额却没记模型的步骤，钱不能凭空消失**：挂回记录级
-                    # 那个模型名。成本表必须满足「各行之和 = 总额」，
-                    # 否则它就是一张对不上账的表，而对不上账的成本表
-                    # 比没有更坏 —— 看的人不会知道少的是哪一笔。
-                    key = str(m) if m else str(r.get("model") or "（未记录）")
-                    e = by_model.setdefault(key, {"calls": 0, "cost_cny": 0.0})
-                    if is_call:
-                        e["calls"] += 1
-                    e["cost_cny"] = round(e["cost_cny"] + c, 6)
-            else:
-                m = r.get("model") or (
-                    "（未记录）" if r.get("kind", "ask") == "ask" else None)
-                if m:
-                    e = by_model.setdefault(m, {"calls": 0, "cost_cny": 0.0})
-                    e["calls"] += 1
-                    e["cost_cny"] = round(
-                        e["cost_cny"] + float(r.get("cost_cny") or 0), 6)
+        # 「按模型」那张表的归因规则全在 model_contrib 里（入库时同一个函数
+        # 已经把每条记录的贡献算好存进 model_agg 列，库后端因此不必把 steps
+        # 拉回来）。这里只做合并。
+        for key, add in model_contrib(r).items():
+            e = by_model.setdefault(key, {"calls": 0, "cost_cny": 0.0})
+            e["calls"] += int(add.get("calls") or 0)
+            e["cost_cny"] = round(e["cost_cny"] + _as_float(add.get("cost_cny")), 6)
 
     elapsed.sort()
     return {
@@ -1506,6 +1819,53 @@ def stats(path: Any, days: int = 30, only_user: str | None = None) -> dict[str, 
         "by_kind": by_kind,
         "by_rule": dict(sorted(by_rule.items(), key=lambda kv: -kv[1])),
         "by_model": dict(sorted(by_model.items(), key=lambda kv: -kv[1]["cost_cny"])),
+    }
+
+
+def _percentile_index(n: int, q: float) -> int:
+    """最近秩法的名次（0 起算）。**与 _percentile 共用同一个算式** ——
+    抽出来是为了让库后端按名次去取值时，用的是同一个 round。"""
+    return max(0, min(n - 1, round((n - 1) * q)))
+
+
+def _stats_sql(f: AuditFilter, days: int, tz: Any) -> dict[str, Any]:
+    """统计的库后端。**每个数字的口径与上面那条 Python 路径逐条对应** ——
+    两条路由 tests/test_stats_pushdown.py 喂同一批记录比对。
+    """
+    from . import auditstore
+
+    (calls, blocked, with_steps, cost_total, tok_in_total, tok_out_total,
+     model_calls, model_failed) = auditstore.stats_totals(f)
+    calls, blocked, with_steps = int(calls), int(blocked), int(with_steps)
+    model_calls, model_failed = int(model_calls), int(model_failed)
+    now = _now_in(tz)
+    offset = now.utcoffset() or timedelta(0)
+    daily = {
+        d.isoformat(): {"date": d.isoformat(), "calls": int(n),
+                        "cost_cny": round(float(c), 6)}
+        for d, n, c in auditstore.stats_daily(f, offset)}
+    return {
+        "days": days,
+        "calls": calls,
+        "blocked": blocked,
+        "block_rate": round(blocked / calls, 4) if calls else 0.0,
+        "cost_cny": round(float(cost_total), 6),
+        "tok_in": int(tok_in_total),
+        "tok_out": int(tok_out_total),
+        "trace_complete": round(with_steps / calls, 4) if calls else None,
+        "model_calls": model_calls,
+        "model_failed": model_failed,
+        "model_success": (round((model_calls - model_failed) / model_calls, 4)
+                          if model_calls else None),
+        "elapsed_p50_ms": (auditstore.elapsed_at(f, _percentile_index(calls, 0.5))
+                           if calls else None),
+        "elapsed_p95_ms": (auditstore.elapsed_at(f, _percentile_index(calls, 0.95))
+                           if calls else None),
+        "daily": _fill_days(daily, now, days),
+        "by_kind": {str(k): int(n) for k, n in auditstore.stats_by_kind(f)},
+        "by_rule": {str(k): int(n) for k, n in auditstore.stats_by_rule(f)},
+        "by_model": {str(m): {"calls": int(n), "cost_cny": round(float(c), 6)}
+                     for m, n, c in auditstore.stats_by_model(f)},
     }
 
 

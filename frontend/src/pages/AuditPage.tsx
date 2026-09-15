@@ -96,8 +96,23 @@ export function AuditPage({ me, onNavigate }: {
     return () => { alive = false }
   }, [requestKey, page, pageSize, query, kind, status, source, user, since])
 
-  // 任一条件变化就回到第一页 —— 停在第 6 页而筛完只剩 2 条，看到的是一片空白
-  useEffect(() => { setPage(1) }, [query, kind, status, source, user, since, pageSize])
+  /* 任一条件变化就回到第一页（停在第 6 页而筛完只剩 2 条，看到的是一片空白），
+     **跟着 setter 一起做**。
+
+     原来这件事挂在一个 useEffect 上，而取数据的 effect 依赖同一批条件 ——
+     于是停在第 3 页改条件时，浏览器先按旧页码发一次请求、再按第 1 页发一次，
+     第一次的结果注定被丢掉。两个 setState 在同一个事件处理里会合并成一次
+     渲染，所以这样写只发一次请求。 */
+  const refilter = <T,>(set: (value: T) => void) => (value: T) => {
+    set(value)
+    setPage(1)
+  }
+  const pickQuery = refilter(setQuery)
+  const pickKind = refilter(setKind)
+  const pickStatus = refilter(setStatus)
+  const pickSource = refilter(setSource)
+  const pickUser = refilter(setUser)
+  const pickSince = refilter(setSince)
 
   const list = loaded?.data ?? null
   const loading = loaded?.key !== requestKey
@@ -105,14 +120,14 @@ export function AuditPage({ me, onNavigate }: {
 
   /* 已选条件。每个都能单独摘掉 —— 一次只错一个条件时不该逼人整条重来。 */
   const auditChips: FilterChip[] = [
-    query ? { label: '关键词', value: query, onClear: () => setQuery('') } : null,
-    kind ? { label: '类型', value: AUDIT_KIND_LABEL[kind] ?? kind, onClear: () => setKind('') } : null,
-    status ? { label: '结果', value: AUDIT_STATUS_LABEL[status] ?? status, onClear: () => setStatus('') } : null,
+    query ? { label: '关键词', value: query, onClear: () => pickQuery('') } : null,
+    kind ? { label: '类型', value: AUDIT_KIND_LABEL[kind] ?? kind, onClear: () => pickKind('') } : null,
+    status ? { label: '结果', value: AUDIT_STATUS_LABEL[status] ?? status, onClear: () => pickStatus('') } : null,
     source !== undefined
       ? {
         label: '数据源',
         value: (list?.sources ?? []).find(item => item.id === source)?.name ?? source,
-        onClear: () => setSource(undefined),
+        onClear: () => pickSource(undefined),
       } : null,
     user !== undefined
       ? {
@@ -121,14 +136,15 @@ export function AuditPage({ me, onNavigate }: {
           const hit = (list?.users ?? []).find(item => item.id === user)
           return personName(hit && hit.name !== hit.id ? hit.name : '', user, me) || hit?.name || user
         })(),
-        onClear: () => setUser(undefined),
+        onClear: () => pickUser(undefined),
       } : null,
     since !== 'all'
-      ? { label: '时间', value: AUDIT_SINCE_LABEL[since] ?? since, onClear: () => setSince('all') } : null,
+      ? { label: '时间', value: AUDIT_SINCE_LABEL[since] ?? since, onClear: () => pickSince('all') } : null,
   ].filter(Boolean) as FilterChip[]
   const resetFilters = () => {
     setQuery(''); setKind(''); setStatus('')
     setSource(undefined); setUser(undefined); setSince('all')
+    setPage(1)
   }
 
   const openReplay = async (traceId: string) => {
@@ -202,18 +218,18 @@ export function AuditPage({ me, onNavigate }: {
       <FilterBar standalone>
         <FilterSearch
           value={query}
-          onCommit={setQuery}
+          onCommit={pickQuery}
           placeholder={textVisible(list) ? '搜索 trace ID 或自然语言问题…' : '搜索 trace ID…'}
         />
         <select className={kind ? 'on' : ''} aria-label="按类型筛选"
-                value={kind} onChange={event => setKind(event.target.value)}>
+                value={kind} onChange={event => pickKind(event.target.value)}>
           <option value="">全部类型</option>
           <option value="ask">提问</option>
           <option value="sql">直查 SQL</option>
           <option value="resume">续跑</option>
         </select>
         <select className={status ? 'on' : ''} aria-label="按策略结果筛选"
-                value={status} onChange={event => setStatus(event.target.value)}>
+                value={status} onChange={event => pickStatus(event.target.value)}>
           <option value="">全部结果</option>
           <option value="ok">通过</option>
           <option value="rejected">已拦截</option>
@@ -221,7 +237,7 @@ export function AuditPage({ me, onNavigate }: {
         </select>
         <select className={source === undefined ? '' : 'on'} aria-label="按数据源筛选"
                 value={source ?? ALL}
-                onChange={event => setSource(event.target.value === ALL ? undefined : event.target.value)}>
+                onChange={event => pickSource(event.target.value === ALL ? undefined : event.target.value)}>
           <option value={ALL}>全部数据源</option>
           {(list?.sources ?? []).map(item => (
             <option key={item.id} value={item.id}>{item.name}</option>
@@ -232,7 +248,7 @@ export function AuditPage({ me, onNavigate }: {
         {textVisible(list) && (
           <select className={user === undefined ? '' : 'on'} aria-label="按发起人筛选"
                   value={user ?? ALL}
-                  onChange={event => setUser(event.target.value === ALL ? undefined : event.target.value)}>
+                  onChange={event => pickUser(event.target.value === ALL ? undefined : event.target.value)}>
             <option value={ALL}>全部发起人</option>
             {(list?.users ?? []).map(item => (
               <option key={item.id} value={item.id}>
@@ -242,7 +258,7 @@ export function AuditPage({ me, onNavigate }: {
           </select>
         )}
         <select className={since === 'all' ? '' : 'on'} aria-label="按时间筛选"
-                value={since} onChange={event => setSince(event.target.value)}>
+                value={since} onChange={event => pickSince(event.target.value)}>
           {Object.entries(AUDIT_SINCE_LABEL).map(([value, label]) => (
             <option key={value} value={value}>{label}</option>
           ))}

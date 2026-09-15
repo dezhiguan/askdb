@@ -64,6 +64,13 @@ FILTERS = [
     AuditFilter(trace_id="tr0000000003"),
     AuditFilter(thread_ids=("th-1",)),
     AuditFilter(thread_ids=()),
+    # 关键词 2026-09-15 起也下推。这几条打的是真 ILIKE：命中问题原文、
+    # 命中 trace_id、遮蔽内容后只剩 trace_id、以及一次都不命中。
+    AuditFilter(q="问题1"),
+    AuditFilter(q="TR00000000"),                     # 大小写不敏感
+    AuditFilter(q="amy"),
+    AuditFilter(q="amy", q_text=False),
+    AuditFilter(q="没有这个词"),
 ]
 
 
@@ -171,3 +178,70 @@ def test_missing_table_reads_as_empty_not_an_error(audit_store):
         con.execute("DROP TABLE IF EXISTS askdb_audit")
     assert pgstore.rows("SELECT 1 FROM askdb_audit") == []
     assert list(pgstore.iter_rows("SELECT 1 FROM askdb_audit")) == []
+
+
+def test_like_metacharacters_are_escaped(seeded):
+    """搜一个 % 搜不出东西 —— 不转义的话它会被 ILIKE 读成"任意字符"，
+    于是搜什么都能搜到，而那是一个静默给出错结果的筛选框。"""
+    for needle in ("%", "_", "!"):
+        f = AuditFilter(q=needle)
+        assert auditstore.count_audit(f) == sum(1 for r in CORPUS if matches(r, f)) == 0
+
+
+def test_backfill_fills_derived_columns_of_old_rows(audit_store):
+    """2026-09-15 之前写下的行，折算列要被补齐 —— **在任何读之前**。
+
+    折算 SQL 只读列不读 record（那是这轮改造的全部收益）。列是空的行会被
+    折算成"没有任何风险痕迹的已完成任务"，也就是**静默算错**而不是报错。
+    所以回填不是优化，是正确性的前提。
+    """
+    from psycopg.types.json import Jsonb
+
+    rec = _rec(7, question="广州有多少岗位", multi_step=True, rows_returned=12,
+               attempts=3, recall_blind=True,
+               steps=[{"step": "generate_sql", "status": "error", "model": "qwen-max"}])
+    # 照 2026-09-15 之前那条 INSERT 写一行：只有老那几列，折算列全空
+    pgstore.execute(
+        "INSERT INTO askdb_audit (ts, trace_id, thread_id, phase, kind, username,"
+        " role, source, rejected_by, model, record)"
+        " VALUES (now(), %s, %s, 'done', 'ask', '', '', '', '', '', %s)",
+        (rec["trace_id"], rec["thread_id"], Jsonb(rec)))
+    assert pgstore.rows("SELECT question FROM askdb_audit WHERE trace_id = %s",
+                        (rec["trace_id"],)) == [(None,)]
+
+    # 记号清掉、进程记忆清掉，让 ensure_derived 再跑一次回填
+    pgstore.execute("DELETE FROM askdb_migrations WHERE name = %s",
+                    (auditstore._BACKFILL_NAME,))
+    auditstore.reset_ready()
+    auditstore.ensure_derived()
+
+    got = pgstore.rows(
+        "SELECT question, multi_step, rows_returned, attempts, recall_blind,"
+        " model_calls, model_failed, has_steps, derived_v"
+        " FROM askdb_audit WHERE trace_id = %s", (rec["trace_id"],))
+    assert got == [("广州有多少岗位", True, 12, 3, True, 1, 1, True, 1)]
+
+
+def test_writing_does_not_wait_for_the_backfill(audit_store):
+    """**写入不等回填。** append_audit 自己就把折算列写全了，一行历史数据
+    都不需要；让它排在一次几分钟的回填后面，等于那几分钟里每一次问答的
+    收尾都卡住。"""
+    auditstore.append_audit(_rec(8))
+    assert pgstore.rows("SELECT count(*) FROM askdb_migrations WHERE name = %s",
+                        (auditstore._BACKFILL_NAME,)) == [(0,)]
+    assert pgstore.rows("SELECT question FROM askdb_audit WHERE trace_id = %s",
+                        (_rec(8)["trace_id"],)) == [("问题8",)]
+
+
+def test_backfill_runs_once(audit_store):
+    """跑过就记在库里。四个副本各跑一次回填是纯浪费，而且第二个副本会在
+    第一个还没跑完时看到半成品。"""
+    auditstore.append_audit(_rec(9))
+    auditstore.ensure_derived()
+    marks = pgstore.rows("SELECT count(*) FROM askdb_migrations WHERE name = %s",
+                         (auditstore._BACKFILL_NAME,))
+    assert marks == [(1,)]
+    auditstore.reset_ready()
+    auditstore.ensure_derived()                      # 再来一次：不该重复记号
+    assert pgstore.rows("SELECT count(*) FROM askdb_migrations WHERE name = %s",
+                        (auditstore._BACKFILL_NAME,)) == [(1,)]

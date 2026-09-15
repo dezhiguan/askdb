@@ -2439,45 +2439,51 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             raise HTTPException(status_code=404, detail="成员不存在")
         return {"ok": True}
 
-    def _settle_stale(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """陈旧的「运行中」线程按检查点定档 —— **就地改，返回同一个列表。**
+    #: 复核 / 运维队列一次最多列多少条。这两页不分页（队列本来就该被清空，
+    #: 不是用来翻的），但**必须有上限** —— 没有上限的"全部"在积压时就是一次
+    #: 把几千条折算完发出去，正是这轮改造要消灭的形状。真积到这个数，
+    #: 该处理的是积压本身。
+    _QUEUE_CAP = 500
 
-        audit.stage 对超时未收尾的线程一律先判「可续跑」，因为审计本身不知道
-        现场有没有落盘。真正的分档要问检查点：核得过就是真可续跑，核不过说明
-        进程连检查点都没写成，那是执行期故障，该进运维队列。
+    def _fold_of(ctx: dict[str, Any]) -> Any:
+        """_task_context 那三份结论 + 部署侧的几个阈值 → audit.TaskFold。
 
-        **为什么必须是共用函数**：2026-09-12 线上实测发现，这段逻辑原来写在
-        /api/tasks 的端点体里，于是任务中心显示 9 条等待运维、而运维队列只有
-        1 条 —— 那 8 条僵尸线程在"该去处理它们的那一页"上根本看不见。
-        任务态的折算口径只能有一份，多一份就会漂，这正是本次改造要消灭的形态，
-        结果自己先犯了一次。新增任何一个按状态取任务的接口，都要经过这里。
+        凑成一个值对象再传下去，是为了让库后端那条折算 SQL 与 Python 的
+        纯函数吃到**同一份输入**。两边输入不同的话，对不上的是状态本身，
+        而页面不会报错，只会安静地显示错的那一档。
+        """
+        return _audit.TaskFold(
+            approval=ctx.get("approval_status") or {},
+            review=ctx.get("review_status") or {},
+            ops=ctx.get("ops_status") or {},
+            max_rows=cfg.max_rows,
+            max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
+            # 与 /api/ask 那一路读的是同一个值 —— 两处各写一个默认值就会出现
+            # "列表说它是长任务、它当时却没被交接"
+            async_after_ms=_async_after_ms(cfg),
+            stale_after_s=int(ctx.get("stale_after_s") or 0),
+        )
 
-        逐条查检查点只发生在 stale 的那几条上（线上个位数），不是全量：
-        正在跑的线程不会陈旧，正常收尾的线程连 stale 都不会置位。
+    def _queue(request: Request, want: str, scope_cap: str) -> list[dict[str, Any]]:
+        """某一档待办的全部任务 —— 复核队列与运维队列共用这一条路。
+
+        **必须与任务中心同一条折算链路**：2026-09-12 线上实测过一次分叉，
+        任务中心显示 9 条等待运维、而运维队列只有 1 条 —— 那 8 条僵尸线程在
+        "该去处理它们的那一页"上根本看不见。任务态的折算口径只能有一份，
+        新增任何一个按状态取任务的接口，都要经过这里。
+
+        可见范围各按各的能力位：有对应结论权的看全部，没有的只看自己发起的
+        —— 发起人必须看得到自己那条被判成什么。
         """
         from .agentgraph import is_resumable
 
-        for it in items:
-            if not it.get("stale"):
-                continue
-            state = is_resumable(str(it.get("thread_id") or ""), cfg)
-            it["resumable"] = bool(state)
-            if state:
-                continue
-            if it.get("ops_status"):
-                # **已经处置过的不再回到队列。**
-                #
-                # 与 audit.stage 的 EXEC 分支是同一条规则，只是那边判得到、
-                # 这边判不到：stage 看不见检查点，分不出"陈旧但可续跑"与
-                # "陈旧且没现场"，所以这一步只能在这里补。漏掉它的表现是
-                # 运维标了「无法恢复」、刷新之后那条原样又回到待处置
-                # —— 队列永远清不空。
-                it["status"] = _audit.REJECTED
-                it["next_actor"] = ""
-                continue
-            it["status"] = _audit.NEEDS_OPERATOR
-            it["next_actor"] = _audit._NEXT_ACTOR[_audit.NEEDS_OPERATOR]
-        return items
+        return _audit.tasks_page(
+            cfg,
+            None if _can(request, scope_cap) else (_current_user(request) or ""),
+            page=1, page_size=_QUEUE_CAP, page_size_cap=_QUEUE_CAP,
+            status=want, tz=_audit.day_tz(cfg), fold=_fold_of(_task_context()),
+            resolve_stale=lambda tid: is_resumable(tid, cfg),
+        )["items"]
 
     def _pending_ops(request: Request) -> list[dict[str, Any]]:
         """当前调用方可见的**待处置**执行期故障。
@@ -2490,17 +2496,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         可见范围顺带也统一了：有 OPS_RESOLVE 的看全部，没有的只看自己发起的
         —— 处置接口因此天然挡住"处置别人那条自己看不到的任务"。
         """
-        from .audit import tasks as _tasks
-
-        items = _tasks(
-            cfg,
-            None if _can(request, _identity.OPS_RESOLVE) else (_current_user(request) or ""),
-            max_rows=cfg.max_rows,
-            max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
-            **_task_context(),
-        )
-        return [t for t in _settle_stale(items)
-                if t.get("status") == _audit.NEEDS_OPERATOR]
+        return _queue(request, _audit.NEEDS_OPERATOR, _identity.OPS_RESOLVE)
 
     def _task_context() -> dict[str, Any]:
         """任务态折算要用的三份结论 + 陈旧阈值，**一处组装，三处共用**。
@@ -2531,16 +2527,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         except Exception:
             pass
         return out
-
-    def _open_traces(ctx: dict[str, Any]) -> tuple[str, ...]:
-        """还等着人动手的 trace —— 未决的审批单，以及批了票还没用掉的那些。
-
-        已驳回 / 已用掉的不钉：它们没有下一步，滑出窗口是应该的
-        （真要翻更早的，走审计流水页，那一页是真分页）。
-        """
-        return tuple(
-            t for t, st in (ctx.get("approval_status") or {}).items()
-            if st in (_approvals.REQUESTED, _approvals.APPROVED))
 
     @app.get("/api/approvals")
     def approvals_list(request: Request) -> dict[str, Any]:
@@ -2602,19 +2588,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         —— 发起人必须看得到自己的结果被判成什么，否则他不知道那个数字还能不能用。
         """
         _require_login(request)
-        from .audit import tasks as _tasks
-
         can_review = _can(request, _identity.APPROVE)
-        me = _current_user(request) or ""
-        items = _tasks(
-            cfg,
-            None if can_review else me,
-            max_rows=cfg.max_rows,
-            max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
-            **_task_context(),
-        )
-        pending = [t for t in _settle_stale(items)
-                   if t.get("status") == _audit.WAITING_REVIEW]
+        pending = _queue(request, _audit.WAITING_REVIEW, _identity.APPROVE)
         return {
             "can_review": can_review,
             "items": _reviews.listing(cfg, pending),
@@ -2765,7 +2740,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     status_code=400,
                     detail=f"{name} 只能是 all / " + " / ".join(allowed))
         username = _current_user(request) or ""
-        from .audit import tasks as _tasks
         from .agentgraph import is_resumable
 
         # 审批状态要联查进来：R-11 被拦下的那条**在等人放行**，不是终局。
@@ -2782,43 +2756,27 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         #
         # 阈值传进去做风险折算（审计里没有风险字段，见 audit._risk 的说明）
         _ctx = _task_context()
-        items = _tasks(
+        result = _audit.tasks_page(
             cfg,
             None if _can(request, _identity.TASKS_ALL) else username,
-            max_rows=cfg.max_rows,
-            max_scan_rows=int(cfg.raw["guard"]["max_scan_rows"]),
-            # 等人动手的那些不能因为滑出窗口就从这一页消失：审批单能躺 4 天，
-            # 而窗口只有最近 2000 条线程。交接出去的任务尤其吃这个亏 ——
-            # 人本来就不在场，回来得更晚（见 audit._pin）。
-            pin_traces=_open_traces(_ctx),
-            # 长/短任务按"这次执行有没有越过交接阈值"折算，阈值从配置取 ——
-            # 与 /api/ask 那一路读的是同一个值（_async_after_ms），
-            # 两处各写一个默认值就会出现"列表说它是长任务、它当时却没被交接"
-            async_after_ms=_async_after_ms(cfg),
-            **_ctx,
-        )
-        # 陈旧的「运行中」线程（进程被杀）在审计里先判成可续跑，**在分页与
-        # 统计之前**按检查点核实一遍：核得过的是真可续，核不过说明现场压根
-        # 没落盘 —— 那不是用户能补救的事，是执行期故障，改判等运维。
-        #
-        # **必须在 paginate_tasks 之前做**：那一步要算各档计数、还要按状态筛。
-        # 放到后面改，会出现「等待运维」筛不出这几条、而计数把它们记在
-        # 「可续跑」名下 —— 状态与计数对不上。
-        _settle_stale(items)
-        # 审计只知道这条线程上次以 INTERRUPTED 收尾（或只落了发起记录），
-        # 不知道现场有没有真的落盘、也不知道后来是不是已被续跑跑完 ——
-        # 只按审计标 resumable，会出现"这里说能续、点下去 404"。
-        # 以检查点为准再核一遍：真正在跑的线程此刻没有可续的断点，
-        # 会在这里被核回 False；被杀掉那条留着现场，核得过。
-        result = _audit.paginate_tasks(
-            items, page=page, page_size=page_size, status=status,
-            source=source, risk=risk, user=user, since=since,
-            task_kind_filter=task_kind, q=q.strip(),
+            page=page, page_size=page_size, status=status, source=source,
+            risk=risk, user=user, since=since, task_kind_filter=task_kind,
+            q=q.strip(),
             # 日界按配置声明的时区算：容器时钟是 UTC，不传这个，「今日完成」
             # 会到北京时间早上八点才翻页
-            tz=_audit.day_tz(cfg))
+            tz=_audit.day_tz(cfg),
+            fold=_fold_of(_ctx),
+            # 陈旧的「运行中」线程（进程被杀）在审计里先判成可续跑，由这个
+            # 回调按检查点核实一遍：核得过的是真可续，核不过说明现场压根没
+            # 落盘 —— 那不是用户能补救的事，是执行期故障，改判等运维。
+            # 审计模块不认识检查点库，所以判据在它那儿、探针在这儿。
+            resolve_stale=lambda tid: is_resumable(tid, cfg),
+        )
         for it in result["items"]:
-            # stale 的那批在分页前已经核过一遍，别再查一次库
+            # 审计只知道这条线程上次以 INTERRUPTED 收尾（或只落了发起记录），
+            # 不知道现场有没有真的落盘、也不知道后来是不是已被续跑跑完 ——
+            # 只按审计标 resumable，会出现"这里说能续、点下去 404"。
+            # 以检查点为准再核一遍；stale 的那批在折算前已经核过，别再查一次库。
             if it.get("resumable") and not it.get("stale"):
                 state = is_resumable(str(it.get("thread_id") or ""), cfg)
                 if state is not None:
@@ -2836,13 +2794,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # user 是**当前账号**，不是过滤条件：页面拿它与每条的 owner 比，
         # 判断哪些是自己的、续跑入口对谁开。匿名时为空串。
         result["user"] = username
-        # 这一页只看最近 TASKS_MAX_THREADS 条线程（见 audit.tasks 那段说明）。
-        # **把上限说出来**：不说的话，"最近这些线程里没有"会被读成"没有"，
-        # 而那正是这套界面反复要消灭的那种静默收窄。
-        result["window"] = {
-            "max_threads": _audit.TASKS_MAX_THREADS,
-            "truncated": len(items) >= _audit.TASKS_MAX_THREADS,
-        }
+        # **窗口没有了**（2026-09-15）。此前这一页只看最近 2000 条线程，那是
+        # 内存逼出来的：全部线程都要读进 Python 才能筛与统计。分页下推到库
+        # 之后没有这个约束，于是那条"等人动手的任务会滑出窗口"的老毛病
+        # （审批单能躺 4 天、窗口只有半小时）连同它的补丁一起消失。
+        #
+        # 字段保留并恒为 false：前端据它决定要不要显示那句截断提示，
+        # 悄悄拿掉字段会让那句提示变成永远渲染不出来的死代码。
+        result["window"] = {"max_threads": 0, "truncated": False}
         # 阈值出接口：页面要能说清"凭什么算长任务"。一个说不出理由的标签，
         # 比不标更糟（与 risk_why 同一条道理）。
         result["async_after_ms"] = _async_after_ms(cfg)
