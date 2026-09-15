@@ -314,7 +314,7 @@
   </p>
   <dl class="meta-strip">
     <div><dt>拟制日期</dt><dd>2026-09-15</dd></div>
-    <div><dt>版本</dt><dd>V1.1 · 待评审</dd></div>
+    <div><dt>版本</dt><dd>V1.2 · 部分落地</dd></div>
     <div><dt>适用实例</dt><dd>askdb.ragforge.net</dd></div>
     <div><dt>代码基线</dt><dd>main@b84644a</dd></div>
     <div><dt>数字来源</dt><dd>代码实读 + 生产 trace</dd></div>
@@ -589,7 +589,7 @@ elif explain_rows >= scan_threshold // 2:     <span class="cm"># 预估扫描过
     <div class="layer-body">
       <ul class="bul">
         <li><strong>向量从哪来</strong>：<code>_n_recall</code> 那次 embedding 的产物 —— 零额外成本、零额外延迟。</li>
-        <li><strong>存哪</strong>：复用同一套 pgvector 设施，<strong>另开</strong> <code>askdb_answer_vectors</code>。
+        <li><strong>存哪</strong>：复用同一套 pgvector 设施，<strong>另开</strong> <code>askdb_answer_cache</code>（表里除向量外还存 payload 与 sql，不只是向量）。
           不要混进 <code>askdb_schema_vectors</code> —— 那张表按 collection 指纹整体回收，会把缓存一起删掉。</li>
         <li><strong>命中判据</strong>：<code>cosine ≥ θ_hi</code>（初值 0.93，靠影子跑标定）<strong>且</strong>
           问题不含时间敏感词<strong>且</strong>缓存年龄 &lt; TTL。</li>
@@ -787,6 +787,45 @@ elif explain_rows >= scan_threshold // 2:     <span class="cm"># 预估扫描过
   </div>
 </section>
 
+<!-- ================= 07b ================= -->
+<section id="s7b">
+  <h2><span class="num">07′</span>落地状态（2026-09-15）</h2>
+  <p class="lede">
+    逐条对照本方案核过一遍。<strong>没做的也列出来，并写明为什么</strong> ——
+    一份只记已完成项的清单，读起来会像全做完了。
+  </p>
+  <div class="tw">
+    <table>
+      <thead><tr><th>条目</th><th>状态</th><th>落在哪</th></tr></thead>
+      <tbody>
+        <tr><td>D-6 交接路径写缓存</td><td><span class="tag t-keep">已完成</span></td><td><code>server._settle_detached</code></td></tr>
+        <tr><td>D-2 key 并入配置指纹</td><td><span class="tag t-keep">已完成</span></td><td><code>qcache.scope</code>（表/列/敏感标记/guard/租户/方言），key 版本升 v2</td></tr>
+        <tr><td>D-5 singleflight</td><td><span class="tag t-keep">已完成</span></td><td><code>qcache.RedisAnswerCache.lead/release</code>，等 800ms，fail-open</td></tr>
+        <tr><td>D-3 命中省下的钱进账</td><td><span class="tag t-keep">已完成</span></td><td><code>saved_cny</code> / <code>saved_ms</code>，进响应、进审计、进两处字段白名单</td></tr>
+        <tr><td>D-4 六份单价</td><td><span class="tag t-keep">已完成</span></td><td>先于本轮由 <code>78324e4</code> 修</td></tr>
+        <tr><td>D-1 nginx 补 /api/ask/stream 闸</td><td><span class="tag t-half">代码已改 · 待运维应用</span></td><td><code>deploy/nginx-askdb.conf</code>。<strong>CI 不部署 nginx</strong>，它在入口机上，要人工 reload</td></tr>
+        <tr><td>L0 问题向量 / 系统提示 / schema 渲染</td><td><span class="tag t-keep">已完成</span></td><td><code>askdb/l0.py</code>，接在 <code>vectors._embed</code> / <code>agent.render_agent_system</code> / <code>schema_rag._render</code></td></tr>
+        <tr><td>L2 语义应答缓存</td><td><span class="tag t-keep">已完成</span></td><td><code>askdb/semcache.py</code> + <code>askdb_answer_cache</code>（pgvector，无 ANN 索引）</td></tr>
+        <tr><td>L3 语义计划缓存</td><td><span class="tag t-keep">已完成</span></td><td>复用 SQL 重跑过 <code>tools.execute_sql</code>；字面日期确定性扫描；数值回填对不上即回落</td></tr>
+        <tr><td>L4 前缀缓存纪律</td><td><span class="tag t-keep">已在命中</span></td><td>L0 的 prompt key 只由旋钮与工具集构成，不掺随请求变的值（单测钉住）</td></tr>
+        <tr><td>三档旋钮 + 影子记录</td><td><span class="tag t-keep">已完成</span></td><td><code>semantic_cache.mode</code> 默认 <code>shadow</code>；记 would_hit 分档与 agree/disagree 判定</td></tr>
+        <tr><td>界面区分 L2 / L3 措辞</td><td><span class="tag t-keep">已完成</span></td><td>L3 真查了库，不能说“本次未查库”——<code>ResultTabs.tsx</code> 分两段话</td></tr>
+        <tr><td>L3「一键完整重跑」按钮</td><td><span class="tag t-waste">未做</span></td><td>本轮只做了措辞区分。<code>enforce</code> 切档前必须补上</td></tr>
+        <tr><td>enforce 切档</td><td><span class="tag t-waste">未做 · 有前置</span></td><td>前置是 §04 的影子标定：两轮 ×130 条 ×13 源。<strong>本轮上线的是 shadow</strong></td></tr>
+        <tr><td>§05 首字延迟三档</td><td><span class="tag t-waste">本轮不做</span></td><td>本轮范围是缓存。P0「先出结果表」单独立项</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout">
+    <p class="h">为什么上线的是 shadow 而不是 enforce</p>
+    <p>§04 是本方案自己定的规矩：语义层的命中是一次判定，判错的形态是“给了你另一个
+      问题的答案”且不报错，所以必须先影子跑标定。<strong>本轮上线不改变任何一个用户
+      可见的答案</strong> —— L2/L3 只记“本来会命中哪一条、命中了会不会答错”。</p>
+    <p>真正立即生效的是 L0、L1（D-6 / D-2 / D-5 / D-3）这几层：它们不是判定，
+      不存在判错一说。</p>
+  </div>
+</section>
+
 <!-- ================= 08 ================= -->
 <section id="s8">
   <h2><span class="num">08</span>分阶段计划</h2>
@@ -860,7 +899,7 @@ elif explain_rows >= scan_threshold // 2:     <span class="cm"># 预估扫描过
 </section>
 
 <footer>
-  askdb · 多级缓存与首字延迟方案 V1.1 · 拟制 2026-09-15 · 待评审<br>V1.1（2026-09-15）新增 D-6「交接出去的执行永不进缓存」，并据此重排阶段一次序。<br>
+  askdb · 多级缓存与首字延迟方案 V1.2 · 拟制 2026-09-15<br>V1.2（2026-09-15）L0/L1/L2/L3 落地，语义层以 shadow 上线；新增 §07′ 落地状态。<br>V1.1（2026-09-15）新增 D-6「交接出去的执行永不进缓存」，并据此重排阶段一次序。<br>
   数字来源：代码实读（main@b84644a）+ 生产 trace 9eefdf7518b6 / 4bac5ce7f21b + 1030 次生产跑测。<br>
   估算项已在正文逐处标注，未标注者为实测。
 </footer>

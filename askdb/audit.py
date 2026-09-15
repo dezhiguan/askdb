@@ -39,6 +39,11 @@ SUMMARY_FIELDS = (
     # 命中应答缓存的那条记录，耗时/成本/token 全是 0 —— 不标一句"命中缓存"，
     # 流水上它和一次真跑长得一样，只是快得离谱。
     "cached",
+    # 命中省下了多少。**与 cost_cny 是两列，不能合并** —— cost_cny 说的是
+    # "这次花了多少"（命中时真是 0），saved_cny 说的是"不命中会花多少"。
+    # 不把后者放出去，缓存这一层在成本页上就只表现为"调用变少了"，
+    # 省了多少钱一个数都拿不出来。
+    "saved_cny", "saved_ms",
 )
 
 # /api/trace 的字段白名单：执行追踪页要的是**节点链与计量**。
@@ -57,7 +62,7 @@ TRACE_FIELDS = (
     "trace_id", "ts", "kind", "thread_id", "role", "model",
     "tok_in", "tok_out", "step_count", "multi_step", "attempts",
     "elapsed_ms", "cost_cny", "rejected_by", "source", "source_name",
-    "cached", "cached_from",
+    "cached", "cached_from", "saved_cny", "saved_ms",
     # 结果可信度那枚角标要判的痕迹。原来是四条机械护栏标志，2026-09-10 之后
     # 加了三条语义信号（猜测措辞、缓存计数列、纯指代追问）—— 那次跑测里
     # 1030 条有 11/12 拿满分，包括模型自己写着"作为占位，口径需人工确认"的

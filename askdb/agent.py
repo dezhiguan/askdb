@@ -24,7 +24,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from . import grounding, planner, skill, tools
+from . import grounding, l0, planner, skill, tools
 from .audit import PHASE_STARTED
 from .config import Config
 from .executor import Executor
@@ -272,9 +272,17 @@ def render_agent_system(cfg: Config, hide: frozenset[str] = frozenset()) -> str:
     **整段是跨请求可缓存的前缀**，所以这里只能填入随部署固定的东西
     （工具规格、旋钮档位），绝不能插入随请求变的值。
     """
-    return AGENT_SYSTEM.format(tools=_render_specs(hide),
-                               answer_style=_ANSWER_STYLE[answer_no_table_dump(cfg)],
-                               **_RULES[sql_consolidation(cfg)])
+    # 走 L0：这一段每轮 decide 都要拼一次，而它的输入只有两个旋钮档位与
+    # 被收起来的工具集 —— 输入相同则输出逐字相同。缓存 key 必须**只由这三样
+    # 构成**，掺进任何随请求变的值都会让厂商侧那 91% 的前缀命中率一起作废。
+    style = answer_no_table_dump(cfg)
+    rules = sql_consolidation(cfg)
+    key = f"{int(style)}|{int(rules)}|{','.join(sorted(hide))}"
+    return l0.memo(
+        "prompt", key,
+        lambda: AGENT_SYSTEM.format(tools=_render_specs(hide),
+                                    answer_style=_ANSWER_STYLE[style],
+                                    **_RULES[rules]))
 
 
 #: 表头是**全局静态**的，而且排在 {schema} 之前 —— 它同时把跨请求可缓存的前缀
