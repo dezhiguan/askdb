@@ -392,7 +392,7 @@ blockquote{margin:0; padding:14px 18px; background:var(--surface-2); border-left
       <div class="dhead">
         <span class="dtag">C2</span>
         <h3>三段以上的 UNION 一律拒答 —— 脱敏判定的解析 bug</h3>
-        <span class="cls">代码 · 确定性</span>
+        <span class="cls"><span class="pill p-ok">已落地 · 2026-09-15</span></span>
       </div>
       <div class="dbody">
         <p>第 07 步这条枚举探查被 P03 从严拒绝，代价是 119 ms 加上第 08 步里重新规划的那一段：</p>
@@ -411,12 +411,26 @@ ORDER BY 1, 3 DESC</pre>
 2-branch | root= Union | this= Select  | expression= Select</pre>
         <p>返回 <code>None</code> → <code>Executor._mask</code> 抛 <code>MaskUnresolved</code> → 整条查询拒答。<strong>也就是说，任何数据源上任何三段及以上的 UNION 查询都必然被拒</strong>，与是否真的涉及个人信息无关。而"先用一条 UNION 把几个枚举列的分布一次查清"正是多步链路最常用的探查写法。</p>
         <p>修法是把 Union / Except / Intersect 递归展平到叶子 Select，再按位置对齐取并集。方向是<strong>变严不是变松</strong>：从"整条拒答"变成"该打码的照常打码"。</p>
+
+        <h3 style="margin-top:10px">落地时查出第二个受害点：EXCEPT / INTERSECT 已经在生产上被 R-02 拒了</h3>
+        <p>同一个根因，另一处。实测 <code>issubclass(exp.Except, exp.Union)</code> 在 <strong>sqlglot 25 上是 <code>True</code>，30 上是 <code>False</code></strong> —— 30 把 Union / Except / Intersect 一起改挂到新的 <code>SetOperation</code> 基类之下，三者平级。于是同一行代码打中两处：</p>
+        <div class="tw">
+          <table>
+            <thead><tr><th>位置</th><th>sqlglot 25</th><th>sqlglot 30</th></tr></thead>
+            <tbody>
+              <tr><td><code>guard.py:269</code> R-02 语句白名单<br><code>isinstance(root, (exp.Select, exp.Union))</code></td><td>EXCEPT / INTERSECT 放行</td><td><strong>判成非法语句直接拒</strong>，reason「实际是 EXCEPT」</td></tr>
+              <tr><td><code>guard.py:1285</code> 脱敏判定</td><td>走 Union 分支</td><td>不认，<code>return None</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>而 <code>pyproject.toml</code> 是 <code>sqlglot&gt;=25.0</code> <strong>无上界</strong>，Dockerfile 里 <code>pip install ".[web,redis,postgres]"</code>、没有 lock 文件，每次构建装当时的最新版。<code>_select_flags</code> 里已有一条同类漂移的注释（「sqlglot 30 把 with 改成了 with_」），说明线上跑的就是 30.x。<strong>没人改过这条规则，是依赖自己变了</strong> —— 这正是最坏的失效方向：不报错，只是判定悄悄换了一侧。</p>
+        <p>放行不是放宽：EXCEPT / INTERSECT 与 UNION 一样是只读集合运算，下游一条护栏都不漏 —— R-10 租户谓词注入走 <code>root.find_all(exp.Select)</code>，递归覆盖每一支（实测三分支注入 3 次）；LIMIT 回写走 <code>root.limit()</code>，SetOperation 同样支持。</p>
       </div>
       <dl class="dmeta">
-        <div><dt>改哪儿</dt><dd><code>askdb/guard.py</code> · <code>sensitive_output_columns</code>（约 1220 行）</dd></div>
-        <div><dt>省多少</dt><dd>本条至少 −1 轮补救决策；抽样 43 次拦截里 P03 占 2 次</dd></div>
-        <div><dt>质量方向</dt><dd><strong>升</strong>。今天的行为是对合法查询的系统性误杀</dd></div>
-        <div><dt>怎么验</dt><dd>加一条三分支 UNION 的单测，断言返回 set 而非 None，且敏感列位置判对；扫审计里 <code>rejected_by=P03</code> 改后归零</dd></div>
+        <div><dt>改了哪儿</dt><dd><code>askdb/guard.py</code> 新增 <code>set_op_leaves</code>（有序递归展平，含 <code>exp.Subquery</code> 解包与 <code>SetOperation</code> 向下兼容），<code>sensitive_output_columns</code> 与 R-02 白名单各改一处；<code>pyproject.toml</code> 钉上界 <code>sqlglot&gt;=25.0,&lt;31</code></dd></div>
+        <div><dt>为什么不用 find_all</dt><dd><code>root.find_all(exp.Select)</code> 是遍历序不是源码序（实测三段 UNION 返回 C、A、B）。这一层判的就是「第几个返回列」，顺序错了脱敏会打在别的列上</dd></div>
+        <div><dt>验收</dt><dd>线上第 07 步那条原文 SQL 现在解析为 <code>set()</code>（放行）；把中间那支换成敏感列 <code>file_name</code> 后正确判出 <code>{1}</code> —— 少误杀，没放宽。全量 <strong>1,088 passed / 0 failed</strong>，覆盖率 82.01%（门槛 81%）。7 条新用例在改动前逐条红、改动后全绿</dd></div>
+        <div><dt>还要看的</dt><dd>部署后扫审计里 <code>rejected_by=P03</code> 与 <code>R-02</code>「实际是 EXCEPT」两项是否归零</dd></div>
       </dl>
     </div>
 
@@ -529,7 +543,7 @@ ORDER BY 1, 3 DESC</pre>
     <table>
       <thead><tr><th>顺序</th><th>改动</th><th>性质</th><th class="n">本条链路</th><th class="n">多步链路均摊</th></tr></thead>
       <tbody>
-        <tr><td class="n">1</td><td>C2　修 P03 多分支 UNION</td><td>代码 · 确定</td><td class="n">≥ −1 轮</td><td class="n">−0.2 s</td></tr>
+        <tr><td class="n">1</td><td>C2　修 P03 多分支 UNION　<span class="pill p-ok">已落地</span></td><td>代码 · 确定</td><td class="n">≥ −1 轮</td><td class="n">−0.2 s</td></tr>
         <tr><td class="n">2</td><td>C3　提示词声明方言</td><td>提示词 · 确定</td><td class="n">重叠计</td><td class="n">−0.45 s</td></tr>
         <tr><td class="n">3</td><td>C1(b)　最后一轮不摆工具</td><td>代码 · 确定</td><td class="n">−3,106 ms</td><td class="n">−1.3 s</td></tr>
         <tr><td class="n">4</td><td>C1(a)　草稿答案兜底</td><td>代码 · 确定</td><td class="n">0 ms</td><td class="n">0 s</td></tr>
@@ -588,11 +602,11 @@ ORDER BY 1, 3 DESC</pre>
 </section>
 
 <div class="foot">
-  <div><dt>文档</dt><dd>askdb 链路提效 · af565a7a7074 专项 · <strong>V1.0</strong></dd></div>
+  <div><dt>文档</dt><dd>askdb 链路提效 · af565a7a7074 专项 · <strong>V1.1</strong></dd></div>
   <div><dt>拟制日期</dt><dd>2026-09-15</dd></div>
   <div><dt>依据</dt><dd>生产 trace <code>af565a7a7074</code>（15 个 span 完整输入输出，取自 <code>/api/trace</code>）；分布数据取自 <code>/api/audit</code> 最近 600 条与 63 条多步链路的逐 span 聚合；代码对照 <code>askdb@bdbaa32</code> 的 <code>agentgraph.py</code> / <code>agent.py</code> / <code>guard.py</code> / <code>executor.py</code>；UNION 解析行为经本机 sqlglot 30.18 复现</dd></div>
   <div><dt>分阶段目标</dt><dd>C1 + C2 + C3 落地：<strong>2026-09-17</strong>　·　对照组验收：<strong>2026-09-18</strong>　·　C4 影子跑两轮：<strong>2026-09-24</strong>　·　C4 切 enforce 并生产验证：<strong>2026-09-29</strong></dd></div>
-  <div><dt>修订记录</dt><dd class="rev"><span>V1.0 / 2026-09-15 / 首版，基于单条 trace 剖析 + 600 条分布抽样</span></dd></div>
+  <div><dt>修订记录</dt><dd class="rev"><span>V1.0 / 2026-09-15 / 首版，基于单条 trace 剖析 + 600 条分布抽样</span><span>V1.1 / 2026-09-15 / C2 落地。落地时查出同根因的第二个受害点 —— sqlglot 25→30 把 Except / Intersect 从 Union 的子类改挂 SetOperation，R-02 白名单因此已在生产上把 EXCEPT / INTERSECT 判成非法语句。一并修复，并给 sqlglot 钉上界 + 一条 AST 形状护栏测试。C1 / C3 / C4 未动</span></dd></div>
   <div><dt>数字来源</dt><dd>全部实测，可逐条回溯到 span 明细或审计接口。不适用 <code>docs/README.md</code> 里「设计文档数字均为占位值」那条</dd></div>
 </div>
 

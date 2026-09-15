@@ -69,6 +69,59 @@ def test_unresolvable_sql_returns_none(cfg):
     assert guard.sensitive_output_columns("SELECT * FROM documents", cfg, "duckdb") is None
 
 
+# ---------------------------------------------------------------------------
+# 集合运算：分支按位置对齐。
+#
+# 2026-09-15 线上 trace af565a7a7074 第 07 步：一条三段 UNION ALL 的枚举探查
+# 被 P03 从严拒答，白烧一轮决策。原判定只拆一层（sides = [this, expression]），
+# 而 A∪B∪C 解析出来是 Union(Union(A,B), C) —— 于是任何数据源上任何三段及以上
+# 的集合运算都必然被拒，与它碰没碰个人信息无关。
+# ---------------------------------------------------------------------------
+
+
+def test_two_branch_union_aligns_by_position(cfg):
+    """两分支原来就是对的，一并锁住，免得递归改动把它带坏。"""
+    sql = ("SELECT file_name, id FROM documents "
+           "UNION ALL SELECT file_name, id FROM documents")
+    assert guard.sensitive_output_columns(sql, cfg, "duckdb") == {0}
+
+
+def test_three_branch_union_is_resolved(cfg):
+    """三分支：这条正是线上被拒的那个形状。"""
+    sql = ("SELECT file_name, id FROM documents "
+           "UNION ALL SELECT file_name, id FROM documents "
+           "UNION ALL SELECT file_name, id FROM documents")
+    assert guard.sensitive_output_columns(sql, cfg, "duckdb") == {0}
+
+
+def test_union_masks_position_sensitive_in_any_branch(cfg):
+    """任一分支敏感则该位置敏感 —— 只看第一支就会漏掉后面那支的明文。"""
+    sql = ("SELECT id AS a, id AS b FROM documents "
+           "UNION ALL SELECT id AS a, id AS b FROM documents "
+           "UNION ALL SELECT id AS a, file_name AS b FROM documents")
+    assert guard.sensitive_output_columns(sql, cfg, "duckdb") == {1}
+
+
+def test_parenthesised_union_branches_are_unwrapped(cfg):
+    """带括号的写法每支裹了一层 Subquery，不拆就又退回"解析不出"。"""
+    sql = ("(SELECT file_name FROM documents) "
+           "UNION ALL (SELECT file_name FROM documents) "
+           "UNION ALL (SELECT file_name FROM documents)")
+    assert guard.sensitive_output_columns(sql, cfg, "duckdb") == {0}
+
+
+def test_except_is_resolved(cfg):
+    """EXCEPT / INTERSECT 与 UNION 同属集合运算，判定不该因类名不同而失效。"""
+    sql = "SELECT file_name FROM documents EXCEPT SELECT file_name FROM documents"
+    assert guard.sensitive_output_columns(sql, cfg, "duckdb") == {0}
+
+
+def test_union_with_unresolvable_branch_returns_none(cfg):
+    """一支拆不开就整条说不知道 —— 从严的方向不因为分支多了而松动。"""
+    sql = "SELECT file_name FROM documents UNION ALL SELECT * FROM documents"
+    assert guard.sensitive_output_columns(sql, cfg, "duckdb") is None
+
+
 def test_executor_masks_aliased_column(ex):
     """端到端：真库、真 SQL、真别名。"""
     r = ex.run("SELECT file_name AS 文件名 FROM documents LIMIT 3")

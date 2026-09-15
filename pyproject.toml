@@ -19,7 +19,13 @@ dependencies = [
     "langchain-openai>=0.3",
     # LLM 观测（自托管 Langfuse，v2 服务端配 v2 SDK；import 路径在 v3 有变，锁大版本）
     "langfuse>=2.60,<3",
-    "sqlglot>=25.0",
+    # 锁大版本：guard 的判定直接依赖 AST 的类层次，而这层会在大版本间无声地变。
+    # 实测 25 → 30 动了两处：Except / Intersect 从 Union 的子类改挂到新的
+    # SetOperation 之下（把 R-02 白名单收严成拒 EXCEPT），CTE 的 args 键从
+    # "with" 改成 "with_"。两次都不报错、只是判定悄悄换了一侧 —— 这正是最坏的
+    # 失效方向，所以宁可升版时人工过一遍，也不要它跟着构建日期漂。
+    # tests/test_guard.py::test_set_operation_ast_shape 是配套的护栏。
+    "sqlglot>=25.0,<31",
     "duckdb>=1.0",
     # 数据源注册表存在 PostgreSQL（askdb/sources.py）。**主依赖，不是可选**：
     # 没有它连"有哪些数据源"都读不出来，实例整个不可用 —— 与被查询的库

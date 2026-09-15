@@ -355,6 +355,45 @@ def test_union_is_accepted_and_injected(cfg):
     assert _where_of(r.sql).count("ORG_ID = 65") == 2
 
 
+def test_three_branch_union_is_accepted_and_injected(cfg):
+    """三分支：每一支都要拿到租户谓词，少注一支就是一次跨租户读。"""
+    r = chk("SELECT id FROM documents UNION SELECT id FROM knowledge_bases "
+            "UNION SELECT id FROM documents", cfg)
+    assert r.ok
+    assert _where_of(r.sql).count("ORG_ID = 65") == 3
+
+
+@pytest.mark.parametrize("op", ["EXCEPT", "INTERSECT"])
+def test_r02_accepts_except_and_intersect(cfg, op):
+    """R-02 的白名单判的是 SetOperation，不是 Union —— 这一行是版本敏感的。
+
+    sqlglot 25 上 Except / Intersect 是 Union 的子类，白名单顺带放行；30 起
+    它们改挂 SetOperation、与 Union 平级，同一行代码就把 `A EXCEPT B` 判成
+    "实际是 EXCEPT" 直接拒。没人改过规则，是依赖自己变了。
+    """
+    r = chk(f"SELECT id FROM documents {op} SELECT id FROM knowledge_bases", cfg)
+    assert r.ok, r.reason
+    assert _where_of(r.sql).count("ORG_ID = 65") == 2
+
+
+def test_set_operation_ast_shape(cfg):
+    """版本护栏：guard 对 sqlglot AST 形状的两条假设，漂了要当场红。
+
+    pyproject 的 `sqlglot>=25.0,<31` 就是为这两条钉的上界。
+      ① 多分支集合运算是**左嵌套**的（A∪B∪C → Union(Union(A,B), C)）——
+         set_op_leaves 的递归、以及"按位置对齐"的脱敏判定都建在这上面；
+      ② Except / Intersect 与 Union 同属一个可判的基类。
+    """
+    root = sqlglot.parse_one(
+        "SELECT 1 AS a UNION ALL SELECT 2 UNION ALL SELECT 3", dialect="duckdb")
+    leaves = guard.set_op_leaves(root)
+    assert leaves is not None and len(leaves) == 3
+
+    base = getattr(sqlglot.exp, "SetOperation", sqlglot.exp.Union)
+    for op in ("Union", "Except", "Intersect"):
+        assert issubclass(getattr(sqlglot.exp, op), base), op
+
+
 def test_r10_outer_join_predicate_goes_to_on_not_where(cfg):
     """把外连接的租户谓词放进 WHERE 会把 LEFT JOIN 悄悄降级成 INNER JOIN。
 

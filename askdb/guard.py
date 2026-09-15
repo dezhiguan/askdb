@@ -266,7 +266,19 @@ def _check(sql: str, cfg: Config, org_id: int, dialect: str = "duckdb",
     root = stmts[0]
 
     # ---------- R-02 语句类型白名单 ----------
-    if not isinstance(root, (exp.Select, exp.Union)):
+    #
+    # 判 SetOperation 而不是判 Union —— **这一行是版本敏感的**，2026-09-15 查
+    # 脱敏那个 bug 时顺带发现它已经在生产上悄悄收严了。sqlglot 25 上 Except /
+    # Intersect 是 Union 的子类，这条白名单连它们一起放行；30 起它们改挂到
+    # SetOperation 之下、与 Union 平级，于是同一行代码开始把 `A EXCEPT B` 判成
+    # "实际是 EXCEPT" 直接拒。而 pyproject 里是 `sqlglot>=25.0`、镜像每次构建
+    # 装当时最新版 —— 没人改过这条规则，它自己变了。
+    #
+    # 放行是对的，不是放宽：EXCEPT / INTERSECT 与 UNION 一样是只读集合运算，
+    # 下游一条护栏都不会漏 —— R-10 租户谓词注入走的是 root.find_all(exp.Select)，
+    # 递归覆盖每一支；LIMIT 回写走 root.limit()，SetOperation 同样支持。
+    # getattr 兜底：装 25 的环境上 Union 本来就涵盖那两个，行为一致。
+    if not isinstance(root, (exp.Select, getattr(exp, "SetOperation", exp.Union))):
         return GuardResult(
             ok=False, rejected_by="R-02",
             reason=f"只允许 SELECT / WITH…SELECT，实际是 {type(root).__name__.upper()}",
@@ -1267,6 +1279,53 @@ def is_bounded_aggregate(sql: str, dialect: str = "duckdb",
     return True
 
 
+def set_op_leaves(node: exp.Expression) -> list[exp.Select] | None:
+    """集合运算（UNION / EXCEPT / INTERSECT）展平成**按源码顺序**的叶子 SELECT。
+
+    不是集合运算就返回它自己那一项；认不出的形状返回 None，由调用方从严处理。
+
+    为什么要递归 —— 2026-09-15 线上 trace af565a7a7074 第 07 步。模型发了一条
+    三段 UNION ALL 的枚举探查（一次问清 knowledge_bases.status、documents
+    .file_type、documents.chunk_type 三列的取值分布），P03 判定拿它没辙、
+    整条从严拒答，白烧一轮决策。原因不在那条 SQL —— 它完全合法 —— 而在这里
+    原来写的是 `sides = [root.this, root.expression]`，只拆一层：
+
+        A UNION B         → Union(this=A,     expression=B)   ✅ 拆得开
+        A UNION B UNION C → Union(this=Union(A,B), expression=C)   ❌ this 是 Union
+
+    于是**任何数据源上任何三段及以上的集合运算都必然被 P03 拒**，与它是不是
+    真的碰了个人信息无关。而"先用一条 UNION 把几个枚举列的分布一次查清"正是
+    多步链路最常用的探查写法，撞上的概率不低。sqlglot 25 与 30 上行为一致，
+    不是版本问题。
+
+    **`SetOperation` 这个基类是版本敏感的**，与 _select_flags 里 "with"/"with_"
+    那个坑同源：sqlglot 25 上 Except / Intersect 是 Union 的**子类**，30 起改挂
+    到新的 SetOperation 之下、与 Union 平级（实测 25 上
+    `issubclass(exp.Except, exp.Union)` 为 True，30 上为 False）。所以这里按
+    SetOperation 判，取不到就退回 Union —— 装 25 的环境上 Union 本来就涵盖
+    那两个，行为一致。
+
+    顺带拆 exp.Subquery：`(SELECT …) UNION ALL (SELECT …)` 这种带括号的写法
+    每一支都裹了一层 Subquery，不拆就又落回 None。
+    """
+    set_op = getattr(exp, "SetOperation", exp.Union)
+    if isinstance(node, exp.Subquery):
+        return set_op_leaves(node.this)
+    if isinstance(node, set_op):
+        out: list[exp.Select] = []
+        for side in (node.this, node.args.get("expression")):
+            if side is None:
+                return None
+            sub = set_op_leaves(side)
+            if sub is None:
+                return None
+            out.extend(sub)
+        return out
+    if isinstance(node, exp.Select):
+        return [node]
+    return None
+
+
 def sensitive_output_columns(sql: str, cfg: Config,
                              dialect: str = "duckdb") -> set[int] | None:
     """这条 SQL 的哪几个返回列必须脱敏（按位置）。
@@ -1282,26 +1341,23 @@ def sensitive_output_columns(sql: str, cfg: Config,
         return None
     root = stmts[0]
 
-    if isinstance(root, exp.Union):
-        # UNION 各分支按位置对齐，任一分支敏感则该位置敏感
-        sides = [root.this, root.expression]
-        per: list[list[tuple[str, bool]]] = []
-        for s in sides:
-            if not isinstance(s, exp.Select):
-                return None
-            f = _select_flags(s, cfg)
-            if f is None:
-                return None
-            per.append(f)
-        width = min(len(f) for f in per)
-        return {i for i in range(width) if any(f[i][1] for f in per)}
-
-    if not isinstance(root, exp.Select):
+    # 集合运算各分支**按位置对齐**，任一分支敏感则该位置敏感。
+    #
+    # 这里必须用 set_op_leaves 的有序展平，不能图省事用 root.find_all(exp.Select)
+    # —— find_all 是遍历序不是源码序（实测三段 UNION 返回的是 C、A、B），
+    # 而这一层判的就是"第几个返回列"，顺序错了脱敏就打在别的列上。
+    leaves = set_op_leaves(root)
+    if leaves is None:
         return None
-    flags = _select_flags(root, cfg)
-    if flags is None:
-        return None
-    return {i for i, (_, s) in enumerate(flags) if s}
+    per: list[list[tuple[str, bool]]] = []
+    for s in leaves:
+        f = _select_flags(s, cfg)
+        if f is None:
+            return None
+        per.append(f)
+    # 取最窄的一支：分支宽度不一致的 SQL 库本身就会拒，真跑起来的列数以它为准。
+    width = min(len(f) for f in per)
+    return {i for i in range(width) if any(f[i][1] for f in per)}
 
 
 # ---------------------------------------------------------------------------
