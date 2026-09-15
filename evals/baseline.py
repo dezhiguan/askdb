@@ -70,6 +70,19 @@ def _curl(args: list[str]) -> str:
     return subprocess.run(["curl", "-s", *args], capture_output=True, text=True).stdout
 
 
+def _git_head() -> str:
+    """当前 HEAD 的短 sha —— 落进结果里当"这一轮跑的是哪版代码"。
+
+    取不到就返回空串，不猜也不抛：这是标注字段，不该让它把一轮跑测弄崩。
+    """
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                              cwd=HERE.parent, capture_output=True, text=True,
+                              check=True).stdout.strip()
+    except Exception:                          # noqa: BLE001
+        return ""
+
+
 def login(jar: str) -> str:
     """登录并把会话 cookie 存进 jar。返回空串表示成功，否则返回失败原因。
 
@@ -285,6 +298,7 @@ def main() -> int:
     ap.add_argument("--only", default="", help="只跑某个数据源（按名字子串匹配）")
     ap.add_argument("--sleep", type=float, default=SLEEP_S)
     ap.add_argument("--compare", action="store_true", help="不跑，只对比已有两份结果")
+    ap.add_argument("--note", default="", help="记进结果的一句话：这一轮对应哪些改动")
     a = ap.parse_args()
 
     out_p, prev_p = Path(a.out), Path(a.out).with_suffix(".prev.json")
@@ -323,7 +337,12 @@ def main() -> int:
                   + (f"  ← {m['rejected_by']}" if m["rejected_by"] else ""))
             time.sleep(a.sleep)
 
-    res = {"base": BASE, "n_cases": len(items), "summary": summarize(items), "items": items}
+    # build / note **必须真的写进去**。模块头写着"记着每一轮对应哪些提交，别丢"，
+    # 而在此之前没有任何代码写这两个字段 —— 首份基线里那两行是手工填的。
+    # 一个文档声明承重、工具却产不出来的字段，等于每一轮都在悄悄丢掉归因：
+    # 两份结果摆在一起时，没人说得出它们各自跑的是哪版代码。
+    res = {"base": BASE, "build": _git_head(), "note": a.note,
+           "n_cases": len(items), "summary": summarize(items), "items": items}
     out_p.parent.mkdir(parents=True, exist_ok=True)
     if out_p.exists():
         prev_p.write_text(out_p.read_text())
