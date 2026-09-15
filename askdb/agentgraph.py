@@ -38,11 +38,21 @@ class AgentState(TypedDict, total=False):
     thread_id: str
 
     schema_prompt: str
+    #: 同一批表的**表头层**（表名 + 一行描述 + 别名，不含列），只给意图预检。
+    #: 单列一个字段而不是在 _n_intent 里现渲染：那里拿不到召回挑中的那批
+    #: Table 对象，从 tables_hit 反查 cfg.tables 会在运行时源改名/裁表时
+    #: 悄悄对不上 —— 与 schema_prompt 同源产出才保证两者是同一批表。
+    schema_heads: str
     tables_hit: list[str]
     #: 召回是否"足够完整"：没盲选、没因预算裁表。为真时 schema_prompt 里每张表
     #: 都是全列原值，get_table_schema 对它们一无所加 —— 决策时据此收窄工具暴露面
     #: （见 _hidden_tools）。**必须声明在这里**，理由同下面 action 那条。
     schema_complete: bool
+    #: 预检判定的"问的是元数据还是数据"。同样**必须声明在这里**，否则 LangGraph
+    #: 按 State 字段过滤节点返回值时会把它静默丢掉，_hidden_tools 永远读到
+    #: 默认的 False —— 而那个方向恰好是"看起来正常、只是一直多花一轮"，
+    #: 不会有任何报错把它暴露出来。
+    metadata_only: bool
 
     history: list[dict[str, Any]] # 回灌进下一轮提示词
     exec_results: list[dict[str, Any]] #每一次执行成功；接地校验要看全部
@@ -60,6 +70,9 @@ class AgentState(TypedDict, total=False):
     action: dict[str, Any]
 
     answer: str
+    #: 模型指认的"结论依据的是第几步的执行结果"（AgentAction.answer_step）。
+    #: 0 = 没指认，按最后一次执行取。**必须声明在这里**，理由同 action 那条。
+    answer_step: int
     converged: str # 为什么提前收敛，空串=正常收尾
     step: int
     step_count: int
@@ -266,30 +279,63 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     rec = tools.search_schema(state["question"], d.cfg)
     tables_hit = rec.data.get("tables", [])
     schema_prompt = rec.data.get("prompt", "")
+    schema_heads = rec.data.get("prompt_heads", "") or schema_prompt
     # 输出必须是**喂进提示词的表结构全文**：排查"模型为什么没用那张表"时，
     # 召回对了但结构没渲染出某一列，与压根没召回那张表，在"召回 N 张表"
     # 这句 note 上完全一样，只有全文分得开。
+    #
+    # **embedding 的用量与金额必须一起落。** 这一行原来只传 tables/input/output，
+    # 于是 vector 召回那次 embedding 调用在 trace 里既没有 token 也没有金额 ——
+    # 生产 trace 4bac5ce7f21b 的 ¥0.012834 就不含它，schema_recall 那一格
+    # tok_in=0 / cost=0，看上去像是"这一步不花钱"。tools.search_schema 的返回体
+    # 里 embed_tokens / embed_cost_cny 一直是现成的，是这里把它们丢了。
+    #
+    # 金额很小，但方向是错的：做成本优化的前提是账面完整，而
+    # trace.embed_cost_cny 的注释自己就写着"不设默认价，0 元在成本页上是显眼的、
+    # 会被人问起来" —— 这里正是那个该被问起来的 0。
+    #
+    # embedding 只有输入没有输出，记进 tok_in 与模型调用的口径一致；keyword
+    # 模式下这三项恒为空/0，如实记 0。
+    #
+    # **model 必须一起带上嵌入模型名**，否则 audit 那张按模型分的成本表会走到
+    # "带金额却没记模型"那条兜底分支，把这笔 embedding 的钱挂到记录级的应答
+    # 模型（qwen3.8-flash）头上 —— 账面合得上，归属是错的。带上之后它记在
+    # text-embedding-v4 名下，次数与金额同源。
+    #
+    # 不会污染别处：MODEL_STEPS 不含 schema_recall，所以「模型调用成功率」的
+    # 分母不受影响；graph._answering_model 也按 MODEL_STEPS 过滤，不会把
+    # "这次由 text-embedding-v4 应答"写进审计（那条注释正是为此写的）。
     d.tracer.add("schema_recall", t, _brief(rec), tables=tables_hit,
+                 tok_in=int(rec.data.get("embed_tokens") or 0),
+                 cost_cny=float(rec.data.get("embed_cost_cny") or 0.0),
+                 model=str(rec.data.get("embed_model") or ""),
                  input=state["question"], output=schema_prompt)
     # 盲选 / 有表被预算裁掉时，提示词里这份就**不是**全部可用的表，
     # 此时 get_table_schema 仍有用武之地（去查一张没被注入的表）。
     complete = bool(schema_prompt) and not rec.data.get("blind") \
         and not rec.data.get("truncated")
     return {"tables_hit": tables_hit, "schema_prompt": schema_prompt,
-            "schema_complete": complete}
+            "schema_heads": schema_heads, "schema_complete": complete}
 
 
 def _n_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     """意图 / 可答性预检。超出这个库的范围就别开始烧 token。"""
-    from .agent import INTENT_SYSTEM, INTENT_USER, IntentCheck, _sys
+    from .agent import (INTENT_SYSTEM, INTENT_USER, IntentCheck, _sys,
+                        intent_schema_heads)
 
     d = _deps(config)
     t = d.tracer.start()
     try:
         intent, u = d.llm.structured(
             IntentCheck, _sys(INTENT_SYSTEM, d.cfg),
-            INTENT_USER.format(schema=state.get("schema_prompt", ""),
-                               question=state["question"]))
+            # **喂表头层，不喂列级明细。** 预检要判的是"有没有承载这个实体的
+            # 表"，列名是它被明确要求忽略的那类证据（见 INTENT_SYSTEM 第 2 条
+            # 与 schema_rag.table_head）。4bac5ce7f21b 上这一段从 5,103 字符
+            # 降到约 900。取不到表头层时退回全量 —— 少喂不如多喂。
+            INTENT_USER.format(
+                schema=(state.get("schema_heads") if intent_schema_heads(d.cfg) else "")
+                       or state.get("schema_prompt", ""),
+                question=state["question"]))
     except QuotaExceeded as e:
         # 异常分支也要取流水：不取，这一步失败的尝试会顺延到下一个节点被取走，
         # 落成挂在别人名下的 span —— 比不记还坏。
@@ -305,7 +351,11 @@ def _n_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     d.tracer.add("intent", t, intent.reason, **_sp_kw(sp))
 
     out: dict[str, Any] = {
-        "tok_used": state.get("tok_used", 0) + u.input_tokens + u.output_tokens}
+        "tok_used": state.get("tok_used", 0) + u.input_tokens + u.output_tokens,
+        # 供 _hidden_tools 决定第一轮要不要把 search_schema 摆上桌。
+        # 这一位**只由预检产出**：循环里没有任何一处比这次调用更清楚用户问的是
+        # 元数据还是数据，而预检本来就要跑，多这一个字段约 10 个输出 token。
+        "metadata_only": bool(intent.metadata_only)}
     # 两种不可答分开报：越界是"这个库里没有这种东西"（补充再多也没用），
     # 缺主体是"你问得不够具体"（补一句就能跑）。下一步该谁动手完全不同。
     if intent.out_of_scope:
@@ -388,11 +438,39 @@ def _hidden_tools(state: AgentState) -> frozenset[str]:
     所以这里只收 get_table_schema：它与闸 ① 无关（元数据的依据来自 search_schema），
     撤掉零风险。search_schema 那一轮改由提示词劝阻（AGENT_USER 表头）+ 下面
     _n_act 的 ⓪′ 兜底 —— 劝不住时至少不重跑 embedding，并在回灌里点破。
+
+    2026-09-15 补：**search_schema 也收，但只对数据问题收。**
+
+    上面那段留下的缺口，生产 trace 4bac5ce7f21b 又原样重演了一次：第 2 轮决策
+    选了 search_schema，⓪′ 把它挡下、返回 reused=true、耗时 0ms —— embedding
+    是省下了，可那一轮决策本身（2,940ms + 4,355 输入 / 225 输出 token
+    ≈ ¥0.0011）已经花掉了。劝阻是概率，而概率会以固定比例失败。
+
+    绕开"改闸 ① 判据"那条难走的路：闸 ① 保护的只是**元数据问题**（"这个库里有
+    哪些表"），那类问题唯一能调的工具就是 search_schema。所以按问题类型分开：
+
+      · metadata_only=True  —— 照旧摆上桌。闸 ① 要保护的正是这一类，行为与
+        改动前逐字相同，上面那段论证护住的不变量原样成立。
+      · metadata_only=False —— 收掉。数据问题必然要跑 execute_sql，闸 ① 天然
+        满足，不存在"零工具调用直接作答"的情形。
+
+    metadata_only 由预检产出（agent.IntentCheck），而且**判不准时它被要求填
+    true**：误判成 true 的代价是多花一轮（退回改动前），误判成 false 的代价是
+    元数据问题无工具可用。两个方向不对称，所以默认值与措辞都偏向 true。
+
+    预检没跑（异常早退）时 state 里没有这一位，读到 False。那种情况下链路根本
+    走不到 decide，不必为它单开一条分支。
     """
     if not state.get("schema_prompt"):
         return frozenset()                     # 召回什么都没给，该让它自己去搜
-    return frozenset({"get_table_schema"}) if state.get("schema_complete") \
-        else frozenset()
+    if not state.get("schema_complete"):
+        # 盲选 / 有表被预算裁掉：提示词里那份**不是**全部可用的表，
+        # 两个检索工具都还有用武之地，一个都不撤。
+        return frozenset()
+    hide = {"get_table_schema"}
+    if not state.get("metadata_only"):
+        hide.add("search_schema")
+    return frozenset(hide)
 
 
 def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
@@ -401,8 +479,8 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     配额耗尽走 converged 而不是 rejected_by：已经查到的东西还在，该收敛作答，
     不是报错丢掉。
     """
-    from .agent import (AGENT_SYSTEM, AGENT_USER, AgentAction, _render_history,
-                        _render_specs, _sys)
+    from .agent import (AGENT_USER, AgentAction, _render_history,
+                        _sys, render_agent_system)
 
     d = _deps(config)
     step = state.get("step", 0) + 1
@@ -414,7 +492,7 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     try:
         action, u = d.llm.structured(
             AgentAction,
-            _sys(AGENT_SYSTEM.format(tools=_render_specs(_hidden_tools(state))), d.cfg),
+            _sys(render_agent_system(d.cfg, _hidden_tools(state)), d.cfg),
             human)
     except QuotaExceeded as e:
         _llm_spans(d, "decide")
@@ -473,6 +551,9 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     }
     if finish:
         out["answer"] = action.answer or ""
+        # 越界/负数在 _answer_exec 里退回"最后一次"，这里不做校验 —— 模型填错
+        # 一个序号不该让整条链路失败。
+        out["answer_step"] = int(getattr(action, "answer_step", 0) or 0)
     _check_handoff(d, state, step=step, tok_used=out["tok_used"])
     return out
 
@@ -613,8 +694,10 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     #
     #    _n_recall 调的就是 tools.search_schema(question)，结果全文已注入提示词。
     #    模型再调一次 search_schema 时，重跑的是一次 **embedding 计费调用 + 向量
-    #    检索**，换回的是逐字相同的一份东西。_hidden_tools 已经把它从规格表里
-    #    撤了，这里是硬兜底 —— 规格表是引导，这一条才是保证。
+    #    检索**，换回的是逐字相同的一份东西。数据问题上 _hidden_tools 已经把它
+    #    从规格表里撤了，这里是硬兜底 —— 规格表是引导，这一条才是保证。
+    #    元数据问题上它仍在桌上（闸 ① 要它），那一类正是这条兜底唯一还会
+    #    真正拦到的场景。
     #
     #    不走上面那道 ⓪：那道闸按 (工具, 参数) 完全相同判，而召回这一次压根不在
     #    history 里，且模型填的 question 往往是自己的改写，字面对不上。
@@ -698,16 +781,29 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     #    大量正确答案判成编造。
     if res.ok and tool_name == "execute_sql":
         out["last_exec"] = dict(res.data or {})
+        # 带上**步号与完整返回**：结果区要按模型指认的 answer_step 回头取某一步的
+        # 结果（见 _answer_exec），只留 columns/rows 拼不回 as_of / explain_rows /
+        # masked_columns 这些 AskResult 要的字段。
+        # 接地校验只读 columns/rows（grounding.values_of / _subset_sum_keys /
+        # _text_digit_keys 三处都只取 r["rows"]），多出来的键对它是透明的。
         out["exec_results"] = list(state.get("exec_results") or []) + [
-            {"columns": list(res.data.get("columns") or []),
-             "rows": list(res.data.get("rows") or [])}]
+            {**dict(res.data or {}),
+             "columns": list(res.data.get("columns") or []),
+             "rows": list(res.data.get("rows") or []),
+             # history 是 1 起数的（_render_history 用 enumerate(history, 1)），
+             # 而这条记录是 append 之后的那一项 —— 与提示词里模型看到的序号对齐。
+             "step": len(state.get("history") or []) + 1}]
         # ④ 供 analyze_result / export_result 用。ctx 不进检查点，它是本次
         #    执行的现场；续跑时从 history 重建不了，那两个工具因此只在
         #    同一次执行内可用 —— 与改造前一致。
         d.ctx.last_result = res.data
+        pv = planner.preview_rows(res.data.get("rows", []))
         item["preview"] = {"columns": res.data.get("columns", []),
-                           "rows": planner.preview_rows(res.data.get("rows", [])),
+                           "rows": pv,
                            "row_count": res.data.get("row_count")}
+        # 预览被裁掉时才带统计 —— 行全给到了就不必再贴一份（见 _render_history）。
+        if len(pv) < int(res.data.get("row_count") or 0):
+            item["stats"] = _stats_line(res.data.get("column_stats") or [])
     elif res.ok and tool_name == "get_table_schema":
         item["columns"] = [c["name"] for c in res.data.get("columns", [])]
         # 查的是上文已经逐字列出的表 —— 这一步没带来任何新信息，白花了一轮决策。
@@ -725,6 +821,56 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                    explain_rows=int(res.data.get("explain_rows") or 0)
                                 if isinstance(res.data, dict) else 0)
     return out
+
+
+def _answer_exec(state: AgentState) -> dict[str, Any] | None:
+    """结果区该渲染**哪一次**执行的结果。
+
+    此前恒取 last_exec，也就是"最后执行"那一条 —— 而多步链路里最后执行的往往是
+    探查或核对，不是回答问题的那一条。生产 trace 4bac5ce7f21b 就是这个形状：
+    第 5 步那条 GROUP BY 才是答案，第 11 步那条加了"近 3 月均值"的改写版只是
+    顺手多给的，结果区却渲染后者。evals/baseline.py 的注释里也记着同一件事的
+    另一面 —— 审计里的 rows_returned 取的是最后执行那条，拿它反查答案 SQL
+    会选中探查语句。
+
+    **改提示词修不好它**（试过），因为这不是模型不懂，是消费端一直没问过它。
+    所以让它在 finish 那一次直接指认：AgentAction.answer_step 填
+    【已完成的工具调用与结果】里的序号，这里按号回取。
+
+    三种情况一律退回"最后一次执行"，因为那正是改动前的行为 —— 这条改动**只在
+    模型明确指认且指认得到时**改变结果，其余时刻逐字不变：
+      · 没填（0）；
+      · 填了但那一步不是成功的 execute_sql（探查失败、或指到工具调用上）；
+      · 越界 / 负数。
+    """
+    execs = state.get("exec_results") or []
+    if not execs:
+        return state.get("last_exec")
+    want = int(state.get("answer_step") or 0)
+    if want > 0:
+        hit = next((e for e in execs if int(e.get("step") or 0) == want), None)
+        if hit is not None:
+            return hit
+    return state.get("last_exec")
+
+
+#: 一行统计最多占多少字符。宽结果（几十列）上整份统计能顶掉大半个预览预算，
+#: 而回灌它的目的只是"别让模型对看不见的行瞎猜"，不是给它一份完整报表。
+_STATS_CHARS = 400
+
+
+def _stats_line(stats: list[dict[str, Any]]) -> str:
+    """列级统计压成一行。只留对"整列长什么样"真正有用的那几项。"""
+    bits = []
+    for st in stats:
+        parts = [f"非空 {st.get('count', 0)}", f"去重 {st.get('distinct', 0)}"]
+        if "min" in st:
+            parts.append(f"min {st['min']:g}/max {st['max']:g}/均值 {st['mean']:g}")
+        if st.get("note"):
+            parts.append(st["note"])
+        bits.append(f"{st.get('column', '')}[{'，'.join(parts)}]")
+    line = "；".join(bits)
+    return line if len(line) <= _STATS_CHARS else line[:_STATS_CHARS] + " …（统计已截断）"
 
 
 def _meta_evidence(state: AgentState) -> list[dict[str, Any]]:
@@ -1043,10 +1189,10 @@ def initial_state(question: str, org: int, trace_id: str, thread_id: str,
     return {
         "question": question, "org_id": org,
         "trace_id": trace_id, "thread_id": thread_id,
-        "schema_prompt": "", "tables_hit": [],
+        "schema_prompt": "", "schema_heads": "", "tables_hit": [],
         "history": history, "exec_results": [],
         "last_exec": None, "scan_blocked": None, "last_error": "",
-        "answer": "", "converged": "", "step": 0, "step_count": 0,
+        "answer": "", "answer_step": 0, "converged": "", "step": 0, "step_count": 0,
         "ungrounded": [], "grounding_retried": False,
         "rejected_by": None, "error": "", "hint": "", "reasoning": "",
         "max_steps": max_steps, "cost_cap": cost_cap, "tok_used": 0,
@@ -1069,7 +1215,9 @@ def to_result(state: AgentState, cfg: Config, tracer: Tracer):
         int(state.get("org_id", 0)), tracer,
         ok=not state.get("rejected_by"),
         reasoning=state.get("answer") or state.get("reasoning") or "",
-        last_exec=state.get("last_exec"),
+        # **不是 state["last_exec"]** —— 结果区要渲染的是"回答问题那一条"的结果，
+        # 不是"最后执行"那一条。没指认时 _answer_exec 退回 last_exec，行为不变。
+        last_exec=_answer_exec(state),
         rejected_by=state.get("rejected_by"),
         error=state.get("error", ""), hint=state.get("hint", ""),
         tables_hit=state.get("tables_hit") or [],

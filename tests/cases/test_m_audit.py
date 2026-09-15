@@ -33,6 +33,7 @@ class FakeLlm:
         u = LlmUsage(10, 5)
         if schema.__name__ == "IntentCheck":
             return SimpleNamespace(answerable=True, out_of_scope=False,
+                                   metadata_only=False,  # 数据问题，见 test_resume 同处注释
                                    reason="ok", clarify=""), u
         if self.i < len(self.sqls):
             sql = self.sqls[self.i]

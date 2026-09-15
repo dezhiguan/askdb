@@ -1,0 +1,1051 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>查询 Agent 链路提效方案 · askdb</title>
+
+<!-- 单文件、无外部依赖（含字体）：与 docs/ 下其它设计稿同一条纪律，
+     下载后用浏览器直接打开即可，离线也不掉版。 -->
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body, h1, h2, h3, h4, p, dl, dd, ul, figure, pre { margin: 0; }
+  ul { padding: 0; }
+  img, svg { max-width: 100%; display: block; }
+  table { border-collapse: collapse; }
+</style>
+
+<style>
+  :root {
+    --paper:      #F1F4F1;
+    --surface:    #FFFFFF;
+    --surface-2:  #E7ECE7;
+    --ink:        #101A15;
+    --ink-2:      #3D4F47;
+    --muted:      #6E8078;
+    --line:       #D3DBD5;
+    --line-soft:  #E2E8E3;
+    --accent:     #1E6F4C;
+    --accent-dim: #CFE3D8;
+    --waste:      #B3541E;
+    --waste-dim:  #F0DDCE;
+    --half:       #8A7430;
+    --half-dim:   #ECE4C9;
+
+    /* 只用系统字体 —— 不引外部字体表，见文件头的说明 */
+    --f-disp: "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans CJK SC",
+              "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --f-body: var(--f-disp);
+    --f-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+              "Liberation Mono", monospace;
+
+    --step--1: 0.78rem;
+    --step-0:  0.95rem;
+    --step-1:  1.12rem;
+    --step-2:  1.42rem;
+    --step-3:  1.95rem;
+    --step-4:  2.9rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0D1512;
+      --surface:    #151F1A;
+      --surface-2:  #1D2A23;
+      --ink:        #E4ECE6;
+      --ink-2:      #B3C3BA;
+      --muted:      #7D9089;
+      --line:       #2A3A32;
+      --line-soft:  #22302A;
+      --accent:     #4FBF88;
+      --accent-dim: #1E3A2C;
+      --waste:      #E08A4F;
+      --waste-dim:  #3A2618;
+      --half:       #CFB35C;
+      --half-dim:   #332C14;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #0D1512;
+    --surface:    #151F1A;
+    --surface-2:  #1D2A23;
+    --ink:        #E4ECE6;
+    --ink-2:      #B3C3BA;
+    --muted:      #7D9089;
+    --line:       #2A3A32;
+    --line-soft:  #22302A;
+    --accent:     #4FBF88;
+    --accent-dim: #1E3A2C;
+    --waste:      #E08A4F;
+    --waste-dim:  #3A2618;
+    --half:       #CFB35C;
+    --half-dim:   #332C14;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: var(--step-0);
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 62rem;
+    margin: 0 auto;
+    padding: 0 1.5rem 6rem;
+  }
+
+  /* ---------- masthead ---------- */
+  .mast {
+    border-bottom: 2px solid var(--ink);
+    padding: 3.5rem 0 1.25rem;
+    margin-bottom: 2rem;
+  }
+  .eyebrow {
+    font-family: var(--f-mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 0.9rem;
+  }
+  h1 {
+    font-family: var(--f-disp);
+    font-weight: 700;
+    font-size: var(--step-4);
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    margin: 0 0 0.75rem;
+    text-wrap: balance;
+  }
+  .standfirst {
+    color: var(--ink-2);
+    font-size: var(--step-1);
+    line-height: 1.6;
+    max-width: 44ch;
+    margin: 0 0 1.5rem;
+  }
+
+  .meta-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 0;
+    border-top: 1px solid var(--line);
+  }
+  .meta-strip div {
+    padding: 0.7rem 1rem 0.7rem 0;
+    border-right: 1px solid var(--line-soft);
+  }
+  .meta-strip div:last-child { border-right: 0; }
+  .meta-strip dt {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 0.2rem;
+  }
+  .meta-strip dd {
+    margin: 0;
+    font-family: var(--f-mono);
+    font-size: var(--step--1);
+    color: var(--ink);
+    font-weight: 500;
+    word-break: break-word;
+  }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 4rem; }
+  h2 {
+    font-family: var(--f-disp);
+    font-weight: 700;
+    font-size: var(--step-3);
+    letter-spacing: -0.015em;
+    line-height: 1.2;
+    margin: 0 0 0.4rem;
+    text-wrap: balance;
+  }
+  h2 .num {
+    font-family: var(--f-mono);
+    font-size: var(--step-1);
+    font-weight: 500;
+    color: var(--accent);
+    margin-right: 0.6rem;
+    vertical-align: 0.12em;
+  }
+  h3 {
+    font-family: var(--f-disp);
+    font-weight: 600;
+    font-size: var(--step-2);
+    letter-spacing: -0.01em;
+    margin: 2.5rem 0 0.5rem;
+    text-wrap: balance;
+  }
+  h4 {
+    font-family: var(--f-disp);
+    font-weight: 600;
+    font-size: var(--step-1);
+    margin: 1.6rem 0 0.4rem;
+  }
+  .lede { color: var(--ink-2); max-width: 68ch; margin: 0 0 1.75rem; }
+  p { max-width: 68ch; }
+  a { color: var(--accent); }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+
+  code, .n {
+    font-family: var(--f-mono);
+    font-variant-numeric: tabular-nums;
+  }
+  code {
+    font-size: 0.86em;
+    background: var(--surface-2);
+    padding: 0.1em 0.35em;
+    border-radius: 2px;
+  }
+
+  /* ---------- verdict cards ---------- */
+  .verdict {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin: 0 0 1.5rem;
+  }
+  .vcard { background: var(--surface); padding: 1.5rem 1.4rem; }
+  .vcard .label {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 0.9rem;
+  }
+  .vnums { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+  .vfrom {
+    font-family: var(--f-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--step-1);
+    color: var(--muted);
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
+  .varrow { color: var(--muted); font-family: var(--f-mono); }
+  .vto {
+    font-family: var(--f-disp);
+    font-variant-numeric: tabular-nums;
+    font-size: var(--step-3);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    color: var(--accent);
+  }
+  .vdelta {
+    display: inline-block;
+    margin-top: 0.8rem;
+    font-family: var(--f-mono);
+    font-size: var(--step--1);
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 0.15rem 0.5rem;
+    border-radius: 2px;
+  }
+  .vnote { font-size: var(--step--1); color: var(--muted); margin: 0.7rem 0 0; line-height: 1.55; }
+
+  /* ---------- waterfall ---------- */
+  .fall {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 1.25rem 1.25rem 1rem;
+    overflow-x: auto;
+  }
+  .fall-inner { min-width: 40rem; }
+  .frow {
+    display: grid;
+    grid-template-columns: 2.1rem 10.5rem 1fr 4.4rem;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.18rem 0;
+  }
+  .frow + .frow { border-top: 1px solid var(--line-soft); }
+  .fidx, .fms {
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+  }
+  .fms { text-align: right; color: var(--ink-2); font-weight: 500; }
+  .fname { font-family: var(--f-mono); font-size: 0.75rem; color: var(--ink); white-space: nowrap; }
+  .fname .st { color: var(--muted); }
+  .ftrack { position: relative; height: 15px; background: var(--surface-2); border-radius: 1px; }
+  .fbar { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 1px; }
+  .k  { background: var(--accent); }
+  .w  { background: var(--waste); }
+  .hf { background: var(--half); }
+  .db { background: var(--accent); opacity: 0.35; }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.1rem;
+    margin-top: 1rem;
+    padding-top: 0.9rem;
+    border-top: 1px solid var(--line);
+    font-family: var(--f-mono);
+    font-size: 0.72rem;
+    color: var(--muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .sw { width: 13px; height: 13px; border-radius: 1px; display: inline-block; }
+
+  /* ---------- tables ---------- */
+  .tw { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; }
+  th, td {
+    padding: 0.55rem 0.8rem;
+    text-align: left;
+    border-bottom: 1px solid var(--line-soft);
+    font-size: var(--step--1);
+    line-height: 1.5;
+  }
+  thead th {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 500;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+  tfoot td {
+    font-family: var(--f-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    border-top: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+
+  .tag {
+    display: inline-block;
+    font-family: var(--f-mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.04em;
+    padding: 0.08rem 0.4rem;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .t-keep  { color: var(--accent); background: var(--accent-dim); }
+  .t-waste { color: var(--waste);  background: var(--waste-dim); }
+  .t-half  { color: var(--half);   background: var(--half-dim); }
+
+  /* ---------- attribution bars ---------- */
+  .attr { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1.5rem; margin: 1.5rem 0; }
+  .abox { background: var(--surface); border: 1px solid var(--line); padding: 1.2rem; }
+  .abox h4 { margin: 0 0 1rem; font-size: var(--step-0); }
+  .stack { display: flex; height: 22px; border-radius: 2px; overflow: hidden; margin-bottom: 0.9rem; }
+  .seg { height: 100%; }
+  .akey { display: flex; flex-direction: column; gap: 0.35rem; font-family: var(--f-mono); font-size: 0.73rem; }
+  .akey div { display: flex; align-items: center; gap: 0.5rem; }
+  .akey .pct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+  .akey .nm { color: var(--ink-2); }
+
+  /* ---------- evidence ---------- */
+  .ev {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--waste);
+    padding: 1.2rem 1.3rem;
+    margin: 1.25rem 0;
+  }
+  .ev.ok { border-left-color: var(--accent); }
+  .ev-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+  }
+  .ev-head .id {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    color: var(--waste);
+    font-weight: 600;
+  }
+  .ev.ok .ev-head .id { color: var(--accent); }
+  .ev-head .ti { font-family: var(--f-disp); font-weight: 600; font-size: var(--step-1); }
+  .ev p { margin: 0.5rem 0; font-size: var(--step--1); line-height: 1.7; color: var(--ink-2); max-width: 70ch; }
+  .ev p strong { color: var(--ink); }
+  pre {
+    background: var(--surface-2);
+    border: 1px solid var(--line-soft);
+    padding: 0.7rem 0.85rem;
+    overflow-x: auto;
+    margin: 0.7rem 0;
+    font-family: var(--f-mono);
+    font-size: 0.73rem;
+    line-height: 1.6;
+    border-radius: 2px;
+  }
+  pre .cm { color: var(--muted); }
+  .cost-line {
+    font-family: var(--f-mono);
+    font-size: 0.73rem;
+    color: var(--waste);
+    font-weight: 600;
+    margin-top: 0.7rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .ev.ok .cost-line { color: var(--accent); }
+
+  /* ---------- fix cards ---------- */
+  .fix {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    margin: 1.25rem 0;
+  }
+  .fix-head {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.9rem 1.3rem;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+    flex-wrap: wrap;
+  }
+  .prio {
+    font-family: var(--f-mono);
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    padding: 0.15rem 0.45rem;
+    border-radius: 2px;
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .prio.p1 { background: var(--accent); color: #fff; }
+  .prio.p2 { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  .fix-head .ti { font-family: var(--f-disp); font-weight: 600; font-size: var(--step-1); }
+  .kind {
+    margin-left: auto;
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+  }
+  .fix-body { padding: 1.1rem 1.3rem 1.3rem; }
+  .fix-body p { margin: 0.45rem 0; font-size: var(--step--1); line-height: 1.7; color: var(--ink-2); }
+  .fix-body p strong { color: var(--ink); }
+  dl.spec { margin: 1rem 0 0; display: grid; grid-template-columns: 5.2rem 1fr; gap: 0.4rem 1rem; }
+  dl.spec dt {
+    font-family: var(--f-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-top: 0.2rem;
+  }
+  dl.spec dd { margin: 0; font-size: var(--step--1); line-height: 1.65; color: var(--ink-2); }
+  dl.spec dd.gain { color: var(--accent); font-family: var(--f-mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+  dl.spec dd.risk { color: var(--waste); }
+
+  ul { max-width: 68ch; padding-left: 1.15rem; }
+  li { margin: 0.35rem 0; }
+
+  .callout {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-top: 3px solid var(--half);
+    padding: 1.2rem 1.3rem;
+    margin: 1.5rem 0;
+  }
+  .callout h4 { margin-top: 0; }
+  .callout p { font-size: var(--step--1); color: var(--ink-2); }
+
+  footer {
+    margin-top: 5rem;
+    padding-top: 1.5rem;
+    border-top: 2px solid var(--ink);
+    font-family: var(--f-mono);
+    font-size: 0.73rem;
+    color: var(--muted);
+    line-height: 1.8;
+  }
+  footer strong { color: var(--ink-2); font-weight: 500; }
+
+  @media (max-width: 640px) {
+    :root { --step-4: 2.1rem; --step-3: 1.55rem; --step-2: 1.22rem; }
+    .frow { grid-template-columns: 1.7rem 8rem 1fr 3.6rem; }
+    dl.spec { grid-template-columns: 1fr; gap: 0.15rem; }
+    dl.spec dt { margin-top: 0.6rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">askdb · 执行追踪 · 单链路剖析</p>
+  <h1>查询 Agent 链路提效方案</h1>
+  <p class="standfirst">一次 35.5 秒、¥0.0128 的多步问答。14 个 span 里 6 个没有为答案贡献任何新信息，而最后一次模型调用独占了一半的时间和四成的钱。</p>
+  <dl class="meta-strip">
+    <div><dt>Trace</dt><dd>4bac5ce7f21b</dd></div>
+    <div><dt>数字来源</dt><dd>全部实测</dd></div>
+    <div><dt>时间</dt><dd>2026-09-14 16:10 UTC</dd></div>
+    <div><dt>数据源</dt><dd>履约物流 · PG</dd></div>
+    <div><dt>问题</dt><dd>各承运商准时率月度均值</dd></div>
+    <div><dt>模型</dt><dd>qwen3.8-flash</dd></div>
+    <div><dt>结果</dt><dd>答对，未拒答</dd></div>
+  </dl>
+</header>
+
+<section id="verdict" style="margin-top:2.5rem">
+  <h2>结论</h2>
+  <p class="lede">三项指标的可达目标，按下面逐条论证的改动累加得出。改动 1 是确定性代码闸，改动 2–4 是提示词与注入层调整、须影子跑标定，所以给的是保守口径。</p>
+  <div class="callout" style="border-top-color:var(--waste)">
+    <h4>⚠ 这三个数已被实测证伪，看 §09</h4>
+    <p>六条改动已于 2026-09-15 全部落地。23 条生产真实提问的两档对照（只看两档都出数的 15 条）实测收益是
+    <strong>tok_in −16.5%、成本 −19.0%，而 tok_out 反而 +6.7%</strong> —— 不是下面这三张卡上的
+    −71% / −71% / −68%。<strong>其中 P0-3 被算成 51% 耗时、43% 成本的那一大块，量级没有被证实。</strong></p>
+    <p>原因不复杂：下面这三个数是拿<strong>一条</strong> trace 算的，而那条跑了 6 轮 decide，
+    对照组的中位数只有 4 轮 —— <strong>可省的部分从一开始就没有它显示的那么多</strong>。
+    这正是本节下方那条口径提醒说的事，只是当时还只是提醒。
+    三张卡原样保留不回填，它们是当时的估算依据，改掉就失去了对照价值。</p>
+  </div>
+
+  <div class="verdict">
+    <div class="vcard">
+      <p class="label">总耗时</p>
+      <div class="vnums"><span class="vfrom">35.5 s</span><span class="varrow">→</span><span class="vto">10.3 s</span></div>
+      <span class="vdelta">−71%</span>
+      <p class="vnote">14 个 span 收敛到 6 个；模型调用 7 次降到 3 次。</p>
+    </div>
+    <div class="vcard">
+      <p class="label">Token 用量</p>
+      <div class="vnums"><span class="vfrom">38,033</span><span class="varrow">→</span><span class="vto">11,114</span></div>
+      <span class="vdelta">−71%</span>
+      <p class="vnote">输入 35,651 → 10,355；输出 2,382 → 759。</p>
+    </div>
+    <div class="vcard">
+      <p class="label">单次成本</p>
+      <div class="vnums"><span class="vfrom">¥0.01283</span><span class="varrow">→</span><span class="vto">¥0.00408</span></div>
+      <span class="vdelta">−68%</span>
+      <p class="vnote">输出侧贡献了其中的 ¥0.0043，是最大的单一来源。</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <h4>先说清这条链路在分布里的位置</h4>
+    <p>今日 P50 是 <span class="n">1.46s</span>、P95 是 <span class="n">16.14s</span>，全站平均每次模型调用 <span class="n">2,948</span> token。这条 35.5 秒的链路远在 P95 之外 —— 它是 <code>multi_step</code> 自主循环的长尾，不是中位数。<strong>下面的改动移动的是 P95/P99 和多步问答那一档的单价，不会让首页那类一问一答变快。</strong>要拿它去估全站省多少钱，得先按 <code>kind=ask</code> 且 <code>multi_step=true</code> 的占比折算。</p>
+  </div>
+</section>
+
+<section id="waterfall">
+  <h2><span class="num">01</span>这条链路实际跑了什么</h2>
+  <p class="lede">按 span 开始时间排的真实瀑布。绿色是为答案做了贡献的，橙色是跑完之后信息量为零的，黄色是模型自己加戏、超出问题范围的。</p>
+
+  <div class="fall">
+    <div class="fall-inner">
+      <div class="frow"><span class="fidx">00</span><span class="fname">schema_recall</span><span class="ftrack"><span class="fbar k" style="left:0%;width:0.81%"></span></span><span class="fms">286</span></div>
+      <div class="frow"><span class="fidx">01</span><span class="fname">intent</span><span class="ftrack"><span class="fbar k" style="left:0.81%;width:5.71%"></span></span><span class="fms">2,023</span></div>
+      <div class="frow"><span class="fidx">02</span><span class="fname">decide <span class="st">· select</span></span><span class="ftrack"><span class="fbar w" style="left:6.52%;width:8.31%"></span></span><span class="fms">2,940</span></div>
+      <div class="frow"><span class="fidx">03</span><span class="fname">tool <span class="st">· search_schema</span></span><span class="ftrack"><span class="fbar w" style="left:14.83%;width:0.2%"></span></span><span class="fms">0</span></div>
+      <div class="frow"><span class="fidx">04</span><span class="fname">decide <span class="st">· assess</span></span><span class="ftrack"><span class="fbar k" style="left:14.83%;width:6.04%"></span></span><span class="fms">2,138</span></div>
+      <div class="frow"><span class="fidx">05</span><span class="fname">tool <span class="st">· execute_sql</span></span><span class="ftrack"><span class="fbar db" style="left:20.87%;width:0.2%"></span></span><span class="fms">46</span></div>
+      <div class="frow"><span class="fidx">06</span><span class="fname">decide <span class="st">· assess</span></span><span class="ftrack"><span class="fbar w" style="left:21.00%;width:7.98%"></span></span><span class="fms">2,823</span></div>
+      <div class="frow"><span class="fidx">07</span><span class="fname">tool <span class="st">· execute_sql</span></span><span class="ftrack"><span class="fbar w" style="left:28.98%;width:0.2%"></span></span><span class="fms">18</span></div>
+      <div class="frow"><span class="fidx">08</span><span class="fname">decide <span class="st">· assess</span></span><span class="ftrack"><span class="fbar w" style="left:29.03%;width:6.33%"></span></span><span class="fms">2,240</span></div>
+      <div class="frow"><span class="fidx">09</span><span class="fname">tool <span class="st">· execute_sql</span></span><span class="ftrack"><span class="fbar w" style="left:35.35%;width:0.2%"></span></span><span class="fms">8</span></div>
+      <div class="frow"><span class="fidx">10</span><span class="fname">decide <span class="st">· assess</span></span><span class="ftrack"><span class="fbar hf" style="left:35.38%;width:13.42%"></span></span><span class="fms">4,750</span></div>
+      <div class="frow"><span class="fidx">11</span><span class="fname">tool <span class="st">· execute_sql</span></span><span class="ftrack"><span class="fbar hf" style="left:48.80%;width:0.2%"></span></span><span class="fms">18</span></div>
+      <div class="frow"><span class="fidx">12</span><span class="fname">decide <span class="st">· converge</span></span><span class="ftrack"><span class="fbar k" style="left:48.85%;width:51.15%"></span></span><span class="fms">18,107</span></div>
+      <div class="frow"><span class="fidx">13</span><span class="fname">finalize</span><span class="ftrack"><span class="fbar k" style="left:99.8%;width:0.2%"></span></span><span class="fms">0</span></div>
+    </div>
+    <div class="legend">
+      <span><i class="sw k"></i>有贡献</span>
+      <span><i class="sw w"></i>信息量为零</span>
+      <span><i class="sw hf"></i>超出问题范围</span>
+      <span><i class="sw db"></i>数据库执行</span>
+      <span style="margin-left:auto">全宽 = 35,397 ms</span>
+    </div>
+  </div>
+
+  <h3>逐 span 账目</h3>
+  <div class="tw">
+    <table>
+      <thead>
+        <tr>
+          <th>#</th><th>Span</th><th>阶段</th>
+          <th class="num">耗时 ms</th><th class="num">tok_in</th><th class="num">命中缓存</th><th class="num">tok_out</th><th class="num">成本 ¥</th><th>判定</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td class="num">00</td><td><code>schema_recall</code></td><td>—</td><td class="num">286</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td><span class="tag t-keep">必要</span></td></tr>
+        <tr><td class="num">01</td><td><code>intent</code></td><td>—</td><td class="num">2,023</td><td class="num">3,347</td><td class="num">3,072</td><td class="num">84</td><td class="num">0.000693</td><td><span class="tag t-keep">必要 · 可瘦身</span></td></tr>
+        <tr><td class="num">02</td><td><code>decide</code></td><td>select</td><td class="num">2,940</td><td class="num">4,355</td><td class="num">4,096</td><td class="num">225</td><td class="num">0.001142</td><td><span class="tag t-waste">冗余</span></td></tr>
+        <tr><td class="num">03</td><td><code>tool</code> search_schema</td><td>degraded</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td><span class="tag t-waste">冗余</span></td></tr>
+        <tr><td class="num">04</td><td><code>decide</code></td><td>assess</td><td class="num">2,138</td><td class="num">4,462</td><td class="num">4,096</td><td class="num">167</td><td class="num">0.001071</td><td><span class="tag t-keep">必要</span></td></tr>
+        <tr><td class="num">05</td><td><code>tool</code> execute_sql</td><td>—</td><td class="num">46</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td><span class="tag t-keep">必要</span></td></tr>
+        <tr><td class="num">06</td><td><code>decide</code></td><td>assess</td><td class="num">2,823</td><td class="num">5,380</td><td class="num">4,096</td><td class="num">143</td><td class="num">0.001741</td><td><span class="tag t-waste">冗余</span></td></tr>
+        <tr><td class="num">07</td><td><code>tool</code> execute_sql</td><td>—</td><td class="num">18</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td><span class="tag t-waste">冗余</span></td></tr>
+        <tr><td class="num">08</td><td><code>decide</code></td><td>assess</td><td class="num">2,240</td><td class="num">5,483</td><td class="num">5,120</td><td class="num">106</td><td class="num">0.000986</td><td><span class="tag t-waste">冗余</span></td></tr>
+        <tr><td class="num">09</td><td><code>tool</code> execute_sql</td><td>—</td><td class="num">8</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td><span class="tag t-waste">冗余</span></td></tr>
+        <tr><td class="num">10</td><td><code>decide</code></td><td>assess</td><td class="num">4,750</td><td class="num">5,931</td><td class="num">5,120</td><td class="num">242</td><td class="num">0.001712</td><td><span class="tag t-half">超范围</span></td></tr>
+        <tr><td class="num">11</td><td><code>tool</code> execute_sql</td><td>—</td><td class="num">18</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td><span class="tag t-half">超范围</span></td></tr>
+        <tr><td class="num">12</td><td><code>decide</code></td><td>converge</td><td class="num">18,107</td><td class="num">6,693</td><td class="num">5,120</td><td class="num">1,415</td><td class="num">0.005489</td><td><span class="tag t-keep">必要 · 过胖</span></td></tr>
+        <tr><td class="num">13</td><td><code>finalize</code></td><td>—</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td><span class="tag t-keep">必要</span></td></tr>
+      </tbody>
+      <tfoot>
+        <tr><td colspan="3">合计</td><td class="num">35,397</td><td class="num">35,651</td><td class="num">30,720</td><td class="num">2,382</td><td class="num">0.012834</td><td></td></tr>
+      </tfoot>
+    </table>
+  </div>
+  <p style="font-size:var(--step--1);color:var(--muted)">前缀缓存命中率 <span class="n">86.2%</span>（30,720 / 35,651），说明提示词是<strong>只往后追加</strong>的、结构没问题 —— 单价 ¥0.00008/千 对 ¥0.0008/千，命中的那部分只按十分之一计。<strong>所以"提示词太长"不是这条链路的主要成本来源，"轮数太多"和"输出太长"才是。</strong></p>
+</section>
+
+<section id="attribution">
+  <h2><span class="num">02</span>时间和钱分别花在哪</h2>
+  <p class="lede">两张归因图指向同一个结论：数据库不是瓶颈，模型解码才是；输入不是主要成本，输出才是。</p>
+
+  <div class="attr">
+    <div class="abox">
+      <h4>总耗时 35,397 ms</h4>
+      <div class="stack">
+        <span class="seg" style="width:98.94%;background:var(--accent)"></span>
+        <span class="seg" style="width:0.81%;background:var(--half)"></span>
+        <span class="seg" style="width:0.25%;background:var(--waste)"></span>
+      </div>
+      <div class="akey">
+        <div><i class="sw" style="background:var(--accent)"></i><span class="nm">7 次模型调用</span><span class="pct">98.9%</span></div>
+        <div><i class="sw" style="background:var(--half)"></i><span class="nm">向量召回（含 embedding）</span><span class="pct">0.8%</span></div>
+        <div><i class="sw" style="background:var(--waste)"></i><span class="nm">4 次 SQL 执行（共 90 ms）</span><span class="pct">0.25%</span></div>
+      </div>
+      <p style="font-size:0.73rem;color:var(--muted);margin:0.9rem 0 0;line-height:1.6">其中 <code>decide·converge</code> 一步就占 <span class="n">18,107 ms</span> —— <strong>全链路的 51.2%</strong>。</p>
+    </div>
+
+    <div class="abox">
+      <h4>总成本 ¥0.012834</h4>
+      <div class="stack">
+        <span class="seg" style="width:50.1%;background:var(--waste)"></span>
+        <span class="seg" style="width:30.7%;background:var(--half)"></span>
+        <span class="seg" style="width:19.2%;background:var(--accent)"></span>
+      </div>
+      <div class="akey">
+        <div><i class="sw" style="background:var(--waste)"></i><span class="nm">输出 2,382 tok @ ¥0.0027/k</span><span class="pct">50.1%</span></div>
+        <div><i class="sw" style="background:var(--half)"></i><span class="nm">未命中输入 4,931 tok @ ¥0.0008/k</span><span class="pct">30.7%</span></div>
+        <div><i class="sw" style="background:var(--accent)"></i><span class="nm">命中输入 30,720 tok @ ¥0.00008/k</span><span class="pct">19.2%</span></div>
+      </div>
+      <p style="font-size:0.73rem;color:var(--muted);margin:0.9rem 0 0;line-height:1.6">最终那段 1,415 token 的答案单独值 <span class="n">¥0.00382</span> —— <strong>全链路的 29.8%</strong>。</p>
+    </div>
+  </div>
+</section>
+
+<section id="dupes">
+  <h2><span class="num">03</span>四处重复，逐条上证据</h2>
+  <p class="lede">每一条都对得上 span 的原始输入输出，不是推测。</p>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">重复 A</span><span class="ti">一整轮决策，只为换回提示词里已经有的东西</span></div>
+    <p>第 02 步模型选了 <code>search_schema</code>，第 03 步 <code>_n_act</code> 的 ⓪′ 兜底把它挡下了，span 状态 <code>degraded</code>、输出 <code>{"reused": true}</code>、耗时 0 ms。<strong>兜底省掉了重复的 embedding 调用，但没省掉那一轮决策本身</strong> —— 2,940 ms 和 4,355 个输入 token 已经花出去了。</p>
+    <p>这跟 2026-09-14 那条 <code>3f16cd49baec</code> 是同一个形状。当时的处置是"<code>_hidden_tools</code> 只收 <code>get_table_schema</code>，<code>search_schema</code> 留在桌上"，理由是元数据类问题（"库里有哪些表"）要靠它过 <code>NO_EVIDENCE</code> 那道闸。理由成立，<strong>但代价被所有非元数据问题平摊了</strong>。</p>
+    <p class="cost-line">代价：2,940 ms · 4,355 in / 225 out · ¥0.001142</p>
+  </div>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">重复 B</span><span class="ti">两轮"自证口径"，答案早在第一条 SQL 的返回里</span></div>
+    <p>第 05 步那条 SQL 已经按承运商返回了 18 行，每行都带 <code>month_cnt</code>、<code>first_month</code>、<code>last_month</code>：</p>
+<pre>AN   安能物流  20  2024-12-27  2026-07-27  0.9175
+CNSD 菜鸟速递  20  2024-12-27  2026-07-27  0.9159
+UC   优速快递  20  2024-12-27  2026-07-27  0.9093   <span class="cm">… 共 18 行</span></pre>
+    <p>18 行 × 每行 20 个月、首尾月份完全一致 —— <strong>"共 360 行 = 18 家 × 20 个月、无重复无缺失"这个结论此刻已经成立了。</strong>但模型又跑了两轮去"确认"：</p>
+<pre><span class="cm">第 07 步 → 返回 1 行：360, 18, 20, 360</span>
+SELECT COUNT(*), COUNT(DISTINCT carrier_code), COUNT(DISTINCT score_month),
+       COUNT(DISTINCT carrier_code || '#' || score_month::text) FROM carrier_scores
+
+<span class="cm">第 09 步 → 返回 20 行，每行都是 18, 18</span>
+SELECT score_month, COUNT(*), COUNT(DISTINCT carrier_code)
+FROM carrier_scores GROUP BY score_month ORDER BY score_month</pre>
+    <p><strong>成因不是模型笨，是提示词在要求它这么做。</strong><code>AGENT_SYSTEM</code> 的硬约束第 2 条写着"要陈述某张表一共多少行，必须<em>单独跑一次</em>不带过滤的 COUNT"，第 6 条写着"要判断整列的分布或总量，<em>另跑</em>一条 GROUP BY"。模型的答案里主动写了"共 360 条记录""每个月都恰好有 18 家"，于是这两条规则各收了它一轮。<strong>护栏本身是对的（它们是从真实错答里挣出来的），错的是"单独跑一次"这个措辞把核对钉死成了额外一轮。</strong></p>
+    <p class="cost-line">代价：5,089 ms · 10,863 in / 249 out · ¥0.002727</p>
+  </div>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">重复 C</span><span class="ti">最后一条 SQL 把第一条整个重算了一遍</span></div>
+    <p>第 11 步这条查询重新算了一遍 <code>AVG(on_time_rate)</code>，并加上了"最近一月"和"近 3 月均值"两列。<strong>它是第 05 步那条的超集 —— 也就是说第 05 步的结果被自己作废了。</strong>而多出来的两列，用户没问。</p>
+<pre>SELECT cs.carrier_code, c.carrier_name,
+       ROUND(AVG(cs.on_time_rate), 4) AS avg_on_time_rate_20m,
+       MAX(cs.on_time_rate) FILTER (WHERE cs.score_month = DATE '2026-07-27') AS on_time_rate_last_month,
+       ROUND(AVG(cs.on_time_rate) FIL<span class="cm">…（近 3 月）</span></pre>
+    <p>这一轮不是纯浪费 —— 多给一列对比往往是好产品行为。问题在于<strong>它是靠"多跑一轮"拿到的，而不是在第一条 SQL 里一次写完</strong>。同样的两列写进第 05 步那条查询，边际成本是 0 ms、0 token。</p>
+    <p class="cost-line">代价：4,768 ms · 5,931 in / 242 out · ¥0.001712</p>
+  </div>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">重复 D</span><span class="ti">收敛轮把界面已经渲染好的结果表又抄了一遍</span></div>
+    <p>第 12 步输出 1,415 个 token，其中主体是一张 18 行 × 6 列的 Markdown 表。<strong>这张表的数据就是 <code>last_exec</code> 里的结构化行，前端结果区本来就在渲染它。</strong>模型把它逐格重打了一遍 —— 而且是在 <code>with_structured_output(method="function_calling")</code> 的 JSON 参数里，换行全被转义成 <code>\n</code>，还额外胀了一成。</p>
+    <p>按 <span class="n">1,415 tok / 18.1 s ≈ 78 tok/s</span> 的解码速率算，<strong>这一张表就是十几秒。</strong>而且 <code>structured()</code> 走的是非流式 <code>invoke</code>，这 18 秒里界面上一个字都没有。</p>
+    <p class="cost-line">代价：约 12,000 ms · 965 冗余 out token · ¥0.002606</p>
+  </div>
+
+  <div class="ev ok">
+    <div class="ev-head"><span class="id">附带发现</span><span class="ti"><code>analyze_result</code> 在这条链路上只可能亏</span></div>
+    <p>它的设计意图是"不回库、省一次数据库往返"。但这条链路上 4 次 SQL 执行合计 <span class="n">90 ms</span>，而让模型<em>选中</em>这个工具要付一整轮决策 —— <strong>2–3 秒 + 四五千 token，去省 20 毫秒。</strong>这个工具在当前的成本结构下无论怎么用都是负收益。本次链路它一次都没被调用，算是走运。</p>
+  </div>
+</section>
+
+<section id="plan">
+  <h2><span class="num">04</span>优化方案</h2>
+  <p class="lede">按"确定性 &gt; 概率性"、"改代码 &gt; 改措辞"排序。P0 三条互不依赖，可以并行落；P1 需要影子跑标定后才切；P2 是结构性的，单独立项。</p>
+
+  <div class="fix">
+    <div class="fix-head"><span class="prio">P0-1</span><span class="ti">按问题类型决定要不要把 search_schema 摆上桌</span><span class="kind">代码 · 确定性</span></div>
+    <div class="fix-body">
+      <p>不动 <code>NO_EVIDENCE</code> 那道闸的判据（那是另一个该单独标定的改动，而且已经被 <code>test_agent_no_evidence_blocks_fabricated_number</code> 拦过一次），改为<strong>只在真正需要它的那类问题上暴露它</strong>。</p>
+      <p><strong>怎么改：</strong>① 在 <code>agent.IntentCheck</code> 上加一个字段 <code>metadata_only: bool</code>（"问的是库/表/字段本身，而不是表里的数据"）—— intent 那次调用本来就在跑，多一个字段只增约 10 个输出 token。② <code>agentgraph._hidden_tools</code> 改成：<code>schema_complete and not metadata_only</code> 时，把 <code>search_schema</code> 一起收进 <code>hide</code>。</p>
+      <p>元数据问题照旧留着 <code>search_schema</code>，闸 ① 保护的正是这一类，行为完全不变；数据问题必然要跑 <code>execute_sql</code>，闸 ① 天然满足。<code>_n_act</code> 的 ⓪′ 硬兜底原样保留，收暴露面从来只是引导。</p>
+      <dl class="spec">
+        <dt>改哪儿</dt><dd><code>askdb/agent.py</code>（IntentCheck）、<code>askdb/agentgraph.py</code>（_hidden_tools、_n_intent 回写 state）</dd>
+        <dt>省多少</dt><dd class="gain">−2,940 ms · −4,355 in / −225 out · −¥0.001142</dd>
+        <dt>风险</dt><dd class="risk">低。误判成 <code>metadata_only=false</code> 的元数据问题会走到闸 ①，但那类问题在 intent 里判错的概率很低，且 ⓪′ 仍在。</dd>
+        <dt>怎么验</dt><dd>跑 <code>evals/</code> 里的元数据用例集，断言 <code>rejected_by=NO_EVIDENCE</code> 的条数不增加；再看生产 span 里 <code>tool·search_schema / degraded</code> 是否归零。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="fix-head"><span class="prio">P0-2</span><span class="ti">一轮一条 SQL：核对列和补充列都写进同一条查询</span><span class="kind">提示词 · 概率性</span></div>
+    <div class="fix-body">
+      <p>这一条同时吃掉重复 B 和重复 C ——<strong>三轮往返塌缩成零轮</strong>。护栏一条都不放松，只改"用哪种方式满足它"。</p>
+      <p><strong>怎么改：</strong>在 <code>AGENT_SYSTEM</code> 的硬约束里新增一条，并回头改写第 2、6 两条里"单独跑一次""另跑一条"的措辞：</p>
+<pre><span class="cm">// 新增</span>
+9. **核对写进同一条 SQL，不要为它多跑一轮。** 需要交代总行数、粒度是否唯一、
+   覆盖了哪些期次时，把它们作为额外列选进你本来就要跑的那条查询
+   （COUNT(*) OVER ()、COUNT(*) AS n、MIN/MAX(期次列)、
+   COUNT(DISTINCT a||'#'||b)），一次拿全。
+   **上文工具结果里已经出现过的列，直接引用，不许再查一遍去"确认"。**
+   想在结论里多给一列对比（最近一期、近 N 期均值）也一样 ——
+   写进同一条 SQL 的 FILTER 子句，不要为此单独发一条。</pre>
+      <p>第 2 条改为"……必须有一条不带过滤的 COUNT <strong>作为依据</strong>（可以是同一条 SQL 里的一列）"；第 6 条同理把"另跑一条"改成"在同一条 SQL 里补一列"。</p>
+      <dl class="spec">
+        <dt>改哪儿</dt><dd><code>askdb/agent.py</code> · <code>AGENT_SYSTEM</code></dd>
+        <dt>省多少</dt><dd class="gain">−9,857 ms · −16,794 in / −491 out · −¥0.004439</dd>
+        <dt>风险</dt><dd class="risk">中。这是在"多查一次"和"一次查全"之间挪概率，措辞压不死。极端情况是模型把核对列塞进一条本来会被 R-11 拦下的查询里，导致整条被拒 —— 需要盯 <code>rejected_by=R-11</code> 的比例。</dd>
+        <dt>怎么验</dt><dd>按你定的规矩先影子跑：改动只进提示词、不改判定，在生产真实流量上量两轮，看 <code>step_count</code> 分布、<code>R-11</code> 拦截率、接地校验 <code>ungrounded</code> 命中率三个数有没有恶化，再定版。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="fix-head"><span class="prio">P0-3</span><span class="ti">收敛轮不复述结果表</span><span class="kind">提示词 · 概率性</span></div>
+    <div class="fix-body">
+      <p>全篇最大的单点收益：<strong>一条规则省下约 12 秒和三成成本。</strong></p>
+      <p><strong>怎么改：</strong>在 <code>AGENT_USER</code> 的收尾行和 <code>AGENT_SYSTEM</code> 的 finish 那条里写死：</p>
+<pre>finish=true 时，answer 只写三件事：口径说明、结论、要点（最多 Top/Bottom 各 3 条）。
+**不要把结果集整表抄进 answer** —— 完整结果表由界面直接渲染最后一次
+execute_sql 的返回行，你抄一遍既不会更准，也会让读的人看到两份。
+需要点名某几行时，写名称和数值即可。</pre>
+      <p>配套要确认前端结果区取的是<strong>"回答问题那一条"而不是"最后执行那一条"</strong> —— 这正是已知未修的那个问题（agent 多步链路结果区显示最后一条 SQL）。<strong>P0-3 会把它从"读起来别扭"升级成"答案里没有表、界面上的表还是错的"，所以这两件事必须一起做，不能只做 P0-3。</strong></p>
+      <dl class="spec">
+        <dt>改哪儿</dt><dd><code>askdb/agent.py</code>（AGENT_SYSTEM / AGENT_USER）+ 结果区取数口径</dd>
+        <dt>省多少</dt><dd class="gain">约 −12,000 ms · −965 out · −¥0.002606</dd>
+        <dt>风险</dt><dd class="risk">中高。答案变短后，接地校验能核对的数字也变少，可能影响 <code>grounding</code> 那一层的命中口径；另外"只给 Top 3"在用户确实想看全表时是退步 —— 靠界面的结果表补齐，所以前置依赖必须先解决。</dd>
+        <dt>怎么验</dt><dd>影子跑量 <code>tok_out</code> 的 P50/P95、<code>ungrounded</code> 命中率；人工抽检 20 条多行结果的答案，确认结果区渲染的是回答问题那条 SQL。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="fix-head"><span class="prio p1">P1-1</span><span class="ti">intent 只喂表名层，不喂列级明细</span><span class="kind">代码 · 低风险</span></div>
+    <div class="fix-body">
+      <p><code>INTENT_USER</code> 现在把 5,103 字符的完整 schema（12 张表的全部列名/类型/枚举）整份灌进去，只为换回 <code>answerable / out_of_scope / multi_step</code> 三个布尔值和一句话。</p>
+      <p><strong>而 <code>INTENT_SYSTEM</code> 自己就写着判据是"有没有承载这个实体的表，不是有没有名字像的列"。</strong>既然如此，喂表名 + 一行表描述 + 别名就够了，列级明细对这次判断没有作用。5,103 → 约 900 字符。</p>
+      <p>顺带解决一个缓存副作用：intent 和 decide 用的是两套不同的 system 前缀，同一份 schema 因此在厂商侧被缓存了两份。瘦身后这份重复就没了。</p>
+      <dl class="spec">
+        <dt>改哪儿</dt><dd><code>askdb/agent.py</code> · <code>INTENT_USER</code>；<code>schema_rag</code> 增一个只渲染表头层的函数</dd>
+        <dt>省多少</dt><dd class="gain">约 −900 ms · −2,650 in · −¥0.00027</dd>
+        <dt>风险</dt><dd class="risk">中。语义劫持（"供应商"攀附 <code>vendor</code> 列）的判定就靠这一步，去掉列名理论上让它更不容易被同名列带偏，但这是未经验证的方向性判断。</dd>
+        <dt>怎么验</dt><dd>拿已有的 OOS 拒答用例集（那 120 条）跑全量回归，<strong>拒答率不达 100% 就不切</strong>。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="fix-head"><span class="prio p1">P1-2</span><span class="ti">execute_sql 的返回自带列级统计，撤掉 analyze_result</span><span class="kind">代码 · 低风险</span></div>
+    <div class="fix-body">
+      <p><code>analyze_result</code> 算的东西（每列 count / distinct / min / max / mean / sum）全部是对已在内存里的结果行做的纯计算，<strong>零 IO</strong>。把它挪进 <code>tools.execute_sql</code> 的返回体，模型就永远不必为它花一轮决策。</p>
+      <p>然后把 <code>analyze_result</code> 从 <code>tool_specs()</code> 里摘掉（<code>REGISTRY</code> 保留，与 <code>_hidden_tools</code> 同一套纪律）。少一个工具规格，<code>AGENT_SYSTEM</code> 也短一截。</p>
+      <dl class="spec">
+        <dt>改哪儿</dt><dd><code>askdb/tools.py</code>（execute_sql 返回体 + tool_specs）</dd>
+        <dt>省多少</dt><dd class="gain">本次链路 0；消除一类"每次触发就亏一轮"的路径</dd>
+        <dt>风险</dt><dd class="risk">低。统计字段会让每次工具返回变长，注意别把 <code>_render_history</code> 的预览预算挤掉 —— 统计只进 span 输出，不要无条件回灌进提示词。</dd>
+        <dt>怎么验</dt><dd>扫历史审计里 <code>tool=analyze_result</code> 的条数，确认改后归零且没有新增 <code>NO_EVIDENCE</code>。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="fix-head"><span class="prio p2">P2-1</span><span class="ti">收尾改流式，把 18 秒的空白变成 1 秒的首字</span><span class="kind">结构性 · 单独立项</span></div>
+    <div class="fix-body">
+      <p><code>LlmClient.structured()</code> 走的是阻塞 <code>invoke</code>。收敛那次调用有 1,415 个输出 token，用户面对的是 18 秒纯白屏。<strong>这不省一分钱、不省一个 token，但它是感知延迟上最值钱的一次改动</strong> —— 首字时间 18 s → 约 1 s。</p>
+      <p>做法上有取舍：<code>with_structured_output</code> 流式解析局部 JSON 是可行的但脆；更稳的是让收敛那一次走两段——结构化调用只返回 <code>finish/thought</code> 和一份要点提纲，再用非结构化流式调用写正文。<strong>但那会多一次调用，与省成本的目标冲突。</strong>建议先做 P0-3 把输出压到 450 token（届时这一步约 6 秒），再评估是否值得为流式付一次调用。</p>
+      <dl class="spec">
+        <dt>改哪儿</dt><dd><code>askdb/llm.py</code>、<code>askdb/agentgraph.py</code> · <code>_n_decide</code>、SSE 端</dd>
+        <dt>省多少</dt><dd class="gain">总耗时 0；首字时间 −17 s</dd>
+        <dt>风险</dt><dd class="risk">高。触碰的是主链路的调用形态，且与检查点/交接（10s 阈值）的边界有交互。</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="fix-head"><span class="prio p2" style="background:var(--waste);color:#fff;border:0">已否决</span><span class="ti" style="text-decoration:line-through;text-decoration-thickness:1px;opacity:0.65">P2-2 · schema 分层注入：前 3 张给全列，其余只给表头</span><span class="kind">2026-09-15 · 基准已跑，判据成立</span></div>
+    <div class="fix-body">
+      <p>原提法：本次召回 12 张表 / 5,103 字符，真正用到的只有 <code>carrier_scores</code> 和 <code>carriers</code>（648 字符），87% 是陪跑的；那就只给相似度前 3 名完整列级明细，其余只给表头。原文已把它列为"前置：先在向量路径上补一份 recall@k 基准，否则这个改动没有判据"。</p>
+      <p><strong>基准跑完了，判据是否定的 —— 这条不做。</strong>见 <a href="./test-report-schema-recall.md"><code>test-report-schema-recall.md</code></a>（97 条 / 12 源，向量路径首次实测）：</p>
+<pre>主表口径 recall@k（96 条，问题里不含表名）
+  k=1    40.6%
+  k=2    65.6%
+  k=3    <span class="cm">74.0%  ← 分层注入要押的就是这一格</span>
+  k=5    86.5%
+  k=8    95.8%   <span class="cm">← 现行 top_k，曲线到这里才进平台区</span>
+  k=12   97.9%   <span class="cm">← 现行 max_k，收益已递减</span></pre>
+      <p><strong>按前 3 名分层，四分之一的问题里真正要写进 SQL 的那张表拿不到列名。</strong>放宽到前 5 名也还有 13.5%。而<strong>现行的 <code>top_k=8</code> / <code>max_k=12</code> 恰好落在曲线转平的位置 —— 这组参数是对的，不要往下调。</strong></p>
+      <p>更要紧的是落榜的形状：主表排不进前 3 的 25 条里，<strong>25 条的主表全部是各自领域的枢纽表 / 主实体表</strong>（<code>documents</code>×8、<code>knowledge_bases</code>×3、<code>retrieval_logs</code>×3、<code>resumes</code>×3、<code>agent_sessions</code>×2，以及 <code>users</code>、<code>organizations</code>、<code>skus</code>、<code>payments</code>、<code>purchase_orders</code> 等），没有一条是冷僻表。<strong>分层注入会精确地砍掉最该保留的那一批。</strong></p>
+      <dl class="spec">
+        <dt>结论</dt><dd class="risk">不做。同时确认 <code>top_k=8</code> / <code>max_k=12</code> / <code>token_budget=4000</code> 维持不动。</dd>
+        <dt>依据</dt><dd><code>evals/recall.py</code> · 原始结果 <code>evals/results/recall.json</code> · 报告 <code>docs/test-report-schema-recall.md</code></dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="fix">
+    <div class="fix-head"><span class="prio p2">P2-3</span><span class="ti">召回基准顺带挖出来的三件事</span><span class="kind">新增 · 由 P2-2 的基准派生</span></div>
+    <div class="fix-body">
+      <p>基准不只是否掉了一个提案，它把召回的三种失败形态各钉出了实探。<strong>这三条都不是性能问题，是答案正确性问题</strong>，优先级应当高于本方案里的任何一条省钱改动。</p>
+      <h4 style="margin-top:1rem">① 2.1% 的题，主表连注入集都进不去</h4>
+<pre>【careermate】有多少用户创建过简历但从没发起过会话   → users 第 <span class="cm">27</span> 名
+   1. resume_generation_run  0.7048
+   2. agent_pending_actions  0.6353
+   3. interview_sessions     0.6344
+  ...
+  27. users                  0.4397</pre>
+      <p>问题里的名词是"简历""会话"，描述里复述这些名词的卫星表全部压过 <code>users</code> —— 而 <code>users</code> 才是被计数的主体。<strong>第 27 名意味着它根本不会出现在提示词里</strong>，模型只能在给它的 12 张里硬凑。同类还有 <code>ra-j11</code>（<code>organizations</code> 第 16 名、相似度 0.32，低于 <code>min_score</code>）。这是<strong>静默答错的风险位</strong>。</p>
+      <h4>② 预聚合表压过明细表 —— 已有现成解法没铺开</h4>
+<pre>【shop_supply】逐个供应商统计采购金额并排序   → purchase_orders 第 7 名
+   1. purchase_stats_daily   0.7243
+   2. suppliers              0.6899</pre>
+      <p><strong>这个坑在 <code>shop_logistics</code> 上已经填过</strong>：<code>logistics_stats_daily</code> 的表注释里写着"只用于看趋势；要查哪些运单…用 <code>shipments</code>"，<code>shipments</code> 也写了反向指路 —— 而 <code>shop_logistics</code> 两条用例的主表 @1 都是 100%。把这句话照抄到 <code>purchase_stats_daily</code> 等同构表上，成本极低。（n=2，方向明确但不构成因果证明。）</p>
+      <h4>③ 向量召回没有字面锚点</h4>
+<pre>【ragforge】JD 文档数是多少            → documents 第 7 名
+   1. judge_metrics_daily  0.4476   <span class="cm">← "JD" 被吸到了 "judge"</span>
+
+【ragforge】documents 表一共有多少行   → documents 第 <span class="cm">2</span> 名
+   1. document_chunks      0.4915   <span class="cm">← 问题里逐字写着表名，仍被压过</span></pre>
+      <p>问题里原样写出表名也不保证第一名。第一例正是生产上那条已知缺陷（「JD 数」恒 0）的召回侧证据 —— 此前只知道列注释缺失让模型选错了列，现在看到<strong>召回这一层就已经把主表排到第 7 了</strong>。建议：问题命中表名或别名时给一个确定性加权，别让向量单打独斗。</p>
+      <dl class="spec">
+        <dt>改哪儿</dt><dd>① 与 ③ 在 <code>askdb/schema_rag.py</code> 的排序与兜底；② 在各源的库 COMMENT，不改代码</dd>
+        <dt>怎么验</dt><dd>改完重跑 <code>python -m evals.recall</code>，与 <code>recall.prev.json</code> 对比 —— 这份基准本身就是它的验收口径</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section id="ledger">
+  <h2><span class="num">05</span>累计收益与落地顺序</h2>
+
+  <div class="tw">
+    <table>
+      <thead>
+        <tr><th>顺序</th><th>改动</th><th class="num">耗时 Δ</th><th class="num">tok Δ</th><th class="num">成本 Δ</th><th>性质</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="num">1</td><td>P0-1 收窄 search_schema 暴露面</td><td class="num">−2,940 ms</td><td class="num">−4,580</td><td class="num">−¥0.00114</td><td>代码闸 · 确定</td></tr>
+        <tr><td class="num">2</td><td>P0-2 一轮一条 SQL</td><td class="num">−9,857 ms</td><td class="num">−17,285</td><td class="num">−¥0.00444</td><td>提示词 · 概率</td></tr>
+        <tr><td class="num">3</td><td>P0-3 收敛轮不复述结果表</td><td class="num">−12,000 ms</td><td class="num">−965</td><td class="num">−¥0.00261</td><td>提示词 · 概率</td></tr>
+        <tr><td class="num">4</td><td>P1-1 intent 只喂表名层</td><td class="num">−900 ms</td><td class="num">−2,650</td><td class="num">−¥0.00027</td><td>代码 · 低风险</td></tr>
+        <tr><td class="num">5</td><td>P1-2 统计并进 execute_sql</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td>消除亏损路径</td></tr>
+      </tbody>
+      <tfoot>
+        <tr><td colspan="2">本条链路改造后</td><td class="num">10.3 s（−71%）</td><td class="num">11,114（−71%）</td><td class="num">¥0.00408（−68%）</td><td></td></tr>
+      </tfoot>
+    </table>
+  </div>
+
+  <p>改造后的链路是 6 个 span：<code>schema_recall → intent → decide(写 SQL) → execute_sql → decide(收敛) → finalize</code>，模型调用 3 次。这正好就是这个问题应有的形状 —— <strong>"各承运商准时率月度均值"是一条 GROUP BY 就能答完的问题，它不该跑 6 轮决策。</strong></p>
+
+  <div class="callout">
+    <h4>口径提醒：别拿这一条的百分比去报全站</h4>
+    <p>这是<strong>单条 trace 的剖析</strong>，节省量是按它自己的 span 账算的。要得到全站数字，需要先按 <code>multi_step=true</code> 的占比、以及"每条链路平均有几轮是可省的"重新统计 —— 建议用 <code>/api/audit</code> 拉最近 7 天全量，按 <code>step_count</code> 分桶后再算。我可以接着做这件事。</p>
+  </div>
+</section>
+
+<section id="acceptance">
+  <h2><span class="num">06</span>验收口径</h2>
+  <p class="lede">P0-2 和 P0-3 都是在改模型行为的概率分布，按既定纪律，<strong>会改变判定结果的东西必须先影子跑标定 —— 本机样例想不出真实的误判形状，离线重放也不作数。</strong></p>
+
+  <h4>用已经建好的对照组，不要另起一套</h4>
+  <p><code>evals/baseline.py</code>（<code>0c159f5</code>）就是为这件事建的：23 条用例全部取自生产上真实发生过、且在改动之前就成功的复杂链路，L1 量链路健康（出没出结果／被哪条规则拦了／跑了几步／烧了多少 token／多少钱／多久），L2 对 <code>expect_sql</code> 非空的那些做行集比对。</p>
+<pre><span class="cm"># 改之前先跑一轮，改完再跑一轮，两份一比就有答案</span>
+ASKDB_USER=... ASKDB_PASSWORD=... python -m evals.baseline
+python -m evals.baseline --compare</pre>
+  <p><strong>它的 <code>build / note</code> 字段记着每一轮对应哪些提交 —— 这几条改动要一条一轮地跑，别叠着上。</strong>首份基线（2026-09-14 15:55）叠了 <code>6cff407</code> 与 <code>58cd176</code> 两个提交，归因不到任何单独一个，这个教训别再犯第二次。</p>
+
+  <h4>补一条用例</h4>
+  <p>本方案的那条链路 <code>4bac5ce7f21b</code> 目前<strong>不在</strong> <code>baseline-cases.jsonl</code> 里（23 条用例集中在 careermate 生产库一侧）。它是"链路成功、答案正确、但多跑了三轮"的典型形状，正是这次改动要压的目标，建议按现有字段补进去：</p>
+<pre>{"id":"b24","question":"各承运商准时率月度均值",
+ "source":"src_66730f8482b7","source_name":"履约物流",
+ "from_trace":"4bac5ce7f21b","from_ts":"2026-09-14T16:10:01",
+ "ref_steps":6,"ref_rows":18,"ref_cost_cny":0.012834,
+ "ref_elapsed_ms":35476,"expect_sql":"<span class="cm">…人工定稿，见下</span>"}</pre>
+  <p><code>expect_sql</code> 要人工定稿、不许从历史 trace 扒 —— 这条链路最后执行的是第 11 步那条带"近 3 月"的加料版，而回答问题的是第 05 步那条。<strong>直接扒会把加料版固化成标准答案。</strong></p>
+
+  <h4>红线与收益指标</h4>
+  <ul>
+    <li><strong>三档旋钮。</strong>每条提示词改动配一个 <code>off / shadow / enforce</code> 开关，与 <code>agent.grounding</code>、<code>agent.grounding_no_exec</code> 同一套语义。<code>shadow</code> 下不生效判定，只记指标。</li>
+    <li><strong>不许恶化的红线（任一触线即不切）：</strong>接地校验 <code>ungrounded</code> 命中率、<code>rejected_by=R-11</code> 比例、OOS 拒答率、同义问法一致性。前三个是安全性，第四个是这个产品此前就吃过亏的地方。</li>
+    <li><strong>要看的收益指标：</strong><code>baseline.json</code> 的 <code>avg_steps</code>（目标：本条链路 6 → 2）、<code>p95_ms</code>、<code>avg_tok</code>、<code>avg_cost_cny</code>、<code>cache_hit_rate</code>。</li>
+    <li><strong>样本量。</strong>对照组 23 条只够看链路健康。判定类改动（P0-2 / P0-3）仍要按老规矩在生产真实流量上跑两轮、每轮不少于 130 条、覆盖全部 13 个数据源，别只在 <code>履约物流</code> 上验。</li>
+  </ul>
+</section>
+
+<section id="gap">
+  <h2><span class="num">07</span>顺带查出来的一个账面缺口</h2>
+  <div class="ev">
+    <div class="ev-head"><span class="id">账面</span><span class="ti">embedding 成本没有进 trace</span></div>
+    <p><code>agentgraph._n_recall</code> 落 <code>schema_recall</code> span 时只传了 <code>tables / input / output</code>，<strong>没传 <code>cost_cny</code></strong> —— 而 <code>tools.search_schema</code> 的返回体里 <code>embed_tokens</code> 和 <code>embed_cost_cny</code> 都是现成的。</p>
+    <p>结果就是这条 trace 的 <code>¥0.012834</code> 里不含那次向量召回的 embedding 计费（<code>text-embedding-v4</code>，¥0.0005/千）。金额很小，但方向是错的：<strong>做成本优化的前提是账面完整</strong>，而 <code>trace.embed_cost_cny</code> 的注释自己就写着"不设默认价，0 元在成本页上是显眼的、会被人问起来" —— 这里正是那个该被问起来的 0。</p>
+    <p class="cost-line">修法：<code>_n_recall</code> 的 <code>tracer.add</code> 补上 <code>cost_cny=rec.data.get("embed_cost_cny", 0)</code> 与 <code>tok_in=rec.data.get("embed_tokens", 0)</code>。一行的事。</p>
+  </div>
+</section>
+
+<section id="exec">
+  <h2><span class="num">08</span>执行计划</h2>
+  <p class="lede">按「累计收益与落地顺序」逐条落地，一条一个 commit，全部完成后再合并推送。每条都要跑一遍全量单测（<code>tests/</code> 81% 覆盖率闸），状态与 commit 记在这里。</p>
+  <div class="tw"><table><thead><tr><th>#</th><th>改动</th><th>做什么</th><th>落在哪</th><th>状态</th><th>commit</th></tr></thead><tbody>
+<tr><td class="num">1</td><td><strong>P0-1</strong><br><span style="color:var(--muted)">收窄 search_schema 暴露面</span></td><td>IntentCheck 加 metadata_only；_hidden_tools 据此收窄</td><td><code>askdb/agent.py · askdb/agentgraph.py</code></td><td><span class="tag t-keep">● 已完成</span></td><td><code>0c426e6</code></td></tr>
+<tr><td class="num">2</td><td><strong>P0-2</strong><br><span style="color:var(--muted)">一轮一条 SQL</span></td><td>AGENT_SYSTEM 新增硬约束 9，改写第 2、6 条的「单独跑一次」措辞</td><td><code>askdb/agent.py · config/*.yaml</code></td><td><span class="tag t-keep">● 已完成</span></td><td><code>d18013d</code></td></tr>
+<tr><td class="num">3</td><td><strong>P0-3</strong><br><span style="color:var(--muted)">收敛轮不复述结果表</span></td><td>answer 只写口径+结论+要点；同步修结果区取「回答问题那条 SQL」</td><td><code>askdb/agent.py · askdb/agentgraph.py</code></td><td><span class="tag t-keep">● 已完成</span></td><td><code>31d6f69</code></td></tr>
+<tr><td class="num">4</td><td><strong>P1-1</strong><br><span style="color:var(--muted)">intent 只喂表名层</span></td><td>新增表头层 render，INTENT_USER 换用</td><td><code>askdb/schema_rag.py · askdb/agent.py</code></td><td><span class="tag t-keep">● 已完成</span></td><td><code>be81a3e</code></td></tr>
+<tr><td class="num">5</td><td><strong>P1-2</strong><br><span style="color:var(--muted)">统计并进 execute_sql</span></td><td>返回体自带列级统计，analyze_result 撤出规格表</td><td><code>askdb/tools.py</code></td><td><span class="tag t-keep">● 已完成</span></td><td><code>de22a18</code></td></tr>
+<tr><td class="num">6</td><td><strong>账面</strong><br><span style="color:var(--muted)">embedding 成本进 trace</span></td><td>_n_recall 落 span 补 cost_cny / tok_in</td><td><code>askdb/agentgraph.py</code></td><td><span class="tag t-keep">● 已完成</span></td><td><code>0e28d11</code></td></tr>
+</tbody></table></div>
+  <div class="callout"><h4>落地过程中的偏差与决定</h4>三条提示词改动各带旋钮。<strong>2026-09-15 对照组跑测后，<code>intent_schema_heads</code> 默认改回 false</strong>（b23 可复现 CLARIFY，见 §09）；<code>sql_consolidation</code> 与 <code>answer_no_table_dump</code> 维持默认开，未发现可复现回归。三条代码改动落地即生效。</div>
+</section>
+
+<section id="measured">
+  <h2><span class="num">09</span>落地实测：23 条对照组</h2>
+  <p class="lede">六条改动落地后，把 <code>evals/baseline-cases.jsonl</code> 那 23 条生产真实提问
+  在本机同种子库上真模型各跑一轮（off = 三个旋钮全关 = 改动前措辞）。
+  <strong>省是真的，但比方案里按单条 trace 估的小得多，而且抓出了一条该改默认值的问题。</strong></p>
+
+  <h3>只看两档都出数的 15 条（口径可比）</h3>
+  <div class="tw"><table>
+    <thead><tr><th>指标</th><th class="num">off</th><th class="num">on</th><th class="num">差</th></tr></thead>
+    <tbody>
+      <tr><td>tok_in 合计</td><td class="num">358,839</td><td class="num">299,720</td><td class="num">−16.5%</td></tr>
+      <tr><td>成本合计</td><td class="num">¥0.1501</td><td class="num">¥0.1216</td><td class="num">−19.0%</td></tr>
+      <tr><td>tok_out 合计</td><td class="num">11,257</td><td class="num">12,016</td><td class="num">+6.7%</td></tr>
+      <tr><td>decide 轮中位（全 23 条）</td><td class="num">4.0</td><td class="num">3.0</td><td class="num">−25%</td></tr>
+      <tr><td>SQL 次中位（全 23 条）</td><td class="num">3.0</td><td class="num">2.0</td><td class="num">−33%</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="callout" style="border-top-color:var(--waste)">
+    <h4>三条要说清楚的，都不利于这份方案</h4>
+    <p><strong>① −71% 是错的，真实量级是 −17% 输入 / −19% 成本。</strong>方案 §02 那三个数拿
+    <strong>一条</strong> trace 算，而 <code>4bac5ce7f21b</code> 跑了 6 轮 decide，对照组里的中位数只有 4 轮 ——
+    可省的部分从一开始就没有那条 trace 显示的那么多。§05 自己写着"不能直接报成全站"，现在数据把它坐实了。</p>
+    <p><strong>② P0-3 的大头收益没兑现。</strong>它在方案里被算成 51% 的耗时与 43% 的成本，依据是
+    收敛轮那 1,415 个输出 token。实测 <code>tok_out</code> 总量反而 +6.7% —— 逐条看，输出增减几乎完全
+    跟着 decide 轮数走（轮数 5→2 的那条省 606，轮数 2→3 的几条各涨 300–600）。
+    单独隔离它（只翻这一个旋钮）：答案字数中位 809 → 320、Markdown 表从 1/5 降到 0/4，
+    <strong>但收敛轮的输出 token 只降 8.6%，而且 n 只有 4–5、样本不配对</strong>。
+    方向对，<strong>那个量级没有被证实</strong>。</p>
+    <p><strong>③ 一条旋钮据此改回默认关。</strong>见下。</p>
+  </div>
+
+  <h3>回归排查：6 条疑似，5 条是噪声</h3>
+  <p>单轮对照里 <code>on</code> 档出数 17/23、<code>off</code> 21/23，新增 6 条未出数。把这 6 条
+  加上 2 条"反而修好"的，两档各重跑 3 次：</p>
+  <div class="tw"><table>
+    <thead><tr><th>用例</th><th class="num">off</th><th class="num">on</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>b03 / b06 / b07 / b20</td><td class="num">3/3</td><td class="num">3/3</td><td>噪声</td></tr>
+      <tr><td>b08 逐个供应商统计采购金额</td><td class="num">2/3</td><td class="num">3/3</td><td>噪声（on 反而更稳）</td></tr>
+      <tr><td>b15 各承运商准时率月度均值</td><td class="num">3/3</td><td class="num">2/3</td><td>噪声（一次 <code>LLM</code>）</td></tr>
+      <tr><td>b14 物流轨迹表一共有多少行</td><td class="num">0/3</td><td class="num">0/3</td><td><strong>两档都挂</strong>，R-11 扫描上限，与本次改动无关</td></tr>
+      <tr><td><strong>b23 被隐藏的评价有多少条？</strong></td><td class="num">3/3</td><td class="num">1/3</td><td><strong>可复现</strong> · <code>CLARIFY</code></td></tr>
+    </tbody>
+  </table></div>
+  <p>b23 单独探预检 10 次：全量 <span class="n">10/10</span> 判可答，表头层 <span class="n">9/10</span>。
+  信号不强，但它落在一道<strong>用户可见的拒答门</strong>上 —— 误判的后果是把一个答得了的问题
+  回成"问得不够具体"。</p>
+  <p><strong>处置：<code>intent_schema_heads</code> 默认改回 <code>false</code></strong>（代码、旋钮、测试全部保留）。
+  验收标准是那份 120 条生产拒答集回归，而它要生产登录态、本地跑不了；
+  <strong>在它能跑之前，默认值就该站在"不改变现有行为"那一侧</strong>。跑通了把配置改 <code>true</code> 即可。</p>
+  <p>顺带说明这条旋钮为什么值得留着：本机 12 条探针里，它把
+  「统计一下仓库总数」问 ragforge 从"全量判成可答（错）"纠正成"越域（对）"—— 正是语义攀附那一类。
+  <strong>问题出在探针选偏了</strong>：12 条全在测"库里有没有这个实体"，一条都没测"这些列答不答得了"，
+  而 b23 恰好是后者。</p>
+
+  <h3>确定性的三条，每次都成立</h3>
+  <ul>
+    <li><strong>P0-1</strong>：全部跑测里 <code>tool_call · search_schema</code> 出现 <strong>0 次</strong>。</li>
+    <li><strong>P1-2</strong>：<code>analyze_result</code> 出现 <strong>0 次</strong>。</li>
+    <li><strong>账面</strong>：<code>schema_recall</code> 那一格真的有钱了（一次向量召回约
+      <span class="n">3,649</span> token / <span class="n">¥0.0018</span>，记在 <code>text-embedding-v4</code> 名下）。
+      也就是说上表 <code>on</code> 档的成本<strong>含 embedding</strong>，而生产那条 ¥0.012834 不含。</li>
+    <li><strong>结果区取数</strong>：专项复跑 5 次，4 次链路上存在"返回 1 行 / 20 行 / 200 行"的探查查询，
+      <strong>每次渲染的都是那条 18 行的作答查询</strong>；其中一次最后那条 SQL 还执行失败，照样取对。</li>
+  </ul>
+
+  <div class="callout">
+    <h4>本机这套数的两处污染，别拿去当生产值</h4>
+    <p><strong>① 到百炼的 RTT 是 460ms</strong>（<code>vpn-bypass</code> 只放行了三台服务器 IP，模型流量仍走公司隧道；
+    一次最简单的 embedding 调用要 1.8 秒）。叠加 <code>356266f</code> 刚把单次调用超时砍到 20 秒，
+    本机约 <strong>13% 的调用以 <code>LLM</code> 失败告终</strong> —— 那是环境，不是代码，生产在同区域内网。
+    <strong>所以耗时那一列不具代表性</strong>；token 与成本是服务端计数，不受影响。</p>
+    <p><strong>② 这仍然不是验收。</strong>本机同种子库、无并发、绕开了 HTTP 与长任务交接
+    （<code>/api/tasks/{id}</code> 无条件要登录，而 <code>async_runner</code> 在 step≥3 必然交接）。
+    生产验收仍按 §06 跑 <code>evals/baseline.py</code>。</p>
+  </div>
+</section>
+
+<footer>
+  <p><strong>文档</strong>　askdb 单链路提效方案 · V1.3<br>
+  <strong>拟制日期</strong>　2026-09-15<br>
+  <strong>依据</strong>　生产 trace <code>4bac5ce7f21b</code>（2026-09-14 16:10 UTC，14 个 span 完整输入输出，取自 <code>/api/trace</code>）；代码对照 <code>askdb@0c159f5</code> 的 <code>agentgraph.py</code> / <code>agent.py</code> / <code>tools.py</code> / <code>llm.py</code>；单价对照 <code>config/public.yaml</code>（qwen3.8-flash 输入 ¥0.0008/千、命中缓存 ¥0.00008/千、输出 ¥0.0027/千，2026-09-06 核对）；分布口径取自执行追踪页当日读数（P50 1.46s / P95 16.14s / 6,931 样本）<br>
+  <strong>数字口径</strong>　<span style="color:var(--accent)">本文档内所有指标均为实测值</span>，逐条可回溯到上述 trace 的 span 明细或配置里的单价 —— <strong>不适用 <code>docs/README.md</code> 中「设计文档数字均为占位值」那条说明</strong>。改造后的预估值已在正文中明确标注为预估，并注明哪些是确定性的、哪些是概率性的。<br>
+  <strong>阶段目标</strong>　P0 三条落地并影子跑完两轮：2026-09-22　·　P0 切 enforce 并生产验证：2026-09-26　·　P1 两条：2026-09-30　·　P2 立项评审：2026-10-10<br>
+  <strong>修订记录</strong>　V1.0 / 2026-09-15 / 首版，基于单条 trace 剖析<br>
+  　　　　　　　V1.1 / 2026-09-15 / 补跑向量路径 recall@k 基准（<code>docs/test-report-schema-recall.md</code>）：
+  <span style="color:var(--waste)">P2-2「schema 分层注入」据此否决</span>，同时确认 <code>top_k=8</code>/<code>max_k=12</code> 维持不动；
+  新增 P2-3（召回的三种失败形态，均为正确性问题，优先级高于本方案任何一条省钱改动）<br>
+  　　　　　　　V1.2 / 2026-09-15 / 六条改动全部落地（见 §08 执行计划）<br>
+  　　　　　　　V1.3 / 2026-09-15 / §09 换成 23 条对照组实测：
+  <span style="color:var(--waste)">tok_in −16.5% / 成本 −19.0% / tok_out +6.7%</span>，远小于 §02
+  按单条 trace 估的 −71%，且 P0-3 的量级未被证实；回归排查 6 条疑似里 5 条是噪声，
+  <strong>b23 可复现</strong> → <code>intent_schema_heads</code> 默认改回 false。
+  三张预估卡原样保留不回填</p>
+</footer>
+
+</div>
+
+</body>
+</html>

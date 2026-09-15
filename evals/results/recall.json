@@ -1,0 +1,2259 @@
+{
+ "ts": "2026-09-15T00:59:12",
+ "build": "0c159f5",
+ "note": "首份向量路径 recall@k 基准（本机同种子库，全表当白名单=下限口径）",
+ "config": "config/public.yaml",
+ "mode": "vector",
+ "top_k": 8,
+ "max_k": 12,
+ "min_score": 0.35,
+ "embedding_model": "text-embedding-v4",
+ "embed_tokens": 48345,
+ "embed_cost_cny": 0.024172,
+ "elapsed_s": 93.0,
+ "n_cases": 97,
+ "ks": [
+  1,
+  2,
+  3,
+  5,
+  8,
+  12
+ ],
+ "summary": {
+  "all": {
+   "n": 97,
+   "recall_strict": {
+    "1": 0.3093,
+    "2": 0.5258,
+    "3": 0.5876,
+    "5": 0.6907,
+    "8": 0.8454,
+    "12": 0.9485
+   },
+   "recall_primary": {
+    "1": 0.4021,
+    "2": 0.6598,
+    "3": 0.7423,
+    "5": 0.866,
+    "8": 0.9588,
+    "12": 0.9794
+   },
+   "blind_rate": 0.0,
+   "primary_below_min_rate": 0.0206
+  },
+  "no_table_name_in_question": {
+   "n": 96,
+   "recall_strict": {
+    "1": 0.3125,
+    "2": 0.5208,
+    "3": 0.5833,
+    "5": 0.6875,
+    "8": 0.8438,
+    "12": 0.9479
+   },
+   "recall_primary": {
+    "1": 0.4062,
+    "2": 0.6562,
+    "3": 0.7396,
+    "5": 0.8646,
+    "8": 0.9583,
+    "12": 0.9792
+   },
+   "blind_rate": 0.0,
+   "primary_below_min_rate": 0.0208
+  },
+  "table_name_in_question": {
+   "n": 1,
+   "recall_strict": {
+    "1": 0.0,
+    "2": 1.0,
+    "3": 1.0,
+    "5": 1.0,
+    "8": 1.0,
+    "12": 1.0
+   },
+   "recall_primary": {
+    "1": 0.0,
+    "2": 1.0,
+    "3": 1.0,
+    "5": 1.0,
+    "8": 1.0,
+    "12": 1.0
+   },
+   "blind_rate": 0.0,
+   "primary_below_min_rate": 0.0
+  },
+  "per_source": {
+   "careermate": {
+    "n": 23,
+    "recall_strict": {
+     "1": 0.4348,
+     "2": 0.6087,
+     "3": 0.6087,
+     "5": 0.7391,
+     "8": 0.7826,
+     "12": 0.8696
+    },
+    "recall_primary": {
+     "1": 0.5652,
+     "2": 0.6957,
+     "3": 0.6957,
+     "5": 0.8696,
+     "8": 0.913,
+     "12": 0.9565
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "ragforge": {
+    "n": 55,
+    "recall_strict": {
+     "1": 0.2182,
+     "2": 0.4,
+     "3": 0.5091,
+     "5": 0.5818,
+     "8": 0.8182,
+     "12": 0.9636
+    },
+    "recall_primary": {
+     "1": 0.2727,
+     "2": 0.5818,
+     "3": 0.7273,
+     "5": 0.8364,
+     "8": 0.9636,
+     "12": 0.9818
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0364
+   },
+   "shop_aftersale": {
+    "n": 2,
+    "recall_strict": {
+     "1": 0.5,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 0.5,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "shop_catalog": {
+    "n": 2,
+    "recall_strict": {
+     "1": 0.0,
+     "2": 0.5,
+     "3": 0.5,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 0.0,
+     "2": 0.5,
+     "3": 0.5,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "shop_customer": {
+    "n": 2,
+    "recall_strict": {
+     "1": 0.0,
+     "2": 0.5,
+     "3": 0.5,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 1.0,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "shop_inventory": {
+    "n": 2,
+    "recall_strict": {
+     "1": 1.0,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 1.0,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "shop_logistics": {
+    "n": 2,
+    "recall_strict": {
+     "1": 0.5,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 1.0,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "shop_marketing": {
+    "n": 2,
+    "recall_strict": {
+     "1": 0.5,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 0.5,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "shop_order": {
+    "n": 1,
+    "recall_strict": {
+     "1": 0.0,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 0.0,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "shop_payment": {
+    "n": 2,
+    "recall_strict": {
+     "1": 0.0,
+     "2": 0.5,
+     "3": 0.5,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 0.0,
+     "2": 0.5,
+     "3": 0.5,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "shop_review": {
+    "n": 2,
+    "recall_strict": {
+     "1": 1.0,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 1.0,
+     "2": 1.0,
+     "3": 1.0,
+     "5": 1.0,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   },
+   "shop_supply": {
+    "n": 2,
+    "recall_strict": {
+     "1": 0.5,
+     "2": 0.5,
+     "3": 0.5,
+     "5": 0.5,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "recall_primary": {
+     "1": 0.5,
+     "2": 0.5,
+     "3": 0.5,
+     "5": 0.5,
+     "8": 1.0,
+     "12": 1.0
+    },
+    "blind_rate": 0.0,
+    "primary_below_min_rate": 0.0
+   }
+  }
+ },
+ "items": [
+  {
+   "id": "b01",
+   "source": "careermate",
+   "origin": "baseline",
+   "question": "有多少用户创建过简历但从没发起过会话",
+   "want": [
+    "users",
+    "resumes",
+    "agent_sessions"
+   ],
+   "primary": "users",
+   "name_in_q": false,
+   "ranks": {
+    "users": 27,
+    "resumes": 14,
+    "agent_sessions": 13
+   },
+   "k_strict": 27,
+   "k_primary": 27,
+   "primary_score": 0.4397,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b02",
+   "source": "careermate",
+   "origin": "baseline",
+   "question": "调用次数最多的 agent 工具是哪几个？",
+   "want": [
+    "agent_tool_calls"
+   ],
+   "primary": "agent_tool_calls",
+   "name_in_q": false,
+   "ranks": {
+    "agent_tool_calls": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5912,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-s01",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "一共有多少个用户",
+   "want": [
+    "users"
+   ],
+   "primary": "users",
+   "name_in_q": false,
+   "ranks": {
+    "users": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5296,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-s02",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "简历按状态各有多少份",
+   "want": [
+    "resumes"
+   ],
+   "primary": "resumes",
+   "name_in_q": false,
+   "ranks": {
+    "resumes": 4
+   },
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.5655,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-s03",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "岗位匹配按匹配等级怎么分布",
+   "want": [
+    "job_matches"
+   ],
+   "primary": "job_matches",
+   "name_in_q": false,
+   "ranks": {
+    "job_matches": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.628,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-s04",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "求职申请各个阶段分别有多少条（不含已删除）",
+   "want": [
+    "job_applications"
+   ],
+   "primary": "job_applications",
+   "name_in_q": false,
+   "ranks": {
+    "job_applications": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6721,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-s05",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "面试题里已回答和未回答的各有多少道",
+   "want": [
+    "interview_questions"
+   ],
+   "primary": "interview_questions",
+   "name_in_q": false,
+   "ranks": {
+    "interview_questions": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.63,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-s06",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "对话消息按角色分布是怎样的",
+   "want": [
+    "agent_messages"
+   ],
+   "primary": "agent_messages",
+   "name_in_q": false,
+   "ranks": {
+    "agent_messages": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5773,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-s07",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "还没完成的待办任务有几条（不含已删除）",
+   "want": [
+    "career_tasks"
+   ],
+   "primary": "career_tasks",
+   "name_in_q": false,
+   "ranks": {
+    "career_tasks": 5
+   },
+   "k_strict": 5,
+   "k_primary": 5,
+   "primary_score": 0.473,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-s08",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "收藏的岗位一共有多少个（不含已删除）",
+   "want": [
+    "saved_jobs"
+   ],
+   "primary": "saved_jobs",
+   "name_in_q": false,
+   "ranks": {
+    "saved_jobs": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6313,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-j01",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "有多少个用户至少有一份简历",
+   "want": [
+    "resumes",
+    "users"
+   ],
+   "primary": "resumes",
+   "name_in_q": false,
+   "ranks": {
+    "resumes": 9,
+    "users": 23
+   },
+   "k_strict": 23,
+   "k_primary": 9,
+   "primary_score": 0.5536,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-j02",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "简历份数最多的三个用户各有几份，只要用户名和份数两列",
+   "want": [
+    "resumes",
+    "users"
+   ],
+   "primary": "resumes",
+   "name_in_q": false,
+   "ranks": {
+    "resumes": 5,
+    "users": 22
+   },
+   "k_strict": 22,
+   "k_primary": 5,
+   "primary_score": 0.5401,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-j03",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "每个面试会话下面挂了多少道面试题，取最多的三个，只要会话 id 和题数两列",
+   "want": [
+    "interview_sessions",
+    "interview_questions"
+   ],
+   "primary": "interview_sessions",
+   "name_in_q": false,
+   "ranks": {
+    "interview_sessions": 1,
+    "interview_questions": 2
+   },
+   "k_strict": 2,
+   "k_primary": 1,
+   "primary_score": 0.7349,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-j04",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "匹配等级为 HIGH 的岗位分别用的哪份简历，只要岗位名和简历标题两列",
+   "want": [
+    "job_matches",
+    "resumes"
+   ],
+   "primary": "job_matches",
+   "name_in_q": false,
+   "ranks": {
+    "job_matches": 1,
+    "resumes": 10
+   },
+   "k_strict": 10,
+   "k_primary": 1,
+   "primary_score": 0.7278,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-j05",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "处于 OFFER 阶段的申请分别是哪些公司和岗位（不含已删除）",
+   "want": [
+    "job_applications"
+   ],
+   "primary": "job_applications",
+   "name_in_q": false,
+   "ranks": {
+    "job_applications": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6552,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-j06",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "消息条数最多的三个会话各有多少条消息，只要会话 id 和条数两列",
+   "want": [
+    "agent_messages"
+   ],
+   "primary": "agent_messages",
+   "name_in_q": false,
+   "ranks": {
+    "agent_messages": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6175,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-w01",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "最近 30 天创建了多少个会话",
+   "want": [
+    "agent_sessions"
+   ],
+   "primary": "agent_sessions",
+   "name_in_q": false,
+   "ranks": {
+    "agent_sessions": 4
+   },
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.4889,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-w02",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "用户按月注册数是多少，月份用 YYYY-MM 格式",
+   "want": [
+    "users"
+   ],
+   "primary": "users",
+   "name_in_q": false,
+   "ranks": {
+    "users": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.5663,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-w03",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "最后一条对话消息是什么时候",
+   "want": [
+    "agent_messages"
+   ],
+   "primary": "agent_messages",
+   "name_in_q": false,
+   "ranks": {
+    "agent_messages": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.4851,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-w04",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "2026 年 8 月创建了多少份简历版本",
+   "want": [
+    "resume_versions"
+   ],
+   "primary": "resume_versions",
+   "name_in_q": false,
+   "ranks": {
+    "resume_versions": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6556,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-m01",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "消息条数最多的那个会话是什么任务类型",
+   "want": [
+    "agent_sessions",
+    "agent_messages"
+   ],
+   "primary": "agent_sessions",
+   "name_in_q": false,
+   "ranks": {
+    "agent_sessions": 7,
+    "agent_messages": 1
+   },
+   "k_strict": 7,
+   "k_primary": 7,
+   "primary_score": 0.5094,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-m02",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "简历份数最多的那个用户，他有几个岗位匹配",
+   "want": [
+    "job_matches",
+    "resumes"
+   ],
+   "primary": "job_matches",
+   "name_in_q": false,
+   "ranks": {
+    "job_matches": 1,
+    "resumes": 12
+   },
+   "k_strict": 12,
+   "k_primary": 1,
+   "primary_score": 0.6938,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ca-cm-m03",
+   "source": "careermate",
+   "origin": "golden",
+   "question": "答题最多的那个面试会话，它的平均分是多少",
+   "want": [
+    "interview_sessions",
+    "interview_questions"
+   ],
+   "primary": "interview_sessions",
+   "name_in_q": false,
+   "ranks": {
+    "interview_sessions": 2,
+    "interview_questions": 1
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.6616,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b03",
+   "source": "ragforge",
+   "origin": "baseline",
+   "question": "哪个组织的知识库最多，它下面各类型文档分别多少？",
+   "want": [
+    "knowledge_bases",
+    "organizations",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 1,
+    "organizations": 8,
+    "documents": 7
+   },
+   "k_strict": 8,
+   "k_primary": 1,
+   "primary_score": 0.5585,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b04",
+   "source": "ragforge",
+   "origin": "baseline",
+   "question": "模型配置按用途分别有多少个？",
+   "want": [
+    "model_config"
+   ],
+   "primary": "model_config",
+   "name_in_q": false,
+   "ranks": {
+    "model_config": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5706,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s01",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "documents 表一共有多少行",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": true,
+   "ranks": {
+    "documents": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.4348,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s02",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各解析状态各有多少个文档",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.4588,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s03",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "文档按内容类型怎么分布",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.4792,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s04",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "解析失败的文档有多少个",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.5053,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s05",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "解析失败的文档报的是什么错，各多少条",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.488,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s06",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "知识库表里一共有多少行（含已删除的）",
+   "want": [
+    "knowledge_bases"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 6
+   },
+   "k_strict": 6,
+   "k_primary": 6,
+   "primary_score": 0.5208,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s07",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "检索日志一共有多少条",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.552,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s08",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各检索策略分别用了多少次",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.4908,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s09",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "检索平均耗时多少毫秒",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 7
+   },
+   "k_strict": 7,
+   "k_primary": 7,
+   "primary_score": 0.4022,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s10",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "最慢的一次检索用了多少毫秒",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 3
+   },
+   "k_strict": 3,
+   "k_primary": 3,
+   "primary_score": 0.4378,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s11",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各模型分别调用了多少次",
+   "want": [
+    "model_usage_daily"
+   ],
+   "primary": "model_usage_daily",
+   "name_in_q": false,
+   "ranks": {
+    "model_usage_daily": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5935,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s12",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "模型调用一共花了多少钱",
+   "want": [
+    "model_usage_daily"
+   ],
+   "primary": "model_usage_daily",
+   "name_in_q": false,
+   "ranks": {
+    "model_usage_daily": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5777,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s13",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "输入 token 总量是多少",
+   "want": [
+    "model_usage_daily"
+   ],
+   "primary": "model_usage_daily",
+   "name_in_q": false,
+   "ranks": {
+    "model_usage_daily": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.4885,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s14",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "文档平均多大（字节）",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.3816,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-s15",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "一共有几种内容类型",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 5
+   },
+   "k_strict": 5,
+   "k_primary": 5,
+   "primary_score": 0.3963,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j01",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各知识库分别有多少文档，从多到少排",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 2,
+    "documents": 7
+   },
+   "k_strict": 7,
+   "k_primary": 2,
+   "primary_score": 0.554,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j02",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "每个知识库有多少个解析失败的文档",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 3,
+    "documents": 2
+   },
+   "k_strict": 3,
+   "k_primary": 3,
+   "primary_score": 0.534,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j03",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "组织下面有几个知识库",
+   "want": [
+    "organizations",
+    "knowledge_bases"
+   ],
+   "primary": "organizations",
+   "name_in_q": false,
+   "ranks": {
+    "organizations": 3,
+    "knowledge_bases": 2
+   },
+   "k_strict": 3,
+   "k_primary": 3,
+   "primary_score": 0.5161,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j04",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "文档最多的 3 个知识库叫什么",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 1,
+    "documents": 12
+   },
+   "k_strict": 12,
+   "k_primary": 1,
+   "primary_score": 0.5598,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j05",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "有哪些知识库一个文档都没有",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 3,
+    "documents": 7
+   },
+   "k_strict": 7,
+   "k_primary": 3,
+   "primary_score": 0.5236,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j06",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各知识库的文档平均多大",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 2,
+    "documents": 6
+   },
+   "k_strict": 6,
+   "k_primary": 2,
+   "primary_score": 0.5326,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j07",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各知识库实际切了多少片",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 2,
+    "documents": 10
+   },
+   "k_strict": 10,
+   "k_primary": 2,
+   "primary_score": 0.5388,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j08",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "哪些知识库的缓存文档数和实际对不上，差多少",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 2,
+    "documents": 11
+   },
+   "k_strict": 11,
+   "k_primary": 2,
+   "primary_score": 0.5595,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j09",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "每个知识库的解析失败率是多少",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 2,
+    "documents": 10
+   },
+   "k_strict": 10,
+   "k_primary": 2,
+   "primary_score": 0.5193,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j10",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各知识库最新一篇文档是什么时候入库的",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 5,
+    "documents": 6
+   },
+   "k_strict": 6,
+   "k_primary": 5,
+   "primary_score": 0.4848,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j11",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "组织一共发起了多少次检索",
+   "want": [
+    "organizations",
+    "retrieval_logs"
+   ],
+   "primary": "organizations",
+   "name_in_q": false,
+   "ranks": {
+    "organizations": 16,
+    "retrieval_logs": 1
+   },
+   "k_strict": 16,
+   "k_primary": 16,
+   "primary_score": 0.32,
+   "any_over_min": true,
+   "primary_over_min": false
+  },
+  {
+   "id": "ra-j12",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "组织的模型总成本是多少",
+   "want": [
+    "organizations",
+    "model_usage_daily"
+   ],
+   "primary": "organizations",
+   "name_in_q": false,
+   "ranks": {
+    "organizations": 3,
+    "model_usage_daily": 1
+   },
+   "k_strict": 3,
+   "k_primary": 3,
+   "primary_score": 0.416,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j13",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "岗位 JD 库里有多少文档",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 5,
+    "documents": 9
+   },
+   "k_strict": 9,
+   "k_primary": 5,
+   "primary_score": 0.442,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j14",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各知识库用的什么向量模型，各有多少文档",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 1,
+    "documents": 10
+   },
+   "k_strict": 10,
+   "k_primary": 1,
+   "primary_score": 0.6405,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-j15",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各知识库的文档总大小是多少字节",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 3,
+    "documents": 6
+   },
+   "k_strict": 6,
+   "k_primary": 3,
+   "primary_score": 0.5372,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-m01",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "现在有几个有效的知识库",
+   "want": [
+    "knowledge_bases"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5346,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-m02",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "JD 文档数是多少",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 7
+   },
+   "k_strict": 7,
+   "k_primary": 7,
+   "primary_score": 0.3763,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-m03",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "日均成本是多少",
+   "want": [
+    "model_usage_daily"
+   ],
+   "primary": "model_usage_daily",
+   "name_in_q": false,
+   "ranks": {
+    "model_usage_daily": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.4385,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-m04",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "模型调用失败率是多少",
+   "want": [
+    "model_usage_daily"
+   ],
+   "primary": "model_usage_daily",
+   "name_in_q": false,
+   "ranks": {
+    "model_usage_daily": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6115,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-m05",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "有哪些慢检索",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.3656,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-m06",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "有多少次空结果检索",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 4
+   },
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.4341,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-m07",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "混合检索占比是多少",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 12
+   },
+   "k_strict": 12,
+   "k_primary": 12,
+   "primary_score": 0.3476,
+   "any_over_min": true,
+   "primary_over_min": false
+  },
+  {
+   "id": "ra-m08",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "文档的解析失败率是多少",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5029,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-m09",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "已入库的文档数是多少",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.5274,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-m10",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "各知识库的 JD 文档数分别是多少",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 2,
+    "documents": 9
+   },
+   "k_strict": 9,
+   "k_primary": 2,
+   "primary_score": 0.5269,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-w01",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "最近 7 天入库了多少文档",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 3
+   },
+   "k_strict": 3,
+   "k_primary": 3,
+   "primary_score": 0.5008,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-w02",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "按天统计文档入库量",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 5
+   },
+   "k_strict": 5,
+   "k_primary": 5,
+   "primary_score": 0.4865,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-w03",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "最近 30 天有多少次检索",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 3
+   },
+   "k_strict": 3,
+   "k_primary": 3,
+   "primary_score": 0.4438,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-w04",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "每天的模型成本是多少",
+   "want": [
+    "model_usage_daily"
+   ],
+   "primary": "model_usage_daily",
+   "name_in_q": false,
+   "ranks": {
+    "model_usage_daily": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.5817,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-w05",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "哪一天入库的文档最多",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 5
+   },
+   "k_strict": 5,
+   "k_primary": 5,
+   "primary_score": 0.3997,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-h01",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "文档最多的那个知识库，它的解析失败率是多少",
+   "want": [
+    "documents",
+    "knowledge_bases"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 8,
+    "knowledge_bases": 1
+   },
+   "k_strict": 8,
+   "k_primary": 8,
+   "primary_score": 0.5071,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-h02",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "哪个知识库文档最多，把它的文档按内容类型分组统计",
+   "want": [
+    "documents",
+    "knowledge_bases"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 6,
+    "knowledge_bases": 2
+   },
+   "k_strict": 6,
+   "k_primary": 6,
+   "primary_score": 0.4963,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-h03",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "最慢的那次检索用的是什么策略",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.4298,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-h04",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "花钱最多的那个模型，它的调用失败率是多少",
+   "want": [
+    "model_usage_daily"
+   ],
+   "primary": "model_usage_daily",
+   "name_in_q": false,
+   "ranks": {
+    "model_usage_daily": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6363,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-h05",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "先看看内容类型都有哪些取值，再统计不是 JD 的那些文档一共多少个",
+   "want": [
+    "documents"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 6
+   },
+   "k_strict": 6,
+   "k_primary": 6,
+   "primary_score": 0.4971,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-h06",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "入库量最大的那一天，那天各知识库分别入了多少文档",
+   "want": [
+    "documents",
+    "knowledge_bases"
+   ],
+   "primary": "documents",
+   "name_in_q": false,
+   "ranks": {
+    "documents": 8,
+    "knowledge_bases": 6
+   },
+   "k_strict": 8,
+   "k_primary": 8,
+   "primary_score": 0.4957,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-h07",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "用得最少的那个检索策略，平均耗时多少",
+   "want": [
+    "retrieval_logs"
+   ],
+   "primary": "retrieval_logs",
+   "name_in_q": false,
+   "ranks": {
+    "retrieval_logs": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.4599,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "ra-h08",
+   "source": "ragforge",
+   "origin": "golden",
+   "question": "缓存文档数和实际差最多的那个知识库，差了多少",
+   "want": [
+    "knowledge_bases",
+    "documents"
+   ],
+   "primary": "knowledge_bases",
+   "name_in_q": false,
+   "ranks": {
+    "knowledge_bases": 2,
+    "documents": 13
+   },
+   "k_strict": 13,
+   "k_primary": 2,
+   "primary_score": 0.5721,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b10",
+   "source": "shop_aftersale",
+   "origin": "baseline",
+   "question": "处理工单最多的客服是谁，处理了多少条？",
+   "want": [
+    "tickets"
+   ],
+   "primary": "tickets",
+   "name_in_q": false,
+   "ranks": {
+    "tickets": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.6373,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b11",
+   "source": "shop_aftersale",
+   "origin": "baseline",
+   "question": "处理工单最多的前 5 个客服分别处理了多少",
+   "want": [
+    "tickets"
+   ],
+   "primary": "tickets",
+   "name_in_q": false,
+   "ranks": {
+    "tickets": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6439,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b12",
+   "source": "shop_catalog",
+   "origin": "baseline",
+   "question": "逐个商品统计它的 SKU 数量，全部列出",
+   "want": [
+    "skus",
+    "products"
+   ],
+   "primary": "skus",
+   "name_in_q": false,
+   "ranks": {
+    "skus": 4,
+    "products": 1
+   },
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.678,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b13",
+   "source": "shop_catalog",
+   "origin": "baseline",
+   "question": "2026年8月的商品日统计 GMV 合计是多少？",
+   "want": [
+    "product_stats_daily"
+   ],
+   "primary": "product_stats_daily",
+   "name_in_q": false,
+   "ranks": {
+    "product_stats_daily": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.608,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b06",
+   "source": "shop_customer",
+   "origin": "baseline",
+   "question": "各会员等级的客户数分别是多少？",
+   "want": [
+    "customers",
+    "member_levels"
+   ],
+   "primary": "customers",
+   "name_in_q": false,
+   "ranks": {
+    "customers": 1,
+    "member_levels": 2
+   },
+   "k_strict": 2,
+   "k_primary": 1,
+   "primary_score": 0.6345,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b07",
+   "source": "shop_customer",
+   "origin": "baseline",
+   "question": "逐个会员统计他的积分流水条数，全部列出",
+   "want": [
+    "points_ledger",
+    "customers"
+   ],
+   "primary": "points_ledger",
+   "name_in_q": false,
+   "ranks": {
+    "points_ledger": 1,
+    "customers": 5
+   },
+   "k_strict": 5,
+   "k_primary": 1,
+   "primary_score": 0.7525,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b16",
+   "source": "shop_inventory",
+   "origin": "baseline",
+   "question": "库存为 0 的商品有多少个",
+   "want": [
+    "stock_snapshots"
+   ],
+   "primary": "stock_snapshots",
+   "name_in_q": false,
+   "ranks": {
+    "stock_snapshots": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6339,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b17",
+   "source": "shop_inventory",
+   "origin": "baseline",
+   "question": "已过期的批次有多少个？",
+   "want": [
+    "batches"
+   ],
+   "primary": "batches",
+   "name_in_q": false,
+   "ranks": {
+    "batches": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.7279,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b14",
+   "source": "shop_logistics",
+   "origin": "baseline",
+   "question": "物流轨迹表一共有多少行",
+   "want": [
+    "shipment_tracks"
+   ],
+   "primary": "shipment_tracks",
+   "name_in_q": false,
+   "ranks": {
+    "shipment_tracks": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6781,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b15",
+   "source": "shop_logistics",
+   "origin": "baseline",
+   "question": "各承运商的准时率月度均值是多少？",
+   "want": [
+    "carrier_scores",
+    "carriers"
+   ],
+   "primary": "carrier_scores",
+   "name_in_q": false,
+   "ranks": {
+    "carrier_scores": 1,
+    "carriers": 2
+   },
+   "k_strict": 2,
+   "k_primary": 1,
+   "primary_score": 0.7468,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b20",
+   "source": "shop_marketing",
+   "origin": "baseline",
+   "question": "预算最高的活动是哪几个？",
+   "want": [
+    "campaigns"
+   ],
+   "primary": "campaigns",
+   "name_in_q": false,
+   "ranks": {
+    "campaigns": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6155,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b21",
+   "source": "shop_marketing",
+   "origin": "baseline",
+   "question": "按活动类型统计各有多少",
+   "want": [
+    "campaigns"
+   ],
+   "primary": "campaigns",
+   "name_in_q": false,
+   "ranks": {
+    "campaigns": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.6064,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b05",
+   "source": "shop_order",
+   "origin": "baseline",
+   "question": "每个订单状态各有多少单",
+   "want": [
+    "orders"
+   ],
+   "primary": "orders",
+   "name_in_q": false,
+   "ranks": {
+    "orders": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.6868,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b18",
+   "source": "shop_payment",
+   "origin": "baseline",
+   "question": "把所有支付流水逐条列出来",
+   "want": [
+    "payments"
+   ],
+   "primary": "payments",
+   "name_in_q": false,
+   "ranks": {
+    "payments": 2
+   },
+   "k_strict": 2,
+   "k_primary": 2,
+   "primary_score": 0.6412,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b19",
+   "source": "shop_payment",
+   "origin": "baseline",
+   "question": "每个支付渠道的成功率是多少",
+   "want": [
+    "payments"
+   ],
+   "primary": "payments",
+   "name_in_q": false,
+   "ranks": {
+    "payments": 4
+   },
+   "k_strict": 4,
+   "k_primary": 4,
+   "primary_score": 0.6072,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b22",
+   "source": "shop_review",
+   "origin": "baseline",
+   "question": "有用数最高的评价是哪几条，有用数分别多少？",
+   "want": [
+    "reviews"
+   ],
+   "primary": "reviews",
+   "name_in_q": false,
+   "ranks": {
+    "reviews": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6206,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b23",
+   "source": "shop_review",
+   "origin": "baseline",
+   "question": "被隐藏的评价有多少条？",
+   "want": [
+    "reviews"
+   ],
+   "primary": "reviews",
+   "name_in_q": false,
+   "ranks": {
+    "reviews": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.6316,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b08",
+   "source": "shop_supply",
+   "origin": "baseline",
+   "question": "逐个供应商统计采购金额并排序，全部列出",
+   "want": [
+    "purchase_orders",
+    "suppliers"
+   ],
+   "primary": "purchase_orders",
+   "name_in_q": false,
+   "ranks": {
+    "purchase_orders": 7,
+    "suppliers": 2
+   },
+   "k_strict": 7,
+   "k_primary": 7,
+   "primary_score": 0.6038,
+   "any_over_min": true,
+   "primary_over_min": true
+  },
+  {
+   "id": "b09",
+   "source": "shop_supply",
+   "origin": "baseline",
+   "question": "应付账单按状态分别有多少张、金额多少？",
+   "want": [
+    "ap_bills"
+   ],
+   "primary": "ap_bills",
+   "name_in_q": false,
+   "ranks": {
+    "ap_bills": 1
+   },
+   "k_strict": 1,
+   "k_primary": 1,
+   "primary_score": 0.7379,
+   "any_over_min": true,
+   "primary_over_min": true
+  }
+ ]
+}

@@ -44,7 +44,11 @@ class FakeLlm:
     def structured(self, schema, system, human):
         u = SimpleNamespace(input_tokens=10, output_tokens=2, cost_cny=0.0)
         if schema.__name__ == "IntentCheck":
+            # metadata_only 要显式给：这是 IntentCheck 的真实形状，替身缺了它
+            # _n_intent 会在 intent.metadata_only 上抛 AttributeError。
+            # 给 False（数据问题）——这些用例问的都是"有多少文档"这类。
             return SimpleNamespace(answerable=self.answerable, out_of_scope=False,
+                                   metadata_only=False,
                                    reason="ok", clarify="补充一下"), u
         self.calls.append(human)
         a = self.actions[min(self.i, len(self.actions) - 1)]

@@ -39,6 +39,7 @@ class FakeLlm:
         u = SimpleNamespace(input_tokens=500, output_tokens=50, cost_cny=0.0)
         if schema.__name__ == "IntentCheck":
             return SimpleNamespace(answerable=self.answerable, out_of_scope=False,
+                                   metadata_only=False,  # 数据问题，见 test_resume 同处注释
                                    reason="ok", clarify=""), u
         a = self.actions[min(self.i, len(self.actions) - 1)]
         self.i += 1

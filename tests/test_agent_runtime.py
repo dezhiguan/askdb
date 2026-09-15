@@ -123,8 +123,12 @@ def test_unknown_tool_and_missing_arg(tmp_path):
 
 def test_tool_specs_default_excludes_side_effect():
     names = {s["name"] for s in tools.tool_specs()}
-    assert {"search_schema", "get_table_schema", "execute_sql", "analyze_result"} <= names
-    assert "export_result" not in names  # 副作用默认不暴露
+    assert {"search_schema", "get_table_schema", "execute_sql"} <= names
+    assert "export_result" not in names      # 副作用默认不暴露
+    # analyze_result 也不暴露：它算的东西现在随 execute_sql 一起回来了，
+    # 规格表里留一行只会诱导模型花一轮决策换一份它已经有的东西。
+    # REGISTRY 里仍在 —— 见 test_analyze_result_is_off_spec_but_still_callable。
+    assert "analyze_result" not in names
 
 
 # --------------------------------------------------------------------------
@@ -271,9 +275,24 @@ def test_side_effect_blocked_from_llm_but_runs_when_approved(tmp_path):
 # agent 循环
 # --------------------------------------------------------------------------
 def _patch_recall(monkeypatch):
-    monkeypatch.setattr(tools, "search_schema", lambda q, c: tools.ToolResult(
-        ok=True, tool="search_schema",
-        data={"tables": ["documents"], "prompt": "【可用的表】documents", "blind": False}))
+    """召回桩。**两份注入都要给**：prompt 是带列的全量，prompt_heads 是表头层。
+
+    用 schema_rag 真的渲染一遍，而不是写死一句"【可用的表】documents" ——
+    意图预检喂哪一份（agent.intent_schema_heads）的区别就在"有没有列名"上，
+    桩里两份长得一样的话，那个旋钮的测试什么都验不到。
+    """
+    from askdb import schema_rag
+
+    def fake(q, c):
+        tbls = list(c.tables.values())
+        return tools.ToolResult(
+            ok=True, tool="search_schema",
+            data={"tables": [t.name for t in tbls],
+                  "prompt": schema_rag._render(tbls, []),
+                  "prompt_heads": schema_rag.render_heads(tbls, []),
+                  "blind": False})
+
+    monkeypatch.setattr(tools, "search_schema", fake)
 
 
 def _patch_exec_invoke(monkeypatch, result=None, rejected_by=None):
@@ -835,35 +854,73 @@ def test_history_preview_says_how_many_rows_are_hidden(tmp_path):
 # 而三条 tool_call span 的耗时全是 0ms —— 后者是计时器起反了，不是真的快。
 # --------------------------------------------------------------------------
 def test_hidden_tools_drops_get_table_schema_only_when_recall_complete():
-    """召回完整 → 撤 get_table_schema；盲选/裁表 → 留着；没召回 → 一个都不撤。
-
-    **search_schema 任何时候都不撤**：元数据问题全靠模型自己调它一次才能过
-    NO_EVIDENCE 那道闸（见 _hidden_tools 的说明）。
-    """
+    """召回完整 → 撤 get_table_schema；盲选/裁表 → 留着；没召回 → 一个都不撤。"""
     from askdb import agentgraph as G
-    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": True}) \
-        == frozenset({"get_table_schema"})
-    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": False}) == frozenset()
+    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": True,
+                            "metadata_only": True}) == frozenset({"get_table_schema"})
+    assert G._hidden_tools({"schema_prompt": "x", "schema_complete": False,
+                            "metadata_only": True}) == frozenset()
     assert G._hidden_tools({}) == frozenset()
 
 
-def test_decide_prompt_hides_get_table_schema_but_keeps_search_schema(tmp_path, monkeypatch):
-    """规格表要真的少一行 —— 只测 _hidden_tools 的返回值管不住接线。"""
+def test_hidden_tools_keeps_search_schema_only_for_metadata_questions():
+    """数据问题撤 search_schema，元数据问题留着。
+
+    留着那一档是 NO_EVIDENCE 闸 ① 的命根子：元数据问题（"这个库里有哪些表"）
+    唯一能调的工具就是它，撤掉之后模型只能零工具调用直接作答，闸 ① 一刀切拒。
+    撤掉那一档省的是 trace 4bac5ce7f21b 里第 2 轮那次纯重复的决策。
+
+    盲选/裁表时**两个都不撤** —— 那时提示词里的不是全部可用的表，
+    模型确实需要自己再检索一次。
+    """
+    from askdb import agentgraph as G
+    base = {"schema_prompt": "x", "schema_complete": True}
+    assert G._hidden_tools({**base, "metadata_only": False}) \
+        == frozenset({"get_table_schema", "search_schema"})
+    assert G._hidden_tools({**base, "metadata_only": True}) \
+        == frozenset({"get_table_schema"})
+    # 预检没跑到（异常早退）时读到的就是缺省 False，按数据问题收 —— 那条路
+    # 根本走不到 decide，这里只钉住"不抛"。
+    assert "search_schema" in G._hidden_tools(base)
+    assert G._hidden_tools({**base, "schema_complete": False,
+                            "metadata_only": False}) == frozenset()
+
+
+def _seen_decide_prompts(tmp_path, monkeypatch, question, *, metadata_only):
+    """跑一趟 agent，把 decide 那几次的 system 提示词收回来。"""
     monkeypatch.setattr(A, "build_quota", lambda c: _Q())
     _patch_recall(monkeypatch)
     seen = []
 
     class Rec(_FakeLLM):
         def structured(self, schema, system, human):
-            if schema is not A.IntentCheck:
-                seen.append(system)
+            if schema is A.IntentCheck:
+                u = A.LlmUsage(input_tokens=1, output_tokens=1)
+                return schema(answerable=True, out_of_scope=False, reason="可答",
+                              metadata_only=metadata_only), u
+            seen.append(system)
             return super().structured(schema, system, human)
 
-    A.run_agent("有哪些表", _cfg(tmp_path, agent={"max_steps": 2}), 316,
-                executor=_FakeExec(), llm=Rec([{"finish": True, "answer": "只有 documents。"}]))
+    A.run_agent(question, _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                executor=_FakeExec(),
+                llm=Rec([{"finish": True, "answer": "只有 documents。"}]))
     assert seen, "decide 一次都没跑，这条测试什么都没验到"
+    return seen
+
+
+def test_decide_prompt_keeps_search_schema_for_metadata_questions(tmp_path, monkeypatch):
+    """规格表要真的少一行 —— 只测 _hidden_tools 的返回值管不住接线。"""
+    seen = _seen_decide_prompts(tmp_path, monkeypatch, "有哪些表", metadata_only=True)
     assert "- get_table_schema：" not in seen[0]
     assert "- search_schema：" in seen[0]
+    assert "- execute_sql：" in seen[0]
+
+
+def test_decide_prompt_drops_search_schema_for_data_questions(tmp_path, monkeypatch):
+    """数据问题的规格表里不该再有 search_schema —— 省掉那一轮纯重复的决策。"""
+    seen = _seen_decide_prompts(tmp_path, monkeypatch, "有多少文档", metadata_only=False)
+    assert "- search_schema：" not in seen[0]
+    assert "- get_table_schema：" not in seen[0]
     assert "- execute_sql：" in seen[0]
 
 
@@ -948,3 +1005,264 @@ def test_tool_call_span_measures_the_call_not_zero(tmp_path, monkeypatch):
     spans = [s for s in r.steps if s["step"] == "tool_call"]
     assert spans, "没有 tool_call span，这条测试什么都没验到"
     assert spans[0]["ms"] >= 20, f"tool_call 只记了 {spans[0]['ms']}ms —— 计时器又起反了"
+
+
+def test_sql_consolidation_knob_swaps_the_three_rules(tmp_path):
+    """P0-2 的三条规则按 agent.sql_consolidation 成套切换，且没有占位符漏填。
+
+    开：第 9 条在场，第 2、6 条不再要求"单独跑一次"。
+    关：逐字回到改动前 —— 这是它的回滚位，不是"旧代码"。
+    """
+    cfg = _cfg(tmp_path, agent={"max_steps": 2})
+
+    cfg.raw["agent"]["sql_consolidation"] = True
+    on = A.render_agent_system(cfg)
+    assert "9. **核对写进同一条 SQL" in on
+    assert "必须单独跑一次不带过滤的 COUNT" not in on
+    assert "必须有一条不带过滤的 COUNT 作为依据" in on
+
+    cfg.raw["agent"]["sql_consolidation"] = False
+    off = A.render_agent_system(cfg)
+    assert "9. **核对写进同一条 SQL" not in off
+    assert "必须单独跑一次不带过滤的 COUNT" in off
+    assert "另跑一条 GROUP BY" in off
+
+    # 两档都不许把 {rule2_tail} 这类占位符原样漏进提示词 —— 漏了模型会照着
+    # 那串花括号当成字面要求读，而这类错在结果上完全看不出来。
+    for text in (on, off):
+        assert "{rule" not in text and "{tools}" not in text
+
+    # 缺配置时默认开：关着等于把 4bac5ce7f21b 里那两轮自证口径留在生产上。
+    cfg.raw["agent"].pop("sql_consolidation")
+    assert A.sql_consolidation(cfg) is True
+
+
+def test_sql_consolidation_keeps_the_grounding_rules_intact(tmp_path):
+    """第 9 条是"怎么拿到依据"，不是"要不要依据" —— 前三条硬约束一字不动。"""
+    cfg = _cfg(tmp_path, agent={"max_steps": 2, "sql_consolidation": True})
+    on = A.render_agent_system(cfg)
+    assert "1. **没跑过就不许写。**" in on
+    assert "3. **被截断的结果不能用来说总量。**" in on
+    assert "不放松第 1、2、3 条" in on
+
+
+def test_answer_no_table_dump_knob(tmp_path):
+    """P0-3 的措辞按 agent.answer_no_table_dump 开关，且不影响 answer_step 那条。"""
+    cfg = _cfg(tmp_path, agent={"max_steps": 2})
+
+    cfg.raw["agent"]["answer_no_table_dump"] = True
+    on = A.render_agent_system(cfg)
+    assert "answer 里不要把结果集整表抄一遍" in on
+
+    cfg.raw["agent"]["answer_no_table_dump"] = False
+    off = A.render_agent_system(cfg)
+    assert "answer 里不要把结果集整表抄一遍" not in off
+
+    # answer_step 是独立的正确性修复，两档都必须在场 —— 关掉复述那条旋钮时，
+    # 结果区仍然要按指认取数，否则两边会各错一半。
+    for text in (on, off):
+        assert "必须填 answer_step" in text
+        assert "{answer_style}" not in text
+
+    cfg.raw["agent"].pop("answer_no_table_dump")
+    assert A.answer_no_table_dump(cfg) is True
+
+
+def test_answer_exec_follows_the_step_the_model_pointed_at():
+    """结果区取"回答问题那一条"，不是"最后执行"那一条。"""
+    from askdb import agentgraph as G
+    first = {"columns": ["n"], "rows": [[7]], "step": 2}
+    probe = {"columns": ["c"], "rows": [[1]], "step": 4}
+    st = {"exec_results": [first, probe], "last_exec": probe}
+
+    assert G._answer_exec({**st, "answer_step": 2}) is first
+    assert G._answer_exec({**st, "answer_step": 4}) is probe
+
+
+def test_answer_exec_falls_back_to_last_exec_unchanged():
+    """没指认 / 指错 / 越界 —— 一律退回改动前的行为（最后一次执行）。"""
+    from askdb import agentgraph as G
+    first = {"columns": ["n"], "rows": [[7]], "step": 2}
+    probe = {"columns": ["c"], "rows": [[1]], "step": 4}
+    st = {"exec_results": [first, probe], "last_exec": probe}
+
+    assert G._answer_exec(st) is probe                       # 没填
+    assert G._answer_exec({**st, "answer_step": 0}) is probe  # 显式 0
+    assert G._answer_exec({**st, "answer_step": 3}) is probe  # 那一步不是成功执行
+    assert G._answer_exec({**st, "answer_step": 99}) is probe  # 越界
+    assert G._answer_exec({**st, "answer_step": -1}) is probe  # 负数
+    # 一次都没执行成功时不该抛
+    assert G._answer_exec({"exec_results": [], "last_exec": None}) is None
+
+
+def test_exec_results_carry_step_and_full_payload(tmp_path, monkeypatch):
+    """exec_results 要带步号与完整返回，接地校验对多出来的键透明。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    _stub_guard(monkeypatch)
+    from askdb import agentgraph as G
+
+    captured = {}
+    real = G._n_finalize
+
+    def spy(state, config):
+        captured["exec_results"] = list(state.get("exec_results") or [])
+        return real(state, config)
+
+    monkeypatch.setattr(G, "_n_finalize", spy)
+    G.reset_graph()
+    try:
+        A.run_agent("有多少文档", _cfg(tmp_path, agent={"max_steps": 3}), 316,
+                    executor=_FakeExec(),
+                    llm=_FakeLLM([{"finish": False, "tool": "execute_sql",
+                                   "args": {"sql": "SELECT 1"}},
+                                  {"finish": True, "answer": "42 个。", "answer_step": 1}]))
+    finally:
+        G.reset_graph()
+
+    got = captured.get("exec_results") or []
+    assert got, "一次成功执行都没落进 exec_results"
+    assert got[0]["step"] == 1, got[0]
+    # 完整返回：AskResult 要的这些字段不能只留 columns/rows
+    assert "as_of" in got[0] and "row_count" in got[0]
+    # 接地校验只读 columns/rows，多出来的键不该改变它的判定
+    assert grounding.ungrounded("一共 42 个", got) == []
+
+
+def test_table_head_is_the_header_layer_only(tmp_path):
+    """表头层 = 表名 + 描述 + 别名，一个列都不带。"""
+    from askdb import schema_rag
+    cfg = _cfg(tmp_path)
+    t = cfg.tables["documents"]
+    head = schema_rag.table_head(t)
+    assert "表 documents —— 文档" in head and "别名：文件" in head
+    for col in t.columns:
+        assert col not in head, f"表头层不该出现列名 {col}"
+    # 全量那份必须仍然带列 —— 两者不是一回事，别把 table_doc 也瘦下去
+    assert "chunk_type" in schema_rag.table_doc(t)
+
+
+def test_intent_schema_heads_knob(tmp_path, monkeypatch):
+    """预检喂表头层还是全量，由 agent.intent_schema_heads 决定。"""
+    cfg = _cfg(tmp_path, agent={"max_steps": 2})
+    # **缺配置默认关** —— 与另外两个旋钮相反。这一条落在用户可见的拒答门上，
+    # 而它的验收（120 条生产拒答集）还没跑，默认值就该站在"不改变现有行为"
+    # 那一侧。见 agent.intent_schema_heads 的说明。
+    assert A.intent_schema_heads(cfg) is False
+    cfg.raw["agent"]["intent_schema_heads"] = True
+    assert A.intent_schema_heads(cfg) is True
+
+    seen = {}
+
+    class Rec(_FakeLLM):
+        def structured(self, schema, system, human):
+            if schema is A.IntentCheck:
+                seen.setdefault("intent", human)
+            return super().structured(schema, system, human)
+
+    _patch_recall(monkeypatch)
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    for heads_on, want_col in ((True, False), (False, True)):
+        seen.clear()
+        cfg.raw["agent"]["intent_schema_heads"] = heads_on
+        A.run_agent("有多少文档", cfg, 316, executor=_FakeExec(),
+                    llm=Rec([{"finish": True, "answer": "42 个。"}]))
+        assert "intent" in seen, "预检一次都没跑"
+        # 列名在不在预检的输入里，就是这个旋钮唯一的区别
+        assert ("chunk_type" in seen["intent"]) is want_col, \
+            f"intent_schema_heads={heads_on} 时列名不该是 {'缺席' if want_col else '在场'}"
+
+
+def test_execute_sql_returns_column_stats(tmp_path, monkeypatch):
+    """execute_sql 的返回自带列级统计 —— 模型不必再为它单花一轮决策。"""
+    _stub_guard(monkeypatch)
+    r = tools.execute_sql("SELECT 1", _cfg(tmp_path), 0, executor=_FakeExec())
+    assert r.ok
+    stats = r.data["column_stats"]
+    assert stats == [{"column": "n", "count": 1, "distinct": 1,
+                      "min": 42.0, "max": 42.0, "mean": 42.0, "sum": 42.0}]
+
+
+def test_column_stats_skips_masked_columns():
+    """打码值不参与数值统计 —— 它本来就不是真值。"""
+    d = {"columns": ["phone", "n"], "rows": [["***", 3], ["***", 5]],
+         "masked_columns": ["phone"]}
+    by = {s["column"]: s for s in tools.column_stats(d)}
+    assert by["phone"]["note"] and "min" not in by["phone"]
+    assert by["n"]["min"] == 3.0 and by["n"]["sum"] == 8.0
+
+
+def test_analyze_result_is_off_spec_but_still_callable(tmp_path):
+    """撤出规格表，但 REGISTRY 里还在 —— 收暴露面不是能力阉割。"""
+    assert "analyze_result" not in {s["name"] for s in tools.tool_specs()}
+    assert "analyze_result" in tools.REGISTRY
+
+    cfg = _cfg(tmp_path)
+    ctx = tools.ToolContext(cfg=cfg, org_id=0)
+    ctx.last_result = {"columns": ["n"], "rows": [[1], [2]], "masked_columns": []}
+    r = tools.invoke("analyze_result", {}, ctx)
+    assert r.ok and r.data["n_rows"] == 2
+
+
+def test_stats_are_fed_back_only_when_the_preview_is_partial():
+    """行全给到了就不贴统计；被裁掉了才贴 —— 那时模型手上确实没有整列分布。"""
+    from askdb import agentgraph as G
+
+    full = [{"tool": "execute_sql", "args": {"sql": "SELECT 1"}, "brief": "返回 2 行",
+             "preview": {"columns": ["n"], "rows": [[1], [2]], "row_count": 2},
+             "stats": "n[非空 2，去重 2]"}]
+    assert "整列统计" not in A._render_history(full)
+
+    partial = [{"tool": "execute_sql", "args": {"sql": "SELECT 1"}, "brief": "返回 200 行",
+                "preview": {"columns": ["n"], "rows": [[1]], "row_count": 200},
+                "stats": "n[非空 200，去重 137，min 1/max 900/均值 12]"}]
+    text = A._render_history(partial)
+    assert "整列统计（全部 200 行，非仅上面几行）" in text
+    assert "去重 137" in text
+
+    # 统计行有上限：宽结果上整份统计会顶掉大半个预览预算
+    long = G._stats_line([{"column": f"c{i}", "count": i, "distinct": i}
+                          for i in range(200)])
+    assert len(long) <= G._STATS_CHARS + 20 and "统计已截断" in long
+
+
+def test_schema_recall_span_books_the_embedding_cost(tmp_path, monkeypatch):
+    """向量召回那次 embedding 的用量与金额要落进 span —— 否则账面少一笔。
+
+    生产 trace 4bac5ce7f21b 的 ¥0.012834 就不含它：schema_recall 那一格
+    tok_in=0 / cost=0，看上去像"这一步不花钱"。
+    """
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    monkeypatch.setattr(tools, "search_schema", lambda q, c: tools.ToolResult(
+        ok=True, tool="search_schema",
+        data={"tables": ["documents"], "prompt": "【可用的表】documents",
+              "prompt_heads": "【可用的表】\n表 documents —— 文档", "blind": False,
+              "embed_tokens": 1234, "embed_cost_cny": 0.000617,
+              "embed_model": "text-embedding-v4"}))
+
+    res = A.run_agent("有多少文档", _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                      executor=_FakeExec(),
+                      llm=_FakeLLM([{"finish": True, "answer": "42 个。"}]))
+    span = next(s for s in res.steps if s["step"] == "schema_recall")
+    assert span["tok_in"] == 1234
+    assert span["cost_cny"] == pytest.approx(0.000617)
+    # 模型名要带上嵌入模型，否则成本表会把这笔钱挂到应答模型头上
+    assert span["model"] == "text-embedding-v4"
+    # 但它不能被算成一次"模型调用"——MODEL_STEPS 不含 schema_recall
+    from askdb.audit import MODEL_STEPS
+    assert "schema_recall" not in MODEL_STEPS
+
+
+def test_keyword_recall_books_nothing(tmp_path, monkeypatch):
+    """keyword 模式没有 embedding 调用，如实记 0，不要凭空造一笔。"""
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)          # 桩不带 embed_* 字段
+    res = A.run_agent("有多少文档", _cfg(tmp_path, agent={"max_steps": 2}), 316,
+                      executor=_FakeExec(),
+                      llm=_FakeLLM([{"finish": True, "answer": "42 个。"}]))
+    span = next(s for s in res.steps if s["step"] == "schema_recall")
+    # 空值/零值在序列化时会被剪掉，所以这里用 get —— 这也正说明 keyword 模式下
+    # 这几项不会往 span 里塞任何东西。
+    assert span.get("tok_in", 0) == 0
+    assert span.get("cost_cny", 0.0) == 0.0
+    assert span.get("model", "") == ""

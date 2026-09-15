@@ -1,0 +1,23 @@
+{"id":"b01","source":"careermate","question":"有多少用户创建过简历但从没发起过会话","primary":"users","want":["users","resumes","agent_sessions"],"note":"人工定稿：计数主体是 users，resumes/agent_sessions 是筛选条件"}
+{"id":"b02","source":"careermate","question":"调用次数最多的 agent 工具是哪几个？","primary":"agent_tool_calls","want":["agent_tool_calls"],"note":"人工定稿"}
+{"id":"b03","source":"ragforge","question":"哪个组织的知识库最多，它下面各类型文档分别多少？","primary":"knowledge_bases","want":["knowledge_bases","organizations","documents"],"note":"人工定稿：先按 org 数 kb，再按 kb 数 doc"}
+{"id":"b04","source":"ragforge","question":"模型配置按用途分别有多少个？","primary":"model_config","want":["model_config"],"note":"取自 baseline-cases.jsonl 的 expect_sql"}
+{"id":"b05","source":"shop_order","question":"每个订单状态各有多少单","primary":"orders","want":["orders"],"note":"人工定稿"}
+{"id":"b06","source":"shop_customer","question":"各会员等级的客户数分别是多少？","primary":"customers","want":["customers","member_levels"],"note":"人工定稿：等级名在 member_levels"}
+{"id":"b07","source":"shop_customer","question":"逐个会员统计他的积分流水条数，全部列出","primary":"points_ledger","want":["points_ledger","customers"],"note":"人工定稿：流水在 points_ledger，会员名在 customers"}
+{"id":"b08","source":"shop_supply","question":"逐个供应商统计采购金额并排序，全部列出","primary":"purchase_orders","want":["purchase_orders","suppliers"],"note":"人工定稿：金额在 purchase_orders.total_amount"}
+{"id":"b09","source":"shop_supply","question":"应付账单按状态分别有多少张、金额多少？","primary":"ap_bills","want":["ap_bills"],"note":"人工定稿"}
+{"id":"b10","source":"shop_aftersale","question":"处理工单最多的客服是谁，处理了多少条？","primary":"tickets","want":["tickets"],"note":"人工定稿：客服在 tickets.assignee"}
+{"id":"b11","source":"shop_aftersale","question":"处理工单最多的前 5 个客服分别处理了多少","primary":"tickets","want":["tickets"],"note":"人工定稿：与 b10 同表，措辞不同"}
+{"id":"b12","source":"shop_catalog","question":"逐个商品统计它的 SKU 数量，全部列出","primary":"skus","want":["skus","products"],"note":"人工定稿：SKU 明细在 skus，商品名在 products"}
+{"id":"b13","source":"shop_catalog","question":"2026年8月的商品日统计 GMV 合计是多少？","primary":"product_stats_daily","want":["product_stats_daily"],"note":"人工定稿：问的就是日统计表"}
+{"id":"b14","source":"shop_logistics","question":"物流轨迹表一共有多少行","primary":"shipment_tracks","want":["shipment_tracks"],"note":"人工定稿"}
+{"id":"b15","source":"shop_logistics","question":"各承运商的准时率月度均值是多少？","primary":"carrier_scores","want":["carrier_scores","carriers"],"note":"人工定稿：即 trace 4bac5ce7f21b 那条"}
+{"id":"b16","source":"shop_inventory","question":"库存为 0 的商品有多少个","primary":"stock_snapshots","want":["stock_snapshots"],"note":"人工定稿：表注释明写「问哪些商品缺货用这张表」"}
+{"id":"b17","source":"shop_inventory","question":"已过期的批次有多少个？","primary":"batches","want":["batches"],"note":"取自 baseline-cases.jsonl 的 expect_sql"}
+{"id":"b18","source":"shop_payment","question":"把所有支付流水逐条列出来","primary":"payments","want":["payments"],"note":"人工定稿"}
+{"id":"b19","source":"shop_payment","question":"每个支付渠道的成功率是多少","primary":"payments","want":["payments"],"note":"人工定稿：status 与 channel_code 都在 payments，pay_channels 只补渠道名，非必需"}
+{"id":"b20","source":"shop_marketing","question":"预算最高的活动是哪几个？","primary":"campaigns","want":["campaigns"],"note":"人工定稿"}
+{"id":"b21","source":"shop_marketing","question":"按活动类型统计各有多少","primary":"campaigns","want":["campaigns"],"note":"取自 baseline-cases.jsonl 的 expect_sql"}
+{"id":"b22","source":"shop_review","question":"有用数最高的评价是哪几条，有用数分别多少？","primary":"reviews","want":["reviews"],"note":"人工定稿"}
+{"id":"b23","source":"shop_review","question":"被隐藏的评价有多少条？","primary":"reviews","want":["reviews"],"note":"人工定稿"}

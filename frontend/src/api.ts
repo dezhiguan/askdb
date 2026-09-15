@@ -427,6 +427,11 @@ export interface TraceResult {
   masked_columns?: string[]
   mask_degraded?: boolean
   truncated?: boolean
+  /** 直查记录才有：提交的 SQL 原文与护栏改写后真正执行的那一版。
+   *  问答链路这两项**不出这个接口**（模型写的 SQL 只走 /api/replay）——
+   *  直查没有问题文本，这条 SQL 就是这次的"提问"，见 audit.SQL_RESULT_FIELDS。 */
+  sql_raw?: string
+  sql_final?: string
 }
 
 /** 取最终结果。未登录/看不到/旧记录都回 null —— 前端据此显示"暂无结果"，不伪造。 */

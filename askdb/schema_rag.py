@@ -139,6 +139,31 @@ def table_doc(t: Table) -> str:
     return "\n".join(lines)
 
 
+def table_head(t: Table) -> str:
+    """一张表的**表头层**：表名 + 一行描述 + 别名，不含任何列。
+
+    给意图预检用。INTENT_SYSTEM 自己写着判据是"**有没有承载这个实体的表**，
+    不是有没有名字像的列"，还专门点名"一个属性列（vendor / type / category /
+    source / ref_type）哪怕名字完全对上，也不等于那个实体存在" —— 既然如此，
+    把几百个列名摆到它面前，喂的正是它被要求忽略的那类证据。
+
+    生产 trace 4bac5ce7f21b 上这一段是 5,103 字符（12 张表的全部列名/类型/
+    枚举），换回来的是三个布尔值和一句话。表头层约 900 字符。
+    """
+    head = f"表 {t.name} —— {t.desc}"
+    return f"{head}（别名：{'、'.join(t.aliases)}）" if t.aliases else head
+
+
+def render_heads(tables: list[Table], metrics: list[Metric]) -> str:
+    """表头层的整份清单。形状与 _render 对齐，只是每张表压成一行。"""
+    parts = ["【可用的表】"]
+    parts += [table_head(t) for t in tables]
+    if metrics:
+        parts.append("\n【业务口径 —— 涉及以下概念时必须使用给定定义】")
+        parts += [metric_doc(m) for m in metrics]
+    return "\n".join(parts)
+
+
 def metric_doc(m: Metric) -> str:
     head = f"口径「{m.name}」"
     if m.aliases:
