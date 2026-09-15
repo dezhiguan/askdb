@@ -735,17 +735,34 @@ def test_bounded_aggregate_needs_a_row_cap():
     assert guard.is_bounded_aggregate("", "postgres", tree=root) is False
 
 
-def test_bounded_aggregate_survives_the_render_roundtrip():
-    """**这条是上面那个 bug 的护栏。**
+def test_bounded_aggregate_reads_grouping_sets_keys():
+    """**这条是那个 bug 的护栏，而且与 sqlglot 版本无关。**
 
-    同一条 SQL，喂 AST 与喂"渲染出来的字符串"结论必须一致。不一致就说明又回到了
-    round-trip：sqlglot 30.16.0 把 `GROUP BY GROUPING SETS (...) LIMIT n` 渲染得
-    出、解析不回来，而那恰恰是 R-09 注入 LIMIT 之后的形状。
+    sqlglot 把 GROUPING SETS / ROLLUP / CUBE 放在 Group 节点的同名 args 里，
+    不在 expressions 里。旧判定只读 expressions，于是这三种写法的分组键集合恒为
+    空集，投影里的任何松散列都"对不上分组键"，整条掉出聚合专档 —— 线上 payments
+    按渠道统计支付笔数（扫描 1,122,911 行，本该走 3,000,000 那档）就是这么被按
+    200,000 拦下挂审批的。
     """
     root = sqlglot.parse_one(
         "SELECT p.channel_code, COUNT(*) FROM payments p"
         " GROUP BY GROUPING SETS ((p.channel_code),())", dialect="postgres").limit(200)
+    keys, key_cols = guard._group_key_columns(root, "postgres")
+    assert "p.channel_code" in key_cols, "GROUPING SETS 的分组键没被读到"
     assert guard.is_bounded_aggregate("", "postgres", tree=root) is True
-    # 字符串这一路当前就是解析不回来的；断言的是"我们不再走它"，
-    # 而不是"它也能过"——哪天 sqlglot 修好了，这条会变成 xfail 提醒去掉兜底。
-    assert guard.is_bounded_aggregate(root.sql("postgres"), "postgres") is False
+
+
+def test_bounded_aggregate_does_not_depend_on_a_render_roundtrip():
+    """喂 AST 的结论不受 sqlglot 渲染/解析往返的影响。
+
+    **这条有意只断言 AST 那一路**：字符串那一路的行为是**版本相关**的 ——
+    sqlglot 30.16.0 对 `GROUP BY GROUPING SETS (...) LIMIT n`（R-09 注入 LIMIT
+    之后的必然形状）ParseError，30.18.0 已修。而 pyproject 只写 `sqlglot>=25.0`、
+    没有锁文件，本机与 CI 就跑在不同版本上。
+    把版本相关的行为写进断言，测试会在换版本时无故变红 —— 第一版这么写过，
+    在 CI 上当场挂掉。判定不再经过字符串，所以也不该再对字符串断言什么。
+    """
+    root = sqlglot.parse_one(
+        "SELECT COALESCE(p.channel_code,'TOTAL') c, COUNT(*) n FROM payments p"
+        " GROUP BY GROUPING SETS ((p.channel_code),())", dialect="postgres").limit(200)
+    assert guard.is_bounded_aggregate("", "postgres", tree=root) is True
