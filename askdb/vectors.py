@@ -39,7 +39,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
-from . import pgstore
+from . import l0, pgstore
 from .config import Config
 
 log = logging.getLogger("askdb.vectors")
@@ -241,13 +241,29 @@ class VectorIndex:
         底层客户端取不到时（langchain 换了实现）退回它自己的方法，**用量记 0
         而不是估一个** —— 成本页上宁可空着，也不要一个来路不明的数。
         """
+        # 单条查询向量走 L0：同一句话嵌出来的向量恒定，而重嵌一次要付一次
+        # 网络往返（实测 300ms 上下）与一次计费。**只对查询侧开**——建索引那条
+        # 路一次几十上百条、每条只嵌一次，缓存它没有意义，还会把 bucket 挤满。
+        #
+        # key 带模型名：换嵌入模型就是换向量空间，两个空间的向量混在一起
+        # 检索出来的东西毫无意义，而这种错不会报任何异常。
+        if query and len(texts) == 1:
+            model = str(self.cfg.raw["schema_rag"].get("embedding_model", ""))
+            key = f"{model}\x00{texts[0]}"
+            # 命中时 token 记 0 —— 这次真的没有调用厂商接口，不是账面漏了。
+            return [l0.memo("embed", key, lambda: self._embed_now(texts, query=True)[0][0])], 0
+        return self._embed_now(texts, query=query)
+
+    def _embed_now(self, texts: list[str], *, query: bool = False
+                   ) -> tuple[list[list[float]], int]:
+        """真正发请求那一段。从 _embed 拆出来，好让 L0 只包住查询侧那一条。"""
         size = self._batch_size()
         if len(texts) > size:
             # 顺序必须与入参一致：调用方按下标把向量配回 keys。
             vecs: list[list[float]] = []
             total = 0
             for i in range(0, len(texts), size):
-                part, tok = self._embed(texts[i:i + size], query=query)
+                part, tok = self._embed_now(texts[i:i + size], query=query)
                 vecs.extend(part)
                 total += tok
             return vecs, total

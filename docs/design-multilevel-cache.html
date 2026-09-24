@@ -1,0 +1,970 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>多级缓存与首字延迟方案 · askdb</title>
+
+<!-- 单文件、无外部依赖（含字体）：与 docs/ 下其它设计稿同一条纪律，
+     下载后用浏览器直接打开即可，离线也不掉版。 -->
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body, h1, h2, h3, h4, p, dl, dd, ul, figure, pre { margin: 0; }
+  ul { padding: 0; }
+  img, svg { max-width: 100%; display: block; }
+  table { border-collapse: collapse; }
+</style>
+
+<style>
+  :root {
+    --paper:      #F1F4F1;
+    --surface:    #FFFFFF;
+    --surface-2:  #E7ECE7;
+    --ink:        #101A15;
+    --ink-2:      #3D4F47;
+    --muted:      #6E8078;
+    --line:       #D3DBD5;
+    --line-soft:  #E2E8E3;
+    --accent:     #1E6F4C;
+    --accent-dim: #CFE3D8;
+    --waste:      #B3541E;
+    --waste-dim:  #F0DDCE;
+    --half:       #8A7430;
+    --half-dim:   #ECE4C9;
+
+    --f-disp: "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans CJK SC",
+              "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --f-body: var(--f-disp);
+    --f-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+              "Liberation Mono", monospace;
+
+    --step--1: 0.78rem;
+    --step-0:  0.95rem;
+    --step-1:  1.12rem;
+    --step-2:  1.42rem;
+    --step-3:  1.95rem;
+    --step-4:  2.9rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0D1512;
+      --surface:    #151F1A;
+      --surface-2:  #1D2A23;
+      --ink:        #E4ECE6;
+      --ink-2:      #B3C3BA;
+      --muted:      #7D9089;
+      --line:       #2A3A32;
+      --line-soft:  #22302A;
+      --accent:     #4FBF88;
+      --accent-dim: #1E3A2C;
+      --waste:      #E08A4F;
+      --waste-dim:  #3A2618;
+      --half:       #CFB35C;
+      --half-dim:   #332C14;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #0D1512;
+    --surface:    #151F1A;
+    --surface-2:  #1D2A23;
+    --ink:        #E4ECE6;
+    --ink-2:      #B3C3BA;
+    --muted:      #7D9089;
+    --line:       #2A3A32;
+    --line-soft:  #22302A;
+    --accent:     #4FBF88;
+    --accent-dim: #1E3A2C;
+    --waste:      #E08A4F;
+    --waste-dim:  #3A2618;
+    --half:       #CFB35C;
+    --half-dim:   #332C14;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: var(--step-0);
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem 6rem; }
+
+  /* ---------- masthead ---------- */
+  .mast { border-bottom: 2px solid var(--ink); padding: 3.5rem 0 1.25rem; margin-bottom: 2rem; }
+  .eyebrow {
+    font-family: var(--f-mono); font-size: var(--step--1); letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 0.9rem;
+  }
+  h1 {
+    font-family: var(--f-disp); font-weight: 700; font-size: var(--step-4);
+    line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 0.75rem; text-wrap: balance;
+  }
+  .standfirst {
+    color: var(--ink-2); font-size: var(--step-1); line-height: 1.6;
+    max-width: 46ch; margin: 0 0 1.5rem;
+  }
+  .meta-strip {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+    gap: 0; border-top: 1px solid var(--line);
+  }
+  .meta-strip div { padding: 0.7rem 1rem 0.7rem 0; border-right: 1px solid var(--line-soft); }
+  .meta-strip div:last-child { border-right: 0; }
+  .meta-strip dt {
+    font-family: var(--f-mono); font-size: 0.68rem; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--muted); margin: 0 0 0.2rem;
+  }
+  .meta-strip dd {
+    margin: 0; font-family: var(--f-mono); font-size: var(--step--1);
+    color: var(--ink); font-weight: 500; word-break: break-word;
+  }
+
+  /* ---------- sections ---------- */
+  section { margin-top: 4rem; }
+  h2 {
+    font-family: var(--f-disp); font-weight: 700; font-size: var(--step-3);
+    letter-spacing: -0.015em; line-height: 1.2; margin: 0 0 0.4rem; text-wrap: balance;
+  }
+  h2 .num {
+    font-family: var(--f-mono); font-size: var(--step-1); font-weight: 500;
+    color: var(--accent); margin-right: 0.6rem; vertical-align: 0.12em;
+  }
+  h3 {
+    font-family: var(--f-disp); font-weight: 600; font-size: var(--step-2);
+    letter-spacing: -0.01em; margin: 2.5rem 0 0.5rem; text-wrap: balance;
+  }
+  h4 { font-family: var(--f-disp); font-weight: 600; font-size: var(--step-1); margin: 1.6rem 0 0.4rem; }
+  .lede { color: var(--ink-2); max-width: 68ch; margin: 0 0 1.75rem; }
+  p { max-width: 68ch; margin: 0.6rem 0; }
+  a { color: var(--accent); }
+  a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  code, .n { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+  code { font-size: 0.86em; background: var(--surface-2); padding: 0.1em 0.35em; border-radius: 2px; }
+
+  ul.bul { margin: 0.6rem 0 0.6rem 1.1rem; padding: 0; max-width: 68ch; }
+  ul.bul li { margin: 0.35rem 0; color: var(--ink-2); }
+  ul.bul li strong { color: var(--ink); }
+
+  /* ---------- verdict cards ---------- */
+  .verdict {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 1px; background: var(--line); border: 1px solid var(--line); margin: 0 0 1.5rem;
+  }
+  .vcard { background: var(--surface); padding: 1.5rem 1.4rem; }
+  .vcard .label {
+    font-family: var(--f-mono); font-size: 0.68rem; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--muted); margin-bottom: 0.9rem;
+  }
+  .vnums { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+  .vfrom {
+    font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-size: var(--step-1);
+    color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px;
+  }
+  .varrow { color: var(--muted); font-family: var(--f-mono); }
+  .vto {
+    font-family: var(--f-disp); font-variant-numeric: tabular-nums; font-size: var(--step-3);
+    font-weight: 700; letter-spacing: -0.02em; line-height: 1; color: var(--accent);
+  }
+  .vnote { font-size: var(--step--1); color: var(--muted); margin: 0.7rem 0 0; line-height: 1.55; }
+
+  /* ---------- tables ---------- */
+  .tw { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); margin: 1.25rem 0; }
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; }
+  th, td {
+    padding: 0.55rem 0.8rem; text-align: left; border-bottom: 1px solid var(--line-soft);
+    font-size: var(--step--1); line-height: 1.55; vertical-align: top;
+  }
+  thead th {
+    font-family: var(--f-mono); font-size: 0.68rem; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--muted); font-weight: 500;
+    border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+  td.mono { font-family: var(--f-mono); font-size: 0.73rem; }
+  tfoot td {
+    font-family: var(--f-mono); font-variant-numeric: tabular-nums; font-weight: 600;
+    border-top: 1px solid var(--line); background: var(--surface-2);
+  }
+  caption {
+    caption-side: bottom; text-align: left; padding: 0.6rem 0.8rem;
+    font-size: 0.72rem; color: var(--muted); border-top: 1px solid var(--line-soft);
+  }
+
+  .tag {
+    display: inline-block; font-family: var(--f-mono); font-size: 0.66rem;
+    letter-spacing: 0.04em; padding: 0.08rem 0.4rem; border-radius: 2px; white-space: nowrap;
+  }
+  .t-keep  { color: var(--accent); background: var(--accent-dim); }
+  .t-waste { color: var(--waste);  background: var(--waste-dim); }
+  .t-half  { color: var(--half);   background: var(--half-dim); }
+
+  /* ---------- pipeline ---------- */
+  .fall { background: var(--surface); border: 1px solid var(--line); padding: 1.25rem 1.25rem 1rem; overflow-x: auto; }
+  .fall-inner { min-width: 40rem; }
+  .frow { display: grid; grid-template-columns: 2.1rem 11rem 1fr 4.4rem; align-items: center; gap: 0.6rem; padding: 0.18rem 0; }
+  .frow + .frow { border-top: 1px solid var(--line-soft); }
+  .fidx, .fms { font-family: var(--f-mono); font-size: 0.72rem; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .fms { text-align: right; color: var(--ink-2); font-weight: 500; }
+  .fname { font-family: var(--f-mono); font-size: 0.75rem; color: var(--ink); white-space: nowrap; }
+  .fname .st { color: var(--muted); }
+  .ftrack { position: relative; height: 15px; background: var(--surface-2); border-radius: 1px; }
+  .fbar { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 1px; }
+  .k  { background: var(--accent); }
+  .w  { background: var(--waste); }
+  .db { background: var(--accent); opacity: 0.35; }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 1.1rem; margin-top: 1rem; padding-top: 0.9rem;
+    border-top: 1px solid var(--line); font-family: var(--f-mono); font-size: 0.72rem; color: var(--muted);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .sw { width: 13px; height: 13px; border-radius: 1px; display: inline-block; }
+
+  /* ---------- attribution ---------- */
+  .attr { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1.5rem; margin: 1.5rem 0; }
+  .abox { background: var(--surface); border: 1px solid var(--line); padding: 1.2rem; }
+  .abox h4 { margin: 0 0 1rem; font-size: var(--step-0); }
+  .stack { display: flex; height: 22px; border-radius: 2px; overflow: hidden; margin-bottom: 0.9rem; }
+  .seg { height: 100%; }
+  .akey { display: flex; flex-direction: column; gap: 0.35rem; font-family: var(--f-mono); font-size: 0.73rem; }
+  .akey div { display: flex; align-items: center; gap: 0.5rem; }
+  .akey .pct { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--ink); font-weight: 600; }
+  .akey .nm { color: var(--ink-2); }
+
+  /* ---------- defect / evidence blocks ---------- */
+  .ev {
+    background: var(--surface); border: 1px solid var(--line);
+    border-left: 3px solid var(--waste); padding: 1.2rem 1.3rem; margin: 1.25rem 0;
+  }
+  .ev.ok { border-left-color: var(--accent); }
+  .ev-head { display: flex; align-items: baseline; gap: 0.7rem; flex-wrap: wrap; margin-bottom: 0.6rem; }
+  .ev-head .id {
+    font-family: var(--f-mono); font-size: 0.7rem; letter-spacing: 0.1em;
+    color: var(--waste); font-weight: 600;
+  }
+  .ev.ok .ev-head .id { color: var(--accent); }
+  .ev-head .ti { font-family: var(--f-disp); font-weight: 600; font-size: var(--step-1); }
+  .ev p { margin: 0.5rem 0; font-size: var(--step--1); line-height: 1.7; color: var(--ink-2); max-width: 70ch; }
+  .ev p strong { color: var(--ink); }
+  .ev .fixline {
+    font-size: var(--step--1); color: var(--accent); font-weight: 600;
+    margin-top: 0.7rem; border-top: 1px solid var(--line-soft); padding-top: 0.6rem;
+  }
+  .ev .fixline span { color: var(--ink-2); font-weight: 400; }
+  pre {
+    background: var(--surface-2); border: 1px solid var(--line-soft); padding: 0.7rem 0.85rem;
+    overflow-x: auto; margin: 0.7rem 0; font-family: var(--f-mono);
+    font-size: 0.73rem; line-height: 1.6; border-radius: 2px;
+  }
+  pre .cm { color: var(--muted); }
+
+  /* ---------- layer cards ---------- */
+  .layer { background: var(--surface); border: 1px solid var(--line); margin: 1.25rem 0; }
+  .layer.star { border-color: var(--accent); border-width: 2px; }
+  .layer-head {
+    display: flex; align-items: center; gap: 0.8rem; padding: 0.9rem 1.3rem;
+    border-bottom: 1px solid var(--line); background: var(--surface-2); flex-wrap: wrap;
+  }
+  .lv {
+    font-family: var(--f-mono); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+    color: var(--accent); background: var(--accent-dim); padding: 0.15rem 0.5rem; border-radius: 2px;
+  }
+  .layer-head .ti { font-family: var(--f-disp); font-weight: 600; font-size: var(--step-1); }
+  .layer-head .kind { margin-left: auto; font-family: var(--f-mono); font-size: 0.7rem; color: var(--muted); }
+  .layer-body { padding: 1.1rem 1.3rem 1.3rem; }
+  .layer-body p { font-size: var(--step--1); line-height: 1.7; color: var(--ink-2); }
+  .layer-body p strong { color: var(--ink); }
+
+  /* ---------- callout ---------- */
+  .callout {
+    background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--half);
+    padding: 1rem 1.2rem; margin: 1.25rem 0;
+  }
+  .callout .h {
+    font-family: var(--f-mono); font-size: 0.7rem; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--half); font-weight: 600; margin-bottom: 0.4rem;
+  }
+  .callout p { font-size: var(--step--1); line-height: 1.7; color: var(--ink-2); margin: 0.3rem 0; }
+  .callout p strong { color: var(--ink); }
+
+  /* ---------- footer ---------- */
+  footer {
+    margin-top: 5rem; padding-top: 1.5rem; border-top: 1px solid var(--line);
+    font-family: var(--f-mono); font-size: 0.72rem; color: var(--muted); line-height: 1.8;
+  }
+  @media (max-width: 40rem) {
+    :root { --step-4: 2.1rem; --step-3: 1.6rem; --step-2: 1.25rem; }
+    .mast { padding-top: 2.25rem; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">askdb · 成本与延迟 · 架构方案</p>
+  <h1>多级缓存与首字延迟方案</h1>
+  <p class="standfirst">
+    钱不花在提示词上，花在轮数和输出上；语义缓存不该缓存答案，该缓存 SQL；
+    首字延迟不需要流式就能砍掉大半。
+  </p>
+  <dl class="meta-strip">
+    <div><dt>拟制日期</dt><dd>2026-09-15</dd></div>
+    <div><dt>版本</dt><dd>V1.3 · 已上线（shadow）</dd></div>
+    <div><dt>适用实例</dt><dd>askdb.ragforge.net</dd></div>
+    <div><dt>代码基线</dt><dd>main@b84644a</dd></div>
+    <div><dt>数字来源</dt><dd>代码实读 + 生产 trace</dd></div>
+  </dl>
+</header>
+
+<!-- ================= 00 ================= -->
+<section id="s0">
+  <h2><span class="num">00</span>结论先行</h2>
+  <p class="lede">
+    三条判断决定了整份方案的形状。它们都来自代码与生产 trace，不是从通用做法推的。
+  </p>
+
+  <div class="verdict">
+    <div class="vcard">
+      <p class="label">成本来源</p>
+      <div class="vnums"><span class="vto">输出 + 轮数</span></div>
+      <p class="vnote">
+        前缀缓存已隐式命中 <span class="n">86–91%</span>，命中部分按 <span class="n">1/8</span> 计价。
+        “提示词太长”不是成本来源 —— 输出 token 占单链路成本约一半。
+      </p>
+    </div>
+    <div class="vcard">
+      <p class="label">语义缓存该缓存什么</p>
+      <div class="vnums"><span class="vfrom">答案</span><span class="varrow">→</span><span class="vto">SQL</span></div>
+      <p class="vnote">
+        连的是生产库：答案有保质期，SQL 没有。命中后重跑一条 <span class="n">15ms</span> 的 SQL，
+        比返回一份十分钟前的数字既便宜又正确。
+      </p>
+    </div>
+    <div class="vcard">
+      <p class="label">首字延迟</p>
+      <div class="vnums"><span class="vfrom">全链路</span><span class="varrow">→</span><span class="vto">SQL 跑完那刻</span></div>
+      <p class="vnote">
+        结果表在收敛轮<strong>之前</strong>就已经在 <code>last_exec</code> 里，
+        现在却要等模型写完结论才一起送达。先推结果表：零成本、零调用、零判定风险。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 01 ================= -->
+<section id="s1">
+  <h2><span class="num">01</span>现状：一次提问真实跑了什么</h2>
+  <p class="lede">
+    链路只有一条（<code>agentgraph</code>，2026-09-12 起老管道已删）。下面是生产 trace
+    <code>9eefdf7518b6</code> 的真实节点序列。
+  </p>
+
+  <div class="fall">
+    <div class="fall-inner">
+      <div class="frow"><span class="fidx">00</span><span class="fname">schema_recall <span class="st">embedding</span></span><span class="ftrack"><span class="fbar db" style="left:0;width:1.8%"></span></span><span class="fms">355</span></div>
+      <div class="frow"><span class="fidx">01</span><span class="fname">intent <span class="st">可答性预检</span></span><span class="ftrack"><span class="fbar w" style="left:1.8%;width:15%"></span></span><span class="fms">2,972</span></div>
+      <div class="frow"><span class="fidx">02</span><span class="fname">decide <span class="st">选工具</span></span><span class="ftrack"><span class="fbar k" style="left:16.8%;width:15%"></span></span><span class="fms">2,971</span></div>
+      <div class="frow"><span class="fidx">03</span><span class="fname">tool <span class="st">execute_sql</span></span><span class="ftrack"><span class="fbar db" style="left:31.8%;width:0.4%"></span></span><span class="fms">14</span></div>
+      <div class="frow"><span class="fidx">04</span><span class="fname">decide <span class="st">收敛</span></span><span class="ftrack"><span class="fbar k" style="left:32.2%;width:14.5%"></span></span><span class="fms">2,867</span></div>
+      <div class="frow"><span class="fidx">05</span><span class="fname">tool <span class="st">execute_sql</span></span><span class="ftrack"><span class="fbar db" style="left:46.7%;width:0.4%"></span></span><span class="fms">15</span></div>
+      <div class="frow"><span class="fidx">··</span><span class="fname">… <span class="st">后续轮次与收尾</span></span><span class="ftrack"><span class="fbar k" style="left:47.1%;width:52.9%"></span></span><span class="fms">≈10,600</span></div>
+    </div>
+    <div class="legend">
+      <span><i class="sw k"></i>模型调用 · 有贡献</span>
+      <span><i class="sw w"></i>模型调用 · 可合并</span>
+      <span><i class="sw db"></i>数据库 / 向量召回</span>
+      <span style="margin-left:auto">全宽 = 19,840 ms · 20,296 tok · ¥0.0051</span>
+    </div>
+  </div>
+
+  <h3>钱与时间各自花在哪</h3>
+  <div class="attr">
+    <div class="abox">
+      <h4>单链路成本结构</h4>
+      <div class="stack">
+        <div class="seg" style="width:50.1%;background:var(--waste)"></div>
+        <div class="seg" style="width:30.7%;background:var(--half)"></div>
+        <div class="seg" style="width:19.2%;background:var(--accent)"></div>
+      </div>
+      <div class="akey">
+        <div><i class="sw" style="background:var(--waste)"></i><span class="nm">输出 token @ ¥2.7/M</span><span class="pct">50.1%</span></div>
+        <div><i class="sw" style="background:var(--half)"></i><span class="nm">未命中输入 @ ¥0.8/M</span><span class="pct">30.7%</span></div>
+        <div><i class="sw" style="background:var(--accent)"></i><span class="nm">命中输入 @ ¥0.1/M</span><span class="pct">19.2%</span></div>
+      </div>
+      <p class="vnote">实测口径：trace <code>4bac5ce7f21b</code>。命中占输入 86.2%，但只贡献两成成本。</p>
+    </div>
+    <div class="abox">
+      <h4>单链路耗时结构</h4>
+      <div class="stack">
+        <div class="seg" style="width:98.9%;background:var(--waste)"></div>
+        <div class="seg" style="width:0.85%;background:var(--half)"></div>
+        <div class="seg" style="width:0.25%;background:var(--accent)"></div>
+      </div>
+      <div class="akey">
+        <div><i class="sw" style="background:var(--waste)"></i><span class="nm">模型调用</span><span class="pct">98.9%</span></div>
+        <div><i class="sw" style="background:var(--half)"></i><span class="nm">向量召回（含 embedding）</span><span class="pct">0.85%</span></div>
+        <div><i class="sw" style="background:var(--accent)"></i><span class="nm">SQL 执行</span><span class="pct">0.25%</span></div>
+      </div>
+      <p class="vnote">已知延迟公式 <code>ms ≈ 1170 + 14.4 × tok_out</code> —— 每轮固定开销约 1.2s，每个输出 token 约 14.4ms。</p>
+    </div>
+  </div>
+
+  <h3>现有缓存只有两层</h3>
+  <div class="tw">
+    <table>
+      <thead><tr><th>层</th><th>实现</th><th>命中判据</th><th class="num">实测命中</th><th>缺口</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">L1</td><td>精确应答缓存 <code>qcache.py</code>，Redis，TTL 600s</td><td>问题原文逐字 + 源 + 组织 + 角色</td><td class="num">73%</td><td>key 缺三维；无 singleflight；省下的钱不进账</td></tr>
+        <tr><td class="mono">L4</td><td>百炼隐式前缀缓存</td><td>提示词前缀逐字相同</td><td class="num">86–91%</td><td>intent 与 decide 两套前缀，同一份 schema 缓存了两份</td></tr>
+        <tr><td class="mono">L0/L2/L3</td><td colspan="4" style="color:var(--waste)">空</td></tr>
+      </tbody>
+      <caption>73% 来自 1030 次生产跑测；86–91% 来自 trace 4bac5ce7f21b 与 9eefdf7518b6。<strong>注意 73% 这个数偏乐观</strong> —— 交接出去的长链路根本不进缓存（见 D-6），它们不在这个分母里。</caption>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 02 ================= -->
+<section id="s2">
+  <h2><span class="num">02</span>动手之前必须先修的六个缺口</h2>
+  <p class="lede">
+    这六条不是优化，是<strong>先把账和闸修对</strong>。否则后面每一层缓存的收益都无法证明 ——
+    而其中 D-6 更要紧：不修它，后面三层缓存对最贵的那批流量根本不生效。
+  </p>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">D-1</span><span class="ti">前端主路径绕过了每 IP 成本闸</span></div>
+    <p>
+      <code>deploy/nginx-askdb.conf</code> 里 <code>location = /api/ask</code> 是<strong>精确匹配</strong>，
+      挂着 20r/m 的 <code>askdb_ask</code> 档。而前端实际走的是
+      <code>askQuestionStream</code> → <code>/api/ask/stream</code>，它落进 <code>location /</code>，
+      只吃 server 块那条 30r/s。
+    </p>
+    <p><strong>限流注释里写的“挡的是一个人把全站额度花光”，在主路径上不成立。</strong>这是当前唯一一个任何人都能持续烧钱的敞口。</p>
+    <p class="fixline">修法 <span>新增 <code>location = /api/ask/stream</code>，同挂 <code>askdb_ask</code>；<code>proxy_read_timeout 60s</code>、<code>proxy_buffering off</code>（30s 读超时会在一次长 decide 上把流掐断）。</span></p>
+  </div>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">D-2</span><span class="ti">应答缓存 key 缺三个维度，配置收紧后十分钟内仍返回旧口径</span></div>
+    <p>
+      <code>qcache.make_key</code> 只带 <code>question / source_id / org_id / role</code>。
+      源的白名单、<strong>脱敏列</strong>、护栏参数改了之后 key 不变 ——
+      旧答案（含旧脱敏口径）继续被返回最长 10 分钟。
+    </p>
+    <p>这不只是新鲜度问题：脱敏那一维是安全口径，改配置的人会认为改完即生效。</p>
+    <p class="fixline">修法 <span>key 并入 <code>cfg</code> 指纹（表白名单 + 脱敏列 + guard 版本）。<code>vectors._fingerprint</code> 已有同类实现可复用。一次改动，零运行时成本。</span></p>
+  </div>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">D-3</span><span class="ti">命中省下的钱不进账</span></div>
+    <p>
+      <code>_serve_cached_ask</code> 把 <code>cost_cny / tok / elapsed</code> 全部清零 —— 这是对的
+      （它描述的是“这次调用发生了什么”），但<strong>没有任何地方记“省下了多少”</strong>。
+      没有这个数，缓存分层做完拿不出收益证明。
+    </p>
+    <p class="fixline">修法 <span>审计记录加 <code>saved_cny / saved_ms</code>（取首跑那条的值），成本页单列“缓存节省”。</span></p>
+  </div>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">D-4</span><span class="ti">六份配置里的缓存单价是错的</span></div>
+    <p>
+      配置写 <code>price_cached_input_per_1k: 0.00008</code>（标准价的 1/10），
+      官方明码 <strong>0.1 元/1M，即 1/8</strong>。命中占输入的 91%，这一项几乎决定整张账单。
+      DeepSeek 备选单价停在 2026-09-10 降价前。
+    </p>
+    <p>单价散落在六份配置：<code>config/{askdb,public,sample}.yaml</code> +
+      <code>evals/config/ragforge-{prod,eval,tight}.yaml</code>，<strong>改必须六份一起</strong>；
+      审计是落库的既成数字，改配置只对之后的调用生效，存量不回溯。</p>
+    <p class="fixline">修法 <span>六份同步；<code>trace.call_cost_cny</code> 的算法本身是对的，不要动。</span></p>
+  </div>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">D-5</span><span class="ti">无 singleflight，同一问题并发全部穿透</span></div>
+    <p>
+      同一个问题被 N 个人同时点（站点上很常见），N 份请求全部穿透 L1，各跑一遍模型、各扣一次配额。
+    </p>
+    <p class="fixline">修法 <span>Redis <code>SET NX</code> 占位 + 短等待，后到者等首跑写入。fail-open 原则不变 —— 占位超时就照常自己跑。</span></p>
+  </div>
+
+  <div class="ev">
+    <div class="ev-head"><span class="id">D-6</span><span class="ti">交接出去的执行永不进缓存 —— 而那正是最贵的一批</span>
+      <span class="tag t-waste">本组最高优先级</span></div>
+    <p>
+      <code>server.py</code> 里 <code>cache.put(ckey, out, …)</code> 只写在<strong>同步返回</strong>那一段。
+      一旦交接，函数在 <code>if _notice is not None: return JSONResponse(_notice)</code> 就返回了，
+      走的是 <code>_settle_detached</code> —— 它只做三件事：<code>_stash_handoff</code>、挂审批、烧票，
+      <strong>没有写 <code>ckey</code></strong>。
+    </p>
+    <p>
+      而交接<strong>不只看 10 秒那条软阈值</strong>。<code>async_runner.Handoff.check</code>
+      在每个节点边界还判三条，任意一条成立就立刻交接：
+    </p>
+    <pre>if   time.monotonic() >= self.deadline:        <span class="cm"># 超 async_after_ms（生产 10s）</span>
+elif multi_step or step >= 3:                 <span class="cm"># 多步链路</span>
+elif tok_used >= cost_cap // 2:               <span class="cm"># token 过半（6,000）</span>
+elif explain_rows >= scan_threshold // 2:     <span class="cm"># 预估扫描过半（250,000 行）</span></pre>
+    <p>
+      「商品总共有多少条记录」这类全表 COUNT 在大表上<strong>第四条几乎必中</strong> ——
+      一条全表 COUNT 的 <code>explain_rows</code> 就是表的行数。它连 10 秒都不用等，
+      在第一次 <code>_n_act</code> 的节点边界就交接了。<strong>这句话的结果结构上不可能进缓存，
+      问一百遍命中零次。</strong>
+    </p>
+    <p>后果有两条，都不是“少省一次钱”那么轻：</p>
+    <p>
+      · <strong>被漏掉的正是最贵的那批。</strong>能同步跑完的是便宜的短链路；
+      交接出去的是多步、高 token、大扫描那一批 —— 缓存本该在它们身上省得最多。<br>
+      · <strong>命中率这个数系统性偏乐观。</strong>分母里没有这批，
+      §01 那个 <span class="n">73%</span> 说的是“短链路的命中率”，不是全站的。
+    </p>
+    <p>
+      交接那一路的结果原本只落进 <code>_stash_handoff</code> 那个按 <code>thread_id</code> 编的临时 key，
+      而 <code>thread_id</code> 每次都是新 uuid —— 别人再问同一句话取不到。
+      同源的还有：<code>as_task</code> 与凭票重跑（<code>approval_id</code>）都令 <code>_thr = 0</code> 入口即交接，
+      同样永不进缓存。
+    </p>
+    <p class="fixline">修法 <span>把 <code>cache.put</code> 挪进 <code>_settle_detached</code>，与 <code>_stash_handoff</code> 并列，
+      判据沿用同一条（<code>ok</code> 且 <code>rejected_by is None</code>；挂审批那一档已被后者挡掉）。
+      同步那一路的判据旁边留一句交叉引用 —— <strong>两边不一致的后果是“同一句话，跑得快的进了缓存、跑得慢的没进”</strong>，
+      那是最难从现象上看出来的一种。</span></p>
+  </div>
+
+  <div class="callout">
+    <p class="h">这六条的先后</p>
+    <p><strong>D-6 &gt; D-1 &gt; D-2 &gt; D-4 &gt; D-3 &gt; D-5。</strong>
+      D-6 决定后面三层缓存能不能对最贵的那批流量生效 —— 不先修它，L2/L3 建在同一个漏口上，
+      长链路照样一条都存不进去。D-1 是在漏钱，D-2 是口径正确性，D-4/D-3 是账面，D-5 是并发尖峰。</p>
+  </div>
+</section>
+
+<!-- ================= 03 ================= -->
+<section id="s3">
+  <h2><span class="num">03</span>多级缓存：L0 – L4</h2>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>层</th><th>介质</th><th>命中判据</th><th>命中省什么</th><th>失败策略</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">L0</td><td>进程内 LRU</td><td>精确 key</td><td>schema 渲染、前缀拼装、问题向量</td><td>无（本地）</td></tr>
+        <tr><td class="mono">L1</td><td>Redis</td><td>问题原文逐字</td><td>全部（模型 / 配额 / SQL）</td><td>fail-open</td></tr>
+        <tr><td class="mono">L2</td><td>pgvector</td><td><strong>内容词相同</strong>且相似度 ≥ θ<sub>hi</sub> 且非时间敏感</td><td>全部</td><td>fail-open</td></tr>
+        <tr style="background:var(--accent-dim)"><td class="mono"><strong>L3 ★</strong></td><td>pgvector + PG</td><td><strong>内容词相同</strong>且相似度 ≥ θ<sub>lo</sub></td><td><strong>全部模型调用，只付一条 SQL</strong></td><td>fail-open</td></tr>
+        <tr><td class="mono">L4</td><td>百炼隐式</td><td>前缀逐字相同</td><td>输入按 1/8 计价</td><td>自动</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="layer">
+    <div class="layer-head"><span class="lv">L0</span><span class="ti">进程内渲染件缓存</span><span class="kind">不缓存答案</span></div>
+    <div class="layer-body">
+      <p><code>qcache</code> 模块头写得对：<strong>答案不能进程内缓存</strong>（多副本各存各的、命中不一致）。
+        但下面这些是确定性派生物，进程内缓存完全安全：</p>
+      <ul class="bul">
+        <li><code>render_agent_system(cfg, hide)</code> 的结果 —— 每轮 decide 重拼一遍，输入是 (cfg 指纹, hide 集合)</li>
+        <li><code>schema_prompt</code> / <code>schema_heads</code> —— 输入是 (源指纹, tables_hit)</li>
+        <li><strong>本次请求的问题向量</strong> —— <code>_n_recall</code> 已经算过，同请求内 L2/L3 直接复用，不再多调一次 embedding</li>
+      </ul>
+      <p>收益：不省钱（这些本来就便宜），省的是每轮几十毫秒 CPU 与一次 embedding 往返。</p>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-head"><span class="lv">L1</span><span class="ti">精确应答缓存</span><span class="kind">已有 · 四处改动</span></div>
+    <div class="layer-body">
+      <ul class="bul">
+        <li>key 并入配置指纹（D-2）</li>
+        <li>singleflight（D-5）</li>
+        <li>记 <code>saved_cny</code>（D-3）</li>
+        <li><strong>问题原文不做规范化</strong> —— 这一条保持现状。<code>qcache</code> 的判断是对的：
+          规范化会把语义不同的两句并到同一条缓存上。<strong>规范化是 L2 的职责，不是 L1 的。</strong></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-head"><span class="lv">L2</span><span class="ti">语义应答缓存</span><span class="kind">新增 · 判定层</span></div>
+    <div class="layer-body">
+      <ul class="bul">
+        <li><strong>向量从哪来</strong>：<code>_n_recall</code> 那次 embedding 的产物 —— 零额外成本、零额外延迟。</li>
+        <li><strong>存哪</strong>：复用同一套 pgvector 设施，<strong>另开</strong> <code>askdb_answer_cache</code>（表里除向量外还存 payload 与 sql，不只是向量）。
+          不要混进 <code>askdb_schema_vectors</code> —— 那张表按 collection 指纹整体回收，会把缓存一起删掉。</li>
+        <li><strong>命中判据</strong>：<code>cosine ≥ θ_hi</code>（初值 0.93，靠影子跑标定）<strong>且</strong>
+          问题不含时间敏感词<strong>且</strong>缓存年龄 &lt; TTL。</li>
+        <li><strong>入库门槛（比 L1 严）</strong>：<code>ok</code> 且 <code>rejected_by is None</code> 且未截断
+          且未降级（<code>recall_blind / recall_degraded / mask_degraded / scope_narrowed</code> 全假）
+          且 grounding 通过。</li>
+        <li><strong>索引</strong>：单源候选上千条之后再建 ivfflat，不要提前建 —— 判据照搬 <code>vectors.py</code> 那段说明。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="layer star">
+    <div class="layer-head"><span class="lv">L3 ★</span><span class="ti">语义计划缓存 —— 本方案的核心</span><span class="kind">新增 · 判定层</span></div>
+    <div class="layer-body">
+      <p><strong>命中后不返回旧答案，而是取出上次的 SQL 重新执行一遍。</strong></p>
+      <pre>问题 → 向量 → 近邻(θ_lo 0.88) → 取 sql_final + answer_step + 口径模板
+     → <strong>过 guard（不跳过）</strong> → execute_sql（~15ms）→ 用新行填回答案模板 → 返回</pre>
+
+      <div class="tw">
+        <table>
+          <thead><tr><th></th><th>L2 直答</th><th>L3 重跑</th></tr></thead>
+          <tbody>
+            <tr><td>模型调用</td><td class="mono">0</td><td class="mono">0</td></tr>
+            <tr><td>数据新鲜度</td><td>最多陈旧 TTL</td><td><strong>永远是当下的</strong></td></tr>
+            <tr><td>成本</td><td class="mono">¥0</td><td class="mono">≈ ¥0（一条 SQL）</td></tr>
+            <tr><td>可用 TTL</td><td>10 分钟</td><td><strong>可以按天算</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>TTL 能拉长，意味着<strong>命中率是完全不同的量级</strong>。“哪个组织的知识库最多”这类问题一周被点几十次，
+        L2 只能收敛同一个十分钟窗口内的，L3 收敛全部。</p>
+
+      <h4>硬约束（不可放宽）</h4>
+      <ul class="bul">
+        <li>复用的 SQL <strong>必须重新过一遍 guard 与脱敏</strong>，绝不因为“上次过了”就跳过 ——
+          白名单、脱敏列、租户注入都可能已经变了。</li>
+        <li>SQL 含<strong>字面日期</strong>（<code>DATE '2026-07-27'</code>）的不进 L3；只有相对时间表达
+          （<code>date_trunc</code>、<code>NOW() - INTERVAL</code>）或无时间的才可复用。
+          这一条做成<strong>确定性扫描</strong>，不靠模型判断。</li>
+        <li>答案模板只做<strong>数值回填</strong>，不重新措辞。回填不上（行数 / 列名与上次不一致）即判未命中，回落模型链路。</li>
+        <li>界面必须标注“结果为实时重跑、结论口径沿用某次首跑”，并给一键完整重跑。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-head"><span class="lv">L4</span><span class="ti">厂商前缀缓存</span><span class="kind">已在命中 · 还能再进一步</span></div>
+    <div class="layer-body">
+      <p>现在 <code>intent</code> 与 <code>decide</code> 是<strong>两套不同的 system 前缀</strong>，
+        同一份 schema 在厂商侧缓存了两份。§05 的“合并 intent 进 decide”会顺带把这份重复消掉。</p>
+      <p><code>render_agent_system</code> 的注释已经把纪律写死了（“绝不能插入随请求变的值”）——
+        <strong>这条纪律要写进评审清单</strong>：它是 91% 命中率的唯一来源，破坏它不会报错，只会账单翻倍。</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <p class="h">明确不做的</p>
+    <p><strong>参数化槽位替换</strong>（“华为的×” → “腾讯的×”复用同一条 SQL 换参数）：收益诱人，
+      但值替换要过实体识别，错一次就是答错人。等 <code>valuelink</code> 在生产跑稳再单独立项。</p>
+    <p><strong>跨源共享缓存</strong>：任何情况下都不做。<strong>进程内答案缓存</strong>：见 L1 说明。</p>
+  </div>
+</section>
+
+<!-- ================= 03b ================= -->
+<section id="s3b">
+  <h2><span class="num">03′</span>实测把 θ 证伪了：相似度分不开"换个说法"和"换个实体"</h2>
+  <p class="lede">
+    §03 那两个 θ（0.93 / 0.88）是拍的。上线当天在生产上量了一次，
+    <strong>被证伪的不只是取值，是"靠相似度判同不同"这个做法本身。</strong>
+  </p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th class="num">余弦</th><th>类别</th><th>问法对</th></tr></thead>
+      <tbody>
+        <tr style="background:var(--waste-dim)"><td class="num"><strong>0.9083</strong></td><td><span class="tag t-waste">换了实体</span></td><td>商品总共有多少条记录 ⇄ <strong>订单</strong>总共有多少条记录</td></tr>
+        <tr><td class="num">0.8888</td><td><span class="tag t-keep">同义</span></td><td>会员总数是多少 ⇄ 一共有多少会员</td></tr>
+        <tr><td class="num">0.8806</td><td><span class="tag t-waste">换时间窗</span></td><td>本月新增商品数 ⇄ <strong>上月</strong>新增商品数</td></tr>
+        <tr><td class="num">0.8508</td><td><span class="tag t-waste">换了聚合</span></td><td>各品类商品<strong>数量</strong>分布 ⇄ 各品类商品<strong>销售额</strong>分布</td></tr>
+        <tr><td class="num">0.8363</td><td><span class="tag t-keep">同义</span></td><td>商品总共有多少条记录 ⇄ 商品一共有多少条</td></tr>
+        <tr><td class="num">0.7935</td><td><span class="tag t-keep">同义</span></td><td>商品总共有多少条记录 ⇄ 商品表里有多少行数据</td></tr>
+        <tr><td class="num">0.7655</td><td><span class="tag t-waste">取反</span></td><td>有多少商品<strong>在售</strong> ⇄ 有多少商品<strong>已下架</strong></td></tr>
+        <tr><td class="num">0.7552</td><td><span class="tag t-keep">同义</span></td><td>商品总共有多少条记录 ⇄ 统计一下商品的数量</td></tr>
+        <tr><td class="num">0.5962</td><td><span class="tag t-waste">加过滤</span></td><td>商品总共有多少条记录 ⇄ 今天新增了多少商品</td></tr>
+        <tr><td class="num">0.3736</td><td>不同</td><td>商品总共有多少条记录 ⇄ 评价平均分是多少</td></tr>
+      </tbody>
+      <caption>text-embedding-v4（与生产同一个模型），13 组真实问法对，2026-09-15 实测。此处列出其中 10 组。</caption>
+    </table>
+  </div>
+
+  <p>
+    同义 <span class="n">0.755–0.889</span>，会答错的那批 <span class="n">0.596–0.908</span> ——
+    <strong>最危险的一对比所有同义对都高</strong>。所以没有任何一条 θ 能把两者分开：
+    调高则一条都不命中（生产上看到的正是这个：stored 一直涨、命中恒 0），
+    调低就会拿订单的数去答商品，而且不报错。
+  </p>
+
+  <div class="layer star">
+    <div class="layer-head"><span class="lv">改法</span><span class="ti">相似度只缩小候选，判据交给内容词</span><span class="kind">确定性</span></div>
+    <div class="layer-body">
+      <p><code>semcache.lexically_same</code>：去掉功能词（数量词 / 疑问词 / 量词 / 套话）之后，
+        两句提问剩下的<strong>内容词必须完全相同</strong>。功能词表里绝不收任何能区分问题的词
+        —— 数量、销售额、新增、在售、本月、商品、订单都留着，单测钉住了这一条。</p>
+      <p>同一份探针上这道判据 <strong>12/13</strong>，<strong>八条危险对全部拦下</strong>，
+        包括那条 0.9083 的。唯一一处错判（「各品类商品数量分布」⇄「按品类统计商品数量」被拦下）
+        是<strong>漏收，不是错答</strong> —— 方向正确：漏收只多花一次钱，错答是给出一个错的
+        数字且不报错。</p>
+      <p>θ 顺带按实测下调到 <span class="n">0.82 / 0.75</span>，但它们从此只负责
+        "把候选缩小到一条"。</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <p class="h">影子档原来记漏了最要紧的一半</p>
+    <p>原实现<strong>只在命中时留痕</strong>，够不着的一概不记 —— 于是"差一点就命中"的那一片
+      分布一个数都拿不到，而 θ 恰恰要靠它来标定。影子档的全部意义是标定，这等于把它最该干的
+      事漏掉了。现在每次近邻查找都记 top-1 分数（0.05 分桶）与拒绝理由。</p>
+  </div>
+</section>
+
+<!-- ================= 04 ================= -->
+<section id="s4">
+  <h2><span class="num">04</span>语义层是判定层，必须先影子跑</h2>
+  <p class="lede">
+    L2/L3 的命中是一次<strong>判定</strong> —— 判错的形态是“给了你另一个问题的答案”，且不报错。
+    按既定纪律，会改变判定结果的东西一律三档先标定。
+  </p>
+
+  <ul class="bul">
+    <li>三档旋钮 <code>semantic_cache: off | shadow | enforce</code>，与 <code>grounding</code>、
+      <code>coverage_check</code> 同一套语义。</li>
+    <li><strong>shadow 档做什么</strong>：正常跑模型链路，同时记录“如果启用会命中哪一条、相似度多少、
+      两个答案是否一致”。跑满两轮、每轮不少于 130 条、覆盖 13 个源，再定 θ。
+      <strong>本机样例想不出真实的误判形状，离线重放不作数。</strong></li>
+    <li><strong>红线（任一触线不切）</strong>：接地校验 ungrounded 命中率、R-11 拦截率、OOS 拒答率、
+      同义问法一致性。前三条守安全，第四条是这个产品吃过亏的地方。</li>
+  </ul>
+
+  <div class="callout">
+    <p class="h">顺带的正收益，以及它的反面</p>
+    <p>同义问法一致性实测只有 <span class="n">58%</span>（1030 次跑测的 P0 之一）。
+      语义簇天然把同一簇收敛到同一个答案，一致性会被拉上去。</p>
+    <p>但反面同样成立 —— <strong>一个错答会被固化给整簇</strong>。
+      所以入库门槛里 grounding 那一条不能省，且界面必须能一键重跑。</p>
+  </div>
+</section>
+
+<!-- ================= 05 ================= -->
+<section id="s5">
+  <h2><span class="num">05</span>首字延迟</h2>
+  <p class="lede">
+    现状：首字时间等于整条链路时长。<code>llm.structured()</code> 走阻塞 <code>invoke</code>，
+    <code>/api/ask/stream</code> 推的是 step 进度事件，不是答案内容。生产 P50 1.46s / P95 16.14s。
+  </p>
+
+  <div class="layer star">
+    <div class="layer-head"><span class="lv">P0</span><span class="ti">先出结果表</span><span class="kind">零成本 · 零风险 · 收益最大</span></div>
+    <div class="layer-body">
+      <p>SQL 早就跑完，结果行躺在 <code>last_exec</code> 里，用户却要等收敛轮把 300–1400 个 token
+        写完（按 14.4ms/token 算是 4–20 秒）才第一次看到东西。</p>
+      <p><strong>改法</strong>：<code>ask_stream</code> 增加事件
+        <code>{"type":"partial_result", "rows":…, "sql":…, "step":n}</code>，
+        在 <code>_n_act</code> 成功后立刻推；前端先渲染结果表 + “正在归纳结论”。</p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>维度</th><th>变化</th></tr></thead>
+          <tbody>
+            <tr><td>首字时间</td><td>从“全链路”降到“SQL 执行完那一刻”（P50 约 3–5s，多轮链路收益更大）</td></tr>
+            <tr><td>成本变化</td><td class="mono">0</td></tr>
+            <tr><td>判定变化</td><td class="mono">0（只是把已有的东西早点送出去）</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p><strong>注意</strong>：每一步都推，前端按 <code>answer_step</code> 在收尾时定版 ——
+        与 <code>_answer_exec</code> 那条已修的正确性口径一致。</p>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-head"><span class="lv">P1</span><span class="ti">收敛轮真流式</span><span class="kind">不增加调用次数</span></div>
+    <div class="layer-body">
+      <p>做法：<code>stream()</code> 拿 <code>tool_call_chunks</code> 的 arguments 增量，
+        做<strong>部分 JSON 的容错抽取</strong>，只抽 <code>answer</code> 一个字段往外推；
+        解析失败即静默回落到整体解析（观测字段绝不能把主链路弄崩，这是项目已有的纪律）。</p>
+      <p><strong>必须同时确认</strong>：流式下 <code>usage_metadata</code> 还在不在
+        （<code>stream_usage=True</code>），否则 token 与成本会整片丢 —— 那比慢更坏。</p>
+      <p>不做两段式（结构化 + 非结构化各一次）：多一次调用，与省钱目标直接冲突。</p>
+    </div>
+  </div>
+
+  <div class="layer">
+    <div class="layer-head"><span class="lv">P2</span><span class="ti">合并 intent 进 decide</span><span class="kind">高风险 · 有前置</span></div>
+    <div class="layer-body">
+      <p><strong>省</strong>：一次调用 ≈ 1.2–3s + 约 3.6k 输入 token + 一份重复的厂商缓存前缀。</p>
+      <p><strong>风险</strong>：OOS 拒答是用户可见的判定门。合并后判据的上下文变了 ——
+        <code>INTENT_SYSTEM</code> 明确要求忽略列名，而 decide 看的是全列明细，
+        这正是 <code>intent_schema_heads</code> 默认关的原因。</p>
+      <p><strong>前置</strong>：那份 120 条生产拒答集回归必须能跑（要生产登录态）。
+        <strong>跑不通就不做</strong> —— 不要为了提速把同一个前置绕过去。</p>
+    </div>
+  </div>
+
+  <div class="callout">
+    <p class="h">P3 · 别忘了</p>
+    <p>缓存本身就是最好的 TTFT：L1/L2 命中是个位数毫秒，L3 命中约 20–50ms。
+      把命中率从 73% 抬到 85%+，对 P50 首字的改善<strong>超过上面任何一条</strong>。</p>
+  </div>
+</section>
+
+<!-- ================= 06 ================= -->
+<section id="s6">
+  <h2><span class="num">06</span>其他成本手段</h2>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th style="width:2.5rem">#</th><th>手段</th><th>说明</th><th>性质</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">1</td><td>配额分三档</td><td>补 D-1 的闸，并把全站单桶的 <code>daily_quota</code> 拆成：全站 12000 / 每登录身份 200 / 每匿名 IP 30。现在是单桶 —— 一个脚本刷爆，全站当天不可用。</td><td><span class="tag t-keep">确定</span></td></tr>
+        <tr><td class="mono">2</td><td>高频问题预热</td><td>被反复点的那批问题离线预跑，以长 TTL 常驻 L3，后台定时刷新。最常见路径成本趋近于零、首字毫秒级。预跑走百炼 <strong>Batch 接口（半价）</strong>。</td><td><span class="tag t-keep">确定</span></td></tr>
+        <tr><td class="mono">3</td><td>轮数动态封顶</td><td><code>max_steps</code> 现固定 6。<code>intent.multi_step=false</code> 的问题给 3 —— 每省一轮就是 1.2s + 4–5k 输入。</td><td><span class="tag t-keep">确定</span></td></tr>
+        <tr><td class="mono">4</td><td>输出封顶</td><td><code>llm.py</code> 现在没设 <code>max_tokens</code>。decide 设 512、收敛轮设 800，防一次失控长输出（1,415 token 那次实测占单链路 29.8% 的钱、51% 的时间）。</td><td><span class="tag t-keep">确定</span></td></tr>
+        <tr><td class="mono">5</td><td>单价六份同步 + 月度对账</td><td><code>/api/trace?trace_id=</code> 匿名可读、分步给 tok/cached，拿它重算能与页面金额逐位对上 —— 做成每月一次的例行核对。</td><td><span class="tag t-keep">确定</span></td></tr>
+        <tr><td class="mono">6</td><td><code>analyze_result</code> 保持撤着</td><td>设计意图是省一次数据库往返（20ms），代价是一整轮决策（2–3s + 四五千 token）。在当前成本结构下无论怎么用都是负收益。</td><td><span class="tag t-keep">已完成</span></td></tr>
+        <tr><td class="mono">7</td><td><strong>不建议现在换模型</strong></td><td>qwen3.8-flash 已是便宜档，且 91% 的输入按 1/8 计价。减轮数、减输出的收益远大于换型号，而换型号要重跑全部判定层的标定。</td><td><span class="tag t-half">否决</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 07 ================= -->
+<section id="s7">
+  <h2><span class="num">07</span>预算测算</h2>
+  <p class="lede">
+    假设（不同意就改这三个数，别改结论）：15,000 次提问/天；单次真跑成本按<strong>当前多轮实测</strong>
+    ¥0.0055 —— 不是配置注释里那个 ¥0.0043，那是单轮口径，已过时。
+  </p>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>阶段</th><th class="num">L1</th><th class="num">L2</th><th class="num">L3</th><th class="num">真跑占比</th><th class="num">日成本</th><th class="num">月成本</th></tr></thead>
+      <tbody>
+        <tr><td>现状</td><td class="num">73%*</td><td class="num">—</td><td class="num">—</td><td class="num">27%</td><td class="num">≈ ¥22</td><td class="num">≈ ¥670</td></tr>
+        <tr><td>阶段二后</td><td class="num">73%</td><td class="num">+5%</td><td class="num">+12%</td><td class="num">10%</td><td class="num">≈ ¥8</td><td class="num">≈ ¥250</td></tr>
+        <tr><td>阶段三后</td><td class="num">73%</td><td class="num">+5%</td><td class="num">+17%</td><td class="num">5%</td><td class="num">≈ ¥4</td><td class="num">≈ ¥125</td></tr>
+      </tbody>
+      <caption>
+        * 73% 是 1030 次跑测实测值；L2/L3 的增量是<strong>估算</strong>，必须由 shadow 档的实测替换后再定版。
+        L3 的增量给得比 L2 高，是因为它的 TTL 可以按天算而 L2 只能按分钟算。
+      </caption>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 07b ================= -->
+<section id="s7b">
+  <h2><span class="num">07′</span>落地状态（2026-09-15）</h2>
+  <p class="lede">
+    逐条对照本方案核过一遍。<strong>没做的也列出来，并写明为什么</strong> ——
+    一份只记已完成项的清单，读起来会像全做完了。
+  </p>
+  <div class="tw">
+    <table>
+      <thead><tr><th>条目</th><th>状态</th><th>落在哪</th></tr></thead>
+      <tbody>
+        <tr><td>D-6 交接路径写缓存</td><td><span class="tag t-keep">已完成</span></td><td><code>server._settle_detached</code></td></tr>
+        <tr><td>D-2 key 并入配置指纹</td><td><span class="tag t-keep">已完成</span></td><td><code>qcache.scope</code>（表/列/敏感标记/guard/租户/方言），key 版本升 v2</td></tr>
+        <tr><td>D-5 singleflight</td><td><span class="tag t-keep">已完成</span></td><td><code>qcache.RedisAnswerCache.lead/release</code>，等 800ms，fail-open</td></tr>
+        <tr><td>D-3 命中省下的钱进账</td><td><span class="tag t-keep">已完成</span></td><td><code>saved_cny</code> / <code>saved_ms</code>，进响应、进审计、进两处字段白名单</td></tr>
+        <tr><td>D-4 六份单价</td><td><span class="tag t-keep">已完成</span></td><td>先于本轮由 <code>78324e4</code> 修</td></tr>
+        <tr><td>D-1 nginx 补 /api/ask/stream 闸</td><td><span class="tag t-half">代码已改 · 待运维应用</span></td><td><code>deploy/nginx-askdb.conf</code>。<strong>CI 不部署 nginx</strong>，它在入口机上，要人工 reload</td></tr>
+        <tr><td>L0 问题向量 / 系统提示 / schema 渲染</td><td><span class="tag t-keep">已完成</span></td><td><code>askdb/l0.py</code>，接在 <code>vectors._embed</code> / <code>agent.render_agent_system</code> / <code>schema_rag._render</code></td></tr>
+        <tr><td>L2 语义应答缓存</td><td><span class="tag t-keep">已完成</span></td><td><code>askdb/semcache.py</code> + <code>askdb_answer_cache</code>（pgvector，无 ANN 索引）</td></tr>
+        <tr><td>L3 语义计划缓存</td><td><span class="tag t-keep">已完成</span></td><td>复用 SQL 重跑过 <code>tools.execute_sql</code>；字面日期确定性扫描；数值回填对不上即回落</td></tr>
+        <tr><td>L4 前缀缓存纪律</td><td><span class="tag t-keep">已在命中</span></td><td>L0 的 prompt key 只由旋钮与工具集构成，不掺随请求变的值（单测钉住）</td></tr>
+        <tr><td>三档旋钮 + 影子记录</td><td><span class="tag t-keep">已完成</span></td><td><code>semantic_cache.mode</code> 默认 <code>shadow</code>；记 would_hit 分档与 agree/disagree 判定</td></tr>
+        <tr><td>界面区分 L2 / L3 措辞</td><td><span class="tag t-keep">已完成</span></td><td>L3 真查了库，不能说“本次未查库”——<code>ResultTabs.tsx</code> 分两段话</td></tr>
+        <tr><td>L3「一键完整重跑」按钮</td><td><span class="tag t-waste">未做</span></td><td>本轮只做了措辞区分。<code>enforce</code> 切档前必须补上</td></tr>
+        <tr><td>确定性内容词判据 + θ 按实测重定</td><td><span class="tag t-keep">已完成</span></td><td><code>semcache.lexically_same</code>，见 §03′。相似度单独用不安全，这是本轮最重要的一个结论</td></tr>
+        <tr><td>影子档记 top-1 分数与拒绝理由</td><td><span class="tag t-keep">已完成</span></td><td>原来只记命中，标定要的那一半数据拿不到</td></tr>
+        <tr><td>pgvector 扩展自建</td><td><span class="tag t-keep">已完成</span></td><td>不建则新部署上这一层永久降级，且只在 health 里留一行字</td></tr>
+        <tr><td>三层计数是进程内的</td><td><span class="tag t-half">已知限制</span></td><td>3 副本各报各的，<code>/api/health</code> 每次随机落到一个 —— 只能看趋势，不能对账</td></tr>
+        <tr><td>enforce 切档</td><td><span class="tag t-waste">未做 · 有前置</span></td><td>前置是 §04 的影子标定：两轮 ×130 条 ×13 源。<strong>本轮上线的是 shadow</strong></td></tr>
+        <tr><td>§05 首字延迟三档</td><td><span class="tag t-waste">本轮不做</span></td><td>本轮范围是缓存。P0「先出结果表」单独立项</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout">
+    <p class="h">为什么上线的是 shadow 而不是 enforce</p>
+    <p>§04 是本方案自己定的规矩：语义层的命中是一次判定，判错的形态是“给了你另一个
+      问题的答案”且不报错，所以必须先影子跑标定。<strong>本轮上线不改变任何一个用户
+      可见的答案</strong> —— L2/L3 只记“本来会命中哪一条、命中了会不会答错”。</p>
+    <p>真正立即生效的是 L0、L1（D-6 / D-2 / D-5 / D-3）这几层：它们不是判定，
+      不存在判错一说。</p>
+  </div>
+</section>
+
+<!-- ================= 08 ================= -->
+<section id="s8">
+  <h2><span class="num">08</span>分阶段计划</h2>
+
+  <div class="tw">
+    <table>
+      <thead><tr><th>阶段</th><th>目标日期</th><th>内容</th><th>验收</th><th>回滚位</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>一 · 止血与记账</strong></td>
+          <td class="mono">2026-09-16 ~ 09-18</td>
+          <td><strong>D-6 交接路径写缓存</strong> / D-1 nginx 闸 / D-2 key 指纹 / D-4 六份单价 / D-3 saved 记账 / D-5 singleflight / L0</td>
+          <td>同一句长链路提问连问两次，第二次同步直返且标 <code>cached</code>；生产 trace 金额与官方单价逐位对账；<code>/api/health</code> 出 cache_hit_rate</td>
+          <td>各自独立，均可单独回滚</td>
+        </tr>
+        <tr>
+          <td><strong>二 · 语义层影子</strong></td>
+          <td class="mono">2026-09-19 ~ 09-25</td>
+          <td>L2 + L3 全量代码，<code>semantic_cache: shadow</code></td>
+          <td>两轮 ×130 条 ×13 源，产出 θ 标定曲线与误命中形状</td>
+          <td>旋钮 <code>off</code></td>
+        </tr>
+        <tr>
+          <td><strong>三 · 切档 + 首字 P0</strong></td>
+          <td class="mono">2026-09-26 ~ 09-30</td>
+          <td><code>enforce</code> 切档；<code>partial_result</code> 事件 + 前端先渲染结果表</td>
+          <td>四条红线不恶化；首字 P50 实测</td>
+          <td>旋钮 <code>off</code> / 事件不发</td>
+        </tr>
+        <tr>
+          <td><strong>四 · 流式与提效</strong></td>
+          <td class="mono">2026-10-08 ~ 10-15</td>
+          <td>收敛轮真流式（P1）；预热与 Batch；轮数动态封顶；输出封顶</td>
+          <td>token 口径不丢；<code>evals/baseline.py</code> 对照</td>
+          <td>流式开关</td>
+        </tr>
+        <tr>
+          <td><strong>五 · 待定</strong></td>
+          <td class="mono">2026-10-16 起</td>
+          <td>intent 并入 decide（P2）</td>
+          <td><strong>前置：120 条拒答集回归能跑</strong></td>
+          <td>前置不满足则不启动</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <p class="h">落地纪律</p>
+    <p><strong>一条改动一个 commit，一轮跑测只叠一条改动。</strong>
+      首份基线叠了两个提交导致归因不到任何一个，那个教训不要犯第二次。</p>
+  </div>
+</section>
+
+<!-- ================= 09 ================= -->
+<section id="s9">
+  <h2><span class="num">09</span>验收红线</h2>
+  <p class="lede">任一触线即不切。</p>
+  <div class="tw">
+    <table>
+      <thead><tr><th style="width:2.5rem">#</th><th>指标</th><th>方向</th><th>守的是什么</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">1</td><td>接地校验 ungrounded 命中率</td><td>不上升</td><td>安全性</td></tr>
+        <tr><td class="mono">2</td><td><code>rejected_by=R-11</code> 比例</td><td>不上升</td><td>安全性</td></tr>
+        <tr><td class="mono">3</td><td>OOS 拒答率</td><td>不下降</td><td>安全性</td></tr>
+        <tr><td class="mono">4</td><td>同义问法一致性（现状 58%）</td><td><strong>应上升</strong>；下降即说明簇划错了</td><td>此前吃过亏的地方</td></tr>
+        <tr><td class="mono">5</td><td>缓存任一层失败</td><td>必须 fail-open</td><td><strong>缓存不该成为 /api/ask 返回 500 的原因</strong>（<code>qcache</code> 模块头已写死，新增三层照此办理）</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<footer>
+  askdb · 多级缓存与首字延迟方案 V1.3 · 拟制 2026-09-15<br>V1.3（2026-09-15）生产实测把 §03 的两个 θ 证伪，新增 §03′ 与确定性内容词判据。<br>V1.2（2026-09-15）L0/L1/L2/L3 落地，语义层以 shadow 上线；新增 §07′ 落地状态。<br>V1.1（2026-09-15）新增 D-6「交接出去的执行永不进缓存」，并据此重排阶段一次序。<br>
+  数字来源：代码实读（main@b84644a）+ 生产 trace 9eefdf7518b6 / 4bac5ce7f21b + 1030 次生产跑测。<br>
+  估算项已在正文逐处标注，未标注者为实测。
+</footer>
+
+</div>
+</body>
+</html>

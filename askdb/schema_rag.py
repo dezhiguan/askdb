@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import valuelink
+from . import l0, valuelink
 from .config import Config, Metric, Table
 from .trace import embed_cost_cny
 
@@ -791,7 +791,7 @@ def recall(question: str, cfg: Config, index: Any = None,
         why = (f"{degraded_from} 召回不可用、已回落{mode}召回" if degraded_from and not blind
                else "没有一张表的语义相似度达到阈值" if mode == "vector"
                else "关键词召回一张表都没命中")
-        whole = _render(all_tables, metrics)
+        whole = _render(all_tables, metrics, cfg)
         if all_tables and _est_tokens(whole) <= blind_budget:
             picked = all_tables
             # 全库都给了，模型手上不再有"看不见的表"，这就不算盲选了 ——
@@ -833,7 +833,7 @@ def recall(question: str, cfg: Config, index: Any = None,
     # 这条兜底正是给它准备的。
     if mode == "keyword" and not blind and len(picked) < len(all_tables):
         rest = [t for t in all_tables if t not in picked]
-        if _est_tokens(_render(picked + rest, metrics)) <= eff_budget:
+        if _est_tokens(_render(picked + rest, metrics, cfg)) <= eff_budget:
             picked = picked + rest
 
     # 值检索：把提问里的取值定位到列，命中的表**插到最前面**。
@@ -873,7 +873,7 @@ def recall(question: str, cfg: Config, index: Any = None,
     # token 预算：超出则按相关度从尾部裁剪，并记录被裁掉的表
     truncated: list[str] = []
     while picked:
-        text = _render(picked, metrics)
+        text = _render(picked, metrics, cfg)
         if _est_tokens(text) <= eff_budget or len(picked) == 1:
             break
         truncated.append(picked[-1].name)
@@ -889,7 +889,7 @@ def recall(question: str, cfg: Config, index: Any = None,
                 "结果可能只答了其中一部分，请核对 SQL")
         note = f"{note}；{said}" if note else said
 
-    prompt = _render(picked, metrics) + valuelink.hint(value_hits)
+    prompt = _render(picked, metrics, cfg) + valuelink.hint(value_hits)
     return Recall(
         tables=picked,
         metrics=metrics,
@@ -916,7 +916,28 @@ def recall(question: str, cfg: Config, index: Any = None,
 
 
 
-def _render(tables: list[Table], metrics: list[Metric]) -> str:
+def _render(tables: list[Table], metrics: list[Metric],
+            cfg: Config | None = None) -> str:
+    """把召回挑中的表渲染成提示词里的那一段。
+
+    走 L0：一次 recall 里这个函数会被调三四遍（预算试算、裁表、定稿），
+    表集合高度重叠；而它的输出只由"哪些表 + 这些表此刻长什么样"决定。
+    key 里的配置指纹（qcache.scope）正是"表此刻长什么样"那一维 —— 改了
+    白名单或列注释，指纹变，缓存自然作废，不会渲染出一份过期的结构。
+
+    cfg 缺省时不缓存（单测与旧调用点），行为与从前一字不差。
+    """
+    if cfg is None:
+        return _render_now(tables, metrics)
+    from .qcache import scope as _scope
+    key = "\x00".join([
+        cfg.source_id or cfg.path or "", _scope(cfg),
+        ",".join(t.name for t in tables), ",".join(m.name for m in metrics),
+    ])
+    return l0.memo("prompt", key, lambda: _render_now(tables, metrics))
+
+
+def _render_now(tables: list[Table], metrics: list[Metric]) -> str:
     parts = ["【可用的表】"]
     parts += [table_doc(t) for t in tables]
     if metrics:

@@ -11,6 +11,11 @@ export const STEP_NAMES: Record<string, string> = {
   quota: '配额检查',
   clarify: '问句主体判定',
   intent: '意图 / 可答性预检',
+  // 简单问题快路径：预检与产 SQL 合成一次调用（后端 agentgraph._n_fast）。
+  fast: '快路径直答',
+  // 走不走快路径的判定本身。命中与不命中都落这一格，让"它为什么这次没走快"
+  // 在链路上有答案；shadow 档也靠它留痕。
+  fastpath: '快路径判定',
   schema_recall: 'Schema 召回',
   plan: '单步/多步判定',
   decide: 'Agent 决策',
@@ -73,6 +78,11 @@ export const STEP_TYPE: Record<string, string> = {
   // 单独出现时来自直查 /api/sql —— 那条路连模型都不过。
   schema_recall: 'RAG',
   intent: 'MODEL',
+  // fast 是一次真实的模型调用（预检 + 产 SQL 合一），fastpath 只是一条
+  // 纯代码判定的留痕 —— 两者分属 MODEL 与 GUARD，别合并：合并之后
+  //「模型调用成功率」的分母会把一条不花 token 的判定算进去。
+  fast: 'MODEL',
+  fastpath: 'GUARD',
   plan: 'MODEL',
   decide: 'MODEL',
   tool_call: 'TOOL',

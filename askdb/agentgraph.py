@@ -54,6 +54,20 @@ class AgentState(TypedDict, total=False):
     #: 不会有任何报错把它暴露出来。
     metadata_only: bool
 
+    #: 本轮走的是简单问题快路径（见 _n_fast）。**必须声明在这里**，理由同
+    #: 上面 metadata_only 那条：LangGraph 按 State 字段过滤节点返回值，
+    #: 没声明的键会被静默丢掉，而这一位丢了的症状是"快路径跑完又走了一遍
+    #: 完整链路"—— 比改动前还慢，且没有任何报错。
+    fast: bool
+    #: 快路径产出的两句人话：结果叫什么、口径是什么。_n_finalize 按它们成句。
+    fast_label: str
+    fast_caliber: str
+    #: 越域 / 可答性这两道门已经判过了。快路径回落时据它决定还要不要跑一次
+    #: intent —— 判过就直接进 decide，没判过（快路径那次调用本身失败了）才补。
+    #: 少了这一位，回落路径会变成 fast + intent + decide × 2，比改动前还多
+    #: 一次调用，而症状只是"偶尔更慢"，不会有任何报错。
+    prechecked: bool
+
     history: list[dict[str, Any]] # 回灌进下一轮提示词
     exec_results: list[dict[str, Any]] #每一次执行成功；接地校验要看全部
     last_exec: dict[str, Any] | None
@@ -272,7 +286,7 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     这一步**不是工具调用** —— 模型既选不了也跳不过，所以 span 类型是 RAG
     而不是 TOOL（见 frontend/src/traceSteps.ts 那段说明）。
     """
-    from .agent import _brief
+    from .agent import _brief, _fastpath_mode
 
     d = _deps(config)
     t = d.tracer.start()
@@ -317,8 +331,216 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     # 此时 get_table_schema 仍有用武之地（去查一张没被注入的表）。
     complete = bool(schema_prompt) and not rec.data.get("blind") \
         and not rec.data.get("truncated")
-    return {"tables_hit": tables_hit, "schema_prompt": schema_prompt,
-            "schema_heads": schema_heads, "schema_complete": complete}
+    out: dict[str, Any] = {
+        "tables_hit": tables_hit, "schema_prompt": schema_prompt,
+        "schema_heads": schema_heads, "schema_complete": complete}
+
+    # 简单问题分流。**判定在这里做、结论写进 state**，路由函数只读那一位 ——
+    # LangGraph 的路由改不了状态，两处各判一次就会漂（见 _after_recall）。
+    #
+    # 判据要看召回的结果（完整没完整、命中几张表），所以只能等到这一步；
+    # 而它纯代码、不花 token，放在这里不额外增加任何开销。
+    mode = _fastpath_mode(d.cfg)
+    if mode != "off":
+        # 计时器起在判定**之前**。它现在是纯字符串扫描、确实接近 0ms，
+        # 但 add(start()) 那种写法记的永远是 0，将来这条判据长出真正的开销时
+        # 在链路上看不出来 —— 与 _n_ground 里那段是同一条理由。
+        ft = d.tracer.start()
+        why = simple_question({**state, **out})
+        if not why:
+            if mode == "on":
+                out["fast"] = True
+            else:
+                # shadow：判据照跑、结论留痕，但仍走完整链路。事后按这条 span
+                # 把命中的那些拉出来，比对完整链路的答案，量"短路会不会答少"。
+                # 这是切 on 之前唯一拿得到真实误判形状的办法。
+                d.tracer.add("fastpath", ft,
+                             "判定可走快路径（影子档，仍走完整链路）",
+                             status="degraded")
+        elif mode == "on":
+            # 为什么这题没走快路径，要能在链路上看见 —— 否则"它有时快有时慢"
+            # 在追踪页上是一件没有解释的事。
+            d.tracer.add("fastpath", ft, f"不走快路径：{why}", status="degraded")
+    return out
+
+
+#: 快路径**只受理**带这些词的问题 —— 一次聚合或一次取前 N 行。
+#:
+#: 用白名单而不是黑名单：黑名单的失败方向是"没想到的问法被放进快路径"，
+#: 而这里每一次误放行都是一个可能答短的答案。白名单漏掉的那些只是走回
+#: 完整链路，代价为零。两个方向不对称，所以宁可漏。
+_SIMPLE_HINTS = (
+    "多少", "几个", "几条", "几家", "几张", "总数", "总共", "一共", "总量",
+    "最大", "最高", "最低", "最小", "最多", "最少", "最新", "最近", "最早",
+    "平均", "均值", "列出", "列一下", "查一下", "看一下", "有没有",
+)
+
+#: 命中任何一条就**不走**快路径 —— 这些词意味着分组、对比、关联或解释，
+#: 一条 SELECT 说不清，或者说得清也该让完整链路去核一遍。
+_COMPLEX_HINTS = (
+    "各", "每个", "每种", "每家", "每天", "每月", "分别", "分组", "按",
+    "对比", "相比", "比较", "同比", "环比", "占比", "比例", "百分",
+    "趋势", "变化", "增长", "分布", "排名", "排行", "top", "TOP",
+    "关联", "连表", "以及", "并且", "还有", "同时", "另外",
+    "为什么", "原因", "分析", "评估", "建议", "是否合理", "健康",
+    "和", "与",          # "A 和 B 各多少" —— 两个实体，必然不止一条 SELECT
+)
+
+#: 元数据问题一律不走快路径。它们的证据来自 schema 而不是结果行，
+#: 快路径的模板成句拿不出数字，而 _n_finalize 的闸 ①（NO_EVIDENCE）
+#: 正是按"有没有成功执行过工具"判的 —— 见 _hidden_tools 里那一大段。
+#: 这一档交回完整链路，行为与改动前逐字相同。
+_META_HINTS = (
+    "哪些表", "什么表", "几张表", "表结构", "哪些字段", "什么字段",
+    "哪些列", "什么列", "能查什么", "有什么数据", "字段含义", "表名",
+)
+
+#: 快路径受理的问题长度上限（字符）。超过这个长度的问法，经验上总带着
+#: 附加条件、口径说明或两个以上的诉求 —— 那些正是一条 SELECT 答不全的。
+FAST_MAX_QUESTION = 40
+
+#: 快路径认可的结果规模上限。一条 SELECT 查回来上百行，说明它多半是在
+#: 列举而不是在回答；模板成句也没法把上百行浓缩成一句话。
+#: 超过就回落完整链路，由模型自己归因。
+FAST_MAX_ROWS = 20
+
+
+def simple_question(state: AgentState) -> str:
+    """这个问题能不能走快路径。**纯代码判定，不问模型，不花 token。**
+
+    返回空串 = 可以走；非空 = 不走，内容是这一次被挡下的理由（落进 span，
+    否则"为什么这题没走快路径"在链路上没有答案）。
+
+    判据全部保守，且每一条的失败方向都朝"回落完整链路"倒 —— 挡错了只是
+    慢回改动前，放错了才会答短。
+    """
+    if state.get("history"):
+        # 有历史 = 澄清补充过、或已经跑过一轮。快路径只受理第一轮：
+        # 它的提示词里没有【已完成的工具调用与结果】那一段，看不见前情。
+        return "非首轮"
+    if not state.get("schema_complete"):
+        # 盲选或有表被预算裁掉：提示词里那份不是全部可用的表，
+        # 一条 SELECT 很可能写在错的表上，而快路径没有第二次机会去纠正。
+        return "召回不完整"
+    if not state.get("tables_hit"):
+        return "召回为空"
+    q = str(state.get("question") or "").strip()
+    if not q or len(q) > FAST_MAX_QUESTION:
+        return f"问题长度 {len(q)} 超过 {FAST_MAX_QUESTION}"
+    if any(w in q for w in _META_HINTS):
+        return "元数据问题"
+    if not any(w in q for w in _SIMPLE_HINTS):
+        return "不含单次聚合/列举的问法"
+    hit = [w for w in _COMPLEX_HINTS if w in q]
+    if hit:
+        return f"含复杂信号词 {'/'.join(hit[:3])}"
+    return ""
+
+
+def fast_result_ok(data: dict[str, Any] | None) -> str:
+    """快路径拿回的这份结果，够不够直接成句。空串 = 够。
+
+    **不够就回落完整链路，不是报错。** 这是快路径唯一的安全网：判据放行了、
+    SQL 也跑通了，但结果的形状说明这题没那么简单（零行、几十行、宽表），
+    那就当作没走过快路径，交回 decide 重新来 —— 代价是这一次多花一轮，
+    而收益是快路径永远不会把一份说不清的结果硬编成一句话。
+    """
+    if not data:
+        return "无结果"
+    rows = list(data.get("rows") or [])
+    if not rows:
+        # 零行本身可能就是答案（"有没有 X" → 没有），但也可能是 SQL 写错了
+        # 表或条件。分不开，交回完整链路 —— 那边有 empty_note 那套说法。
+        return "零行"
+    if len(rows) > FAST_MAX_ROWS:
+        return f"{len(rows)} 行超过 {FAST_MAX_ROWS}"
+    if data.get("truncated"):
+        return "结果被截断"
+    return ""
+
+
+def _n_fast(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+    """简单问题快路径：**一次调用同时完成预检与产 SQL**。
+
+    这个节点替换的是 intent + 第一轮 decide 两次往返，不是绕过它们 ——
+    越域、不可答、需要多步这三道门逐条还在（agent.FastSql 的前三位，
+    判据文字与 INTENT_SYSTEM 同源），只是不再各开一次往返去问。
+
+    走得通时整条链路是：recall → fast → act → finalize，**一次模型调用**。
+    走不通时把这一次的预检结论带着回落 decide，完整链路照跑 —— 预检不重跑，
+    所以回落路径的调用次数与改动前持平（fast 顶掉了 intent 那一次）。
+
+    SQL 一个字都不额外放行：它照旧经 _n_act 交给 tools.execute_sql，
+    guard / 干跑 / 只读 / 脱敏 / R-11 / R-12 全在那条路上，与模型自己
+    挑工具发出来的那条 SQL 走的是同一个安全原子。
+    """
+    from .agent import FAST_SYSTEM, FAST_USER, FastSql, _sys
+
+    d = _deps(config)
+    t = d.tracer.start()
+    try:
+        fast, u = d.llm.structured(
+            FastSql, _sys(FAST_SYSTEM, d.cfg),
+            FAST_USER.format(schema=state.get("schema_prompt", ""),
+                             question=state["question"]))
+    except QuotaExceeded as e:
+        _llm_spans(d, "fast")
+        d.tracer.add("fast", t, str(e), status="blocked")
+        return {"rejected_by": "QUOTA", "error": str(e), "hint": "明日自动恢复。"}
+    except Exception as e:                        # noqa: BLE001
+        # **失败不拒答，回落完整链路。** 与 _n_intent 那条分支刻意不同：
+        # 预检失败时链路确实无从继续，而快路径失败时完整链路原封不动还在，
+        # 把一次加速尝试的失败升级成整条查询的失败毫无道理。
+        _llm_spans(d, "fast")
+        d.tracer.add("fast", t, f"快路径失败，回落完整链路：{e}", status="degraded")
+        return {"fast": False}
+    sp = _llm_spans(d, "fast", u)
+
+    out: dict[str, Any] = {
+        "tok_used": state.get("tok_used", 0) + u.input_tokens + u.output_tokens,
+        # 快路径只受理数据问题（_META_HINTS 已把元数据挡在外面），所以这一位
+        # 恒为 False。显式写出来而不是靠默认值：回落时 _hidden_tools 要读它，
+        # 读到的必须是一个**判过的** False，不是"没人填过"的 False。
+        "metadata_only": False,
+    }
+    # 三道门与 _n_intent 逐条对齐：同样的判据、同样的 rejected_by、
+    # 同样的两种不可答分开报。这里只是把它们挪进了同一次调用。
+    if fast.out_of_scope:
+        d.tracer.add("fast", t, fast.reason, **_sp_kw(sp))
+        out.update({"rejected_by": "OOS", "reasoning": fast.reason,
+                    "error": fast.reason
+                             or "该问题涉及的业务实体在当前库中不存在，无法回答。"})
+        return out
+    if not fast.answerable:
+        d.tracer.add("fast", t, fast.reason, **_sp_kw(sp))
+        out.update({"rejected_by": "CLARIFY", "reasoning": fast.clarify,
+                    "error": fast.clarify or "问题缺少明确的查询对象，请补充。"})
+        return out
+
+    # 两道门都放行了 —— 这一位让回落路径知道预检不必重跑。
+    out["prechecked"] = True
+
+    sql = (fast.sql or "").strip().rstrip(";").strip()
+    if fast.too_complex or not sql:
+        why = "模型判定需要完整链路" if fast.too_complex else "未产出 SQL"
+        d.tracer.add("fast", t, f"{why}，回落完整链路：{fast.reason}",
+                     status="degraded", **_sp_kw(sp))
+        out["fast"] = False
+        return out
+
+    d.tracer.add("fast", t, f"一条 SELECT 直答：{fast.label or fast.reason}",
+                 **_sp_kw(sp))
+    # 伪装成一次 decide 的产物交给 _n_act —— 执行路径一行都不重写，
+    # 重复动作检测、R-11 换写法、exec_results 累加全部原样复用。
+    out.update({
+        "fast": True,
+        "fast_label": (fast.label or "").strip(),
+        "fast_caliber": (fast.caliber or "").strip(),
+        "step": state.get("step", 0) + 1,
+        "action": {"finish": False, "answer": "",
+                   "tool": "execute_sql", "args": {"sql": sql}},
+    })
+    return out
 
 
 def _n_intent(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
@@ -545,6 +767,10 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     out: dict[str, Any] = {
         "step": step,
         "tok_used": tok_used,
+        # 跑到 decide 就不再是快路径了 —— 回落进来的那些，state 里还留着
+        # fast=True。不清掉的话 _n_finalize 会对一条完整链路的答案套用模板
+        # 成句，把模型写好的归因盖掉。**路由函数改不了状态，只能在这里清。**
+        "fast": False,
         # 决策结果进 state 供 _n_act 读。它是可序列化的普通 dict，不是
         # AgentAction 对象 —— 检查点存不下 pydantic 模型。
         # finish 写的是**归一之后**的值：_after_decide 读它来路由，两处各判
@@ -929,6 +1155,70 @@ def _meta_evidence(state: AgentState, cfg: Config | None = None,
     return out
 
 
+#: 快路径成句时最多逐条列出几行。再多就只报条数、让用户看结果表 ——
+#: 一段列了二十行的"结论"不是结论。
+_FAST_BULLETS = 5
+
+
+def _fmt_cell(v: Any) -> str:
+    """一个结果格子写成人话。**只做格式，不做换算** —— 换算就是编造的开始。"""
+    if v is None:
+        return "空"
+    if isinstance(v, bool):
+        return "是" if v else "否"
+    if isinstance(v, int):
+        return f"{v:,}"
+    if isinstance(v, float):
+        # 整值浮点（COUNT 经某些驱动回来是 float）按整数写，否则留两位。
+        # 千分位一起加上：这一格用户要直接读，128000 和 128,000 的差别很实际。
+        return f"{int(v):,}" if v == int(v) else f"{v:,.2f}"
+    return str(v)
+
+
+def _fast_answer(state: AgentState, exec_data: dict[str, Any]) -> str:
+    """快路径的结论句。**纯拼装，一个模型 token 都不花。**
+
+    每个数字都逐字取自 exec_data 的结果行，不经任何转述或换算 —— 这是这条
+    路径敢跳过收尾决策的全部理由。口径那句来自 _n_fast（它看过 schema），
+    数字来自库，两者都不是这里现编的。
+    """
+    label = (state.get("fast_label") or "").strip() or "查询结果"
+    caliber = (state.get("fast_caliber") or "").strip()
+    cols = [str(c) for c in (exec_data.get("columns") or [])]
+    rows = list(exec_data.get("rows") or [])
+
+    def cells(row: Any) -> list[str]:
+        if isinstance(row, dict):
+            return [_fmt_cell(row.get(c)) for c in cols]
+        if isinstance(row, (list, tuple)):
+            return [_fmt_cell(v) for v in row]
+        return [_fmt_cell(row)]
+
+    parts: list[str] = []
+    if caliber:
+        parts.append(f"**口径**：{caliber}")
+
+    if len(rows) == 1 and len(cols) <= 1:
+        parts.append(f"**结论**：{label}为 **{cells(rows[0])[0]}**。")
+    elif len(rows) == 1:
+        pairs = "；".join(f"{c} {v}" for c, v in zip(cols, cells(rows[0])))
+        parts.append(f"**结论**：{label} —— {pairs}。")
+    else:
+        parts.append(f"**结论**：{label}共 {len(rows):,} 条，完整结果见下方结果表。")
+        bullets = []
+        for row in rows[:_FAST_BULLETS]:
+            vs = cells(row)
+            bullets.append("- " + "；".join(
+                f"{c} {v}" for c, v in zip(cols, vs)) if cols else "- " + "；".join(vs))
+        if bullets:
+            parts.append("\n".join(bullets))
+        if len(rows) > _FAST_BULLETS:
+            # **把省略说出来。** 不说的话，列出的这几行会被读成全部 ——
+            # 那正是这套界面反复要消灭的那种静默收窄。
+            parts.append(f"（以上为前 {_FAST_BULLETS} 条，其余见结果表）")
+    return "\n\n".join(parts)
+
+
 def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     """收尾：能不能把这个答案给用户。**纯代码判定，不问模型。**
 
@@ -997,8 +1287,15 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                  "结果表仍在下方，可直接看。")
 
     if last_exec is not None:
-        # 有数据。模型没来得及归因时，别用一句"未完全收敛"把已经查到的结果盖掉
-        # —— 结果表就在 AskResult 里，直说"看表"比丢掉它诚实得多。
+        # 快路径成句：**用模板，不问模型。** 这是省掉收尾那次调用的地方，
+        # 也是整条改动里收益最大的一刀 —— 生产实测收尾 decide 平均 4.3 秒
+        # （输出 277 token，按 ms≈1170+14.4×out 几乎全在生成那段口径文字上）。
+        #
+        # 数字全部逐字取自刚刚返回的结果行，不经模型转述，所以它**天然接地**：
+        # grounding.ungrounded 拿去比对必然为空，UNGROUNDED 那道门对这条路径
+        # 是个恒真判定。这不是绕过校验，是这条路径上根本没有可编造的环节。
+        if state.get("fast") and not answer:
+            answer = _fast_answer(state, last_exec)
         if not answer:
             answer = (("（未在预算内完成归因）" + converged + "。") if converged else "") + \
                      "以下为最后一次查询执行的原始结果，请直接看结果表。"
@@ -1115,6 +1412,33 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
 # 路由
 # ---------------------------------------------------------------------------
 
+def _after_recall(state: AgentState) -> Literal["fast", "intent"]:
+    """召回之后分流：这题走不走快路径。**判定已在 _n_recall 里落过 span。**
+
+    路由函数改不了状态（LangGraph 的约束），所以判定本身在节点里做、
+    结论写进 state，这里只读那一位。两处各判一次就会漂。
+    """
+    return "fast" if state.get("fast") else "intent"
+
+
+def _after_fast(state: AgentState) -> Literal["act", "decide", "intent", "finalize"]:
+    """快路径之后四条路。回落分两种，**区别在预检做没做过**。
+
+    · 拒了（越域 / 不可答 / 配额）  —— 直接收尾，与预检拒答同一条口径。
+    · 产出了 SQL                  —— 去执行。
+    · 模型判 too_complex          —— 预检**已经做过**（越域、可答性两位都已
+      判定并放行），直接进 decide。这一条是回落路径不退化的关键：fast 顶掉了
+      intent 那一次调用，完整链路照跑，总次数与改动前持平。
+    · 调用本身失败                 —— 预检没做过，走 intent 补上。OOS / CLARIFY
+      两道门不能因为一次加速尝试失败就消失。
+    """
+    if state.get("rejected_by"):
+        return "finalize"
+    if (state.get("action") or {}).get("tool"):
+        return "act"
+    return "decide" if state.get("prechecked") else "intent"
+
+
 def _after_intent(state: AgentState) -> Literal["decide", "finalize"]:
     return "finalize" if state.get("rejected_by") else "decide"
 
@@ -1143,6 +1467,10 @@ def _after_act(state: AgentState) -> Literal["decide", "finalize"]:
     "跑完了"还是"跑不动了"。
     """
     if state.get("rejected_by"):
+        return "finalize"
+    # 快路径：结果的形状说了算，不是判据说了算。够直接成句就收尾（整条链路
+    # 一次模型调用），不够就当作没走过快路径、交回 decide —— 见 fast_result_ok。
+    if state.get("fast") and not fast_result_ok(state.get("last_exec")):
         return "finalize"
     return "finalize" if _converge_reason(state) else "decide"
 
@@ -1178,11 +1506,13 @@ def _converge_reason(state: AgentState) -> str:
 def build_skeleton() -> StateGraph:
     g = StateGraph(AgentState)
     for name, fn in(("recall", _n_recall), ("intent", _n_intent),
+                    ("fast", _n_fast),
                     ("decide", _n_decide), ("act", _n_act),
                     ("ground", _n_ground), ("finalize", _n_finalize)):
         g.add_node(name, fn)
     g.set_entry_point("recall")
-    g.add_edge("recall", "intent")
+    g.add_conditional_edges("recall", _after_recall, {...})
+    g.add_conditional_edges("fast", _after_fast, {...})
     g.add_conditional_edges("intent", _after_intent, {...})
     g.add_conditional_edges("decide", _after_decide, {...})
     g.add_conditional_edges("act", _after_act, {...})

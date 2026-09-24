@@ -27,6 +27,8 @@ from . import audit as _audit
 from . import ops as _ops
 from . import reviews as _reviews
 from . import auth as _auth
+import logging as _logging
+
 from . import evalrun as _evalrun
 from . import guard
 from . import identity as _identity
@@ -43,6 +45,8 @@ from .agentgraph import resume as run_resume
 from .agent import run_agent
 from .graph import jsonable
 from .quota import build_quota
+from . import l0 as _l0
+from . import qcache as _qcache, semcache as _semcache
 from .qcache import build_answer_cache, make_key as _cache_key
 from .trace import now_iso as _now_iso, observability_status as _obs_status
 
@@ -50,6 +54,14 @@ from .trace import now_iso as _now_iso, observability_status as _obs_status
 # 单列出来是因为直查端点内有个同名局部函数 _audit 会遮蔽模块别名 _audit，
 # 拿不到 _audit.RESULT_PREVIEW_ROWS —— 在模块级先取好。
 _RESULT_PREVIEW_ROWS = _audit.RESULT_PREVIEW_ROWS
+
+_log = _logging.getLogger("askdb.server")
+
+#: 单飞时最多等多久（毫秒）。**等待占着一个 web 工作线程**，而这条链路的
+#: 中位耗时是秒级 —— 等太久都可能是白等，等不到就自己跑。取 800ms 是因为
+#: 站点上"同一个问题被连点几下"那种重复，首跑往往还没结束，但 800ms 足够
+#: 接住"上一个人刚跑完、我紧跟着点"的那一批。
+_LEAD_WAIT_MS = 800
 
 
 def _mask_pii(s: str) -> str:
@@ -1005,6 +1017,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 应答缓存现状：命中/未命中是本副本的局部计数，仅供观测；enabled
             # 反映是否真的接上了 Redis（配了却连不上会退化为 False）。
             "answer_cache": build_answer_cache(cfg).stats(),
+            # 多级缓存三层各报各的。**不合成一个总命中率** —— L1 命中省的是
+            # 整条链路，L3 命中省的是模型但仍付一条 SQL，L0 命中只省一次
+            # 嵌入往返，三者的单位不是一回事，加在一起没有任何意义。
+            "semantic_cache": {"mode": _semcache.mode(cfg), **_semcache.stats()},
+            "l0_cache": _l0.stats(),
             "observability": {
                 "tracing": _obs_status(),
                 "replay_api": bool(cfg.raw["observability"].get("replay_api", False)),
@@ -3373,10 +3390,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                   "note": "命中应答缓存，未调用模型"}]
         # 计量与"怎么跑出来的"全部按本次调用重置；结果本身（rows / sql_final /
         # tables_hit / masked_columns）照旧沿用缓存，那才是要还给调用方的东西。
+        # 省下了多少，必须记下来 —— 不记就拿不出这一层的收益证明。
+        # 与上面那段清零不矛盾：cost_cny 说的是"这次花了多少"（真是 0），
+        # saved_cny 说的是"如果不命中会花多少"（取首跑那次的实付）。
+        # 两个字段在成本页上是两列，合成一列就什么都说明不了。
+        saved_cny = float(cached.get("cost_cny") or 0.0)
+        saved_ms = int(cached.get("elapsed_ms") or 0)
         out.update({"trace_id": tid, "cached": True, "cached_from": origin,
                     "steps": steps, "step_count": 1, "attempts": 0,
                     "multi_step": False, "converged_early": "",
-                    "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0})
+                    "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0,
+                    "saved_cny": saved_cny, "saved_ms": saved_ms})
         _wa(scoped, {
             "trace_id": tid, "ts": _ni(), "kind": "ask", "cached": True,
             "cached_from": origin,
@@ -3397,6 +3421,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 两类字段在这里必须分开处理 —— 一起清零的话，追踪页要么按缺省
             # 判成满分，要么整条拒判，而工作台拿着同一份结果照样打了分，
             # 同一次查询两页两个答案。
+            "saved_cny": saved_cny, "saved_ms": saved_ms,
             "mask_degraded": bool(out.get("mask_degraded")),
             "recall_blind": bool(out.get("recall_blind")),
             "recall_degraded": bool(out.get("recall_degraded")),
@@ -3405,6 +3430,34 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "elapsed_ms": 0, "tok_in": 0, "tok_out": 0, "cost_cny": 0.0,
             "steps": steps,
         })
+        return out
+
+    def _serve_semantic(cand: Any, scoped: Config, question: str,
+                        org: int) -> dict[str, Any] | None:
+        """把一条语义候选兑现成本次应答。**兑现不了返回 None，回落模型链路。**
+
+        两档走两条路：
+          · answer —— 上次的完整结果原样返回，与 L1 命中同一个处置
+          · plan   —— 取出上次那条 SQL **重新过闸执行**，把新数字填回旧结论
+
+        plan 那一路为什么还要走 _serve_cached_ask：它管的是"这次调用的计量与
+        链路怎么记" —— 换新 trace_id、节点链只留一条、耗时与 token 归零。
+        这两件事对两档是一样的，差别只在给它的 payload 是旧结果还是新跑的结果。
+        """
+        if cand.kind == "answer":
+            out = _serve_cached_ask(cand.payload, scoped, question, org)
+            out["cache_layer"] = "L2"
+            return out
+        fresh = _semcache.serve_plan(cand, scoped, org_id=org)
+        if fresh is None:
+            return None
+        out = _serve_cached_ask(fresh, scoped, question, org)
+        # plan 这一路**真的查了库**，所以不能说"本次未查库"。把这两件事在
+        # 接口上分开：cached 说的是"没调模型"，cache_layer 说的是"哪一层命中"，
+        # 前端据此换一句话（L3 的结果是当下的，L2 的不是）。
+        out["cache_layer"] = "L3"
+        out["steps"] = [{"step": "cache", "ms": 0, "status": "hit",
+                         "note": "命中语义计划缓存，复用上次的 SQL 重新执行，未调用模型"}]
         return out
 
     @app.post("/api/ask")
@@ -3439,12 +3492,53 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         eff_org = scoped.default_org if req.org_id is None else req.org_id
         cache = build_answer_cache(scoped)
         ckey: str | None = None
-        if cache.enabled and not req.as_task and not req.approval_id and not scoped.scan_waiver:
+        cacheable = (not req.as_task and not req.approval_id
+                     and not scoped.scan_waiver)
+        if cache.enabled and cacheable:
+            # scope_fp：源白名单 / 脱敏列 / 护栏参数的指纹。少了它，改完配置
+            # 之后旧答案（含旧脱敏口径）还会被返回最长一个 TTL —— 而改配置的人
+            # 理所当然地认为改完即生效。见 qcache.scope。
             ckey = _cache_key(question=q_text, source_id=scoped.source_id,
-                              org_id=eff_org, role=scoped.role)
+                              org_id=eff_org, role=scoped.role,
+                              scope_fp=_qcache.scope(scoped))
             hit = cache.get(ckey)
             if hit is not None:
                 return JSONResponse(_serve_cached_ask(hit, scoped, q_text, eff_org))
+            # 单飞：同一个问题被很多人在同一秒点开时，别让它们各跑一遍模型。
+            # 只等一小会儿 —— 等待占着一个 web 工作线程，而这条链路的中位耗时
+            # 是秒级，等太久都可能是白等。等不到就自己跑（fail-open）。
+            led = cache.lead(ckey, wait_ms=_LEAD_WAIT_MS)
+            if led is not None:
+                return JSONResponse(_serve_cached_ask(led, scoped, q_text, eff_org))
+
+        # ---------- L2 / L3：语义缓存 ----------
+        # 近义问法的收敛。L2 直答，L3 取出上次那条 SQL 重跑（零模型调用，
+        # 只付一条 SQL），详见 askdb/semcache.py 模块头。
+        #
+        # **默认 shadow**：命中是一次判定，判错的形态是"给了你另一个问题的答案"
+        # 且不报错。按既定纪律先影子跑标定，shadow 下只记数、不改变任何返回。
+        sem_vec: list[float] | None = None
+        shadow_cand: Any = None
+        sem_mode = _semcache.mode(scoped)
+        if cacheable and _semcache.enabled(scoped):
+            sem_vec = _semcache.embed_question(scoped, q_text)
+            cand = _semcache.lookup(scoped, q_text, sem_vec,
+                                    org_id=eff_org, role=scoped.role)
+            if cand is not None:
+                if sem_mode == _semcache.ENFORCE:
+                    served = _serve_semantic(cand, scoped, q_text, eff_org)
+                    if served is not None:
+                        return JSONResponse(served)
+                else:
+                    # 影子档要记的是**分档**而不是一个总数：直答与重跑的误判
+                    # 形状完全不同，合在一起看不出该动哪个 θ。
+                    _semcache.note_shadow(f"would_{cand.kind}")
+                    _log.info("语义缓存影子命中 kind=%s score=%.3f age=%ds "
+                              "原问=%r 本问=%r", cand.kind, cand.score,
+                              cand.age_s, cand.question, q_text)
+                    # 真跑完之后还要回来判一次"命中了会不会答错"——
+                    # 那才是定 θ 的依据（见 semcache.note_shadow_verdict）。
+                    shadow_cand = cand
 
         # **唯一一条链路。** 2026-09-12 起没有第二条路可选，所以这里不再有分支。
         #
@@ -3485,6 +3579,43 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             """
             _stash_handoff(scoped, _tid, res)
             _open_approval_bg(scoped, res, who=_who, kind="ask", question=q_text)
+            # 应答缓存也必须发生在这一路，理由与上面那两件事完全相同。
+            #
+            # 2026-09-15 查出来的：`cache.put` 原来只写在同步返回那一段，而交接
+            # 出去的执行走不到 —— 函数在上面 `if _notice is not None` 就返回了。
+            # 于是**任何越过交接判据的提问都结构性地不可能进缓存**，问一百遍
+            # 命中零次。而交接不只看 10 秒那条软阈值：async_runner.Handoff.check
+            # 在每个节点边界还判"多步 / token 过半 / 预估扫描过半"，
+            # 「商品总共有多少条记录」这类全表 COUNT 在大表上第三条几乎必中，
+            # 连 10 秒都不用等就交接了。
+            #
+            # 后果不只是少省一次钱，还有两条：
+            #   · **被漏掉的正是最贵的那批。** 能同步跑完的是便宜的短链路，
+            #     交接出去的是多步、高 token、大扫描那一批 —— 缓存本该在它们
+            #     身上省得最多。
+            #   · **命中率这个数系统性偏乐观。** 分母里没有这批，看板上的
+            #     73% 说的是"短链路的命中率"，而不是全站的。
+            #
+            # 交接那一路的结果原本只落进 _stash_handoff 那个按 thread_id 编的
+            # 临时 key，而 thread_id 每次都是新 uuid —— 别人再问同一句话取不到。
+            #
+            # 判据与同步那一路逐字相同：干净的成功才进（ok 且没被任何规则拦）。
+            # 不必再判"有没有挂审批"——挂审批的前提是 rejected_by == "R-11"
+            # （见 _open_approval_bg 第一行），已经被 rejected_by is None 挡掉。
+            # ckey 为 None 的那几种（缓存关闭 / as_task / 凭票重跑）在入口就已经
+            # 决定不缓存，这里照旧跳过。
+            if ckey is not None and res is not None:
+                if res.ok and res.rejected_by is None:
+                    cache.put(ckey, res.to_dict(), cache.ttl)
+                cache.release(ckey)
+            # 语义层同理：交接出去的正是最该被记住的那批（多步、大扫描），
+            # 漏掉它们等于让 L2/L3 只服务便宜的短链路。
+            if cacheable and sem_vec is not None and res is not None:
+                d = res.to_dict()
+                _semcache.remember(scoped, q_text, sem_vec, d,
+                                   org_id=eff_org, role=scoped.role)
+                if shadow_cand is not None:
+                    _semcache.note_shadow_verdict(shadow_cand, d)
             # 票是一次性的，作废也必须发生在这一路。
             # 2026-09-13 生产复验抓到：作废原来只写在同步返回那一段，凭票重跑
             # 又恒定立即交接（A-2）—— 于是那张票**永远走不到作废那一行**，
@@ -3525,9 +3656,24 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             _approvals.consume(cfg, req.approval_id)
         # 只缓存"干净的成功"：ok 且无任何拦截、无挂起审批。失败/被拦/挂起都是
         # 有状态或一次性的，缓存它们即错误（详见 qcache 模块头注）。
+        #
+        # **这一段有一个孪生体在 _settle_detached 里**，管交接出去那一路。
+        # 改这里的判据就要一起改那边 —— 两边不一致的后果是"同一句话，
+        # 跑得快的进了缓存、跑得慢的没进"，而那恰好是最难从现象上看出来的。
         if (ckey is not None and r.ok and r.rejected_by is None
                 and not out.get("approval_id")):
             cache.put(ckey, out, cache.ttl)
+        if ckey is not None:
+            cache.release(ckey)           # 单飞锁：成功失败都要放
+        # 语义层的入库门槛更严（截断 / 降级 / 接地存疑一律不收），判据在
+        # semcache._storable 里，这里不重复一套。
+        if cacheable and sem_vec is not None:
+            _semcache.remember(scoped, q_text, sem_vec, out,
+                               org_id=eff_org, role=scoped.role)
+        if shadow_cand is not None:
+            v = _semcache.note_shadow_verdict(shadow_cand, out)
+            _log.info("语义缓存影子判定 kind=%s score=%.3f 判定=%s 本问=%r",
+                      shadow_cand.kind, shadow_cand.score, v, q_text)
         return JSONResponse(out)
 
     @app.post("/api/ask/stream")
