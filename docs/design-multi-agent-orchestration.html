@@ -1,0 +1,1039 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="askdb 多智能体编排设计方案：角色拆分、协作协议、LangGraph 编排、前端改造、风险与实施路线。">
+  <title>askdb · 多智能体编排设计方案</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f2efe6;
+      --paper-2: #e8e3d7;
+      --card: rgba(255,255,252,.72);
+      --ink: #151713;
+      --muted: #686b63;
+      --line: rgba(21,23,19,.17);
+      --line-strong: rgba(21,23,19,.45);
+      --orange: #ef5b2a;
+      --cyan: #0c91a3;
+      --green: #377d4a;
+      --red: #c43e31;
+      --yellow: #d99c19;
+      --nav-w: 242px;
+      --shadow: 0 18px 50px rgba(43,39,28,.11);
+    }
+
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --paper: #11130f;
+      --paper-2: #191c17;
+      --card: rgba(28,31,25,.82);
+      --ink: #f3f0e7;
+      --muted: #abaea3;
+      --line: rgba(243,240,231,.14);
+      --line-strong: rgba(243,240,231,.38);
+      --orange: #ff6b37;
+      --cyan: #3fc3d1;
+      --green: #75c38b;
+      --red: #f07164;
+      --yellow: #f2bd49;
+      --shadow: 0 22px 60px rgba(0,0,0,.35);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        linear-gradient(var(--line) 1px, transparent 1px),
+        linear-gradient(90deg, var(--line) 1px, transparent 1px),
+        var(--paper);
+      background-size: 32px 32px;
+      color: var(--ink);
+      font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 15px;
+      line-height: 1.72;
+      transition: background-color .25s, color .25s;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 50;
+      opacity: .14;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.92' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.16'/%3E%3C/svg%3E");
+      mix-blend-mode: multiply;
+    }
+    a { color: inherit; }
+    button { font: inherit; }
+    code, pre, .mono {
+      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+
+    .topbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 40;
+      height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--line-strong);
+      background: color-mix(in srgb, var(--paper) 88%, transparent);
+      backdrop-filter: blur(16px);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand-mark {
+      width: 30px;
+      height: 30px;
+      display: grid;
+      place-items: center;
+      background: var(--ink);
+      color: var(--paper);
+      font: 800 12px/1 "SFMono-Regular", monospace;
+      transform: rotate(-4deg);
+    }
+    .brand strong { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; }
+    .brand span { color: var(--muted); font-size: 12px; }
+    .top-actions { display: flex; gap: 8px; }
+    .icon-btn {
+      min-height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--line-strong);
+      color: var(--ink);
+      background: var(--card);
+      cursor: pointer;
+      border-radius: 2px;
+    }
+    .icon-btn:hover { border-color: var(--orange); color: var(--orange); }
+
+    .side {
+      position: fixed;
+      z-index: 30;
+      top: 58px;
+      bottom: 0;
+      left: 0;
+      width: var(--nav-w);
+      overflow: auto;
+      padding: 28px 20px 36px;
+      border-right: 1px solid var(--line-strong);
+      background: color-mix(in srgb, var(--paper) 91%, transparent);
+      backdrop-filter: blur(14px);
+    }
+    .side-label {
+      margin: 0 0 13px 10px;
+      color: var(--muted);
+      font: 700 10px/1 "SFMono-Regular", monospace;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    .side a {
+      display: grid;
+      grid-template-columns: 24px 1fr;
+      gap: 4px;
+      padding: 7px 9px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      text-decoration: none;
+      border-left: 2px solid transparent;
+    }
+    .side a .n { font-family: "SFMono-Regular", monospace; font-size: 10px; opacity: .65; }
+    .side a:hover, .side a.active { color: var(--ink); border-left-color: var(--orange); background: color-mix(in srgb, var(--orange) 7%, transparent); }
+    .side-meta {
+      margin-top: 28px;
+      padding: 14px 10px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 1.7;
+    }
+
+    main { margin-left: var(--nav-w); padding-top: 58px; overflow: hidden; }
+    section { scroll-margin-top: 82px; }
+    .wrap { max-width: 1190px; margin: 0 auto; padding: 0 44px; }
+
+    .hero {
+      position: relative;
+      min-height: 720px;
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid var(--line-strong);
+      background:
+        radial-gradient(circle at 79% 27%, color-mix(in srgb, var(--cyan) 16%, transparent), transparent 27%),
+        radial-gradient(circle at 15% 78%, color-mix(in srgb, var(--orange) 13%, transparent), transparent 30%);
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(280px, .75fr);
+      gap: 66px;
+      align-items: center;
+      padding-top: 74px;
+      padding-bottom: 74px;
+    }
+    .kicker {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+      font: 750 11px/1.2 "SFMono-Regular", monospace;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+      color: var(--orange);
+    }
+    .kicker::before { content: ""; width: 48px; height: 2px; background: currentColor; }
+    h1, h2, h3, h4 { margin: 0; line-height: 1.18; }
+    h1 {
+      max-width: 820px;
+      font-family: "Iowan Old Style", "Songti SC", STSong, serif;
+      font-size: clamp(56px, 7vw, 102px);
+      font-weight: 700;
+      letter-spacing: -.055em;
+    }
+    h1 em { color: var(--orange); font-style: normal; }
+    .hero-lede {
+      max-width: 710px;
+      margin: 28px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.72;
+    }
+    .hero-lede strong { color: var(--ink); }
+    .hero-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
+    .tag {
+      padding: 6px 10px;
+      border: 1px solid var(--line-strong);
+      background: var(--card);
+      font: 700 10px/1 "SFMono-Regular", monospace;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+    .hero-console {
+      position: relative;
+      min-height: 440px;
+      padding: 26px;
+      border: 1px solid var(--line-strong);
+      background: var(--ink);
+      color: var(--paper);
+      box-shadow: var(--shadow);
+      transform: rotate(1.3deg);
+    }
+    .hero-console::after {
+      content: "ORCHESTRATION / 01";
+      position: absolute;
+      right: -18px;
+      top: 62px;
+      padding: 5px 9px;
+      background: var(--orange);
+      color: #fff;
+      font: 800 9px/1 "SFMono-Regular", monospace;
+      letter-spacing: .08em;
+      transform: rotate(90deg) translateX(100%);
+      transform-origin: top right;
+    }
+    .console-head { display: flex; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,.22); padding-bottom: 14px; }
+    .console-head span { font: 700 10px/1 "SFMono-Regular", monospace; letter-spacing: .12em; }
+    .pulse { width: 8px; height: 8px; border-radius: 50%; background: #7ce396; box-shadow: 0 0 0 6px rgba(124,227,150,.12); animation: pulse 2s infinite; }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 12px rgba(124,227,150,0); } }
+    .console-flow { display: grid; gap: 11px; margin-top: 22px; }
+    .flow-row { display: grid; grid-template-columns: 30px 1fr auto; gap: 12px; align-items: center; font-size: 12px; }
+    .flow-id { color: var(--orange); font: 800 11px "SFMono-Regular", monospace; }
+    .flow-role { border-left: 1px solid rgba(255,255,255,.25); padding-left: 12px; }
+    .flow-role small { display: block; color: rgba(255,255,255,.55); margin-top: 2px; }
+    .flow-state { font: 700 9px "SFMono-Regular", monospace; color: #7ce396; }
+    .console-line { height: 22px; margin-left: 14px; border-left: 1px dashed rgba(255,255,255,.25); }
+    .hero-fact {
+      position: absolute;
+      left: 24px;
+      bottom: 21px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      width: calc(100% - 48px);
+      border-top: 1px solid rgba(255,255,255,.22);
+      padding-top: 14px;
+    }
+    .hero-fact div { padding-right: 10px; }
+    .hero-fact b { display: block; color: var(--orange); font: 800 22px/1 "Iowan Old Style", serif; }
+    .hero-fact span { color: rgba(255,255,255,.5); font-size: 9px; }
+
+    .section { padding: 88px 0; border-bottom: 1px solid var(--line-strong); }
+    .section-head { display: grid; grid-template-columns: 140px 1fr; gap: 26px; margin-bottom: 40px; }
+    .section-no { color: var(--orange); font: 800 14px/1 "SFMono-Regular", monospace; letter-spacing: .06em; padding-top: 9px; }
+    .section-head h2 {
+      font-family: "Iowan Old Style", "Songti SC", STSong, serif;
+      font-size: clamp(34px, 4vw, 54px);
+      letter-spacing: -.035em;
+    }
+    .section-head p { max-width: 800px; color: var(--muted); font-size: 16px; margin: 14px 0 0; }
+
+    .decision {
+      display: grid;
+      grid-template-columns: 1.2fr .8fr;
+      gap: 1px;
+      border: 1px solid var(--line-strong);
+      background: var(--line-strong);
+      box-shadow: var(--shadow);
+    }
+    .decision-main, .decision-side { background: var(--card); padding: 34px; }
+    .decision-main blockquote { margin: 0; font: 700 30px/1.38 "Iowan Old Style", "Songti SC", serif; letter-spacing: -.02em; }
+    .decision-main blockquote em { color: var(--orange); font-style: normal; }
+    .decision-side h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .11em; font-family: "SFMono-Regular", monospace; }
+    .decision-side ul { margin: 18px 0 0; padding: 0; list-style: none; }
+    .decision-side li { padding: 8px 0 8px 22px; border-bottom: 1px solid var(--line); position: relative; color: var(--muted); }
+    .decision-side li::before { content: "→"; position: absolute; left: 0; color: var(--orange); }
+
+    .compare { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin-top: 26px; }
+    .compare-card { border: 1px solid var(--line-strong); background: var(--card); padding: 26px; }
+    .compare-card .label { font: 800 10px "SFMono-Regular", monospace; color: var(--muted); letter-spacing: .12em; }
+    .compare-card h3 { margin-top: 10px; font: 700 25px "Iowan Old Style", "Songti SC", serif; }
+    .compare-card p { color: var(--muted); }
+    .compare-card.current { border-top: 5px solid var(--cyan); }
+    .compare-card.target { border-top: 5px solid var(--orange); }
+
+    .reason-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+    .reason {
+      position: relative;
+      min-height: 230px;
+      padding: 26px;
+      overflow: hidden;
+      border: 1px solid var(--line-strong);
+      background: var(--card);
+    }
+    .reason::after {
+      content: attr(data-n);
+      position: absolute;
+      right: -4px;
+      bottom: -28px;
+      color: color-mix(in srgb, var(--ink) 7%, transparent);
+      font: 800 110px/1 "Iowan Old Style", serif;
+    }
+    .reason b { display: block; color: var(--orange); font: 800 11px "SFMono-Regular", monospace; letter-spacing: .1em; }
+    .reason h3 { margin-top: 26px; font-size: 19px; }
+    .reason p { position: relative; z-index: 1; color: var(--muted); font-size: 13px; }
+
+    .architecture {
+      padding: 28px;
+      border: 1px solid var(--line-strong);
+      background: color-mix(in srgb, var(--card) 90%, transparent);
+      box-shadow: var(--shadow);
+    }
+    .arch-caption { display: flex; justify-content: space-between; gap: 20px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
+    .arch-caption strong { font-family: "SFMono-Regular", monospace; font-size: 12px; }
+    .arch-caption span { color: var(--muted); font-size: 11px; }
+    .arch-flow { margin-top: 25px; display: grid; gap: 14px; }
+    .arch-row { display: flex; align-items: stretch; justify-content: center; gap: 12px; }
+    .node {
+      position: relative;
+      min-width: 170px;
+      padding: 17px 18px;
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+    }
+    .node strong { display: block; font-size: 13px; }
+    .node small { display: block; color: var(--muted); margin-top: 3px; line-height: 1.45; }
+    .node .node-id { position: absolute; top: 8px; right: 9px; color: var(--orange); font: 800 9px "SFMono-Regular", monospace; }
+    .node.runtime { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+    .node.runtime small { color: color-mix(in srgb, var(--paper) 65%, transparent); }
+    .node.agent { border-top: 4px solid var(--orange); }
+    .node.worker { border-top: 4px solid var(--cyan); flex: 1; }
+    .node.store { border-style: dashed; border-width: 2px; }
+    .arrow-down { margin: -4px auto; width: 1px; height: 25px; background: var(--line-strong); position: relative; }
+    .arrow-down::after { content: ""; position: absolute; bottom: -1px; left: -4px; width: 7px; height: 7px; border-right: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); transform: rotate(45deg); }
+    .runtime-band { padding: 13px 18px; background: var(--ink); color: var(--paper); display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 24px; font: 700 10px "SFMono-Regular", monospace; letter-spacing: .03em; }
+    .runtime-band span::before { content: "◆"; color: var(--orange); margin-right: 7px; }
+
+    .agent-count {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 24px;
+      align-items: center;
+      margin-bottom: 24px;
+      padding: 24px 28px;
+      border-left: 6px solid var(--orange);
+      background: var(--ink);
+      color: var(--paper);
+    }
+    .agent-count b { font: 800 42px/1 "Iowan Old Style", serif; color: var(--orange); }
+    .agent-count p { margin: 0; color: color-mix(in srgb, var(--paper) 70%, transparent); }
+    .agent-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 11px; }
+    .agent-card { min-height: 340px; padding: 22px 18px; border: 1px solid var(--line-strong); background: var(--card); display: flex; flex-direction: column; }
+    .agent-index { color: var(--orange); font: 800 12px "SFMono-Regular", monospace; }
+    .agent-card h3 { margin-top: 18px; font: 700 21px/1.15 "Iowan Old Style", "Songti SC", serif; }
+    .agent-card .en { color: var(--muted); font: 700 9px "SFMono-Regular", monospace; letter-spacing: .1em; margin-top: 4px; }
+    .agent-card p { color: var(--muted); font-size: 12px; }
+    .agent-card ul { margin: auto 0 0; padding: 14px 0 0; list-style: none; border-top: 1px solid var(--line); }
+    .agent-card li { position: relative; padding: 3px 0 3px 13px; font-size: 11px; }
+    .agent-card li::before { content: "·"; color: var(--orange); position: absolute; left: 0; }
+    .agent-card .deny { margin-top: 14px; padding-top: 10px; border-top: 1px dashed var(--line-strong); color: var(--red); font-size: 10px; }
+
+    .skill-definition {
+      display: grid;
+      grid-template-columns: 1.1fr .9fr;
+      gap: 1px;
+      margin-bottom: 18px;
+      border: 1px solid var(--line-strong);
+      background: var(--line-strong);
+    }
+    .skill-definition > div { padding: 28px; background: var(--card); }
+    .skill-definition h3 { font: 700 27px "Iowan Old Style", "Songti SC", serif; }
+    .skill-definition p { color: var(--muted); }
+    .skill-formula { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 18px; }
+    .skill-formula span { padding: 7px 10px; border: 1px solid var(--line-strong); font: 750 10px "SFMono-Regular", monospace; background: var(--paper); }
+    .skill-formula i { color: var(--orange); font-style: normal; font-weight: 800; }
+    .skill-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .skill-card { padding: 21px; border: 1px solid var(--line-strong); background: var(--card); }
+    .skill-card b { color: var(--orange); font: 800 10px "SFMono-Regular", monospace; letter-spacing: .08em; }
+    .skill-card h4 { margin-top: 11px; font-size: 15px; }
+    .skill-card p { color: var(--muted); font-size: 11px; }
+    .skill-resolution { margin-top: 22px; display: grid; grid-template-columns: repeat(5, 1fr); border: 1px solid var(--line-strong); }
+    .skill-resolution > div { min-height: 132px; padding: 15px; border-right: 1px solid var(--line); background: var(--card); }
+    .skill-resolution > div:last-child { border-right: 0; }
+    .skill-resolution b { color: var(--orange); font: 800 10px "SFMono-Regular", monospace; }
+    .skill-resolution strong { display: block; margin-top: 12px; font-size: 12px; }
+    .skill-resolution small { display: block; color: var(--muted); margin-top: 4px; }
+
+    .protocol-grid { display: grid; grid-template-columns: .85fr 1.15fr; gap: 18px; }
+    .protocol-stack { display: grid; gap: 10px; }
+    .artifact { padding: 17px 18px; border: 1px solid var(--line-strong); background: var(--card); display: grid; grid-template-columns: 92px 1fr; gap: 15px; }
+    .artifact b { color: var(--orange); font: 800 11px "SFMono-Regular", monospace; }
+    .artifact span { color: var(--muted); font-size: 12px; }
+    .code-panel { background: #141713; color: #f2efe6; padding: 24px; overflow: auto; border: 1px solid #141713; box-shadow: var(--shadow); }
+    .code-panel .cap { display: flex; justify-content: space-between; color: #9da398; font: 700 10px "SFMono-Regular", monospace; letter-spacing: .1em; border-bottom: 1px solid #394037; padding-bottom: 12px; }
+    pre { margin: 17px 0 0; font-size: 11px; line-height: 1.65; white-space: pre-wrap; }
+    .ck { color: #71ccdb; }
+    .cv { color: #f1ae55; }
+    .cc { color: #81887d; }
+
+    .scenario-tabs { display: flex; gap: 0; overflow-x: auto; border-bottom: 1px solid var(--line-strong); }
+    .scenario-tab { border: 0; border-right: 1px solid var(--line); padding: 12px 18px; color: var(--muted); background: var(--card); cursor: pointer; font-weight: 700; font-size: 12px; }
+    .scenario-tab.active { background: var(--ink); color: var(--paper); }
+    .scenario-panel { display: none; padding: 28px; border: 1px solid var(--line-strong); border-top: 0; background: var(--card); }
+    .scenario-panel.active { display: block; animation: panelIn .25s ease both; }
+    @keyframes panelIn { from { opacity: 0; transform: translateY(6px); } }
+    .sequence { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; margin-top: 22px; }
+    .seq-step { min-height: 130px; padding: 13px; border: 1px solid var(--line-strong); background: var(--paper); }
+    .seq-step b { font: 800 10px "SFMono-Regular", monospace; color: var(--orange); }
+    .seq-step strong { display: block; margin-top: 14px; font-size: 12px; }
+    .seq-step small { color: var(--muted); display: block; margin-top: 4px; }
+
+    .state-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+    .state { padding: 9px 13px; border: 1px solid var(--line-strong); background: var(--card); font: 750 10px "SFMono-Regular", monospace; }
+    .state.human { border-color: var(--orange); color: var(--orange); }
+    .state.done { background: var(--green); color: #fff; border-color: var(--green); }
+    .state-arrow { color: var(--muted); }
+    .note { margin-top: 20px; padding: 17px 20px; border-left: 4px solid var(--cyan); background: color-mix(in srgb, var(--cyan) 8%, var(--card)); color: var(--muted); }
+    .note strong { color: var(--ink); }
+
+    .front-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 18px; }
+    .wireframe { border: 1px solid var(--line-strong); background: var(--card); box-shadow: var(--shadow); }
+    .wire-head { height: 46px; padding: 0 15px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); font: 750 10px "SFMono-Regular", monospace; }
+    .wire-body { display: grid; grid-template-columns: 1fr 220px; min-height: 410px; }
+    .chat { padding: 18px; border-right: 1px solid var(--line); }
+    .question { max-width: 82%; margin-left: auto; padding: 12px 14px; background: var(--ink); color: var(--paper); font-size: 12px; }
+    .plan-mini { margin-top: 18px; border: 1px solid var(--line); }
+    .plan-mini-head { padding: 10px 12px; display: flex; justify-content: space-between; border-bottom: 1px solid var(--line); font-size: 11px; }
+    .plan-item { display: grid; grid-template-columns: 18px 1fr auto; gap: 7px; align-items: center; padding: 9px 12px; border-bottom: 1px solid var(--line); font-size: 10px; }
+    .plan-item:last-child { border: 0; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .dot.run { background: var(--orange); animation: pulse 1.4s infinite; }
+    .answer-mini { margin-top: 18px; padding: 13px; border-left: 3px solid var(--cyan); background: color-mix(in srgb, var(--cyan) 7%, transparent); font-size: 11px; }
+    .evidence-drawer { padding: 14px; }
+    .evidence-drawer h4 { font: 800 10px "SFMono-Regular", monospace; letter-spacing: .08em; }
+    .ev-card { margin-top: 11px; padding: 11px; border: 1px solid var(--line); background: var(--paper); font-size: 9px; }
+    .ev-card b { display: block; color: var(--orange); font-family: "SFMono-Regular", monospace; }
+    .front-list { display: grid; gap: 10px; }
+    .front-item { padding: 18px; border: 1px solid var(--line-strong); background: var(--card); }
+    .front-item b { font-size: 13px; }
+    .front-item p { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
+
+    .risk-table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line-strong); }
+    .risk-table th, .risk-table td { padding: 13px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); font-size: 12px; }
+    .risk-table th { font: 800 9px "SFMono-Regular", monospace; letter-spacing: .08em; color: var(--muted); background: var(--paper-2); }
+    .risk-table tr:last-child td { border-bottom: 0; }
+    .sev { display: inline-block; min-width: 47px; padding: 3px 7px; text-align: center; color: #fff; font: 800 8px "SFMono-Regular", monospace; }
+    .sev.h { background: var(--red); }
+    .sev.m { background: var(--yellow); color: #231b08; }
+
+    .roadmap { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--line-strong); border: 1px solid var(--line-strong); }
+    .phase { min-height: 370px; padding: 24px 20px; background: var(--card); }
+    .phase .phase-no { color: var(--orange); font: 800 11px "SFMono-Regular", monospace; }
+    .phase h3 { margin-top: 28px; font: 700 22px "Iowan Old Style", "Songti SC", serif; }
+    .phase .time { color: var(--muted); font: 700 9px "SFMono-Regular", monospace; }
+    .phase ul { padding: 15px 0 0; list-style: none; border-top: 1px solid var(--line); }
+    .phase li { padding: 5px 0 5px 15px; position: relative; font-size: 11px; }
+    .phase li::before { content: "□"; position: absolute; left: 0; color: var(--orange); }
+    .phase .gate { margin-top: auto; padding-top: 14px; color: var(--green); font-size: 10px; }
+
+    .file-map { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+    .tree { padding: 24px; border: 1px solid var(--line-strong); background: #141713; color: #ece8dd; font: 11px/1.7 "SFMono-Regular", monospace; overflow: auto; }
+    .tree .new { color: #ff8458; }
+    .tree .edit { color: #72d0da; }
+    .principles { display: grid; gap: 10px; }
+    .principle { display: grid; grid-template-columns: 42px 1fr; gap: 14px; align-items: start; padding: 15px; border-bottom: 1px solid var(--line); }
+    .principle b { width: 36px; height: 36px; display: grid; place-items: center; background: var(--ink); color: var(--paper); font: 800 10px "SFMono-Regular", monospace; }
+    .principle strong { display: block; font-size: 13px; }
+    .principle span { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
+
+    .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .metric { padding: 19px; border-top: 4px solid var(--cyan); background: var(--card); border-left: 1px solid var(--line); border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .metric b { display: block; font: 800 26px "Iowan Old Style", serif; }
+    .metric span { color: var(--muted); font-size: 10px; }
+    .checklist { columns: 2; column-gap: 25px; margin: 28px 0 0; padding: 0; list-style: none; }
+    .checklist li { break-inside: avoid; position: relative; padding: 9px 8px 9px 25px; border-bottom: 1px solid var(--line); font-size: 12px; }
+    .checklist li::before { content: "✓"; position: absolute; left: 4px; color: var(--green); font-weight: 800; }
+
+    .closing {
+      padding: 90px 0 110px;
+      background: var(--ink);
+      color: var(--paper);
+    }
+    .closing .wrap { display: grid; grid-template-columns: 1.25fr .75fr; gap: 50px; }
+    .closing h2 { font: 700 clamp(38px, 5vw, 70px)/1.12 "Iowan Old Style", "Songti SC", serif; letter-spacing: -.035em; }
+    .closing h2 em { color: var(--orange); font-style: normal; }
+    .closing p { color: color-mix(in srgb, var(--paper) 65%, transparent); }
+    .closing-card { padding: 24px; border: 1px solid rgba(255,255,255,.25); }
+    .closing-card b { color: var(--orange); font-family: "SFMono-Regular", monospace; font-size: 11px; }
+    .closing-card ol { padding-left: 20px; }
+    .closing-card li { margin: 9px 0; color: color-mix(in srgb, var(--paper) 72%, transparent); font-size: 12px; }
+
+    .reveal { opacity: 0; transform: translateY(18px); transition: opacity .55s ease, transform .55s ease; }
+    .reveal.visible { opacity: 1; transform: none; }
+
+    @media (max-width: 1050px) {
+      :root { --nav-w: 0px; }
+      .side { display: none; }
+      main { margin-left: 0; }
+      .hero-grid, .decision, .front-grid, .protocol-grid, .file-map, .closing .wrap { grid-template-columns: 1fr; }
+      .hero-console { transform: none; }
+      .agent-grid { grid-template-columns: repeat(2, 1fr); }
+      .reason-grid, .roadmap { grid-template-columns: repeat(2, 1fr); }
+      .skill-grid { grid-template-columns: repeat(2, 1fr); }
+      .skill-resolution { grid-template-columns: repeat(2, 1fr); }
+      .skill-resolution > div { border-bottom: 1px solid var(--line); }
+      .sequence { grid-template-columns: repeat(3, 1fr); }
+    }
+    @media (max-width: 650px) {
+      .topbar { padding: 0 14px; }
+      .brand span { display: none; }
+      .wrap { padding-left: 18px; padding-right: 18px; }
+      .hero { min-height: auto; }
+      .hero-grid { padding-top: 48px; gap: 38px; }
+      h1 { font-size: 52px; }
+      .section { padding: 64px 0; }
+      .section-head { grid-template-columns: 1fr; gap: 10px; }
+      .compare, .reason-grid, .agent-grid, .roadmap, .metric-grid { grid-template-columns: 1fr; }
+      .skill-definition, .skill-grid, .skill-resolution { grid-template-columns: 1fr; }
+      .arch-row { flex-direction: column; }
+      .node { width: 100%; }
+      .sequence { grid-template-columns: 1fr 1fr; }
+      .wire-body { grid-template-columns: 1fr; }
+      .chat { border-right: 0; border-bottom: 1px solid var(--line); }
+      .risk-table { display: block; overflow-x: auto; white-space: nowrap; }
+      .checklist { columns: 1; }
+    }
+    @media print {
+      .topbar, .side { display: none !important; }
+      main { margin: 0; padding: 0; }
+      body { background: #fff; }
+      .section { break-inside: avoid; }
+      .reveal { opacity: 1; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark">A/5</div><strong>askdb orchestration</strong><span>多智能体设计方案 · V1.0</span></div>
+    <div class="top-actions">
+      <button class="icon-btn" id="printBtn" type="button">打印 / PDF</button>
+      <button class="icon-btn" id="themeBtn" type="button" aria-label="切换主题">深色</button>
+    </div>
+  </header>
+
+  <nav class="side" aria-label="文档目录">
+    <p class="side-label">Navigation</p>
+    <a href="#summary"><span class="n">00</span><span>设计结论</span></a>
+    <a href="#why"><span class="n">01</span><span>为什么要拆</span></a>
+    <a href="#architecture"><span class="n">02</span><span>目标架构</span></a>
+    <a href="#agents"><span class="n">03</span><span>五类智能体</span></a>
+    <a href="#skills"><span class="n">04</span><span>Skill 能力层</span></a>
+    <a href="#protocol"><span class="n">05</span><span>协作协议</span></a>
+    <a href="#orchestration"><span class="n">06</span><span>编排流程</span></a>
+    <a href="#state"><span class="n">07</span><span>状态与恢复</span></a>
+    <a href="#frontend"><span class="n">08</span><span>前端改造</span></a>
+    <a href="#risks"><span class="n">09</span><span>问题与治理</span></a>
+    <a href="#implementation"><span class="n">10</span><span>代码落点</span></a>
+    <a href="#roadmap"><span class="n">11</span><span>分期实施</span></a>
+    <a href="#acceptance"><span class="n">12</span><span>验收标准</span></a>
+    <div class="side-meta">基于 askdb 当前工作树分析<br>LangGraph · Evidence-first<br>2026-09-24</div>
+  </nav>
+
+  <main>
+    <section class="hero" id="top">
+      <div class="wrap hero-grid">
+        <div>
+          <div class="kicker">Architecture dossier / 2026</div>
+          <h1>从单循环到<br><em>协作式数据智能</em></h1>
+          <p class="hero-lede">askdb 多智能体编排与 Skill 能力设计方案。目标不是制造更多模型调用，而是让<strong>复杂问题可以被拆解、按需装载领域能力、并行取证、独立复核、证据化合成</strong>，同时保留现有可信 SQL 安全边界。</p>
+          <div class="hero-tags"><span class="tag">5 类 Agent</span><span class="tag">Dynamic Skills</span><span class="tag">Evidence-first</span><span class="tag">Dynamic Fan-out</span><span class="tag">Human-in-the-loop</span></div>
+        </div>
+        <div class="hero-console" aria-label="多智能体运行示意">
+          <div class="console-head"><span>LIVE TASK / Q-240924</span><i class="pulse"></i></div>
+          <div class="console-flow">
+            <div class="flow-row"><span class="flow-id">01</span><div class="flow-role">Supervisor<small>拆解目标 · 构造任务 DAG</small></div><span class="flow-state">DONE</span></div>
+            <div class="console-line"></div>
+            <div class="flow-row"><span class="flow-id">02</span><div class="flow-role">Semantic Agent<small>确认指标、粒度与关联契约</small></div><span class="flow-state">DONE</span></div>
+            <div class="console-line"></div>
+            <div class="flow-row"><span class="flow-id">03</span><div class="flow-role">Query Worker × 3<small>订单 / 支付 / 行为并行取证</small></div><span class="flow-state">RUN</span></div>
+            <div class="console-line"></div>
+            <div class="flow-row"><span class="flow-id">04</span><div class="flow-role">Verifier<small>完整性、口径与交叉一致性</small></div><span class="flow-state">WAIT</span></div>
+            <div class="console-line"></div>
+            <div class="flow-row"><span class="flow-id">05</span><div class="flow-role">Synthesizer<small>只基于已验证证据生成结论</small></div><span class="flow-state">WAIT</span></div>
+          </div>
+          <div class="hero-fact"><div><b>5</b><span>AGENT TYPES</span></div><div><b>3</b><span>HARD GATES</span></div><div><b>1</b><span>SHARED TRUTH</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="summary">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">00 / DECISION</div><div><h2>设计结论</h2><p>保留现有单 Agent 快路径，在复杂请求上增加顶层 Supervisor。多智能体不是默认路径，而是按复杂度、数据域和验证需求动态启用。</p></div></div>
+        <div class="decision">
+          <div class="decision-main"><blockquote>把 askdb 改造成<em>“快路径 + 多智能体任务图”</em>，而不是让所有问题都进入多 Agent 会议。</blockquote></div>
+          <div class="decision-side"><h3>不可改变的三条边界</h3><ul><li>权限、租户、脱敏由 Runtime 决定</li><li>每条 SQL 继续独立经过现有安全原子</li><li>最终结论必须引用结构化 Evidence</li></ul></div>
+        </div>
+        <div class="compare">
+          <article class="compare-card current"><span class="label">CURRENT / 单智能体</span><h3>一个循环承担全部职责</h3><p>当前 <span class="mono">recall → intent/fast → decide → act → ground → finalize</span> 已能稳定完成单源查数，但计划、取证、复核和表达由同一决策主体完成。</p></article>
+          <article class="compare-card target"><span class="label">TARGET / 协作式</span><h3>职责分离，证据汇合</h3><p>Supervisor 管任务图，Semantic 管口径，Worker 管取证，Verifier 管质量，Synthesizer 管表达；只有 Evidence Store 是共享事实源。</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="why">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">01 / WHY</div><div><h2>为什么要拆成多智能体</h2><p>不是因为当前功能不可用，而是单循环在任务复杂度提高后会出现职责冲突、上下文膨胀、难以并发和自我复核失真。</p></div></div>
+        <div class="reason-grid">
+          <article class="reason" data-n="1"><b>LIMIT 01</b><h3>规划与执行相互污染</h3><p>同一个模型既决定查什么，又根据自己的查询结果判断是否正确，容易围绕第一条错误假设持续修补。</p></article>
+          <article class="reason" data-n="2"><b>LIMIT 02</b><h3>复杂问题无法真正并行</h3><p>多个相互独立的指标目前仍在一个 decide/act 循环里串行推进，延迟随子问题数量线性增长。</p></article>
+          <article class="reason" data-n="3"><b>LIMIT 03</b><h3>跨源上下文不成立</h3><p>当前一次请求绑定一个 source，状态里只有一个 cfg、executor 与 last_exec，无法自然表达多数据源取证。</p></article>
+          <article class="reason" data-n="4"><b>LIMIT 04</b><h3>自我复核不够独立</h3><p>生成 SQL、解释结果和数字接地都围绕同一段历史。验证更像“检查自己的作业”，缺少独立目标与失败分类。</p></article>
+          <article class="reason" data-n="5"><b>LIMIT 05</b><h3>失败只能整链重试</h3><p>没有稳定的子任务与证据 ID，某一项失败后很难只重跑该项，恢复、去重和局部降级都不够精确。</p></article>
+          <article class="reason" data-n="6"><b>LIMIT 06</b><h3>最终答案与证据耦合偏弱</h3><p>现有 exec_results 能做数字接地，但尚未形成“每条 Claim 明确引用哪些 Evidence”的强契约。</p></article>
+        </div>
+        <div class="note"><strong>拆分触发条件：</strong>多实体、多指标、跨数据源、需要独立核对、存在可并行子问题或需要结果驱动分支。单表计数、普通分组、Top-N 和单条 SQL 可表达的问题继续走现有快路径。</div>
+      </div>
+    </section>
+
+    <section class="section" id="architecture">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">02 / TOPOLOGY</div><div><h2>目标架构</h2><p>顶层是一张可检查点恢复的任务图，底层仍是 askdb 已有的确定性安全 Runtime。自主性在编排层，可信性在工具与证据边界。</p></div></div>
+        <div class="architecture">
+          <div class="arch-caption"><strong>ASKDB MULTI-AGENT CONTROL PLANE</strong><span>实线＝任务流 · 虚线框＝共享状态 · 黑底＝不可由 LLM 绕过</span></div>
+          <div class="arch-flow">
+            <div class="arch-row"><div class="node runtime"><span class="node-id">G0</span><strong>Gateway / Policy</strong><small>登录、角色、可见数据源、缓存、配额、请求指纹</small></div><div class="node"><span class="node-id">R0</span><strong>Complexity Router</strong><small>纯代码信号 + 结构化分类；决定 fast / multi</small></div></div>
+            <div class="arrow-down"></div>
+            <div class="arch-row"><div class="node agent"><span class="node-id">A1</span><strong>Supervisor Agent</strong><small>目标拆解、DAG、依赖、预算、调度、收敛</small></div></div>
+            <div class="arrow-down"></div>
+            <div class="arch-row"><div class="node agent"><span class="node-id">A2</span><strong>Semantic Agent</strong><small>指标、维度、粒度、时间、实体与关联契约</small></div><div class="node store"><span class="node-id">SK</span><strong>Skill Registry / Resolver</strong><small>按角色、任务、数据源动态绑定已发布 Skill</small></div><div class="node store"><span class="node-id">BB</span><strong>Shared Blackboard</strong><small>TaskPlan · Evidence · Review · Claim · Budget</small></div></div>
+            <div class="arrow-down"></div>
+            <div class="arch-row"><div class="node worker"><span class="node-id">A3.1</span><strong>Query Worker</strong><small>Source: orders · scoped tools</small></div><div class="node worker"><span class="node-id">A3.2</span><strong>Query Worker</strong><small>Source: payments · scoped tools</small></div><div class="node worker"><span class="node-id">A3.N</span><strong>Query Worker</strong><small>按 DAG 动态 fan-out</small></div></div>
+            <div class="runtime-band"><span>AST GUARD</span><span>EXPLAIN / R-11</span><span>READONLY EXECUTE</span><span>MASKING</span><span>ROW LIMIT</span><span>AUDIT</span></div>
+            <div class="arrow-down"></div>
+            <div class="arch-row"><div class="node agent"><span class="node-id">A4</span><strong>Verifier Agent</strong><small>完整性、口径、总分一致、冲突、独立核验请求</small></div><div class="node agent"><span class="node-id">A5</span><strong>Synthesis Agent</strong><small>只读通过验证的 Evidence，生成带引用结论</small></div></div>
+            <div class="arrow-down"></div>
+            <div class="arch-row"><div class="node runtime"><span class="node-id">G1</span><strong>Result Gate</strong><small>Claim 引用校验、脱敏复核、审批/复核状态、响应与缓存</small></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="agents">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">03 / ROSTER</div><div><h2>拆成五类智能体</h2><p>五类是职责类型，不代表每次固定启动五个进程。简单问题启动零个新增 Agent；复杂问题通常是 1 Supervisor + 1 Semantic + 1～3 Worker + 1 Verifier + 1 Synthesizer。</p></div></div>
+        <div class="agent-count"><div><b>5 类</b><p>运行时动态生成 3～8 个实例。Query Worker 是可水平扩展的同构角色，不按业务域复制大量永久 Agent。</p></div><span class="tag">Recommended boundary</span></div>
+        <div class="agent-grid">
+          <article class="agent-card"><span class="agent-index">A1</span><h3>主管智能体</h3><span class="en">SUPERVISOR</span><p>拥有全局目标，但不直接查库；维护任务图并决定下一步调度。</p><ul><li>拆解与依赖排序</li><li>预算与并行度分配</li><li>失败降级和局部重试</li><li>判断是否需要人工介入</li></ul><div class="deny">禁止：execute_sql、修改权限、绕过验证</div></article>
+          <article class="agent-card"><span class="agent-index">A2</span><h3>语义智能体</h3><span class="en">SEMANTIC</span><p>把用户意图固化为可执行契约，减少各 Worker 对同一口径的重复猜测。</p><ul><li>指标与维度解析</li><li>统计粒度与时间窗口</li><li>候选数据源与关联键</li><li>生成 QuerySpec</li></ul><div class="deny">禁止：直接给最终数字、访问不可见源</div></article>
+          <article class="agent-card"><span class="agent-index">A3</span><h3>查询智能体</h3><span class="en">QUERY WORKER</span><p>每个实例绑定一个 source scope，只完成一个原子子任务并产出 Evidence。</p><ul><li>Schema 召回与 SQL 生成</li><li>调用现有安全 SQL 原子</li><li>结果形状与截断检查</li><li>Evidence 标准化</li></ul><div class="deny">禁止：自由选择其他数据源、生成总答案</div></article>
+          <article class="agent-card"><span class="agent-index">A4</span><h3>验证智能体</h3><span class="en">VERIFIER</span><p>从独立目标检查证据是否足以支持问题，而不是润色已有答案。</p><ul><li>总计与分项一致性</li><li>时间、去重、软删除口径</li><li>跨源冲突检测</li><li>发出受限 VerificationTask</li></ul><div class="deny">禁止：推翻代码护栏、直接修改 Evidence</div></article>
+          <article class="agent-card"><span class="agent-index">A5</span><h3>合成智能体</h3><span class="en">SYNTHESIZER</span><p>只读取已验证证据，生成面向用户的结论、限制说明和证据引用。</p><ul><li>Claim → evidence_ids</li><li>结论与口径说明</li><li>冲突和缺失如实披露</li><li>选择主结果表</li></ul><div class="deny">禁止：调用数据库、补写不存在的数字</div></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="skills">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">04 / SKILL LAYER</div><div><h2>这一期同时建设 Skill 能力层</h2><p>askdb 当前已有 <span class="mono">skill.py</span>，但主要是“通用规则 + YAML 追加规则”后整体拼入系统提示。多智能体需要把它升级成可注册、可选择、可版本化、可授权、可评测的能力包。</p></div></div>
+        <div class="skill-definition">
+          <div><h3>Skill 不是 Agent，也不是 Tool</h3><p>Agent 是承担任务的决策角色，Tool 是可执行的原子能力，Skill 是教某类 Agent “在特定业务场景里应该如何判断和行动”的可复用方法包。Skill 不独立运行，而是在创建 Agent 实例时由 Runtime 解析并绑定。</p><div class="skill-formula"><span>Agent 角色</span><i>＋</i><span>最小 Tool 权限</span><i>＋</i><span>Resolved Skills</span><i>＝</i><span>本次 Worker</span></div></div>
+          <div><h3>安全不变量</h3><p>Skill 只能提供方法、语义约束、示例和校验规则，不能授予权限、扩大数据源范围、绕过 Guard、改变审批结论或直接执行任意代码。Skill 请求的 Tool 必须与 Runtime 允许集求交集。</p><div class="note" style="margin-top:14px"><strong>能力只减不增：</strong><span class="mono">effective_tools = runtime_allowed ∩ agent_profile ∩ skill_requested</span></div></div>
+        </div>
+
+        <div class="skill-grid">
+          <article class="skill-card"><b>TYPE 01</b><h4>通用数据方法 Skill</h4><p>实体接地、软删除、枚举查证、缓存计数器不当真值、结果截断处理。由所有数据 Agent 默认继承。</p></article>
+          <article class="skill-card"><b>TYPE 02</b><h4>领域语义 Skill</h4><p>订单、支付、知识库等领域的指标定义、实体关系、默认时间和常见误区，主要绑定 Semantic 与 Verifier。</p></article>
+          <article class="skill-card"><b>TYPE 03</b><h4>数据源 Skill</h4><p>某个 source 独有的表选择、方言、枚举、软删除和已知质量问题，只能绑定该 source 的 Query Worker。</p></article>
+          <article class="skill-card"><b>TYPE 04</b><h4>分析模式 Skill</h4><p>同比、环比、漏斗、留存、Top-N、异常归因等查询模板和验证清单，由任务意图触发。</p></article>
+          <article class="skill-card"><b>TYPE 05</b><h4>验证 Skill</h4><p>定义结果形状、总分一致、分母、去重、基准期与容差，主要供 Verifier 生成确定性的检查项。</p></article>
+          <article class="skill-card"><b>TYPE 06</b><h4>表达 Skill</h4><p>面向运营、管理层或开发者的回答结构，只影响呈现，不改变 Evidence、数字和权限。</p></article>
+        </div>
+
+        <div class="skill-resolution">
+          <div><b>01 / DISCOVER</b><strong>候选发现</strong><small>按 agent_role、intent、source、tables、metrics 和领域标签找候选 Skill。</small></div>
+          <div><b>02 / FILTER</b><strong>权限过滤</strong><small>剔除未发布、已撤销、越出 source scope 或角色不允许的 Skill。</small></div>
+          <div><b>03 / RESOLVE</b><strong>依赖与冲突</strong><small>展开 requires；deny 优先；同级冲突失败关闭或请求人工选择。</small></div>
+          <div><b>04 / PIN</b><strong>版本固定</strong><small>任务开始后记录 skill_id、version、checksum；恢复时可追溯同一版本。</small></div>
+          <div><b>05 / BIND</b><strong>按 Agent 注入</strong><small>方法注入 Prompt，约束注入 QuerySpec/Verifier，Tool 请求仍过 Runtime。</small></div>
+        </div>
+
+        <div class="protocol-grid" style="margin-top:22px">
+          <div class="protocol-stack">
+            <div class="artifact"><b>Manifest</b><span>id、version、owner、status、agent_roles、source_scopes、triggers、priority。</span></div>
+            <div class="artifact"><b>Instructions</b><span>给 Agent 的方法论，不允许携带密钥、数据库连接或越权指令。</span></div>
+            <div class="artifact"><b>Constraints</b><span>可机器执行的指标、维度、结果形状和验证规则，优先于自然语言提醒。</span></div>
+            <div class="artifact"><b>Examples</b><span>少量正反例；按需检索，不把整个 Skill 库全部塞进上下文。</span></div>
+            <div class="artifact"><b>Tests</b><span>触发、拒绝、SQL 形状、口径和回归用例；发布前必须通过。</span></div>
+          </div>
+          <div class="code-panel">
+            <div class="cap"><span>SKILL MANIFEST / EXAMPLE</span><span>VERSIONED PACKAGE</span></div>
+            <pre>{
+  <span class="ck">"id"</span>: <span class="cv">"orders.month_over_month"</span>,
+  <span class="ck">"version"</span>: <span class="cv">"1.2.0"</span>,
+  <span class="ck">"status"</span>: <span class="cv">"published"</span>,
+  <span class="ck">"owner"</span>: <span class="cv">"data-commerce"</span>,
+  <span class="ck">"agent_roles"</span>: [<span class="cv">"semantic"</span>, <span class="cv">"query_worker"</span>, <span class="cv">"verifier"</span>],
+  <span class="ck">"source_scopes"</span>: [<span class="cv">"orders_*"</span>],
+  <span class="ck">"triggers"</span>: {
+    <span class="ck">"intents"</span>: [<span class="cv">"mom_compare"</span>],
+    <span class="ck">"metrics"</span>: [<span class="cv">"paid_order_count"</span>]
+  },
+  <span class="ck">"requires"</span>: [<span class="cv">"core.time_window@^1"</span>],
+  <span class="ck">"conflicts_with"</span>: [<span class="cv">"orders.legacy_calendar"</span>],
+  <span class="ck">"requested_tools"</span>: [<span class="cv">"execute_sql"</span>],
+  <span class="ck">"constraints"</span>: {
+    <span class="ck">"same_metric_definition"</span>: <span class="cv">true</span>,
+    <span class="ck">"same_period_length"</span>: <span class="cv">true</span>,
+    <span class="ck">"require_total_column"</span>: <span class="cv">true</span>
+  }
+}</pre>
+          </div>
+        </div>
+
+        <div class="compare" style="margin-top:22px">
+          <article class="compare-card current"><span class="label">CURRENT</span><h3>全量平铺式注入</h3><p><span class="mono">GENERAL_RULES + config.skill.rules</span> 整体进入 Agent 系统提示；缺少 Agent 角色、触发条件、版本、依赖、冲突、发布状态和独立评测。</p></article>
+          <article class="compare-card target"><span class="label">THIS RELEASE</span><h3>Skill Registry + Resolver</h3><p>本期交付注册表、Manifest、解析器、按 Agent 绑定、版本固定、Trace 留痕、发布校验和 Skill 管理页；兼容现有 YAML rules，自动迁移为内置 Skill。</p></article>
+        </div>
+        <div class="note"><strong>优先级：</strong>Runtime 安全策略 ＞ 用户可见范围 ＞ 已发布语义定义 ＞ Source Skill ＞ Domain Skill ＞ General Skill ＞ 表达偏好。发生硬口径冲突时不能让后加载者静默覆盖，必须阻止执行并留下冲突记录。</div>
+      </div>
+    </section>
+
+    <section class="section" id="protocol">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">05 / PROTOCOL</div><div><h2>智能体如何相互协作</h2><p>不让 Agent 自由聊天。所有协作通过共享黑板上的结构化产物完成；每种产物都有版本、作者、输入引用、Skill 绑定和幂等指纹。</p></div></div>
+        <div class="protocol-grid">
+          <div class="protocol-stack">
+            <div class="artifact"><b>TaskPlan</b><span>Supervisor 输出。定义目标、子任务、依赖、分配的数据源和预算。</span></div>
+            <div class="artifact"><b>QuerySpec</b><span>Semantic 输出。定义指标、维度、过滤、粒度、时间、期望结果形状。</span></div>
+            <div class="artifact"><b>Evidence</b><span>Worker 输出。封装 SQL、结果、数据时间、脱敏、护栏、截断与来源。</span></div>
+            <div class="artifact"><b>Review</b><span>Verifier 输出。PASS / REPAIR / CONFLICT / INSUFFICIENT，并指向具体证据。</span></div>
+            <div class="artifact"><b>Claim</b><span>Synthesizer 输出。每条结论绑定 evidence_ids 和派生公式。</span></div>
+          </div>
+          <div class="code-panel">
+            <div class="cap"><span>SHARED STATE / CONTRACT</span><span>JSON · VERSIONED</span></div>
+            <pre><span class="cc">// 智能体不传递长对话，只提交结构化事实</span>
+{
+  <span class="ck">"task_id"</span>: <span class="cv">"task_92e4"</span>,
+      <span class="ck">"plan_version"</span>: <span class="cv">3</span>,
+  <span class="ck">"skill_bindings"</span>: [
+    {<span class="ck">"id"</span>: <span class="cv">"core.safe_analytics"</span>, <span class="ck">"version"</span>: <span class="cv">"1.0.0"</span>, <span class="ck">"checksum"</span>: <span class="cv">"sha256:..."</span>}
+  ],
+  <span class="ck">"subtasks"</span>: [
+    {
+      <span class="ck">"id"</span>: <span class="cv">"st_orders"</span>,
+      <span class="ck">"goal"</span>: <span class="cv">"统计本月支付订单数"</span>,
+      <span class="ck">"source_id"</span>: <span class="cv">"orders_prod_ro"</span>,
+      <span class="ck">"depends_on"</span>: [],
+      <span class="ck">"expected_shape"</span>: <span class="cv">"one_row_metric"</span>,
+      <span class="ck">"budget"</span>: {<span class="ck">"sql_calls"</span>: <span class="cv">2</span>, <span class="ck">"tokens"</span>: <span class="cv">5000</span>}
+    }
+  ],
+  <span class="ck">"evidence"</span>: {
+    <span class="cv">"ev_01"</span>: {
+      <span class="ck">"subtask_id"</span>: <span class="cv">"st_orders"</span>,
+      <span class="ck">"sql_final"</span>: <span class="cv">"SELECT ..."</span>,
+      <span class="ck">"as_of"</span>: <span class="cv">"2026-09-24T16:00:00+08:00"</span>,
+      <span class="ck">"row_count"</span>: <span class="cv">1</span>,
+      <span class="ck">"truncated"</span>: <span class="cv">false</span>,
+      <span class="ck">"scope_fingerprint"</span>: <span class="cv">"sha256:..."</span>
+    }
+  },
+  <span class="ck">"reviews"</span>: [{<span class="ck">"evidence_id"</span>: <span class="cv">"ev_01"</span>, <span class="ck">"verdict"</span>: <span class="cv">"PASS"</span>}],
+  <span class="ck">"claims"</span>: [{<span class="ck">"text"</span>: <span class="cv">"..."</span>, <span class="ck">"evidence_ids"</span>: [<span class="cv">"ev_01"</span>]}]
+}</pre>
+          </div>
+        </div>
+        <div class="note"><strong>通信原则：</strong>Agent 输出全部视为“不可信提议”，必须经过 Pydantic/JSON Schema 校验后才能写入共享状态；来自数据库的文本同样属于不可信数据，不能被当成下一位 Agent 的系统指令。</div>
+      </div>
+    </section>
+
+    <section class="section" id="orchestration">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">06 / ORCHESTRATION</div><div><h2>四种编排路径</h2><p>用户无须手动选择 Agent 或 Skill。Router 决定路径，Skill Resolver 决定每个 Agent 实例本次装载哪些能力包，并允许在调试模式查看选择理由。</p></div></div>
+        <div class="scenario-tabs" role="tablist">
+          <button class="scenario-tab active" type="button" data-tab="simple">简单单源</button>
+          <button class="scenario-tab" type="button" data-tab="complex">复杂单源</button>
+          <button class="scenario-tab" type="button" data-tab="cross">跨数据源</button>
+          <button class="scenario-tab" type="button" data-tab="repair">验证返工</button>
+        </div>
+        <div class="scenario-panel active" data-panel="simple"><h3>路径 A · 保留现有快路径</h3><p>例如“本月支付订单有多少”。不启动新增 Agent，继续使用现有 recall/fast/execute/finalize，避免多 Agent 固定税。</p><div class="sequence"><div class="seq-step"><b>01</b><strong>Gateway</strong><small>权限、源与缓存</small></div><div class="seq-step"><b>02</b><strong>Recall</strong><small>召回完整 Schema</small></div><div class="seq-step"><b>03</b><strong>Fast SQL</strong><small>一次结构化生成</small></div><div class="seq-step"><b>04</b><strong>Safe Execute</strong><small>现有安全原子</small></div><div class="seq-step"><b>05</b><strong>Ground</strong><small>数字接地</small></div><div class="seq-step"><b>06</b><strong>Return</strong><small>同步返回</small></div></div></div>
+        <div class="scenario-panel" data-panel="complex"><h3>路径 B · 复杂单源并行</h3><p>例如“分析订单下降原因，分别看渠道、地区、商品类别”。Supervisor 拆成三个无依赖子任务，Worker 并行取证，Verifier 检查各口径一致后合成。</p><div class="sequence"><div class="seq-step"><b>01</b><strong>Supervisor</strong><small>拆成三个维度</small></div><div class="seq-step"><b>02</b><strong>Semantic</strong><small>统一基准期与指标</small></div><div class="seq-step"><b>03</b><strong>Workers × 3</strong><small>并行查询</small></div><div class="seq-step"><b>04</b><strong>Evidence</strong><small>三个证据对象</small></div><div class="seq-step"><b>05</b><strong>Verifier</strong><small>总分与时间一致</small></div><div class="seq-step"><b>06</b><strong>Synthesis</strong><small>原因排序与限制</small></div></div></div>
+        <div class="scenario-panel" data-panel="cross"><h3>路径 C · 跨数据源联邦取证</h3><p>例如“活动访问后的支付转化率”。订单库和行为库分别聚合，Runtime 只允许通过已登记关联键或统一维度组合 Evidence；默认不搬运两边原始明细。</p><div class="sequence"><div class="seq-step"><b>01</b><strong>Source Plan</strong><small>选行为源与订单源</small></div><div class="seq-step"><b>02</b><strong>Approval</strong><small>命中跨源策略时挂起</small></div><div class="seq-step"><b>03</b><strong>Workers × 2</strong><small>各源内先聚合</small></div><div class="seq-step"><b>04</b><strong>Combine</strong><small>按批准键组合证据</small></div><div class="seq-step"><b>05</b><strong>Verifier</strong><small>时间窗、分母对齐</small></div><div class="seq-step"><b>06</b><strong>Synthesis</strong><small>带双源引用返回</small></div></div></div>
+        <div class="scenario-panel" data-panel="repair"><h3>路径 D · 只返工失败子任务</h3><p>Verifier 不修改 Worker 的结果，而是提交 RepairTask。Supervisor 按问题类型重跑对应 Worker；最多两轮，仍失败则带限制收敛或转人工。</p><div class="sequence"><div class="seq-step"><b>01</b><strong>Review</strong><small>发现分项缺总计</small></div><div class="seq-step"><b>02</b><strong>RepairTask</strong><small>指向 st_channel</small></div><div class="seq-step"><b>03</b><strong>Worker Retry</strong><small>新 evidence_id</small></div><div class="seq-step"><b>04</b><strong>Supersede</strong><small>旧证据不删除</small></div><div class="seq-step"><b>05</b><strong>Re-verify</strong><small>最多两轮</small></div><div class="seq-step"><b>06</b><strong>Converge</strong><small>成功或如实降级</small></div></div></div>
+      </div>
+    </section>
+
+    <section class="section" id="state">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">07 / STATE</div><div><h2>状态机、并发和恢复</h2><p>多智能体的难点不是调用多个模型，而是并发状态合并、幂等、恢复和预算。每个子任务必须有稳定 ID，并固定本次使用的 Skill 版本，不能依赖“history 最后一条”。</p></div></div>
+        <div class="state-flow"><span class="state">CREATED</span><span class="state-arrow">→</span><span class="state">PLANNING</span><span class="state-arrow">→</span><span class="state">DISPATCHING</span><span class="state-arrow">→</span><span class="state">RUNNING</span><span class="state-arrow">→</span><span class="state">VERIFYING</span><span class="state-arrow">→</span><span class="state">SYNTHESIZING</span><span class="state-arrow">→</span><span class="state done">COMPLETED</span></div>
+        <div class="state-flow" style="margin-top:12px"><span class="state">RUNNING</span><span class="state-arrow">→</span><span class="state human">WAITING_APPROVAL</span><span class="state-arrow">→</span><span class="state">RESUMING</span><span class="state-arrow">→</span><span class="state">RUNNING</span><span class="state-arrow">／</span><span class="state human">WAITING_CLARIFICATION</span><span class="state-arrow">／</span><span class="state">FAILED</span><span class="state-arrow">／</span><span class="state">CANCELED</span></div>
+        <div class="compare" style="margin-top:28px">
+          <article class="compare-card"><span class="label">PARALLEL REDUCER</span><h3>按 ID 合并，不覆盖列表</h3><p><span class="mono">subtasks_by_id</span>、<span class="mono">evidence_by_id</span> 和 <span class="mono">reviews_by_id</span> 使用显式 reducer。并行 Worker 返回时只写自己的 key，防止最后写入者覆盖其他结果。</p></article>
+          <article class="compare-card"><span class="label">IDEMPOTENCY</span><h3>一次子任务只产生一个有效版本</h3><p>幂等键由 task、subtask、source、QuerySpec、scope fingerprint 和 schema version 组成。重试生成新 Evidence，并用 <span class="mono">supersedes</span> 关联旧版本。</p></article>
+        </div>
+        <div class="note"><strong>恢复前重新校验：</strong>用户权限、数据源状态、Schema 版本、语义版本和审批票必须重新检查。Checkpoint 是执行现场，不是永久授权。</div>
+      </div>
+    </section>
+
+    <section class="section" id="frontend">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">08 / UX</div><div><h2>前端需要改，但不应变复杂</h2><p>普通用户仍然只看到提问框和答案。多智能体和 Skill 细节以可折叠的“执行计划”“已装载能力”和“证据”呈现；高级用户可以观察、干预和复核。</p></div></div>
+        <div class="front-grid">
+          <div class="wireframe" aria-label="查询页多智能体线框图">
+            <div class="wire-head"><span>查询 Agent · 自动编排</span><span>RUNNING 03/05</span></div>
+            <div class="wire-body">
+              <div class="chat"><div class="question">分析本月订单下降的主要原因，并与上月对比。</div><div class="plan-mini"><div class="plan-mini-head"><b>执行计划</b><span>3 个并行任务</span></div><div class="plan-item"><i class="dot"></i><span>统一订单口径与基准期</span><b>完成</b></div><div class="plan-item"><i class="dot"></i><span>按渠道分析变化</span><b>完成</b></div><div class="plan-item"><i class="dot run"></i><span>按地区分析变化</span><b>执行中</b></div><div class="plan-item"><i class="dot run"></i><span>按商品类别分析变化</span><b>执行中</b></div><div class="plan-item"><i class="dot"></i><span>独立验证与合成</span><b>等待</b></div></div><div class="answer-mini"><b>阶段结果</b><br>渠道维度已发现两个主要下降项。全部证据验证完成后生成最终结论。</div></div>
+              <aside class="evidence-drawer"><h4>EVIDENCE / 2</h4><div class="ev-card"><b>EV-01 · ORDER TOTAL</b>orders_prod_ro<br>as of 16:00<br>verified</div><div class="ev-card"><b>EV-02 · CHANNEL</b>orders_prod_ro<br>9 rows · complete<br>verified</div><div class="ev-card"><b>EV-03 · REGION</b>running…</div></aside>
+            </div>
+          </div>
+          <div class="front-list">
+            <div class="front-item"><b>查询页：增加“自动编排”状态</b><p>默认 auto；调试用户可以选择 single / multi。普通用户不需要理解 Agent 名称。</p></div>
+            <div class="front-item"><b>执行计划：显示可公开的动作摘要</b><p>显示子任务、依赖、数据源、状态、耗时和成本，不展示模型原始思维链。</p></div>
+            <div class="front-item"><b>证据抽屉：Claim 可展开</b><p>点击答案中的数字，定位 Evidence、SQL、数据时间、护栏改写和脱敏信息。</p></div>
+            <div class="front-item"><b>冲突卡片：需要人决定时才出现</b><p>展示两个证据的差异、可能原因和建议动作；支持补充条件、采用某口径或终止。</p></div>
+            <div class="front-item"><b>任务中心：从线程升级为任务图</b><p>增加完成比例、正在运行的 Worker、失败子任务、重试次数和下一责任人。</p></div>
+            <div class="front-item"><b>Skill 中心：管理能力包生命周期</b><p>新增列表、版本、负责人、适用 Agent/数据源、触发器、依赖冲突、测试、shadow、发布和回滚；查询详情展示本次实际绑定的 Skill。</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="risks">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">09 / FAILURE MODES</div><div><h2>多智能体与 Skill 会带来的问题</h2><p>Agent 数量增加会放大成本、状态、权限和错误传播；Skill 若缺少生命周期，也会把错误方法论稳定复制给所有 Agent。下面这些必须提前治理。</p></div></div>
+        <table class="risk-table">
+          <thead><tr><th>风险</th><th>严重度</th><th>典型表现</th><th>治理策略</th></tr></thead>
+          <tbody>
+            <tr><td>调用放大</td><td><span class="sev h">HIGH</span></td><td>一个问题拆成十几个模型与 SQL 调用，成本和延迟失控。</td><td>max_workers、max_parallel、全局/子任务 token 与 SQL 预算；简单题永不进入多 Agent。</td></tr>
+            <tr><td>错误级联</td><td><span class="sev h">HIGH</span></td><td>Semantic 的错误口径被所有 Worker 同时执行，错误看起来更一致。</td><td>QuerySpec 版本化；高风险指标先做确定性语义校验；Verifier 检查原问题与 QuerySpec。</td></tr>
+            <tr><td>上下文污染</td><td><span class="sev h">HIGH</span></td><td>数据库文本或某 Agent 输出被下一 Agent 当成指令。</td><td>结构化 Schema、字段白名单、数据/指令分区、转义和最大长度；禁止自由 Agent 对话。</td></tr>
+            <tr><td>并发覆盖</td><td><span class="sev h">HIGH</span></td><td>多个 Worker 同时写 state，部分 evidence 丢失或 last_exec 指错。</td><td>map/reducer 状态；按稳定 ID 写入；不可依赖 append 顺序与最后一条结果。</td></tr>
+            <tr><td>权限扩散</td><td><span class="sev h">HIGH</span></td><td>Supervisor 或 Worker 因跨源任务获得超出用户的可见范围。</td><td>Runtime 计算 scope；每个 Worker 注入最小 cfg；source_id 不由 LLM 自由提供。</td></tr>
+            <tr><td>验证死循环</td><td><span class="sev m">MED</span></td><td>Verifier 不断要求重查，Worker 不断产生近似结果。</td><td>repair_rounds≤2；重复指纹检测；失败分类；到限后如实收敛或转人工。</td></tr>
+            <tr><td>跨源假 Join</td><td><span class="sev h">HIGH</span></td><td>名称相同但语义不同的字段被当成关联键，结果合理但错误。</td><td>只允许登记的 JoinContract；记录基数、时区、粒度；默认先聚合后组合。</td></tr>
+            <tr><td>恢复时越权</td><td><span class="sev h">HIGH</span></td><td>任务创建后权限被收回，续跑仍沿用旧 Checkpoint。</td><td>Resume 前重算 scope fingerprint；不一致则重新计划或拒绝恢复。</td></tr>
+            <tr><td>缓存混用</td><td><span class="sev m">MED</span></td><td>不同计划、源组合或语义版本复用了旧答案。</td><td>缓存键加入 plan、sources、scope、semantic 与 schema fingerprint；跨源缓存默认关闭。</td></tr>
+            <tr><td>不可解释的共识</td><td><span class="sev m">MED</span></td><td>多个 Agent 投票得出答案，但没人能指出原始数据。</td><td>不采用“多数票即真”；每条 Claim 必须绑定通过验证的 Evidence。</td></tr>
+            <tr><td>Skill 冲突</td><td><span class="sev h">HIGH</span></td><td>两个 Skill 对同一指标、时间或软删除给出不同规则，加载顺序悄悄决定结果。</td><td>Manifest 显式声明 conflicts；硬约束冲突 fail-closed；Resolution Report 记录选择理由。</td></tr>
+            <tr><td>Skill 供应链</td><td><span class="sev h">HIGH</span></td><td>未经评测的 Skill 被发布，或 Skill 夹带越权工具、提示注入和敏感配置。</td><td>草稿/影子/发布流程、owner 审核、checksum、静态扫描、工具求交集、禁止秘密与任意代码。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section" id="implementation">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">10 / CODE MAP</div><div><h2>如何落到 askdb 现有代码</h2><p>新建顶层编排图，不直接把现有 agentgraph.py 改成巨型状态机。现有单 Agent 路径保留；当前 skill.py 作为兼容入口，内部逐步切到 Registry 与 Resolver。</p></div></div>
+        <div class="file-map">
+          <div class="tree">askdb/
+├─ agentgraph.py                  <span class="edit"># 保留：单 Agent 快路径</span>
+├─ tools.py                       <span class="edit"># 扩展：scope/evidence 契约</span>
+├─ skill.py                       <span class="edit"># 兼容 facade，旧 rules 自动迁移</span>
+├─ server.py                      <span class="edit"># mode/sources/plan API</span>
+├─ trace.py                       <span class="edit"># agent/subtask 父子 span</span>
+├─ approvals.py                   <span class="edit"># 跨源计划审批</span>
+└─ multiagent/                    <span class="new"># NEW</span>
+   ├─ protocol.py                <span class="new"># Pydantic 协作对象</span>
+   ├─ state.py                   <span class="new"># MultiAgentState + reducers</span>
+   ├─ router.py                  <span class="new"># fast / multi 分流</span>
+   ├─ supervisor_graph.py        <span class="new"># 顶层 LangGraph</span>
+   ├─ semantic_agent.py          <span class="new"># QuerySpec</span>
+   ├─ query_worker.py            <span class="new"># scoped subgraph</span>
+   ├─ verifier.py                <span class="new"># Review/RepairTask</span>
+   ├─ synthesizer.py             <span class="new"># Claim + answer</span>
+   ├─ evidence_store.py          <span class="new"># 证据账本</span>
+   ├─ federation.py              <span class="new"># 受控跨源组合</span>
+   ├─ policy.py                  <span class="new"># 并发与预算</span>
+   └─ skills/                    <span class="new"># NEW：本期交付</span>
+      ├─ manifest.py             <span class="new"># SkillManifest/Binding</span>
+      ├─ registry.py             <span class="new"># 版本与发布状态</span>
+      ├─ resolver.py             <span class="new"># 发现/过滤/冲突/绑定</span>
+      ├─ loader.py               <span class="new"># 文件/数据库加载</span>
+      └─ validator.py            <span class="new"># 静态检查与发布门禁</span></div>
+          <div class="principles">
+            <div class="principle"><b>01</b><div><strong>LangGraph 顶层用动态 fan-out</strong><span>Supervisor 输出 SubTask 后，以 Send/子图方式分派 Worker，汇合到 verifier。</span></div></div>
+            <div class="principle"><b>02</b><div><strong>现有 execute_sql 原样复用</strong><span>Guard、EXPLAIN、只读执行和脱敏不复制，不允许 Worker 自建数据库通道。</span></div></div>
+            <div class="principle"><b>03</b><div><strong>Deps 按 Worker 隔离</strong><span>每个 Worker 获得自己 source 的 cfg、executor 和 ToolContext，不共享 last_result。</span></div></div>
+            <div class="principle"><b>04</b><div><strong>Checkpoint 存协议对象</strong><span>不存 LLM 对象、数据库连接和 AST；Evidence 大结果落对象存储，只在 state 留引用。</span></div></div>
+            <div class="principle"><b>05</b><div><strong>API 保持向后兼容</strong><span>原 source 字段继续可用，新增 sources、mode；AskResult 原字段保留，扩展 plan/evidence。</span></div></div>
+            <div class="principle"><b>06</b><div><strong>Skill 解析由 Runtime 完成</strong><span>Agent 不能自行安装 Skill；每个实例只收到解析后的只读 SkillBinding 和 Resolution Report。</span></div></div>
+          </div>
+        </div>
+        <div class="code-panel" style="margin-top:24px">
+          <div class="cap"><span>LANGGRAPH / PSEUDO FLOW</span><span>SUPERVISOR GRAPH</span></div>
+          <pre>START → gateway → router
+  ├─ <span class="cv">FAST</span>  → existing_agent_graph → result_gate → END
+  └─ <span class="cv">MULTI</span> → supervisor_plan → resolve_skills → semantic_contract → policy_check
+                    ├─ <span class="cv">NEED_CLARIFY</span>  → interrupt(HUMAN)
+                    ├─ <span class="cv">NEED_APPROVAL</span> → interrupt(HUMAN)
+                    └─ dispatch_workers
+                         ├─ query_worker[subtask_1] ─┐
+                         ├─ query_worker[subtask_2] ─┼→ evidence_reduce → verifier
+                         └─ query_worker[subtask_n] ─┘       ├─ <span class="cv">PASS</span>   → synthesizer
+                                                            ├─ <span class="cv">REPAIR</span> → supervisor_repair → dispatch
+                                                            └─ <span class="cv">CONFLICT</span> → interrupt(HUMAN)
+                 synthesizer → claim_gate → audit/cache → END</pre>
+        </div>
+        <div class="protocol-grid" style="margin-top:18px">
+          <div class="code-panel">
+            <div class="cap"><span>CONFIG / PROPOSED</span><span>SAFE DEFAULTS</span></div>
+            <pre><span class="ck">multi_agent</span>:
+  <span class="ck">enabled</span>: <span class="cv">true</span>
+  <span class="ck">mode</span>: <span class="cv">shadow</span>       <span class="cc"># off | shadow | assist | enforce</span>
+  <span class="ck">trigger</span>: <span class="cv">auto</span>
+  <span class="ck">max_workers</span>: <span class="cv">3</span>
+  <span class="ck">max_parallel</span>: <span class="cv">3</span>
+  <span class="ck">max_repair_rounds</span>: <span class="cv">2</span>
+  <span class="ck">cost_cap_tokens</span>: <span class="cv">30000</span>
+  <span class="ck">allow_cross_source</span>: <span class="cv">false</span>
+
+<span class="ck">skills</span>:
+  <span class="ck">enabled</span>: <span class="cv">true</span>
+  <span class="ck">backend</span>: <span class="cv">postgres</span>
+  <span class="ck">pin_versions</span>: <span class="cv">true</span>
+  <span class="ck">max_per_agent</span>: <span class="cv">8</span>
+  <span class="ck">conflict_policy</span>: <span class="cv">fail_closed</span>
+  <span class="ck">allow_inline_code</span>: <span class="cv">false</span>
+  <span class="ck">mode</span>: <span class="cv">shadow</span>
+
+<span class="cc"># 旧 skill.rules 继续读取，映射为 builtin.legacy_rules@1</span></pre>
+          </div>
+          <div class="protocol-stack">
+            <div class="artifact"><b>GET</b><span><span class="mono">/api/skills</span>：列表、版本、状态、负责人、适用范围和线上使用量。</span></div>
+            <div class="artifact"><b>POST</b><span><span class="mono">/api/skills</span>：创建草稿；服务端校验 Manifest、权限声明和依赖。</span></div>
+            <div class="artifact"><b>POST</b><span><span class="mono">/api/skills/{id}/test</span>：跑绑定的触发、SQL 形状与回归用例。</span></div>
+            <div class="artifact"><b>POST</b><span><span class="mono">/api/skills/{id}/publish</span>：通过门禁后发布新版本，不覆盖旧版本。</span></div>
+            <div class="artifact"><b>POST</b><span><span class="mono">/api/skills/resolve-preview</span>：给定 Agent/问题/source，预览会绑定哪些 Skill 及理由。</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="roadmap">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">11 / DELIVERY</div><div><h2>四阶段落地路线</h2><p>Skill Registry 与多智能体基础设施在同一期交付：先建立证据和 Skill 协议，再引入 Agent 协作；先单源，再跨源。</p></div></div>
+        <div class="roadmap">
+          <article class="phase"><span class="phase-no">PHASE 0</span><h3>证据与 Skill 基座</h3><span class="time">2–3 WEEKS</span><ul><li>Evidence/Claim 协议</li><li>SkillManifest/Registry</li><li>旧 YAML rules 兼容迁移</li><li>Resolver 与版本固定</li><li>Trace 记录 Skill 绑定</li></ul><div class="gate">门：现有回归兼容，Skill 冲突可拦截</div></article>
+          <article class="phase"><span class="phase-no">PHASE 1</span><h3>单源多智能体 + Skill</h3><span class="time">3–5 WEEKS</span><ul><li>Router + Supervisor</li><li>Semantic QuerySpec</li><li>按 Agent 动态绑定 Skill</li><li>并行 Worker + Verifier</li><li>Skill/Agent 双 shadow</li></ul><div class="gate">门：复杂集提升，技能选择可解释</div></article>
+          <article class="phase"><span class="phase-no">PHASE 2</span><h3>产品化可视协作</h3><span class="time">2–4 WEEKS</span><ul><li>执行计划与 Evidence</li><li>Skill 中心与发布流</li><li>任务图进度</li><li>冲突与人工介入</li><li>持久任务 Worker</li></ul><div class="gate">门：恢复、回滚与人工闭环通过</div></article>
+          <article class="phase"><span class="phase-no">PHASE 3</span><h3>跨源联邦</h3><span class="time">3–5 WEEKS</span><ul><li>Source Catalog</li><li>JoinContract</li><li>combine_evidence</li><li>P12 跨源审批</li><li>跨源评测集</li></ul><div class="gate">门：零未授权搬运、可完整追溯</div></article>
+        </div>
+        <div class="note"><strong>上线方式：</strong><span class="mono">off → shadow → assist → enforce</span>。shadow 运行完整多 Agent 图但仍返回现有单 Agent 结果；离线比较正确性、冲突率、延迟和成本后再逐步切流。</div>
+      </div>
+    </section>
+
+    <section class="section" id="acceptance">
+      <div class="wrap reveal">
+        <div class="section-head"><div class="section-no">12 / ACCEPTANCE</div><div><h2>怎么判断改造成功</h2><p>不能用“启动了几个 Agent”或“安装了几个 Skill”衡量成果。成功标准是复杂问题更正确、技能选择可解释、局部失败可恢复，同时简单问题不变慢。</p></div></div>
+        <div class="metric-grid">
+          <div class="metric"><b>0</b><span>未授权源 / 表 / 字段访问</span></div>
+          <div class="metric"><b>100%</b><span>数值 Claim 绑定 Evidence</span></div>
+          <div class="metric"><b>≤ 2</b><span>单子任务最大返工轮数</span></div>
+          <div class="metric"><b>≈ 0%</b><span>简单问题新增延迟</span></div>
+        </div>
+        <ul class="checklist">
+          <li>复杂任务黄金集准确率显著高于现有单 Agent 基线</li>
+          <li>相同问题的 token 和 SQL 调用有明确上限</li>
+          <li>并行 Worker 不发生 state 覆盖或证据丢失</li>
+          <li>任一 Worker 崩溃后可从最近 Checkpoint 局部恢复</li>
+          <li>权限变更后旧任务不能沿用旧 scope 续跑</li>
+          <li>Verifier 失败能定位到具体 subtask/evidence</li>
+          <li>跨源组合只使用批准的 JoinContract</li>
+          <li>前端可从结论定位 SQL、数据源和数据时间</li>
+          <li>取消任务后停止未开始的 Worker 并回收预算</li>
+          <li>缓存不会跨 source/scope/semantic version 复用</li>
+          <li>每个 Agent Span 记录实际 Skill id、版本、checksum 与选择理由</li>
+          <li>Skill 无法扩大 Runtime 授予的 Tool、数据源、表和字段权限</li>
+          <li>Skill 冲突、循环依赖、缺失依赖和未发布版本均在执行前被拒绝</li>
+          <li>Skill 可按版本 shadow、发布、停用和回滚，任务恢复可追溯原版本</li>
+          <li>Agent 原始思维链不进入普通用户界面</li>
+          <li>现有 Guard、审批、审计和脱敏测试全部保持通过</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer class="closing">
+      <div class="wrap">
+        <div><div class="kicker">Final recommendation</div><h2>先建立共同事实，<br>再让智能体<em>协作</em>。</h2><p>多智能体编排真正的承重墙不是 Prompt，而是结构化任务、最小权限、Evidence Ledger、并发状态合并、预算和恢复。askdb 已经拥有可靠的 SQL 安全原子；下一步应该围绕这些原子建立协作控制面。</p></div>
+        <div class="closing-card"><b>FIRST IMPLEMENTATION SLICE</b><ol><li>增加 Evidence 与 SkillManifest 协议</li><li>实现 Skill Registry/Resolver，兼容现有 rules</li><li>让现有单 Agent 输出 Evidence/Claim 并记录 SkillBinding</li><li>新增 SupervisorGraph：两个 Worker + 一个 Verifier</li><li>Agent 与 Skill 一起 shadow 跑黄金集和真实流量</li></ol></div>
+      </div>
+    </footer>
+  </main>
+
+  <script>
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('themeBtn');
+    const savedTheme = localStorage.getItem('askdb-ma-theme');
+    if (savedTheme) root.dataset.theme = savedTheme;
+    function syncThemeLabel() {
+      themeBtn.textContent = root.dataset.theme === 'dark' ? '浅色' : '深色';
+    }
+    syncThemeLabel();
+    themeBtn.addEventListener('click', () => {
+      root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('askdb-ma-theme', root.dataset.theme);
+      syncThemeLabel();
+    });
+    document.getElementById('printBtn').addEventListener('click', () => window.print());
+
+    document.querySelectorAll('.scenario-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.scenario-tab').forEach(x => x.classList.remove('active'));
+        document.querySelectorAll('.scenario-panel').forEach(x => x.classList.remove('active'));
+        btn.classList.add('active');
+        document.querySelector(`[data-panel="${btn.dataset.tab}"]`).classList.add('active');
+      });
+    });
+
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) entry.target.classList.add('visible');
+      });
+    }, { threshold: .08 });
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+    const navLinks = [...document.querySelectorAll('.side a')];
+    const sections = [...document.querySelectorAll('main section[id]')];
+    const spy = new IntersectionObserver(entries => {
+      const current = entries.filter(x => x.isIntersecting).sort((a,b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (!current) return;
+      navLinks.forEach(x => x.classList.toggle('active', x.getAttribute('href') === `#${current.target.id}`));
+    }, { rootMargin: '-20% 0px -68% 0px', threshold: [0, .2, .6] });
+    sections.forEach(section => spy.observe(section));
+  </script>
+</body>
+</html>
