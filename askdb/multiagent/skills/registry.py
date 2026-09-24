@@ -74,4 +74,9 @@ def build_registry(cfg: Any) -> SkillRegistry:
         ))
     for item in list((raw.get("skills") or {}).get("manifests") or []):
         manifests.append(SkillManifest.model_validate(item))
+    # 管理 API 创建的版本与配置内置包合并；相同 id/version 明确报错，避免
+    # “配置一份、注册表一份”时加载顺序悄悄决定生效内容。
+    from .store import load_manifests
+
+    manifests.extend(load_manifests(cfg))
     return SkillRegistry(manifests)

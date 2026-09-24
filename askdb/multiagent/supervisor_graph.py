@@ -194,6 +194,8 @@ def _dispatch_gate(state: MultiAgentState) -> dict[str, Any]:
 
 
 def _dispatch(state: MultiAgentState) -> list[Send] | str:
+    if int(state.get("tok_used", 0)) >= int(state.get("token_cap", 0)):
+        return "verifier"
     tasks = list((state.get("subtasks_by_id") or {}).values())
     by_id = state.get("subtasks_by_id") or {}
     ready = [task for task in tasks
@@ -238,6 +240,8 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
 
 def _after_verify(state: MultiAgentState) -> list[Send] | str:
     repairs = state.get("pending_repairs") or []
+    if int(state.get("tok_used", 0)) >= int(state.get("token_cap", 0)):
+        return "synthesizer"
     if not repairs:
         return "synthesizer"
     sends: list[Send] = []
@@ -300,7 +304,7 @@ def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, An
     }
 
 
-def build_graph(*, checkpointer: Any = None):
+def build_skeleton() -> StateGraph:
     graph = StateGraph(MultiAgentState)
     graph.add_node("supervisor", _supervisor)
     graph.add_node("resolve_skills", _resolve_roles)
@@ -318,4 +322,34 @@ def build_graph(*, checkpointer: Any = None):
     graph.add_conditional_edges("verifier", _after_verify,
                                 ["query_worker", "synthesizer"])
     graph.add_edge("synthesizer", END)
-    return graph.compile(checkpointer=checkpointer)
+    return graph
+
+
+def build_graph(*, checkpointer: Any = None):
+    return build_skeleton().compile(checkpointer=checkpointer)
+
+
+_GRAPH = None
+_GRAPH_KEY: str | None = None
+
+
+def ensure_graph(cfg: Config):
+    """Compile once per configured checkpoint backend.
+
+    This reuses askdb.graph's SQLite/PostgreSQL saver factory, so single- and
+    multi-agent runs have identical durability and multi-replica semantics.
+    """
+    from .. import auditstore, graph as graph_runtime
+
+    global _GRAPH, _GRAPH_KEY
+    key = ("pg:" + graph_runtime._pg_key()) if auditstore.enabled(cfg) \
+        else str(cfg.checkpoint_db)
+    if _GRAPH is None or _GRAPH_KEY != key:
+        _GRAPH = graph_runtime.compile_with_checkpoint(build_skeleton(), cfg)
+        _GRAPH_KEY = key
+    return _GRAPH
+
+
+def reset_graph() -> None:
+    global _GRAPH, _GRAPH_KEY
+    _GRAPH, _GRAPH_KEY = None, None

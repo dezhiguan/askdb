@@ -64,6 +64,29 @@ _log = _logging.getLogger("askdb.server")
 _LEAD_WAIT_MS = 800
 
 
+def _checkpoint_resumable(thread_id: str, cfg: Config) -> bool | None:
+    """Probe both graph schemas; a thread belongs to exactly one of them."""
+    from .multiagent.runtime import is_resumable as multi_resumable
+
+    multi = multi_resumable(thread_id, cfg)
+    if multi is not None:
+        return multi
+    from .agentgraph import is_resumable as single_resumable
+
+    return single_resumable(thread_id, cfg)
+
+
+def _checkpoint_progress(thread_id: str, cfg: Config) -> dict[str, Any] | None:
+    from .multiagent.runtime import progress as multi_progress
+
+    multi = multi_progress(thread_id, cfg)
+    if multi is not None:
+        return multi
+    from .agentgraph import progress as single_progress
+
+    return single_progress(thread_id, cfg)
+
+
 def _mask_pii(s: str) -> str:
     """把 PII 文本脱敏成"看得出形状、读不出内容"：字母数字与 CJK 等字符一律换成
     实心点,空格与 · / - . 等分隔符保留,长度不变。
@@ -146,6 +169,10 @@ _WRITE_ACTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("POST", ("api", "eval", "run"), "运行回归评测"),
     ("POST", ("api", "sources", "test"), "测试数据源连接"),
     ("POST", ("api", "sources"), "接入数据源"),
+    ("POST", ("api", "skills"), "创建 Skill"),
+    ("POST", ("api", "skills", "*", "test"), "测试 Skill"),
+    ("POST", ("api", "skills", "*", "publish"), "发布 Skill"),
+    ("POST", ("api", "skills", "*", "status"), "调整 Skill 状态"),
     ("PUT", ("api", "sources", "*", "tables"), "调整数据源的可查表"),
     ("DELETE", ("api", "sources", "*"), "移除数据源"),
     ("POST", ("api", "identity", "members"), "新增成员"),
@@ -565,6 +592,11 @@ class AskRequest(BaseModel):
     org_id: int | None = None
     # 运行时数据源 id。留空 / "builtin" 走启动配置里的那个源
     source: str = Field(default="", max_length=32)
+    # 多源请求只在 multi_agent.allow_cross_source=true 时执行。source 继续保留；
+    # 新客户端使用 sources，服务端会逐个重做当前用户的权限收窄。
+    sources: list[str] = Field(default_factory=list, max_length=4)
+    # auto 保留简单问题的单 Agent 快路径；multi/single 用于调试和显式控制。
+    mode: str = Field(default="auto", pattern="^(auto|single|multi)$")
     # 已批准的高成本查询单号（P07）。带上它才可能跳过 R-11，且只跳一次
     approval_id: str = Field(default="", max_length=32)
     #: 这次提问是从「创建任务」发起的。
@@ -626,6 +658,21 @@ class SourceRequest(BaseModel):
 
 class SourceTablesRequest(BaseModel):
     tables: list[str] = Field(default_factory=list, max_length=200)
+
+
+class SkillResolveRequest(BaseModel):
+    agent_role: str = Field(max_length=32)
+    question: str = Field(default="", max_length=500)
+    source_id: str = Field(default="builtin", max_length=64)
+    intent: str = Field(default="", max_length=64)
+    metrics: list[str] = Field(default_factory=list, max_length=20)
+    tables: list[str] = Field(default_factory=list, max_length=50)
+    runtime_allowed_tools: list[str] = Field(default_factory=list, max_length=30)
+
+
+class SkillStatusRequest(BaseModel):
+    version: str = Field(min_length=1, max_length=32)
+    status: str = Field(pattern="^(shadow|disabled|revoked)$")
 
 
 class ResumeRequest(BaseModel):
@@ -1514,6 +1561,96 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 而"界面停在了另一个库上"本身看不出是配置写错了。
             "default_source_error": default_err,
             "items": _visible_sources(request),
+        }
+
+    # ---------------------------------------------------------------- Skills
+
+    @app.get("/api/skills")
+    def skills_list(request: Request) -> dict[str, Any]:
+        _require_cap(request, _identity.SKILLS_READ, "查看 Skill")
+        from .multiagent.skills import build_registry
+
+        items = [item.model_dump(mode="json") for item in build_registry(cfg).list()]
+        return {"items": items, "count": len(items),
+                "settings": (cfg.raw.get("skills") or {})}
+
+    @app.post("/api/skills")
+    def skills_create(payload: dict[str, Any], request: Request) -> JSONResponse:
+        _require_cap(request, _identity.SKILLS_WRITE, "创建 Skill")
+        from .multiagent.skills.store import create_draft
+
+        try:
+            manifest = create_draft(cfg, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return JSONResponse({"ok": True, "item": manifest.model_dump(mode="json")},
+                            status_code=201)
+
+    @app.post("/api/skills/{skill_id}/test")
+    def skills_test(skill_id: str, request: Request, version: str = "") -> dict[str, Any]:
+        _require_cap(request, _identity.SKILLS_WRITE, "测试 Skill")
+        from .multiagent.skills.store import mark_tested
+
+        try:
+            return mark_tested(cfg, skill_id, version)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Skill 不存在") from exc
+
+    @app.post("/api/skills/{skill_id}/publish")
+    def skills_publish(skill_id: str, request: Request,
+                       version: str = "") -> dict[str, Any]:
+        _require_cap(request, _identity.SKILLS_WRITE, "发布 Skill")
+        from .multiagent.skills.store import publish
+
+        try:
+            manifest = publish(cfg, skill_id, version)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Skill 不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "item": manifest.model_dump(mode="json")}
+
+    @app.post("/api/skills/{skill_id}/status")
+    def skills_status(skill_id: str, body: SkillStatusRequest,
+                      request: Request) -> dict[str, Any]:
+        _require_cap(request, _identity.SKILLS_WRITE, "调整 Skill 状态")
+        from .multiagent.skills import SkillStatus
+        from .multiagent.skills.store import set_status
+
+        try:
+            manifest = set_status(cfg, skill_id, body.version, SkillStatus(body.status))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Skill 不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "item": manifest.model_dump(mode="json")}
+
+    @app.post("/api/skills/resolve-preview")
+    def skills_resolve_preview(body: SkillResolveRequest,
+                               request: Request) -> dict[str, Any]:
+        _require_cap(request, _identity.SKILLS_READ, "预览 Skill 解析")
+        from .multiagent.skills import ResolutionContext, build_registry, resolve_skills
+        from .multiagent.skills.resolver import ResolutionError
+
+        try:
+            report = resolve_skills(build_registry(cfg), ResolutionContext(
+                agent_role=body.agent_role,
+                source_id=body.source_id,
+                question=body.question,
+                intent=body.intent,
+                metrics=tuple(body.metrics),
+                tables=tuple(body.tables),
+                runtime_allowed_tools=frozenset(body.runtime_allowed_tools),
+                agent_allowed_tools=frozenset(body.runtime_allowed_tools),
+                include_shadow=True,
+                max_skills=int((cfg.raw.get("skills") or {}).get("max_per_agent", 8)),
+            ))
+        except (ValueError, ResolutionError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "bindings": [item.model_dump(mode="json") for item in report.bindings],
+            "effective_tools": sorted(report.effective_tools),
+            "rejected": report.rejected,
         }
 
     def _visible_sources(request: Request) -> list[dict[str, Any]]:
@@ -2492,14 +2629,13 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         可见范围各按各的能力位：有对应结论权的看全部，没有的只看自己发起的
         —— 发起人必须看得到自己那条被判成什么。
         """
-        from .agentgraph import is_resumable
 
         return _audit.tasks_page(
             cfg,
             None if _can(request, scope_cap) else (_current_user(request) or ""),
             page=1, page_size=_QUEUE_CAP, page_size_cap=_QUEUE_CAP,
             status=want, tz=_audit.day_tz(cfg), fold=_fold_of(_task_context()),
-            resolve_stale=lambda tid: is_resumable(tid, cfg),
+            resolve_stale=lambda tid: _checkpoint_resumable(tid, cfg),
         )["items"]
 
     def _pending_ops(request: Request) -> list[dict[str, Any]]:
@@ -2757,7 +2893,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     status_code=400,
                     detail=f"{name} 只能是 all / " + " / ".join(allowed))
         username = _current_user(request) or ""
-        from .agentgraph import is_resumable
 
         # 审批状态要联查进来：R-11 被拦下的那条**在等人放行**，不是终局。
         # 只看审计的话它与"碰了安全红线"长得一模一样，页面上都是「已拦截」，
@@ -2787,7 +2922,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 回调按检查点核实一遍：核得过的是真可续，核不过说明现场压根没
             # 落盘 —— 那不是用户能补救的事，是执行期故障，改判等运维。
             # 审计模块不认识检查点库，所以判据在它那儿、探针在这儿。
-            resolve_stale=lambda tid: is_resumable(tid, cfg),
+            resolve_stale=lambda tid: _checkpoint_resumable(tid, cfg),
         )
         for it in result["items"]:
             # 审计只知道这条线程上次以 INTERRUPTED 收尾（或只落了发起记录），
@@ -2795,7 +2930,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             # 只按审计标 resumable，会出现"这里说能续、点下去 404"。
             # 以检查点为准再核一遍；stale 的那批在折算前已经核过，别再查一次库。
             if it.get("resumable") and not it.get("stale"):
-                state = is_resumable(str(it.get("thread_id") or ""), cfg)
+                state = _checkpoint_resumable(str(it.get("thread_id") or ""), cfg)
                 if state is not None:
                     it["resumable"] = state
         # 发起人补姓名，与审计中心同一格显示口径（同一份流水，两页不能一页
@@ -2851,7 +2986,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         not_found = JSONResponse({"error": "not found"}, status_code=404)
         if not _TRACE_ID_RE.fullmatch(thread_id or ""):
             return not_found
-        from .agentgraph import progress as _progress
         from .audit import AuditFilter, iter_records
 
         recs: list[dict[str, Any]] = []
@@ -2895,7 +3029,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             "attempts_on_thread": len(recs),
         }
         if running:
-            out["progress"] = _progress(thread_id, cfg)
+            out["progress"] = _checkpoint_progress(thread_id, cfg)
             return JSONResponse(out)
         # 跑完了（或停在某一档）。完整应答优先，审计结果块兜底。
         out["result"] = _take_handoff(cfg, thread_id) or None
@@ -2929,6 +3063,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 重跑要的问题原文只在审计里。取法与 owner / source 完全同源，
         # 不额外多读一遍流水。
         origin_question = ""
+        origin_execution_mode = "single"
         origin_org: int | None = None
         # **带上发起记录**（include_started）：进程被杀那种线程只剩这一条，
         # 而归属与数据源正是从它取。滤掉它就等于"任务中心说能续跑、这里说
@@ -2955,6 +3090,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     # 契约，又给了"在 A 源发起、拿 B 源续跑"的可乘之机。
                     origin_source = str(rec.get("source") or "")
                     origin_question = str(rec.get("question") or "")
+                    origin_execution_mode = str(rec.get("execution_mode") or "single")
                     org_val = rec.get("org_id")
                     origin_org = int(org_val) if isinstance(org_val, int) else None
                 last_rec = rec
@@ -3010,10 +3146,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             _open_approval_bg(scoped, res, who=_who, kind="ask",
                               question=_q or origin_question)
         try:
+            def _resume_selected() -> Any:
+                if origin_execution_mode == "multi":
+                    from .multiagent.runtime import resume_multi_agent
+
+                    return resume_multi_agent(
+                        req.thread_id, scoped, clarification=clarification,
+                        question=_q, org_id=origin_org)
+                return run_resume(
+                    req.thread_id, scoped, clarification=clarification,
+                    question=_q, org_id=origin_org, handoff=_ho)
+
             r, _notice = _async_runner.run_or_detach(
-                lambda: run_resume(req.thread_id, scoped,
-                                   clarification=clarification, question=_q,
-                                   org_id=origin_org, handoff=_ho),
+                _resume_selected,
                 _thr, req.thread_id, user=scoped.user or "",
                 per_user=_async_per_user(scoped), handoff=_ho,
                 on_detached_done=lambda res: _settle_detached_resume(res))
@@ -3479,8 +3624,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 那时该给的是"你没有数据角色"，而不是"你无权用这个功能"——
         # 后者会让他去找系统管理员，而他自己就是。
         # 选源传 request：环境归属校验依赖"选中了哪个源"（Q-05）。
-        scoped = _scoped(request, _cfg_for(req.source, request))
-        _require_scope(scoped)
+        requested_sources = list(dict.fromkeys(
+            item.strip() for item in (req.sources or ([req.source] if req.source else ["builtin"]))
+            if item.strip()))
+        if not requested_sources:
+            requested_sources = ["builtin"]
+        scoped_sources: list[Config] = []
+        for source_ref in requested_sources:
+            source_cfg = _scoped(request, _cfg_for(source_ref, request))
+            _require_scope(source_cfg)
+            scoped_sources.append(source_cfg)
+        scoped = scoped_sources[0]
         _require_cap(request, _identity.QUERY, "发起查询")
         scoped = _apply_waiver(scoped, request, aid=req.approval_id,
                                kind="ask", text=req.question)
@@ -3490,9 +3644,33 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 缓存是优化不是护栏：qcache 把一切 Redis 异常吞成未命中，这里不会因它抛错。
         q_text = req.question.strip()
         eff_org = scoped.default_org if req.org_id is None else req.org_id
+        from .multiagent.router import decide_route as _decide_multi_route
+        from .multiagent.runtime import run_multi_agent as _run_multi_agent
+        from .multiagent.runtime import settings as _multi_settings
+
+        _ma = _multi_settings(scoped)
+        if req.mode == "multi" and (not _ma["enabled"] or _ma["mode"] == "off"):
+            raise HTTPException(
+                status_code=409,
+                detail="当前实例未开启多智能体编排，请在 multi_agent 配置中启用。")
+        if len(scoped_sources) > 1 and not _ma["allow_cross_source"]:
+            raise HTTPException(status_code=403, detail="当前实例未开放跨数据源编排。")
+        _route = _decide_multi_route(
+            q_text, requested_mode=req.mode, source_count=len(scoped_sources))
+        # shadow 只观测路由判定，不改变线上答案；assist/enforce 才允许 auto 真正切流。
+        _use_multi = bool(
+            _ma["enabled"] and _ma["mode"] != "off"
+            and (req.mode == "multi"
+                 or (req.mode == "auto" and _ma["mode"] in ("assist", "enforce")
+                     and _route.route == "multi")))
+        _source_map = {
+            item.source_id or ("builtin" if index == 0 else requested_sources[index]): item
+            for index, item in enumerate(scoped_sources)
+        }
         cache = build_answer_cache(scoped)
         ckey: str | None = None
-        cacheable = (not req.as_task and not req.approval_id
+        cacheable = (not _use_multi and len(scoped_sources) == 1
+                     and not req.as_task and not req.approval_id
                      and not scoped.scan_waiver)
         if cache.enabled and cacheable:
             # scope_fp：源白名单 / 脱敏列 / 护栏参数的指纹。少了它，改完配置
@@ -3628,11 +3806,20 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 except Exception:     # noqa: BLE001
                     pass
 
+        def _execute_selected() -> Any:
+            if _use_multi:
+                return _run_multi_agent(
+                    q_text, scoped, org_id=req.org_id,
+                    source_configs=_source_map, trace_id=_tid, thread_id=_tid,
+                    on_span=_on_span)
+            return run_agent(
+                q_text, scoped, org_id=req.org_id,
+                trace_id=_tid, thread_id=_tid, handoff=_ho,
+                on_span=_on_span)
+
         try:
             r, _notice = _async_runner.run_or_detach(
-                lambda: run_agent(q_text, scoped, org_id=req.org_id,
-                                  trace_id=_tid, thread_id=_tid, handoff=_ho,
-                                  on_span=_on_span),
+                _execute_selected,
                 _thr, _tid, user=scoped.user or "",
                 per_user=_async_per_user(scoped), handoff=_ho,
                 on_detached_done=_settle_detached)

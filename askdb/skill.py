@@ -67,7 +67,9 @@ def resolve(cfg: Any, *, role: str = "query_worker", source_id: str = "",
         tables=tuple(tables),
         runtime_allowed_tools=frozenset(runtime_allowed_tools),
         agent_allowed_tools=frozenset(agent_allowed_tools),
-        include_shadow=str(settings.get("mode", "shadow")).lower() == "shadow",
+        # shadow 包只参与解析预览与离线评测，不能改变线上 Prompt；切到
+        # assist/enforce 后才成为实际绑定。否则“影子”会静默改写答案。
+        include_shadow=str(settings.get("mode", "shadow")).lower() in ("assist", "enforce"),
         max_skills=int(settings.get("max_per_agent", 8)),
     ))
 

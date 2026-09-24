@@ -252,10 +252,14 @@ EVAL_RUN = "eval.run"               # E-04 触发黄金集回归
 
 #: 读类能力位 —— **每一个角色，包括匿名，都拿到全部这些位。**
 #: 「不同角色看到的内容完全一样」这句话在代码里就是这一行。
+SKILLS_READ = "skills:read"
+SKILLS_WRITE = "skills:write"
+
 _READ: frozenset[str] = frozenset({
     QUERY, QUERY_SQL, SOURCES_READ, GLOSSARY_READ, QUALITY_READ,
     SELFCHECK, INTROSPECT,
     AUDIT_READ, AUDIT_ALL, AUDIT_CONTENT, REPLAY, TASKS_ALL, MEMBERS_READ,
+    SKILLS_READ,
 })
 
 #: 写类能力位 —— 登录用户都有，匿名一个都没有。
@@ -273,6 +277,7 @@ _WRITE: frozenset[str] = frozenset({
     # 跑一轮回归会真的调模型、真的查库，**花钱也压库** —— 判据同 SOURCES_SCAN：
     # 会不会往外做动作。匿名一律不给。
     EVAL_RUN,
+    SKILLS_WRITE,
 })
 
 #: 角色 → 能力位。**固定，不开放配置**：能配的东西就会被配错，

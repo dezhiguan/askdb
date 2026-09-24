@@ -12,6 +12,8 @@ from askdb.multiagent.supervisor_graph import (
     SupervisorPlanDraft,
     SynthesisDraft,
     build_graph,
+    ensure_graph,
+    reset_graph,
 )
 from askdb.trace import Tracer
 
@@ -146,3 +148,23 @@ def test_verifier_repairs_only_failed_worker_and_preserves_review_history(cfg, m
     attempts = {task["title"]: task["attempt"]
                 for task in result["subtasks_by_id"].values()}
     assert attempts == {"渠道": 1, "地区": 2}
+
+
+def test_supervisor_graph_persists_protocol_state_for_cold_resume(cfg, monkeypatch):
+    _patch_tools(monkeypatch)
+    reset_graph()
+    deps = _deps(cfg)
+    state = initial_state(
+        question="分析订单下降原因，分别看渠道和地区",
+        run_id="persisted", thread_id="persisted", org_id=65,
+        source_id="builtin", max_workers=3, max_repair_rounds=1,
+    )
+    graph = ensure_graph(cfg)
+    graph.invoke(state, {"configurable": {"thread_id": "persisted", "deps": deps}})
+
+    snapshot = graph.get_state({"configurable": {"thread_id": "persisted"}})
+    assert snapshot.values["plan"]["plan_id"] == "persisted:plan"
+    assert len(snapshot.values["evidence_by_id"]) == 2
+    assert snapshot.values["skill_bindings_by_role"]
+    assert not snapshot.next
+    reset_graph()
