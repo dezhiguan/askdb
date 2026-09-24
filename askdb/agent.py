@@ -658,6 +658,15 @@ def _result(cfg: Config, question: str, trace_id: str, thread_id: str, org: int,
         exec_results=exec_results if exec_results is not None else ([d] if d else []),
         answer=reasoning,
     )
+    # 记录真正注入过的版本，恢复与审计都不再依赖“当前最新版本”。单 Agent
+    # 只使用 query_worker 角色；多 Agent 图会为每个角色分别解析。
+    resolved = skill.resolve(
+        cfg, role="query_worker", source_id=cfg.source_id or "builtin",
+        question=question, tables=tables_hit or [],
+    )
+    artifacts.skill_bindings = resolved.bindings
+    for evidence in artifacts.evidence:
+        evidence.skill_bindings = list(resolved.bindings)
     for name, value in artifacts.as_result_fields().items():
         setattr(result, name, value)
     return result

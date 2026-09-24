@@ -10,7 +10,7 @@ config 的 `skill.rules` 追加数据源特定口径（无需改码），与通�
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 
 #: 通用方法论。每一条对应一类线上实测暴露过的错法。
@@ -44,9 +44,41 @@ def rules(cfg: Any) -> list[str]:
     return GENERAL_RULES + [str(r) for r in extra]
 
 
-def render(cfg: Any) -> str:
-    """渲染成可注入 LLM 系统提示的一段文本。无规则则返回空串。"""
-    rs = rules(cfg)
+def resolve(cfg: Any, *, role: str = "query_worker", source_id: str = "",
+            question: str = "", intent: str = "", metrics: Iterable[str] = (),
+            tables: Iterable[str] = (), runtime_allowed_tools: Iterable[str] = (),
+            agent_allowed_tools: Iterable[str] = ()):
+    """Resolve and pin the Skills visible to one ephemeral Agent instance.
+
+    Kept in this facade so existing callers can migrate without importing the
+    orchestration package.  The resolver is deliberately owned by Runtime: an
+    Agent cannot install a package or expand its own tool/source permissions.
+    """
+    from .multiagent.skills import ResolutionContext, build_registry, resolve_skills
+
+    raw = getattr(cfg, "raw", {}) or {}
+    settings = raw.get("skills") or {}
+    return resolve_skills(build_registry(cfg), ResolutionContext(
+        agent_role=role,
+        source_id=source_id or getattr(cfg, "source_id", "") or "builtin",
+        question=question,
+        intent=intent,
+        metrics=tuple(metrics),
+        tables=tuple(tables),
+        runtime_allowed_tools=frozenset(runtime_allowed_tools),
+        agent_allowed_tools=frozenset(agent_allowed_tools),
+        include_shadow=str(settings.get("mode", "shadow")).lower() == "shadow",
+        max_skills=int(settings.get("max_per_agent", 8)),
+    ))
+
+
+def render(cfg: Any, *, role: str = "query_worker", source_id: str = "",
+           question: str = "", intent: str = "", metrics: Iterable[str] = (),
+           tables: Iterable[str] = ()) -> str:
+    """Render resolved instructions for one Agent; no match returns an empty block."""
+    report = resolve(cfg, role=role, source_id=source_id, question=question,
+                     intent=intent, metrics=metrics, tables=tables)
+    rs = report.instructions()
     if not rs:
         return ""
     body = "\n".join(f"{i}. {r}" for i, r in enumerate(rs, 1))

@@ -58,6 +58,9 @@ class Budget(_Contract):
 class SkillBinding(_Contract):
     skill_id: str
     version: str
+    checksum: str = ""
+    selection_reason: str = ""
+    effective_tools: list[str] = Field(default_factory=list)
     config_hash: str = ""
     source: str = "registry"
 
