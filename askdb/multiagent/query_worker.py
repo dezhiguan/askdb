@@ -1,0 +1,92 @@
+"""Scoped Query Worker: schema recall → SQL generation → existing safe atom."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from .. import skill, tools
+from .evidence_store import from_tool_result
+
+
+def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
+    task = state["worker_task"]
+    task_id = task["subtask_id"]
+    attempt = int(task.get("attempt", 0)) + 1
+    source_id = task.get("source_id") or state["source_id"]
+    cfg = deps.config_for(source_id)
+    tracer = deps.tracer
+    started = tracer.start()
+    resolved = skill.resolve(
+        cfg, role="query_worker", source_id=source_id,
+        question=task.get("query", {}).get("question") or state["question"],
+        runtime_allowed_tools=tools.REGISTRY.keys(),
+        agent_allowed_tools=("search_schema", "get_table_schema", "execute_sql"),
+    )
+    recall = tools.search_schema(
+        task.get("query", {}).get("question") or state["question"], cfg)
+    schema_prompt = str(recall.data.get("prompt", ""))
+    contract = state.get("semantic_contract") or {}
+    instructions = resolved.instructions()
+    context = (
+        schema_prompt
+        + "\n\n【统一语义契约】\n"
+        + json.dumps(contract, ensure_ascii=False, default=str)
+        + ("\n\n【本 Worker Skills】\n- " + "\n- ".join(instructions)
+           if instructions else "")
+    )
+    worker_llm = deps.llm_for(cfg)
+    repair = str(task.get("repair_instructions", ""))
+    try:
+        draft, usage = worker_llm.generate_sql(
+            task.get("query", {}).get("question") or state["question"],
+            context,
+            dialect=cfg.dialect,
+            error=repair,
+            step=task.get("title", ""),
+        )
+        sql = str(getattr(draft, "sql", ""))
+        if not sql:
+            raise ValueError(getattr(draft, "reasoning", "Worker 未生成 SQL"))
+        executor, own_executor = deps.executor_for(cfg)
+        try:
+            result = tools.execute_sql(sql, cfg, int(state.get("org_id", 0)), executor)
+        finally:
+            if own_executor:
+                executor.close()
+        if not result.ok:
+            raise ValueError(f"{result.rejected_by or 'EXEC'}: {result.error}")
+        previous = str(task.get("previous_evidence_id", ""))
+        evidence = from_tool_result(
+            run_id=state["run_id"], subtask_id=task_id, source_id=source_id,
+            data=result.data,
+            bindings=[item.model_dump(mode="json") for item in resolved.bindings],
+            attempt=attempt,
+            supersedes=previous,
+        )
+        updated = {**task, "status": "SUCCEEDED", "attempt": attempt, "error": ""}
+        tracer.add(
+            "query_worker", started, f"{task_id} 产出 {evidence.row_count} 行证据",
+            tok_in=getattr(usage, "input_tokens", 0),
+            tok_out=getattr(usage, "output_tokens", 0),
+            cost_cny=getattr(usage, "cost_cny", 0.0),
+            tables=list(recall.data.get("tables", [])), stage=task_id,
+            input=task, output={"evidence_id": evidence.evidence_id,
+                                "checksum": evidence.checksum},
+        )
+        return {
+            "subtasks_by_id": {task_id: updated},
+            "evidence_by_id": {evidence.evidence_id: evidence.model_dump(mode="json")},
+            "skill_bindings_by_role": {
+                f"query_worker:{task_id}": [item.model_dump(mode="json")
+                                             for item in resolved.bindings]},
+        }
+    except Exception as exc:  # worker failures are artifacts, not graph crashes
+        updated = {**task, "status": "FAILED", "attempt": attempt, "error": str(exc)}
+        tracer.add("query_worker", started, f"{task_id} 失败：{exc}",
+                   status="failed", stage=task_id, input=task)
+        return {
+            "subtasks_by_id": {task_id: updated},
+            "worker_errors": {task_id: {
+                "subtask_id": task_id, "attempt": attempt, "error": str(exc)}},
+        }
