@@ -1601,6 +1601,7 @@ def to_result(state: AgentState, cfg: Config, tracer: Tracer):
         # **不是 state["last_exec"]** —— 结果区要渲染的是"回答问题那一条"的结果，
         # 不是"最后执行"那一条。没指认时 _answer_exec 退回 last_exec，行为不变。
         last_exec=_answer_exec(state),
+        exec_results=state.get("exec_results") or [],
         rejected_by=state.get("rejected_by"),
         error=state.get("error", ""), hint=state.get("hint", ""),
         tables_hit=state.get("tables_hit") or [],

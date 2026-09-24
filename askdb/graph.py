@@ -122,6 +122,15 @@ class AskResult:
     tok_out: int = 0
     cost_cny: float = 0.0
 
+    # 多智能体公共协议。单智能体链路同样填充这些字段，前端与审计因此不必
+    # 根据执行模式维护两套数据模型。
+    execution_mode: str = "single"
+    plan: dict[str, Any] = field(default_factory=dict)
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    reviews: list[dict[str, Any]] = field(default_factory=list)
+    claims: list[dict[str, Any]] = field(default_factory=list)
+    skill_bindings: list[dict[str, Any]] = field(default_factory=list)
+
     def to_dict(self) -> dict[str, Any]:
         d = dict(self.__dict__)
         d["rows"] = [[jsonable(v) for v in r] for r in self.rows]
@@ -484,8 +493,19 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         "elapsed_ms": result.elapsed_ms,
         "tok_in": result.tok_in, "tok_out": result.tok_out,
         "cost_cny": result.cost_cny, "steps": result.steps,
+        "execution_mode": result.execution_mode,
+        "plan": result.plan,
+        # 审计保存证据定位信息而不重复结果行；结果行已有 rows_preview，完整
+        # evidence 仍通过本次响应与检查点读取，避免审计记录体积随 worker 数膨胀。
+        "evidence_summary": [
+            {key: item.get(key) for key in (
+                "evidence_id", "task_id", "subtask_id", "source_id",
+                "sql_final", "row_count", "truncated", "as_of", "checksum")}
+            for item in result.evidence
+        ],
+        "claims": result.claims,
+        "skill_bindings": result.skill_bindings,
     }
-
 
 
 

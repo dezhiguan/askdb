@@ -627,11 +627,12 @@ def _budget(cfg: Config) -> tuple[int, int]:
 
 def _result(cfg: Config, question: str, trace_id: str, thread_id: str, org: int,
             tracer: Tracer, *, ok: bool, reasoning: str = "", last_exec: dict | None = None,
+            exec_results: list[dict[str, Any]] | None = None,
             rejected_by: str | None = None, error: str = "", hint: str = "",
             tables_hit: list[str] | None = None, step_count: int = 1,
             converged: str = "", ungrounded: list[str] | None = None) -> AskResult:
     d = last_exec or {}
-    return AskResult(
+    result = AskResult(
         ok=ok, question=question, trace_id=trace_id, org_id=org, thread_id=thread_id,
         sql_final=d.get("sql_final", ""), reasoning=reasoning,
         rules_fired=list(d.get("rules_fired", [])), rewrites=list(d.get("rewrites", [])),
@@ -647,6 +648,19 @@ def _result(cfg: Config, question: str, trace_id: str, thread_id: str, org: int,
         steps=tracer.as_list(), elapsed_ms=tracer.elapsed_ms,
         tok_in=tracer.tok_in, tok_out=tracer.tok_out, cost_cny=tracer.cost_cny,
     )
+    # 旧链路也发布新协议，确保功能灰度时 API、审计和前端的数据形状稳定。
+    from .multiagent.protocol import single_agent_artifacts
+
+    artifacts = single_agent_artifacts(
+        question=question,
+        trace_id=trace_id,
+        source_id=cfg.source_id or "builtin",
+        exec_results=exec_results if exec_results is not None else ([d] if d else []),
+        answer=reasoning,
+    )
+    for name, value in artifacts.as_result_fields().items():
+        setattr(result, name, value)
+    return result
 
 
 def run_agent(question: str, cfg: Config, org_id: int | None = None, *,
