@@ -23,6 +23,7 @@ export const navGroups: {
     items: [
       { view: 'permissions', icon: 'ID', title: '身份与权限', subtitle: 'SSO · RBAC · ABAC' },
       { view: 'glossary', icon: 'DI', title: '业务口径', subtitle: '指标与字段词典' },
+      { view: 'skills', icon: 'SK', title: 'Skill 中心', subtitle: '能力包 · 版本 · 发布' },
       { view: 'evaluation', icon: 'QA', title: 'Agent 质量中心', subtitle: '运行健康与持续评测' },
       { view: 'traces', icon: 'TR', title: '执行追踪', subtitle: 'Agent 链路与 Span' },
       // 「人工处置」入口 2026-09-12 撤下（产品决定）：**三类处置全部搬进了

@@ -943,7 +943,82 @@ export interface AskResult {
    *  与 cost_cny 是两件事：那个是"这次花了多少"（命中时为 0）。 */
   saved_cny?: number
   saved_ms?: number
+
+  /** 多智能体与单智能体共用的结构化协作协议。旧服务端可能不带，故保持可选。 */
+  execution_mode?: 'single' | 'multi'
+  plan?: TaskPlan
+  evidence?: Evidence[]
+  reviews?: AgentReview[]
+  claims?: AgentClaim[]
+  skill_bindings?: SkillBinding[]
+  sub_steps?: AgentSubTask[]
 }
+
+export interface SkillBinding {
+  skill_id: string
+  version: string
+  checksum?: string
+  selection_reason?: string
+  effective_tools?: string[]
+  source?: string
+}
+
+export interface AgentSubTask {
+  subtask_id: string
+  title: string
+  assigned_role?: string
+  source_id?: string
+  depends_on?: string[]
+  status: string
+  attempt?: number
+  error?: string
+}
+
+export interface TaskPlan {
+  plan_id: string
+  run_id?: string
+  question?: string
+  execution_mode?: string
+  created_at?: string
+  budget?: { max_steps?: number; max_workers?: number; max_repair_rounds?: number; token_cap?: number }
+  subtasks?: AgentSubTask[]
+}
+
+export interface Evidence {
+  evidence_id: string
+  task_id?: string
+  subtask_id: string
+  source_id: string
+  agent_role?: string
+  sql_final: string
+  columns?: string[]
+  rows?: unknown[][]
+  row_count?: number
+  truncated?: boolean
+  as_of?: string
+  checksum?: string
+  supersedes?: string
+  skill_bindings?: SkillBinding[]
+}
+
+export interface AgentReview {
+  review_id: string
+  verdict: string
+  evidence_ids?: string[]
+  issues?: string[]
+  confidence?: number
+  repair_tasks?: { repair_id: string; target_subtask_id: string; reason: string }[]
+}
+
+export interface AgentClaim {
+  claim_id: string
+  text: string
+  evidence_ids: string[]
+  confidence?: number
+  caveats?: string[]
+}
+
+export type AgentMode = 'auto' | 'single' | 'multi'
 
 /** source 是运行时数据源 id；留空走启动配置里的内置源。
  *
@@ -956,10 +1031,10 @@ export interface AskResult {
  *  服务端不替任何人执行 —— 所以这个参数必须从这里传，没有第二条路。
  *  票是一次性的、绑在**问题原文**上：question 改一个字指纹就对不上，403。 */
 export const askQuestion = (question: string, source = '', orgId?: number,
-                            asTask = false, approvalId = '') =>
+                            asTask = false, approvalId = '', mode: AgentMode = 'auto') =>
   post<AskResult | AsyncReceipt>('/api/ask', {
     question, source, org_id: orgId ?? null, as_task: asTask,
-    approval_id: approvalId,
+    approval_id: approvalId, mode,
   })
 
 /** 链路进度的一步。同步窗口内由 /api/ask/stream 实时推来。 */
@@ -987,12 +1062,13 @@ export interface AskStep {
  *  不静默吞掉：一次"什么都没发生"比一个错误更难排查。 */
 export async function askQuestionStream(
   question: string, source = '', onStep?: (s: AskStep) => void, orgId?: number,
+  mode: AgentMode = 'auto',
 ): Promise<AskResult | AsyncReceipt> {
   const response = await request('/api/ask/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question, source, org_id: orgId ?? null,
-                           as_task: false, approval_id: '' }),
+                           as_task: false, approval_id: '', mode }),
   })
   if (!response.ok || !response.body) throw new Error(`/api/ask/stream ${response.status}`)
 
@@ -1024,6 +1100,68 @@ export async function askQuestionStream(
   if (!done) throw new Error('流已结束但没有收到结果')
   return done
 }
+
+/* ---------------- Skill 中心 ---------------- */
+
+export type SkillStatus = 'draft' | 'shadow' | 'published' | 'disabled' | 'revoked'
+
+export interface SkillManifest {
+  id: string
+  version: string
+  status: SkillStatus
+  owner: string
+  kind: 'general' | 'domain' | 'source' | 'analysis' | 'verification' | 'presentation'
+  description?: string
+  agent_roles: string[]
+  source_scopes: string[]
+  triggers: { intents?: string[]; metrics?: string[]; tables?: string[]; terms?: string[] }
+  priority: number
+  requires: string[]
+  conflicts_with: string[]
+  requested_tools: string[]
+  instructions: string[]
+  constraints: Record<string, unknown>
+  examples: Record<string, unknown>[]
+  tests: Record<string, unknown>[]
+  checksum: string
+}
+
+export interface SkillList {
+  items: SkillManifest[]
+  count: number
+  settings: Record<string, unknown>
+}
+
+export async function fetchSkills(): Promise<SkillList> {
+  const response = await request('/api/skills')
+  if (!response.ok) throw new Error(`/api/skills ${response.status}`)
+  return response.json()
+}
+
+export const createSkill = (manifest: Partial<SkillManifest>) =>
+  post<{ ok: boolean; item: SkillManifest }>('/api/skills', manifest)
+
+export const testSkill = (id: string, version: string) =>
+  post<{ ok: boolean; skill: string; results: { name: string; ok: boolean }[] }>(
+    `/api/skills/${encodeURIComponent(id)}/test?version=${encodeURIComponent(version)}`, {})
+
+export const publishSkill = (id: string, version: string) =>
+  post<{ ok: boolean; item: SkillManifest }>(
+    `/api/skills/${encodeURIComponent(id)}/publish?version=${encodeURIComponent(version)}`, {})
+
+export const setSkillStatus = (id: string, version: string, status: 'shadow' | 'disabled' | 'revoked') =>
+  post<{ ok: boolean; item: SkillManifest }>(
+    `/api/skills/${encodeURIComponent(id)}/status`, { version, status })
+
+export interface SkillResolutionPreview {
+  bindings: SkillBinding[]
+  effective_tools: string[]
+  rejected: { skill: string; reason: string }[]
+}
+
+export const previewSkills = (input: {
+  agent_role: string; question: string; source_id: string; runtime_allowed_tools: string[]
+}) => post<SkillResolutionPreview>('/api/skills/resolve-preview', input)
 
 /** 交接回执：这次执行超过了软阈值（生产 10s），已经转到后台。
  *

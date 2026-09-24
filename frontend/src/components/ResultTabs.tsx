@@ -175,6 +175,9 @@ export function ResultTabs({ result, active, dialect, onChange, onResumed, onOpe
     <div className="query-result show">
       {/* 被拦下时不出结论卡：那时候该看的是拦截原因，不是"返回 0 行" */}
       {result.ok && <AnswerCard result={result} onGoTab={onChange} />}
+      {(result.plan || result.evidence?.length || result.skill_bindings?.length) && (
+        <CollaborationPanel result={result} />
+      )}
       <div className="result-tabs">
         {tabs.map(([id, label]) => (
           <button className={`result-tab ${active === id ? 'active' : ''}`} key={id} onClick={() => onChange(id)}>
@@ -191,6 +194,85 @@ export function ResultTabs({ result, active, dialect, onChange, onResumed, onOpe
       {active === 'chain' && <ChainPane result={result} onOpenTrace={onOpenTrace} />}
       {active === 'checkpoint' && <CheckpointPane result={result} onResumed={onResumed} />}
     </div>
+  )
+}
+
+function CollaborationPanel({ result }: { result: AskResult }) {
+  const isMulti = result.execution_mode === 'multi'
+  const tasks = result.plan?.subtasks ?? result.sub_steps ?? []
+  const evidence = result.evidence ?? []
+  const reviews = result.reviews ?? []
+  const claims = result.claims ?? []
+  const skills = result.skill_bindings ?? []
+  const statusLabel: Record<string, string> = {
+    PENDING: '待执行', RUNNING: '执行中', RECOVERING: '返工中',
+    SUCCEEDED: '已完成', FAILED: '失败', WAITING_APPROVAL: '待审批',
+    WAITING_CLARIFICATION: '待补充', CANCELED: '已取消',
+  }
+  return (
+    <details className={`collaboration-panel ${isMulti ? 'is-multi' : ''}`} open={isMulti}>
+      <summary>
+        <span className="collaboration-kicker">{isMulti ? 'MULTI-AGENT RUN' : 'EVIDENCE RUN'}</span>
+        <strong>{isMulti ? '多智能体协作详情' : '证据与能力'}</strong>
+        <span>{tasks.length} 子任务 · {evidence.length} 证据 · {skills.length} Skills</span>
+      </summary>
+      <div className="collaboration-body">
+        {!!tasks.length && <section className="agent-plan">
+          <div className="collaboration-section-head"><b>执行计划</b><span>按依赖顺序调度，Worker 不直接互聊</span></div>
+          <div className="agent-task-grid">
+            {tasks.map((task, index) => (
+              <article className={`agent-task status-${task.status.toLowerCase()}`} key={task.subtask_id}>
+                <span className="agent-task-index">{String(index + 1).padStart(2, '0')}</span>
+                <div><strong>{task.title}</strong><small>{task.assigned_role || 'query_worker'} · {task.source_id || 'builtin'}</small></div>
+                <em>{statusLabel[task.status] || task.status}{task.attempt && task.attempt > 1 ? ` · ${task.attempt} 次` : ''}</em>
+                {task.error && <p>{task.error}</p>}
+              </article>
+            ))}
+          </div>
+        </section>}
+
+        {!!skills.length && <section>
+          <div className="collaboration-section-head"><b>已装载能力</b><span>版本已固定，可随 Checkpoint 恢复</span></div>
+          <div className="skill-chip-row">{skills.map(skill => (
+            <span className="skill-binding-chip" key={`${skill.skill_id}@${skill.version}`}>
+              <b>{skill.skill_id}</b><code>@{skill.version}</code>
+              {skill.selection_reason && <small>{skill.selection_reason}</small>}
+            </span>
+          ))}</div>
+        </section>}
+
+        {!!reviews.length && <section>
+          <div className="collaboration-section-head"><b>独立复核</b><span>不以多数票代替证据</span></div>
+          <div className="review-row">{reviews.map(review => (
+            <article key={review.review_id} className={`review-card verdict-${review.verdict.toLowerCase()}`}>
+              <strong>{review.verdict}</strong>
+              <span>{Math.round((review.confidence ?? 0) * 100)}% confidence</span>
+              {!!review.issues?.length && <p>{review.issues.join('；')}</p>}
+            </article>
+          ))}</div>
+        </section>}
+
+        {!!claims.length && <section>
+          <div className="collaboration-section-head"><b>结论—证据绑定</b><span>每条 Claim 可回到原始 Evidence</span></div>
+          <div className="claim-list">{claims.map(claim => (
+            <article key={claim.claim_id}><p>{claim.text}</p><small>
+              证据 {claim.evidence_ids.map(id => id.split(':').slice(-2).join(':')).join(' · ') || '无'}
+              {' · '}{Math.round((claim.confidence ?? 0) * 100)}%
+            </small></article>
+          ))}</div>
+        </section>}
+
+        {!!evidence.length && <section>
+          <div className="collaboration-section-head"><b>Evidence 账本</b><span>展开查看来源、校验和与 SQL</span></div>
+          <div className="evidence-ledger">{evidence.map(item => (
+            <details key={item.evidence_id}>
+              <summary><b>{item.source_id}</b><span>{item.row_count ?? 0} 行</span><code>{item.checksum?.slice(0, 18) || '—'}…</code></summary>
+              <div><small>{item.evidence_id}{item.supersedes ? ` · supersedes ${item.supersedes}` : ''}</small><pre>{item.sql_final}</pre></div>
+            </details>
+          ))}</div>
+        </section>}
+      </div>
+    </details>
   )
 }
 

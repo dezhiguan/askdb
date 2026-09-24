@@ -2,6 +2,7 @@ export type View =
   | 'query'
   | 'tasks'
   | 'sources'
+  | 'skills'
   | 'permissions'
   | 'glossary'
   | 'evaluation'
@@ -15,4 +16,3 @@ export type ResultTab = 'result' | 'sql' | 'chain' | 'checkpoint'
 // askdb 的连接由配置文件指定，页面上不存在「新增数据源」这件事，
 // 更不该留一个收数据库口令的表单在包里等人接回去。
 export type ModalName = 'clarification' | 'langfuse' | null
-

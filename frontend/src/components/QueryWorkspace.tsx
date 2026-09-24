@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   askQuestion, askQuestionStream, fetchSchema, fetchTask, isAsyncReceipt, runSql,
-  type AskResult, type AskStep, type AsyncReceipt, type Me, type Schema, type TaskDetail,
+  type AgentMode, type AskResult, type AskStep, type AsyncReceipt, type Me, type Schema, type TaskDetail,
 } from '../api'
 import { writeGuard, type WriteGuard } from '../writeGuard'
 import type { ResultTab, View } from '../types'
@@ -40,6 +40,7 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
   // 用户没显式选过时按能力推导：模型没接就落到直查 ——
   // 让人对着一个永远点不动的按钮发呆没有意义。
   const [modeChoice, setModeChoice] = useState<Mode | null>(null)
+  const [agentMode, setAgentMode] = useState<AgentMode>('auto')
   const [question, setQuestion] = useState(prefill ?? '')
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<AskResult | null>(null)
@@ -244,8 +245,8 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
       // 流断了就退回非流式重来一次 —— 进度是锦上添花，答案不是。
       setSteps([])
       const value = mode === 'ask'
-        ? await askQuestionStream(text, current.id, (s) => setSteps((prev) => [...prev, s]))
-            .catch(() => askQuestion(text, current.id))
+        ? await askQuestionStream(text, current.id, (s) => setSteps((prev) => [...prev, s]), undefined, agentMode)
+            .catch(() => askQuestion(text, current.id, undefined, false, '', agentMode))
         : await runSql(text, current.id)
       // 交接回执不是结果：它没有 ok 字段，照结果渲染会变成一张空的"已拦截"
       // 结果页，而后台其实跑得好好的。识别出来，就地转成执行中卡片。
@@ -297,6 +298,16 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
             <button className={`mode-tab ${mode === 'sql' ? 'active' : ''}`} disabled={!canSql}
                     onClick={() => setModeChoice('sql')}>直查 SQL</button>
           </div>
+          {mode === 'ask' && (
+            <label className="agent-mode-picker" title="自动模式只在复杂问题上启动多智能体；简单问题保留快路径">
+              <span>编排</span>
+              <select value={agentMode} onChange={e => setAgentMode(e.target.value as AgentMode)}>
+                <option value="auto">自动</option>
+                <option value="single">单智能体</option>
+                <option value="multi">多智能体</option>
+              </select>
+            </label>
+          )}
         </div>
 
         <div className="composer">

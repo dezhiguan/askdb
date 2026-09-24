@@ -14,6 +14,7 @@ import { GlossaryPage } from './pages/GlossaryPage'
 import { PermissionsPage } from './pages/PermissionsPage'
 import { TasksPage } from './pages/TasksPage'
 import { TracesPage } from './pages/TracesPage'
+import { SkillsPage } from './pages/SkillsPage'
 import type { ModalName, View } from './types'
 import { fetchMe, logout, setLoginRequiredHandler, type Me } from './api'
 import { useHealth } from './useHealth'
@@ -37,6 +38,7 @@ import './styles/proto-permissions.css'
 import './styles/proto-glossary.css'
 import './styles/proto-audit.css'
 import './styles/filterbar.css'
+import './styles/skills.css'
 
 /** 「本次浏览已跳过登录」。session 级 —— 关掉标签页就忘掉。 */
 const SKIP_LOGIN_KEY = 'askdb.skipLogin.v1'
@@ -137,6 +139,7 @@ function App() {
     if (view === 'sources') return <DataSourcesPage health={health} me={me} />
     if (view === 'permissions') return <PermissionsPage notify={notify} me={me} />
     if (view === 'glossary') return <GlossaryPage onNavigate={navigate} notify={notify} me={me} sources={sources} />
+    if (view === 'skills') return <SkillsPage notify={notify} me={me} />
     if (view === 'approvals') return <ApprovalsPage notify={notify} />
     if (view === 'audit') return <AuditPage me={me} onNavigate={navigate} />
     if (view === 'evaluation') return <EvaluationPage onNavigate={navigate} me={me} onOpenLogin={() => setLoginOpen(true)} />
