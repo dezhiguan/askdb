@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  createSkill, fetchSkills, previewSkills, publishSkill, setSkillStatus, testSkill,
+  createSkill, fetchSkills, previewSkills, publishSkill, rollbackSkill, setSkillStatus, testSkill,
   type Me, type SkillManifest, type SkillResolutionPreview,
 } from '../api'
 import { writeGuard } from '../writeGuard'
@@ -113,6 +113,8 @@ export function SkillsPage({ me, notify }: { me: Me | null; notify: (message: st
                 onClick={() => action(() => setSkillStatus(selected.id, selected.version, 'disabled'), 'Skill 已停用')}>停用</button>}
               {selected.status === 'disabled' && <button className="secondary" {...guard.props}
                 onClick={() => action(() => setSkillStatus(selected.id, selected.version, 'shadow'), 'Skill 已进入影子验证')}>转影子</button>}
+              {selected.status === 'disabled' && <button className="secondary" {...guard.props}
+                onClick={() => action(() => rollbackSkill(selected.id, selected.version), `已回滚到 ${selected.version}`)}>回滚到此版本</button>}
             </div>
           </> : <div className="skill-empty">选择一个 Skill 查看 Manifest。</div>}
         </aside>

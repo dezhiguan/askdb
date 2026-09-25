@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -59,6 +60,7 @@ class MultiAgentDeps:
     source_configs: dict[str, Config] | None = None
     llm_factory: Callable[[Config], Any] | None = None
     executor_factory: Callable[[Config], Any] | None = None
+    cancel_event: threading.Event | None = None
 
     def config_for(self, source_id: str) -> Config:
         if self.source_configs and source_id in self.source_configs:
@@ -74,6 +76,9 @@ class MultiAgentDeps:
         if self.executor_factory:
             return self.executor_factory(cfg), True
         return Executor(cfg), True
+
+    def cancelled(self) -> bool:
+        return bool(self.cancel_event and self.cancel_event.is_set())
 
 
 def _deps(config: RunnableConfig) -> MultiAgentDeps:
@@ -94,6 +99,7 @@ def _supervisor(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any
     draft, usage = deps.llm.structured(
         SupervisorPlanDraft, SUPERVISOR_SYSTEM,
         f"用户问题：{state['question']}\n默认数据源：{state['source_id']}\n"
+        f"本次已授权数据源：{sorted((deps.source_configs or {state['source_id']: deps.cfg}).keys())}\n"
         f"最多创建 {state['max_workers']} 个查询子任务。",
     )
     analyses = list(draft.analyses)[:int(state["max_workers"])]
@@ -122,6 +128,9 @@ def _supervisor(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any
     )
     enforce_plan(plan, max_workers=int(state["max_workers"]),
                  token_cap=int(state["token_cap"]))
+    # Supervisor 只能从 Runtime 已收窄的配置中选源，不能凭模型输出扩权。
+    for task in tasks:
+        deps.config_for(task.source_id or state["source_id"])
     deps.tracer.add("supervisor", started, draft.reasoning or f"拆分为 {len(tasks)} 个子任务",
                     stage="supervisor", input=state["question"],
                     output=plan.model_dump(mode="json"), **_usage_kwargs(usage))
@@ -159,13 +168,12 @@ def _semantic(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     deps = _deps(config)
     started = deps.tracer.start()
     bindings = (state.get("skill_bindings_by_role") or {}).get("semantic", [])
-    report = skill.resolve(
-        deps.cfg, role="semantic", source_id=state["source_id"],
-        question=state["question"])
+    report = skill.load_pinned(deps.cfg, bindings)
     instructions = report.instructions()
     human = (
         f"用户问题：{state['question']}\n"
         f"任务计划：{json.dumps(state['plan'], ensure_ascii=False)}\n"
+        f"批准的跨源契约：{json.dumps(state.get('join_contracts') or [], ensure_ascii=False)}\n"
         + ("已绑定方法：\n- " + "\n- ".join(instructions) if instructions else "")
     )
     contract, usage = deps.llm.structured(SemanticContractDraft, SEMANTIC_SYSTEM, human)
@@ -176,7 +184,8 @@ def _semantic(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
         query["semantic_context"] = payload
         tasks[task_id] = {**task, "query": query}
     deps.tracer.add("semantic", started, contract.metric_definition,
-                    stage="semantic", input=state["plan"], output=payload,
+                    stage="semantic", input=state["plan"],
+                    output={"contract": payload, "skill_bindings": bindings},
                     **_usage_kwargs(usage))
     return {
         "phase": "DISPATCHING", "status": "DISPATCHING",
@@ -218,6 +227,10 @@ def _worker(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
 def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     deps = _deps(config)
     started = deps.tracer.start()
+    if deps.cancelled():
+        deps.tracer.add("verifier", started, "任务已取消，停止调度未开始的 Worker",
+                        status="blocked", stage="verifier")
+        return {"phase": "CANCELED", "status": "CANCELED", "pending_repairs": []}
     review, repairs = verify(state)
     current_round = int(state.get("repair_round", 0))
     exhausted = bool(repairs) and current_round >= int(state["max_repair_rounds"])
@@ -226,10 +239,13 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
         review.issues.append("已达到最大返工轮次，按现有证据降级收敛")
         review.repair_tasks = []
         repairs = []
+    verifier_bindings = (state.get("skill_bindings_by_role") or {}).get("verifier", [])
     deps.tracer.add("verifier", started,
                     f"{review.verdict}：{len(review.evidence_ids)} 份证据",
                     status="degraded" if review.verdict != "PASS" else "ok",
-                    stage="verifier", output=review.model_dump(mode="json"))
+                    stage="verifier", output={
+                        "review": review.model_dump(mode="json"),
+                        "skill_bindings": verifier_bindings})
     return {
         "phase": "VERIFYING", "status": "VERIFYING",
         "reviews_by_id": {review.review_id: review.model_dump(mode="json")},
@@ -239,6 +255,8 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
 
 
 def _after_verify(state: MultiAgentState) -> list[Send] | str:
+    if state.get("status") == "CANCELED":
+        return END
     repairs = state.get("pending_repairs") or []
     if int(state.get("tok_used", 0)) >= int(state.get("token_cap", 0)):
         return "synthesizer"
@@ -264,6 +282,8 @@ def _after_verify(state: MultiAgentState) -> list[Send] | str:
 def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     deps = _deps(config)
     started = deps.tracer.start()
+    if deps.cancelled():
+        return {"phase": "CANCELED", "status": "CANCELED", "answer": "", "claims": []}
     reviews = list((state.get("reviews_by_id") or {}).values())
     latest_review = reviews[-1] if reviews else {}
     approved_ids = set(latest_review.get("evidence_ids") or [])
@@ -274,8 +294,13 @@ def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, An
         "semantic_contract": state.get("semantic_contract") or {},
         "review": latest_review,
         "evidence": evidence,
+        "join_contracts": state.get("join_contracts") or [],
     }, ensure_ascii=False, default=str)
     draft, usage = deps.llm.structured(SynthesisDraft, SYNTHESIS_SYSTEM, human)
+    if deps.cancelled():
+        deps.tracer.add("synthesizer", started, "任务在合成期间被取消，丢弃未返回答案",
+                        status="blocked", stage="synthesizer", **_usage_kwargs(usage))
+        return {"phase": "CANCELED", "status": "CANCELED", "answer": "", "claims": []}
     caveats = list(draft.caveats)
     if latest_review.get("verdict") != "PASS":
         caveats.extend(latest_review.get("issues") or [])
@@ -293,7 +318,10 @@ def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, An
             claim["caveats"].append("没有通过验证的 Evidence 可绑定")
     deps.tracer.add("synthesizer", started, f"合成 {len(claims)} 条 Claim",
                     stage="synthesizer", input=latest_review,
-                    output={"answer": draft.answer, "claims": claims},
+                    output={
+                        "answer": draft.answer, "claims": claims,
+                        "skill_bindings": (state.get("skill_bindings_by_role") or {}).get(
+                            "synthesizer", [])},
                     **_usage_kwargs(usage))
     return {
         "phase": "COMPLETED", "status": "COMPLETED",
@@ -320,7 +348,7 @@ def build_skeleton() -> StateGraph:
     graph.add_conditional_edges("dispatch_gate", _dispatch, ["query_worker", "verifier"])
     graph.add_edge("query_worker", "dispatch_gate")
     graph.add_conditional_edges("verifier", _after_verify,
-                                ["query_worker", "synthesizer"])
+                                ["query_worker", "synthesizer", END])
     graph.add_edge("synthesizer", END)
     return graph
 

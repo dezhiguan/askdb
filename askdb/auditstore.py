@@ -831,7 +831,7 @@ def _fold_sql(fold: Any) -> tuple[str, list[Any]]:
     与 audit._risk / audit.task_kind / audit.stage 逐分支对应，顺序也一样 ——
     对照着读才看得出有没有漏一档。
     """
-    from .audit import (DONE, INTERRUPTED, LONG_TASK, NEEDS_OPERATOR, REJECTED,
+    from .audit import (CANCELED, DONE, INTERRUPTED, LONG_TASK, NEEDS_OPERATOR, REJECTED,
                         REVIEW_RETURNED, RUNNING, SHORT_TASK, WAITING_APPROVAL,
                         WAITING_INPUT, WAITING_REVIEW, _INPUT_CODES,
                         _OPEN_CODES, _OPS_CODES, _RISK_HIGH, _RISK_MEDIUM)
@@ -865,6 +865,7 @@ def _fold_sql(fold: Any) -> tuple[str, list[Any]]:
     stage = f"""CASE
         WHEN t.phase = 'started' THEN
             CASE WHEN t.stale THEN {_lit(INTERRUPTED)} ELSE {_lit(RUNNING)} END
+        WHEN t.rejected_by = 'CANCELED' THEN {_lit(CANCELED)}
         WHEN t.rejected_by = ANY(%s) THEN {_lit(INTERRUPTED)}
         WHEN t.rejected_by = '' THEN
             CASE WHEN t.review_status = 'RETURNED' THEN {_lit(REVIEW_RETURNED)}

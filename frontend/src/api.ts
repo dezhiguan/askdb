@@ -1153,6 +1153,10 @@ export const setSkillStatus = (id: string, version: string, status: 'shadow' | '
   post<{ ok: boolean; item: SkillManifest }>(
     `/api/skills/${encodeURIComponent(id)}/status`, { version, status })
 
+export const rollbackSkill = (id: string, version: string) =>
+  post<{ ok: boolean; item: SkillManifest }>(
+    `/api/skills/${encodeURIComponent(id)}/rollback?version=${encodeURIComponent(version)}`, {})
+
 export interface SkillResolutionPreview {
   bindings: SkillBinding[]
   effective_tools: string[]
@@ -1246,6 +1250,14 @@ export async function resumeTask(
   const data = await response.json().catch(() => null)
   if (!response.ok) throw new Error(data?.detail || `/api/resume ${response.status}`)
   return data
+}
+
+export async function cancelTask(threadId: string): Promise<void> {
+  const response = await request(`/api/tasks/${encodeURIComponent(threadId)}/cancel`, {
+    method: 'POST',
+  })
+  const data = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(data?.detail || `取消任务失败（${response.status}）`)
 }
 
 /* ---------------- 身份与权限 ---------------- */
@@ -1456,9 +1468,10 @@ export interface Task {
    *    waiting_approval 等系统管理员放行；批准后由发起人凭票重跑
    *    needs_operator   等运维：数据源连不上或执行期故障，恢复后可重试
    *    interrupted      断点在，可续跑 */
-  status: 'running' | 'done' | 'rejected' | 'waiting_input'
+  status: 'running' | 'done' | 'rejected' | 'waiting_input' | 'canceled'
         | 'waiting_approval' | 'waiting_review' | 'review_returned'
         | 'needs_operator' | 'interrupted'
+  execution_mode?: 'single' | 'multi'
   /** 下一步该谁动手，后端给的原话。页面直接显示，别在前端再写一遍 if/else。 */
   next_actor?: string
   /** 这条结果**为什么**值得复核（盲选召回、脱敏退化、反复重试、触顶收敛）。
@@ -1507,6 +1520,7 @@ export interface TaskStats {
   review_returned: number
   needs_operator: number
   interrupted: number
+  canceled: number
   rejected: number
   done: number
   done_today: number
@@ -1559,7 +1573,7 @@ export interface TasksResult {
 const EMPTY_TASK_STATS: TaskStats = {
   running: 0, waiting_input: 0, waiting_approval: 0, waiting_review: 0,
   review_returned: 0, needs_operator: 0, interrupted: 0, rejected: 0,
-  done: 0, done_today: 0, success_rate: null,
+  canceled: 0, done: 0, done_today: 0, success_rate: null,
 }
 
 export async function fetchTasks(query: TaskQuery = {}): Promise<TasksResult> {

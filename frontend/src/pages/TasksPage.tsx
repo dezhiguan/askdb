@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FilterBar, FilterChips, FilterSearch, type FilterChip } from '../components/FilterBar'
 import {
   askQuestion,
+  cancelTask,
   isAsyncReceipt,
   decideApproval,
   decideReview,
@@ -79,7 +80,7 @@ function fmtDuration(ms: number | null | undefined): string {
 const EMPTY_STATS: TaskStats = {
   running: 0, waiting_input: 0, waiting_approval: 0, waiting_review: 0,
   review_returned: 0, needs_operator: 0, interrupted: 0, rejected: 0,
-  done: 0, done_today: 0, success_rate: null,
+  canceled: 0, done: 0, done_today: 0, success_rate: null,
 }
 
 /** 数字未知时的占位。与执行追踪页同一个字符，两页并排看不出差异。 */
@@ -94,6 +95,7 @@ const STATUS_LABEL: Record<Task['status'], string> = {
   waiting_approval: '等待审批',
   needs_operator: '等待运维',
   rejected: '已拦截',
+  canceled: '已取消',
   done: '已完成',
 }
 
@@ -107,6 +109,7 @@ const STATUS_WAIT: Record<Task['status'], boolean> = {
   waiting_approval: true,
   needs_operator: true,
   rejected: true,
+  canceled: true,
   done: false,
 }
 
@@ -119,6 +122,7 @@ const STATE_GLYPH: Record<Task['status'], string> = {
   waiting_approval: '!',
   needs_operator: '!',
   rejected: '!',
+  canceled: '×',
   done: '✓',
 }
 
@@ -132,11 +136,11 @@ const STATE_GLYPH: Record<Task['status'], string> = {
    筛选搬到服务端之后这种档位更留不得：传过去就是一个非法取值。 */
 type StatusFilter = 'all' | 'running' | 'interrupted' | 'waiting_input'
   | 'waiting_approval' | 'waiting_review' | 'review_returned' | 'needs_operator'
-  | 'done' | 'rejected'
+  | 'done' | 'rejected' | 'canceled'
 
 const FILTER_ORDER: StatusFilter[] = ['all', 'running', 'waiting_input',
   'waiting_approval', 'waiting_review', 'needs_operator', 'interrupted', 'done',
-  'review_returned', 'rejected']
+  'review_returned', 'rejected', 'canceled']
 const FILTER_LABEL: Record<StatusFilter, string> = {
   all: '全部状态',
   running: '运行中',
@@ -148,6 +152,7 @@ const FILTER_LABEL: Record<StatusFilter, string> = {
   done: '已完成',
   review_returned: '复核未通过',
   rejected: '已拦截',
+  canceled: '已取消',
 }
 const FILTER_CODE: Record<StatusFilter, string> = {
   all: 'ALL',
@@ -160,6 +165,7 @@ const FILTER_CODE: Record<StatusFilter, string> = {
   done: 'DONE',
   review_returned: 'RETURNED',
   rejected: 'BLOCK',
+  canceled: 'CANCEL',
 }
 
 /** 风险档与发起时间档的显示文案。取值定义在后端（audit.RISK_LEVELS /
@@ -382,6 +388,20 @@ export function TasksPage({ onNavigate, notify, me }: {
         notify(`仍未跑通：${response.rejected_by ?? ''} ${response.error ?? ''}`.trim())
       }
       setModal({ kind: 'none' })
+      load()
+    } catch (e) {
+      notify(String((e as Error).message || e))
+    } finally {
+      setBusy('')
+    }
+  }
+
+  const cancel = async (task: Task) => {
+    if (!window.confirm('确认取消这条多智能体任务？未开始的 Worker 将不再执行。')) return
+    setBusy(task.thread_id)
+    try {
+      await cancelTask(task.thread_id)
+      notify('任务已取消，未开始的 Worker 已停止调度。')
       load()
     } catch (e) {
       notify(String((e as Error).message || e))
@@ -693,6 +713,16 @@ export function TasksPage({ onNavigate, notify, me }: {
                              title={task.next_actor ?? ''}>{STATUS_LABEL[task.status]}</span></div>
                   {task.status === 'done' ? (
                     <button className="ghost task-view-result" onClick={() => openDetail(task, 'result')}>查看结果</button>
+                  ) : task.status === 'running'
+                      && task.execution_mode === 'multi'
+                      && !!result?.user && task.user === result.user ? (
+                    <div className="task-actions">
+                      <button className="secondary" onClick={() => openDetail(task, 'reason')}>查看进度</button>
+                      <button className="danger" disabled={busy === task.thread_id}
+                              onClick={() => cancel(task)}>
+                        {busy === task.thread_id ? '取消中…' : '取消'}
+                      </button>
+                    </div>
                   ) : (
                     <button
                       className={task.resumable ? 'danger task-view-reason' : 'secondary task-view-reason'}

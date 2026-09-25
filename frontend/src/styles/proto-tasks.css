@@ -72,6 +72,8 @@
 .tasks-page .task-row .status.wait { color: var(--amber); background: var(--amber-wash); }
 .tasks-page .task-row > button { justify-self: end; white-space: nowrap; }
 .tasks-page .task-row > button:disabled { opacity: .55; cursor: default; transform: none; }
+.tasks-page .task-actions { display: flex; justify-self: end; gap: 6px; }
+.tasks-page .task-actions button { white-space: nowrap; }
 
 .tasks-page .task-empty { padding: 24px 14px; text-align: center; }
 .tasks-page .task-empty strong { display: block; font-size: 9px; }

@@ -149,6 +149,8 @@ multi_agent:
   max_repair_rounds: 2
   cost_cap_tokens: 30000
   allow_cross_source: false
+  # 跨源打开后仍需为每一对源登记聚合 JoinContract；没有契约一律 P12 拒绝。
+  join_contracts: []
 
 skills:
   enabled: true

@@ -119,6 +119,34 @@ def set_status(cfg: Any, skill_id: str, version: str, status: SkillStatus) -> Sk
         return manifest
 
 
+def rollback(cfg: Any, skill_id: str, version: str) -> SkillManifest:
+    """Make a previously tested version active and disable newer versions."""
+    with _LOCK:
+        data = _read(cfg)
+        target = _find(data, skill_id, version)
+        manifest = SkillManifest.model_validate(target)
+        if manifest.ref not in data["tested"]:
+            raise ValueError("只能回滚到曾通过测试的版本")
+        issues = _publication_issues(manifest, data)
+        if issues:
+            raise ValueError("；".join(issues))
+        target_version = tuple(int(part) for part in version.split("."))
+        for item in data["manifests"]:
+            if item.get("id") != skill_id:
+                continue
+            current = tuple(int(part) for part in str(item["version"]).split("."))
+            if current > target_version and item.get("status") == SkillStatus.PUBLISHED.value:
+                item["status"] = SkillStatus.DISABLED.value
+                item["checksum"] = ""
+                item.update(SkillManifest.model_validate(item).model_dump(mode="json"))
+        target["status"] = SkillStatus.PUBLISHED.value
+        target["checksum"] = ""
+        released = SkillManifest.model_validate(target)
+        target.update(released.model_dump(mode="json"))
+        _write(cfg, data)
+        return released
+
+
 def _find(data: dict[str, Any], skill_id: str, version: str) -> dict[str, Any]:
     candidates = [item for item in data["manifests"] if item.get("id") == skill_id
                   and (not version or item.get("version") == version)]

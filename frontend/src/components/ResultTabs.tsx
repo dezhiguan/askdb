@@ -267,7 +267,10 @@ function CollaborationPanel({ result }: { result: AskResult }) {
           <div className="evidence-ledger">{evidence.map(item => (
             <details key={item.evidence_id}>
               <summary><b>{item.source_id}</b><span>{item.row_count ?? 0} 行</span><code>{item.checksum?.slice(0, 18) || '—'}…</code></summary>
-              <div><small>{item.evidence_id}{item.supersedes ? ` · supersedes ${item.supersedes}` : ''}</small><pre>{item.sql_final}</pre></div>
+              <div>
+                <small>{item.evidence_id}{item.as_of ? ` · 数据截至 ${fmtStamp(item.as_of)}` : ''}{item.supersedes ? ` · supersedes ${item.supersedes}` : ''}</small>
+                <pre>{item.sql_final}</pre>
+              </div>
             </details>
           ))}</div>
         </section>}

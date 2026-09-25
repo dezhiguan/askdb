@@ -17,7 +17,9 @@ def latest_by_subtask(items: dict[str, dict[str, Any]]) -> dict[str, dict[str, A
 
 def from_tool_result(*, run_id: str, subtask_id: str, source_id: str,
                      data: dict[str, Any], bindings: list[dict[str, Any]],
-                     attempt: int, supersedes: str = "") -> Evidence:
+                     attempt: int, supersedes: str = "",
+                     scope_fingerprint: str = "",
+                     semantic_contract: dict[str, Any] | None = None) -> Evidence:
     from .protocol import SkillBinding
 
     return Evidence(
@@ -39,5 +41,6 @@ def from_tool_result(*, run_id: str, subtask_id: str, source_id: str,
         mask_degraded=bool(data.get("mask_degraded", False)),
         skill_bindings=[SkillBinding.model_validate(item) for item in bindings],
         supersedes=supersedes,
-        scope={"attempt": attempt},
+        scope={"attempt": attempt, "scope_fingerprint": scope_fingerprint,
+               "semantic_contract": dict(semantic_contract or {})},
     )

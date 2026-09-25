@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from askdb import audit, auth, server
+from askdb import audit, auditstore, auth, server
 
 SECRET = "s" * 40
 
@@ -192,9 +192,40 @@ def test_stage_tells_who_acts_next(acfg):
         ("EXEC", audit.NEEDS_OPERATOR),      # 库连不上，该找运维且可重试
         ("INTERRUPTED", audit.INTERRUPTED),  # 现场在检查点里
         ("RESUME_BLOCKED", audit.INTERRUPTED),
+        ("CANCELED", audit.CANCELED),
     ]
     for code, want in cases:
         assert audit.stage({"rejected_by": code}) == want, code
+
+
+def test_postgres_task_fold_keeps_canceled_as_its_own_terminal_state():
+    sql, _args = auditstore._fold_sql(audit.TaskFold())
+    assert "t.rejected_by = 'CANCELED'" in sql
+    assert f"THEN '{audit.CANCELED}'" in sql
+
+
+def test_owner_can_cancel_a_running_multiagent_task(client, acfg, monkeypatch):
+    record = {
+        **_rec("aaaaaaaaaaa1", "aaaaaaaaaaa1", user="alice", rejected=None,
+               ts=_now(), question="分析渠道和地区"),
+        "phase": audit.PHASE_STARTED,
+        "source": "builtin",
+        "execution_mode": "multi",
+    }
+    _write(acfg.audit_log, [record])
+    calls: list[str] = []
+    monkeypatch.setattr(
+        "askdb.multiagent.runtime.cancel",
+        lambda thread_id, _cfg: calls.append(thread_id) or True,
+    )
+    client.post("/api/auth/login", json={"username": "alice", "password": "pw"})
+
+    response = client.post("/api/tasks/aaaaaaaaaaa1/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "CANCELED"
+    assert calls == ["aaaaaaaaaaa1"]
+    assert audit.tasks(acfg.audit_log)[0]["status"] == audit.CANCELED
 
 
 def test_pending_approval_is_not_a_rejection(acfg):

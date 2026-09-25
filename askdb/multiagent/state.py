@@ -21,6 +21,8 @@ class MultiAgentState(TypedDict, total=False):
     phase: str
     plan: dict[str, Any]
     semantic_contract: dict[str, Any]
+    scope_fingerprints: dict[str, str]
+    join_contracts: list[dict[str, Any]]
     skill_bindings_by_role: Annotated[dict[str, list[dict[str, Any]]], merge_by_id]
     subtasks_by_id: Annotated[dict[str, dict[str, Any]], merge_by_id]
     evidence_by_id: Annotated[dict[str, dict[str, Any]], merge_by_id]
@@ -44,7 +46,9 @@ class MultiAgentState(TypedDict, total=False):
 def initial_state(*, question: str, run_id: str, thread_id: str, org_id: int,
                   source_id: str, requested_mode: str = "multi",
                   max_workers: int = 3, max_repair_rounds: int = 2,
-                  token_cap: int = 30_000) -> MultiAgentState:
+                  token_cap: int = 30_000,
+                  scope_fingerprints: dict[str, str] | None = None,
+                  join_contracts: list[dict[str, Any]] | None = None) -> MultiAgentState:
     return {
         "question": question,
         "run_id": run_id,
@@ -55,6 +59,8 @@ def initial_state(*, question: str, run_id: str, thread_id: str, org_id: int,
         "phase": "CREATED",
         "plan": {},
         "semantic_contract": {},
+        "scope_fingerprints": dict(scope_fingerprints or {}),
+        "join_contracts": list(join_contracts or []),
         "skill_bindings_by_role": {},
         "subtasks_by_id": {},
         "evidence_by_id": {},

@@ -38,7 +38,7 @@ log = logging.getLogger("askdb.audit")
 SUMMARY_FIELDS = (
     "trace_id", "ts", "kind", "thread_id", "org_id", "role", "user", "question", "rejected_by",
     "attempts", "rows_returned", "elapsed_ms", "cost_cny",
-    "step_count", "multi_step", "source", "source_name",
+    "step_count", "multi_step", "source", "source_name", "execution_mode",
     # 命中应答缓存的那条记录，耗时/成本/token 全是 0 —— 不标一句"命中缓存"，
     # 流水上它和一次真跑长得一样，只是快得离谱。
     "cached",
@@ -710,6 +710,7 @@ WAITING_INPUT = "waiting_input"           # 等用户补充/换个问法
 WAITING_APPROVAL = "waiting_approval"     # 等系统管理员放行（批准后仍需发起人凭票重跑）
 NEEDS_OPERATOR = "needs_operator"         # 等运维：库连不上、执行期故障
 INTERRUPTED = "interrupted"               # 断点在，可续跑
+CANCELED = "canceled"                     # 发起人主动终止，不可续跑
 
 
 #: 结果可信度存疑的痕迹 → 一句人话。**判据全在审计里已有的字段上**，
@@ -762,6 +763,8 @@ def stage(rec: dict[str, Any], *, approval_status: str = "",
         # 全部是一个多小时前被杀的进程，没有任何机制会再看它们一眼。
         return INTERRUPTED if stale else RUNNING
     code = rec.get("rejected_by")
+    if code == "CANCELED":
+        return CANCELED
     if code in _OPEN_CODES:
         return INTERRUPTED
     if not code:
@@ -946,6 +949,7 @@ _NEXT_ACTOR = {
     WAITING_APPROVAL: "等系统管理员放行：批准后由你自己凭票重跑",
     NEEDS_OPERATOR: "等运维：数据源连不上或执行期故障，恢复后可重试",
     INTERRUPTED: "可续跑：现场还在检查点里",
+    CANCELED: "已由发起人取消：未开始的 Worker 不再调度",
 }
 
 #: 审批已批准、票还没用掉时的那一句。**与 _NEXT_ACTOR[WAITING_APPROVAL] 是
@@ -1143,7 +1147,7 @@ SINCE_CHOICES = ("all", "today", "7d", "30d")
 
 TASK_STATUSES = (
     RUNNING, DONE, WAITING_REVIEW, REVIEW_RETURNED, REJECTED,
-    WAITING_INPUT, WAITING_APPROVAL, NEEDS_OPERATOR, INTERRUPTED,
+    WAITING_INPUT, WAITING_APPROVAL, NEEDS_OPERATOR, INTERRUPTED, CANCELED,
 )
 
 RISK_LEVELS = ("HIGH", "MEDIUM", "LOW")
@@ -1446,6 +1450,7 @@ def _task_stats(counts: list[tuple[Any, ...]]) -> dict[str, Any]:
         "review_returned": by.get(REVIEW_RETURNED, 0),
         "needs_operator": by.get(NEEDS_OPERATOR, 0),
         "interrupted": by.get(INTERRUPTED, 0),
+        "canceled": by.get(CANCELED, 0),
         "rejected": by.get(REJECTED, 0),
         "done": done,
         "done_today": done_today,
@@ -1505,6 +1510,7 @@ def paginate_tasks(
         "review_returned": counts[REVIEW_RETURNED],
         "needs_operator": counts[NEEDS_OPERATOR],
         "interrupted": counts[INTERRUPTED],
+        "canceled": counts[CANCELED],
         "rejected": counts[REJECTED],
         "done": len(done),
         "done_today": done_today,

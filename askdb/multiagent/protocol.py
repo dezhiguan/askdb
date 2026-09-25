@@ -70,6 +70,18 @@ class QuerySpec(_Contract):
     source_id: str
     semantic_context: dict[str, Any] = Field(default_factory=dict)
     constraints: dict[str, Any] = Field(default_factory=dict)
+    expected_shape: str = ""
+
+
+class JoinContract(_Contract):
+    """An explicitly approved way to combine aggregate evidence across sources."""
+    contract_id: str
+    left_source: str
+    right_source: str
+    join_keys: list[str] = Field(min_length=1)
+    grain: str
+    aggregate_only: bool = True
+    timezone: str = "Asia/Shanghai"
 
 
 class SubTask(_Contract):
@@ -89,6 +101,8 @@ class TaskPlan(_Contract):
     run_id: str
     question: str
     execution_mode: str = "multi"
+    plan_version: int = Field(default=1, ge=1)
+    created_by: AgentRole = AgentRole.SUPERVISOR
     budget: Budget = Field(default_factory=Budget)
     subtasks: list[SubTask] = Field(default_factory=list)
     created_at: str = Field(

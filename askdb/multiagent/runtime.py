@@ -3,16 +3,44 @@
 from __future__ import annotations
 
 import uuid
+import threading
 from typing import Any
 
 from ..config import Config
 from ..graph import AskResult, _audit_of
 from ..llm import LlmClient
+from ..qcache import scope as scope_fingerprint
 from ..quota import build_quota
 from ..trace import Tracer, now_iso, write_audit
 from .evidence_store import latest_by_subtask
+from .federation import approved_contracts, parse_contracts
 from .state import initial_state
 from .supervisor_graph import MultiAgentDeps, ensure_graph
+
+
+_CANCEL_LOCK = threading.Lock()
+_CANCEL_EVENTS: dict[str, threading.Event] = {}
+
+
+def _cancel_event(thread_id: str) -> threading.Event:
+    with _CANCEL_LOCK:
+        return _CANCEL_EVENTS.setdefault(thread_id, threading.Event())
+
+
+def cancel(thread_id: str, cfg: Config) -> bool:
+    """Cooperatively stop unstarted workers and persist the canceled terminal state."""
+    try:
+        graph = ensure_graph(cfg)
+        config = {"configurable": {"thread_id": thread_id}}
+        snapshot = graph.get_state(config)
+        values = snapshot.values or {}
+        if not values.get("plan") or values.get("status") in ("COMPLETED", "CANCELED"):
+            return False
+        graph.update_state(config, {"phase": "CANCELED", "status": "CANCELED"})
+        _cancel_event(thread_id).set()
+        return True
+    except Exception:
+        return False
 
 
 def settings(cfg: Config) -> dict[str, Any]:
@@ -26,6 +54,7 @@ def settings(cfg: Config) -> dict[str, Any]:
         "max_repair_rounds": max(0, int(raw.get("max_repair_rounds", 2))),
         "cost_cap_tokens": max(1, int(raw.get("cost_cap_tokens", 30_000))),
         "allow_cross_source": bool(raw.get("allow_cross_source", False)),
+        "join_contracts": list(raw.get("join_contracts") or []),
     }
 
 
@@ -38,6 +67,7 @@ def run_multi_agent(
     trace_id: str | None = None,
     thread_id: str | None = None,
     on_span: Any = None,
+    shadow_of: str = "",
 ) -> AskResult:
     opts = settings(cfg)
     trace_id = trace_id or uuid.uuid4().hex[:12]
@@ -56,11 +86,18 @@ def run_multi_agent(
     if len(sources) > 1 and not opts["allow_cross_source"]:
         return _failed(question, trace_id, thread_id, org, tracer, "POLICY",
                        "当前实例未开启跨数据源编排")
+    try:
+        joins = approved_contracts(set(sources), parse_contracts(opts["join_contracts"]))
+    except ValueError as exc:
+        return _failed(question, trace_id, thread_id, org, tracer, "P12", str(exc))
+    scope_fingerprints = {source: scope_fingerprint(source_cfg)
+                          for source, source_cfg in sources.items()}
 
     try:
         write_audit(cfg, {
             "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
             "phase": "started", "execution_mode": "multi",
+            "shadow": bool(shadow_of), "shadow_of": shadow_of,
             "thread_id": thread_id, "org_id": org, "question": question,
             "role": cfg.role or "ANONYMOUS", "user": cfg.user or "",
             "source": source_id, "sources": sorted(sources),
@@ -70,13 +107,16 @@ def run_multi_agent(
         pass
 
     deps = MultiAgentDeps(
-        cfg=cfg, llm=LlmClient(cfg), tracer=tracer, source_configs=sources)
+        cfg=cfg, llm=LlmClient(cfg), tracer=tracer, source_configs=sources,
+        cancel_event=_cancel_event(thread_id))
     state = initial_state(
         question=question, run_id=trace_id, thread_id=thread_id,
         org_id=org, source_id=source_id, requested_mode="multi",
         max_workers=opts["max_workers"],
         max_repair_rounds=opts["max_repair_rounds"],
         token_cap=opts["cost_cap_tokens"],
+        scope_fingerprints=scope_fingerprints,
+        join_contracts=[item.model_dump(mode="json") for item in joins],
     )
     try:
         final = ensure_graph(cfg).invoke(
@@ -91,9 +131,13 @@ def run_multi_agent(
         result = _failed(question, trace_id, thread_id, org, tracer, "EXEC",
                          f"多智能体编排失败：{exc}")
     try:
-        write_audit(cfg, _audit_of(result, cfg, "ask"))
+        record = _audit_of(result, cfg, "multi_shadow" if shadow_of else "ask")
+        record.update({"shadow": bool(shadow_of), "shadow_of": shadow_of})
+        write_audit(cfg, record)
     except Exception:
         pass
+    with _CANCEL_LOCK:
+        _CANCEL_EVENTS.pop(thread_id, None)
     return result
 
 
@@ -118,6 +162,12 @@ def resume_multi_agent(
     values = dict(snapshot.values or {})
     if not values:
         return None
+    if values.get("status") == "CANCELED":
+        tracer = Tracer(on_span=on_span)
+        return _failed(str(values.get("question", "")),
+                       str(values.get("run_id", thread_id)), thread_id,
+                       int(values.get("org_id", 0)), tracer, "CANCELED",
+                       "任务已取消，不能继续执行")
     expected_source = str(values.get("source_id") or "builtin")
     current_source = cfg.source_id or "builtin"
     if expected_source != current_source:
@@ -126,6 +176,15 @@ def resume_multi_agent(
             str(values.get("question", "")), str(values.get("run_id", thread_id)),
             thread_id, int(values.get("org_id", 0)), tracer, "RESUME_BLOCKED",
             f"任务原数据源为 {expected_source}，当前授权数据源为 {current_source}",
+        )
+    expected_scope = (values.get("scope_fingerprints") or {}).get(expected_source, "")
+    current_scope = scope_fingerprint(cfg)
+    if expected_scope and expected_scope != current_scope:
+        tracer = Tracer(on_span=on_span)
+        return _failed(
+            str(values.get("question", "")), str(values.get("run_id", thread_id)),
+            thread_id, int(values.get("org_id", 0)), tracer, "RESUME_BLOCKED",
+            "当前权限、表白名单、脱敏或 Guard 配置已变化，旧 Checkpoint 不再获授权",
         )
     rewritten = (question or "").strip()
     extra = (clarification or "").strip()
@@ -138,7 +197,8 @@ def resume_multi_agent(
     opts = settings(cfg)
     tracer = Tracer(on_span=on_span)
     deps = MultiAgentDeps(cfg=cfg, llm=LlmClient(cfg), tracer=tracer,
-                          source_configs={current_source: cfg})
+                          source_configs={current_source: cfg},
+                          cancel_event=_cancel_event(thread_id))
     run_id = str(values.get("run_id") or thread_id)
     try:
         final = graph.invoke(
@@ -156,6 +216,8 @@ def resume_multi_agent(
         write_audit(cfg, _audit_of(result, cfg, "resume"))
     except Exception:
         pass
+    with _CANCEL_LOCK:
+        _CANCEL_EVENTS.pop(thread_id, None)
     return result
 
 
@@ -168,6 +230,8 @@ def is_resumable(thread_id: str, cfg: Config) -> bool | None:
     values = snapshot.values or {}
     if not values.get("plan"):
         return None
+    if values.get("status") == "CANCELED":
+        return False
     return bool(snapshot.next)
 
 
@@ -231,7 +295,7 @@ def to_result(state: dict[str, Any], cfg: Config, tracer: Tracer) -> AskResult:
         masked_columns=sorted({column for item in evidence
                                for column in item.get("masked_columns", [])}),
         mask_degraded=any(bool(item.get("mask_degraded")) for item in evidence),
-        rejected_by=None if ok else "EXEC",
+        rejected_by=None if ok else ("CANCELED" if status == "CANCELED" else "EXEC"),
         error=str(state.get("error", "")),
         tables_hit=[],
         caliber="；".join(str(contract.get(key, "")) for key in

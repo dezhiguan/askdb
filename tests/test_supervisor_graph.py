@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 from askdb import tools
@@ -168,3 +169,29 @@ def test_supervisor_graph_persists_protocol_state_for_cold_resume(cfg, monkeypat
     assert snapshot.values["skill_bindings_by_role"]
     assert not snapshot.next
     reset_graph()
+
+
+def test_cancel_stops_workers_before_sql_execution(cfg, monkeypatch):
+    execute_calls = {"count": 0}
+    _patch_tools(monkeypatch)
+
+    def should_not_execute(*args, **kwargs):
+        execute_calls["count"] += 1
+        raise AssertionError("canceled worker must not execute SQL")
+
+    monkeypatch.setattr(tools, "execute_sql", should_not_execute)
+    deps = _deps(cfg)
+    deps.cancel_event = threading.Event()
+    deps.cancel_event.set()
+    state = initial_state(
+        question="分析订单下降原因，分别看渠道和地区",
+        run_id="canceled", thread_id="canceled", org_id=65,
+        source_id="builtin", max_workers=3, max_repair_rounds=1,
+    )
+
+    result = build_graph().invoke(
+        state, {"configurable": {"thread_id": "canceled", "deps": deps}})
+
+    assert result["status"] == "CANCELED"
+    assert not result["evidence_by_id"]
+    assert execute_calls["count"] == 0

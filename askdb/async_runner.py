@@ -170,6 +170,22 @@ def stats() -> dict[str, Any]:
     return _POOL.stats()
 
 
+def submit_background(fn: Callable[[], Any], *, user: str = "",
+                      per_user: int = DEFAULT_PER_USER) -> bool:
+    """Best-effort background work for shadow evaluation.
+
+    Unlike run_or_detach this has no user-facing receipt. Capacity exhaustion is
+    therefore a clean skip, never a reason to delay or fail the primary answer.
+    """
+    try:
+        if not _POOL.reserve(user, per_user):
+            return False
+    except CapacityExceeded:
+        return False
+    _POOL.submit(fn, user)
+    return True
+
+
 def run_or_detach(fn: Callable[[], AskResult], threshold_ms: int, thread_id: str,
                   *, user: str = "", per_user: int = DEFAULT_PER_USER,
                   handoff: Handoff | None = None,

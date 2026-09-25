@@ -141,7 +141,8 @@ def test_anonymous_reads_everything_and_writes_nothing():
     # `logged_in - identity._WRITE` 就成了恒真式，新增一个写位会自动溜过去。
     # 加位的人必须在这里显式回答一次"匿名给不给"，这条用例红了就是在问这个。
     assert anon == logged_in - {identity.SOURCES_TEST, identity.SOURCES_SCAN,
-                                identity.SOURCES_WRITE, identity.EVAL_RUN}
+                                identity.SOURCES_WRITE, identity.EVAL_RUN,
+                                identity.SKILLS_WRITE}
     # 写类：一位都没有
     assert identity.SOURCES_WRITE not in anon
     assert identity.APPROVE not in anon

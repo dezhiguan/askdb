@@ -17,7 +17,13 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
     cfg = deps.config_for(source_id)
     tracer = deps.tracer
     started = tracer.start()
-    resolved = skill.resolve(
+    if deps.cancelled():
+        return {"subtasks_by_id": {task_id: {
+            **task, "status": "CANCELED", "attempt": attempt,
+            "error": "任务已由发起人取消"}}}
+    pinned = (state.get("skill_bindings_by_role") or {}).get(
+        f"query_worker:{task_id}", [])
+    resolved = skill.load_pinned(cfg, pinned) if pinned else skill.resolve(
         cfg, role="query_worker", source_id=source_id,
         question=task.get("query", {}).get("question") or state["question"],
         runtime_allowed_tools=tools.REGISTRY.keys(),
@@ -48,6 +54,10 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
         sql = str(getattr(draft, "sql", ""))
         if not sql:
             raise ValueError(getattr(draft, "reasoning", "Worker 未生成 SQL"))
+        if deps.cancelled():
+            return {"subtasks_by_id": {task_id: {
+                **task, "status": "CANCELED", "attempt": attempt,
+                "error": "任务已由发起人取消；SQL 未执行"}}}
         executor, own_executor = deps.executor_for(cfg)
         try:
             result = tools.execute_sql(sql, cfg, int(state.get("org_id", 0)), executor)
@@ -63,6 +73,8 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
             bindings=[item.model_dump(mode="json") for item in resolved.bindings],
             attempt=attempt,
             supersedes=previous,
+            scope_fingerprint=(state.get("scope_fingerprints") or {}).get(source_id, ""),
+            semantic_contract=contract,
         )
         updated = {**task, "status": "SUCCEEDED", "attempt": attempt, "error": ""}
         tracer.add(
@@ -71,8 +83,11 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
             tok_out=getattr(usage, "output_tokens", 0),
             cost_cny=getattr(usage, "cost_cny", 0.0),
             tables=list(recall.data.get("tables", [])), stage=task_id,
-            input=task, output={"evidence_id": evidence.evidence_id,
-                                "checksum": evidence.checksum},
+            input=task, output={
+                "evidence_id": evidence.evidence_id,
+                "checksum": evidence.checksum,
+                "skill_bindings": [item.model_dump(mode="json")
+                                   for item in resolved.bindings]},
         )
         return {
             "subtasks_by_id": {task_id: updated},

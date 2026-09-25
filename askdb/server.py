@@ -172,7 +172,9 @@ _WRITE_ACTIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("POST", ("api", "skills"), "创建 Skill"),
     ("POST", ("api", "skills", "*", "test"), "测试 Skill"),
     ("POST", ("api", "skills", "*", "publish"), "发布 Skill"),
+    ("POST", ("api", "skills", "*", "rollback"), "回滚 Skill"),
     ("POST", ("api", "skills", "*", "status"), "调整 Skill 状态"),
+    ("POST", ("api", "tasks", "*", "cancel"), "取消任务"),
     ("PUT", ("api", "sources", "*", "tables"), "调整数据源的可查表"),
     ("DELETE", ("api", "sources", "*"), "移除数据源"),
     ("POST", ("api", "identity", "members"), "新增成员"),
@@ -1625,6 +1627,20 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"ok": True, "item": manifest.model_dump(mode="json")}
 
+    @app.post("/api/skills/{skill_id}/rollback")
+    def skills_rollback(skill_id: str, request: Request,
+                        version: str) -> dict[str, Any]:
+        _require_cap(request, _identity.SKILLS_WRITE, "回滚 Skill")
+        from .multiagent.skills.store import rollback
+
+        try:
+            manifest = rollback(cfg, skill_id, version)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Skill 版本不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "item": manifest.model_dump(mode="json")}
+
     @app.post("/api/skills/resolve-preview")
     def skills_resolve_preview(body: SkillResolveRequest,
                                request: Request) -> dict[str, Any]:
@@ -3039,6 +3055,53 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         out["hint"] = last.get("hint") or ""
         return JSONResponse(out)
 
+    @app.post("/api/tasks/{thread_id}/cancel")
+    def task_cancel(thread_id: str, request: Request) -> dict[str, Any]:
+        """Cancel an owned, running multi-agent thread."""
+        if not _current_user(request):
+            raise HTTPException(status_code=401, detail="取消任务需要登录")
+        if not _TRACE_ID_RE.fullmatch(thread_id or ""):
+            raise HTTPException(status_code=404, detail="任务不存在")
+        from .audit import AuditFilter, iter_records
+
+        recs: list[dict[str, Any]] = []
+        stream = iter_records(cfg, AuditFilter(
+            include_started=True, thread_ids=(thread_id,)))
+        with closing(stream):
+            recs.extend(stream)
+        if not recs:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        first = recs[0]
+        owner = str(first.get("user") or "")
+        if owner and owner != (_current_user(request) or ""):
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if str(first.get("execution_mode") or "single") != "multi":
+            raise HTTPException(status_code=409, detail="仅多智能体任务支持协作取消")
+
+        source = str(first.get("source") or "")
+        scoped = _scoped(request, _cfg_for(source, request))
+        _require_scope(scoped)
+        from .multiagent import runtime as multi_runtime
+
+        if not multi_runtime.cancel(thread_id, scoped):
+            raise HTTPException(status_code=409, detail="任务已经结束或当前不可取消")
+
+        from .graph import AskResult, _audit_of
+        from .trace import write_audit
+
+        result = AskResult(
+            ok=False,
+            question=str(first.get("question") or ""),
+            trace_id=str(first.get("trace_id") or thread_id),
+            thread_id=thread_id,
+            org_id=int(first.get("org_id") or 0),
+            rejected_by="CANCELED",
+            error="任务已由发起人取消；未开始的 Worker 已停止调度",
+            execution_mode="multi",
+        )
+        write_audit(scoped, _audit_of(result, scoped, "cancel"))
+        return {"ok": True, "thread_id": thread_id, "status": "CANCELED"}
+
     @app.post("/api/resume")
     def resume_task(req: ResumeRequest, request: Request) -> JSONResponse:
         """从断点续跑一次中断的提问（中断恢复设计 V1.1）。
@@ -3663,6 +3726,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             and (req.mode == "multi"
                  or (req.mode == "auto" and _ma["mode"] in ("assist", "enforce")
                      and _route.route == "multi")))
+        _shadow_multi = bool(
+            _ma["enabled"] and _ma["mode"] == "shadow"
+            and req.mode == "auto" and _route.route == "multi")
         _source_map = {
             item.source_id or ("builtin" if index == 0 else requested_sources[index]): item
             for index, item in enumerate(scoped_sources)
@@ -3812,10 +3878,19 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     q_text, scoped, org_id=req.org_id,
                     source_configs=_source_map, trace_id=_tid, thread_id=_tid,
                     on_span=_on_span)
-            return run_agent(
+            primary = run_agent(
                 q_text, scoped, org_id=req.org_id,
                 trace_id=_tid, thread_id=_tid, handoff=_ho,
                 on_span=_on_span)
+            if _shadow_multi:
+                shadow_id = _uuid.uuid4().hex[:12]
+                _async_runner.submit_background(
+                    lambda: _run_multi_agent(
+                        q_text, scoped, org_id=req.org_id,
+                        source_configs=_source_map, trace_id=shadow_id,
+                        thread_id=shadow_id, shadow_of=_tid),
+                    user=scoped.user or "", per_user=_async_per_user(scoped))
+            return primary
 
         try:
             r, _notice = _async_runner.run_or_detach(

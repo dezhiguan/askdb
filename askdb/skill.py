@@ -74,6 +74,33 @@ def resolve(cfg: Any, *, role: str = "query_worker", source_id: str = "",
     ))
 
 
+def load_pinned(cfg: Any, bindings: Iterable[dict[str, Any]]) -> Any:
+    """Rehydrate the exact immutable Skill versions stored in a checkpoint.
+
+    A newer publication must not change an in-flight or repaired Agent. Revoked
+    packages are the sole exception: they fail closed instead of being replayed.
+    """
+    from .multiagent.skills import ResolutionError, ResolutionReport, build_registry
+    from .multiagent.skills.manifest import SkillStatus
+    from .multiagent.protocol import SkillBinding
+
+    registry = build_registry(cfg)
+    report = ResolutionReport()
+    for raw in bindings:
+        binding = SkillBinding.model_validate(raw)
+        manifest = registry.get(binding.skill_id, binding.version)
+        if manifest is None:
+            raise ResolutionError(f"pinned skill is unavailable: {binding.skill_id}@{binding.version}")
+        if manifest.status == SkillStatus.REVOKED.value:
+            raise ResolutionError(f"pinned skill was revoked: {manifest.ref}")
+        if binding.checksum and manifest.checksum != binding.checksum:
+            raise ResolutionError(f"pinned skill checksum changed: {manifest.ref}")
+        report.bindings.append(binding)
+        report.manifests.append(manifest)
+        report.effective_tools.update(binding.effective_tools)
+    return report
+
+
 def render(cfg: Any, *, role: str = "query_worker", source_id: str = "",
            question: str = "", intent: str = "", metrics: Iterable[str] = (),
            tables: Iterable[str] = ()) -> str:
