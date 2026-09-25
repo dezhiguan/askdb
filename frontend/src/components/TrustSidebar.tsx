@@ -61,6 +61,18 @@ export function TrustSidebar({ health, source, result, mode, me, onResultTab, on
   // table_count，内置源取 schema 表数），直接用；取不到时退回 me.scope，
   // 再取不到就给 null —— 这一项直接不进准入清单，不拿一个猜的数去判真假。
   const whitelist = source?.tables ?? (source?.id ? null : me?.scope.tables.length ?? null)
+  // scope.tables 的空数组表示「身份不额外收窄」，不是零表可见。此前 title 直接
+  // 渲染数组长度，因而一边成功查询 26 张表，一边宣称「可见表 0 张」。有显式
+  // 身份白名单时显示它；没有时回到当前数据源真实开放表数。
+  const scopedTableCount = me?.scope.tables.length ?? 0
+  const visibleTableCount = scopedTableCount > 0 ? scopedTableCount : (source?.tables ?? null)
+  const identityTitle = !me?.username
+    ? '未登录，按匿名可见范围执行'
+    : scopedTableCount > 0
+      ? `可见表 ${scopedTableCount} 张 · 行上限 ${me.scope.max_rows}`
+      : visibleTableCount != null
+        ? `当前数据源开放 ${visibleTableCount} 张表 · 身份未额外收窄 · 行上限 ${me.scope.max_rows}`
+        : `身份未额外收窄 · 行上限 ${me.scope.max_rows}`
 
   // 有结果且真的执行成功了才切到「本次结果」；被护栏拒掉的那次没有结果可评。
   // 判据走 trust.ts —— 执行追踪页那枚角标调的是同一份，两处不能各算各的
@@ -114,7 +126,7 @@ export function TrustSidebar({ health, source, result, mode, me, onResultTab, on
         </div>
         {/* 三格标签照原型：身份 / 数据库角色 / 数据保护 */}
         <div className="assurance-grid">
-          <div className="assurance-item" title={me?.username ? `可见表 ${me.scope.tables.length} 张 · 行上限 ${me.scope.max_rows}` : '未登录，按匿名可见范围执行'}>
+          <div className="assurance-item" title={identityTitle}>
             <span>身份</span><strong>{identityLabel(me)}</strong>
           </div>
           {/* askdb 的每一条连接都是只读（duckdb read_only / postgres 只读事务）；

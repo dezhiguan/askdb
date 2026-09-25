@@ -45,6 +45,14 @@
 
 /* ---------------- 审计表（原型 .audit-row） ---------------- */
 
+/* .card 的通用 overflow:hidden 会以更晚/同权重规则吃掉 theme.css 的
+   .table-scroll。窄屏下表格比卡片宽，必须让卡片自己横向滚动，否则最右侧的
+   复放与观测操作会被永久裁掉。 */
+.card.table-scroll {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
+}
 .audit-row { cursor: pointer; }
 .audit-row:hover td { background: var(--green-wash); }
 /* 后端没落这项的格子：保留原型排版，但看得出来是占位而不是空值 */

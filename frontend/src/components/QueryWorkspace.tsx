@@ -215,8 +215,10 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [threadId])
 
-  const run = async () => {
-    const text = question.trim()
+  const run = async (textOverride?: string) => {
+    // 键盘提交直接带 textarea 当前值进来。快速 fill → Enter 时，React 的
+    // question 状态可能还没完成一次渲染；只读 state 会把刚输入的非空值当成空值。
+    const text = (textOverride ?? question).trim()
     if (!text) { inputRef.current?.focus(); return }
     // Enter 与「发送」按钮必须同一套判定。按钮上挂着 disabled，Enter 却直接
     // 进链路 —— 两条入口对同一个状态给出不同结果，用户看到的就是"有时能发、
@@ -319,13 +321,18 @@ export function QueryWorkspace({ health, sources, onNavigate, notify, me, prefil
               disabled={!canQuery}
               onChange={e => setQuestion(e.target.value)}
               onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey && mode === 'ask') { e.preventDefault(); run() }
+                // 两种模式的页脚都把 Enter 当作提交键。中文输入法确认候选时也会
+                // 产生 Enter，组合态必须放行，否则选一个词就会误发查询。
+                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  void run(e.currentTarget.value)
+                }
               }}
               placeholder={!canQuery ? '登录后可查询'
                 : mode === 'ask' ? '例如：各知识库分别有多少文档'
                 : 'SELECT ... —— 直查不经模型，只跑护栏、干跑与只读执行'}
             />
-            <button className="send" onClick={run}
+            <button className="send" onClick={() => { void run() }}
                     disabled={running || !canQuery || !usable || !question.trim()}
                     title={canQuery ? undefined : '查询需要登录后才能执行'}>
               {running ? '…' : '↗'}

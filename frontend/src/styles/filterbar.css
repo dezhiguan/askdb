@@ -92,6 +92,9 @@
 .tasks-page .task-list {
   display: grid;
   grid-template-columns: var(--task-cols);
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .tasks-page .task-list .task-head,
 .tasks-page .task-list .task-row {

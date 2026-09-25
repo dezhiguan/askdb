@@ -62,6 +62,34 @@ def test_build_output_is_committed():
         assert asset.is_file(), f"页面引用了不存在的资源 {ref}（产物没提交全）"
 
 
+def test_frontend_regressions_for_query_and_mobile_tables():
+    """钉住生产 Playwright 实测抓到的三条前端回归。"""
+    query = (FRONTEND_SRC / "components" / "QueryWorkspace.tsx").read_text(encoding="utf-8")
+    trust = (FRONTEND_SRC / "components" / "TrustSidebar.tsx").read_text(encoding="utf-8")
+    audit_css = (FRONTEND_SRC / "styles" / "proto-audit.css").read_text(encoding="utf-8")
+    filters_css = (FRONTEND_SRC / "styles" / "filterbar.css").read_text(encoding="utf-8")
+
+    key_handler = re.search(r"onKeyDown=\{e => \{(.*?)\n\s*\}\}", query, re.S)
+    assert key_handler and "mode === 'ask'" not in key_handler.group(1), (
+        "Enter 又被限制成只提交自然语言模式，直查 SQL 会与页面提示不一致")
+    assert "nativeEvent.isComposing" in key_handler.group(1), "Enter 提交必须避开输入法组合态"
+    assert "run(e.currentTarget.value)" in key_handler.group(1), (
+        "Enter 必须提交输入框当前值，不能撞 React 状态尚未刷新的竞态")
+
+    assert "visibleTableCount" in trust and "title={identityTitle}" in trust
+    assert "可见表 ${me.scope.tables.length}" not in trust, (
+        "scope.tables=[] 表示不额外收窄，不能再显示成可见 0 张")
+
+    assert re.search(r"\.card\.table-scroll\s*\{[^}]*overflow-x:\s*auto", audit_css, re.S)
+    assert re.search(r"\.tasks-page \.task-list\s*\{[^}]*overflow-x:\s*auto", filters_css, re.S)
+
+
+def test_frontend_declares_an_embedded_favicon():
+    """浏览器默认请求 /favicon.ico 会稳定制造一条无意义的 404。"""
+    html = (ROOT / "frontend" / "index.html").read_text(encoding="utf-8")
+    assert re.search(r'<link\s+rel="icon"\s+href="data:image/svg\+xml,', html)
+
+
 def test_assets_are_actually_served(client):
     """只加路由不挂静态目录，页面会白屏而接口全绿 —— 这种故障最难查。"""
     html = (WEB / "index.html").read_text(encoding="utf-8")
