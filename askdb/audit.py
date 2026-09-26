@@ -138,6 +138,7 @@ REPLAY_FIELDS = (
     "step_count", "multi_step", "converged_early", "rows_returned",
     "elapsed_ms", "tok_in", "tok_out", "cost_cny", "steps",
     "source", "source_name", "cached", "cached_from",
+    "shadow_of", "shadow_comparison",
 )
 
 # 「最终结果」字段（/api/result 用）。与上面两份白名单**分开**、单独一道门：
@@ -1090,7 +1091,8 @@ def tasks(path: Any, only_user: str | None = None, *,
         owner = recs[0].get("user") or ""
         if only_user is not None and owner != only_user:
             continue
-        last = recs[-1]
+        last = next((r for r in reversed(recs)
+                     if r.get("rejected_by") == "CANCELED"), recs[-1])
         item = _summary(last)
         item["thread_id"] = tid
         item["attempts_on_thread"] = len(recs)

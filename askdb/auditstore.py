@@ -919,7 +919,9 @@ def _thread_cte(f: Any, fold: Any, owner: str | None) -> tuple[str, list[Any]]:
         OR NOT EXISTS (SELECT 1 FROM scoped d
                         WHERE d.trace_id = s.trace_id AND d.phase <> 'started')
 ), grouped AS (
-    SELECT th, count(*) AS attempts_on_thread, min(id) AS first_id, max(id) AS last_id
+    SELECT th, count(*) AS attempts_on_thread, min(id) AS first_id,
+           COALESCE(max(id) FILTER (WHERE rejected_by = 'CANCELED'),
+                    max(id)) AS last_id
       FROM live GROUP BY th
 ), thr AS (
     SELECT g.th AS thread_id, g.attempts_on_thread, g.last_id, g.first_id,

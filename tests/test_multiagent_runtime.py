@@ -14,6 +14,7 @@ from askdb.multiagent.federation import FederationPolicyError, approved_contract
 from askdb.multiagent.skills.manifest import SkillStatus
 from askdb.trace import Tracer
 from askdb.qcache import scope as scope_fingerprint
+from askdb.multiagent.shadow_compare import compare
 
 
 def _skill_payload(skill_id: str = "orders.mom") -> dict:
@@ -175,6 +176,7 @@ def test_shadow_mode_runs_multiagent_in_background_but_returns_single(cfg, monke
 
     def fake_multi(question, cfg, **kwargs):
         seen["shadow_of"] = kwargs["shadow_of"]
+        seen["baseline_trace"] = kwargs["shadow_baseline"].trace_id
         return AskResult(ok=True, question=question, trace_id=kwargs["trace_id"],
                          thread_id=kwargs["thread_id"], org_id=65,
                          execution_mode="multi")
@@ -187,6 +189,7 @@ def test_shadow_mode_runs_multiagent_in_background_but_returns_single(cfg, monke
         "question": "分析订单下降原因，分别看渠道和地区", "mode": "auto"}).json()
     assert body["execution_mode"] == "single"
     assert seen["shadow_of"] == body["trace_id"]
+    assert seen["baseline_trace"] == body["trace_id"]
 
 
 def test_resume_blocks_when_current_scope_fingerprint_changed(cfg, monkeypatch):
@@ -233,8 +236,85 @@ def test_cancel_persists_terminal_state_before_signaling_workers(cfg, monkeypatc
     )
     monkeypatch.setattr(runtime, "ensure_graph", lambda _cfg: fake_graph)
     runtime._CANCEL_EVENTS.pop("thread", None)
-
     assert runtime.cancel("thread", cfg) is True
     assert updates == [{"phase": "CANCELED", "status": "CANCELED"}]
     assert runtime._CANCEL_EVENTS["thread"].is_set()
     runtime._CANCEL_EVENTS.pop("thread", None)
+
+
+def test_shadow_compares_sql_data_conclusion_and_evidence():
+    single = AskResult(ok=True, question="数量", trace_id="single", org_id=1,
+                       sql_final="SELECT count(*) FROM documents", rows=[[203]],
+                       reasoning="共有203个，约两个数量级", evidence=[{
+                           "evidence_id": "e1", "sql_final": "SELECT count(*) FROM documents",
+                           "rows": [[203]], "checksum": "sha256:a"}],
+                       reviews=[{"verdict": "PASS"}],
+                       claims=[{"evidence_ids": ["e1"]}])
+    shadow = AskResult(ok=True, question="数量", trace_id="shadow", org_id=1,
+                       sql_final="select count(*) from documents", rows=[[203]],
+                       reasoning="共有 203 个，约三个数量级", evidence=[{
+                           "evidence_id": "e2", "sql_final": "select count(*) from documents",
+                           "rows": [["203"]], "checksum": "sha256:b"}],
+                       reviews=[{"verdict": "PASS"}],
+                       claims=[{"evidence_ids": ["e2"]}])
+    report = compare(single, shadow)
+    assert report["layers"]["sql"]["same"] is True
+    assert report["layers"]["data"]["same"] is True
+    assert report["layers"]["conclusion"]["same"] is False
+    assert report["layers"]["conclusion"]["magnitude_claims_same"] is False
+    assert report["layers"]["evidence"]["same"] is True
+    assert report["status"] == "DIFFERENT"
+    assert "203" not in str(report), "comparison metadata must not copy result rows"
+
+
+def test_cancel_accepts_request_before_first_checkpoint(cfg, monkeypatch):
+    fake_graph = SimpleNamespace(get_state=lambda _config: SimpleNamespace(values={}))
+    monkeypatch.setattr(runtime, "ensure_graph", lambda _cfg: fake_graph)
+    runtime._CANCEL_EVENTS.pop("early", None)
+    assert runtime.cancel("early", cfg) is True
+    assert runtime._CANCEL_EVENTS["early"].is_set()
+    runtime._CANCEL_EVENTS.pop("early", None)
+
+
+def test_late_worker_cannot_publish_success_after_durable_cancel(cfg, monkeypatch):
+    from askdb.audit import AuditFilter, iter_records
+    from askdb.trace import write_audit
+
+    thread_id = "a1b2c3d4e5f6"
+
+    class FakeGraph:
+        def invoke(self, state, _config):
+            write_audit(cfg, {
+                "trace_id": thread_id, "thread_id": thread_id,
+                "kind": "cancel", "rejected_by": "CANCELED", "phase": "final",
+                "question": state["question"], "execution_mode": "multi",
+            })
+            return {**state, "status": "COMPLETED", "answer": "late success"}
+
+    monkeypatch.setattr(runtime, "ensure_graph", lambda _cfg: FakeGraph())
+    runtime._CANCEL_EVENTS.pop(thread_id, None)
+    result = runtime.run_multi_agent("分析渠道和地区", cfg,
+                                     thread_id=thread_id, trace_id=thread_id)
+    assert result.rejected_by == "CANCELED" and not result.ok
+    records = list(iter_records(cfg, AuditFilter(include_started=True,
+                                                thread_ids=(thread_id,))))
+    assert len(records) == 2  # started + authoritative cancellation
+    assert records[-1]["rejected_by"] == "CANCELED"
+    runtime._CANCEL_EVENTS.pop(thread_id, None)
+
+
+def test_cancel_remains_terminal_even_if_a_late_success_record_exists(cfg):
+    from askdb import audit, auditstore
+    from askdb.trace import write_audit
+
+    thread_id = "b1b2c3d4e5f6"
+    common = {"thread_id": thread_id, "trace_id": thread_id,
+              "question": "测试取消终态", "kind": "ask"}
+    write_audit(cfg, {**common, "phase": "started"})
+    write_audit(cfg, {**common, "phase": "final", "rejected_by": "CANCELED"})
+    write_audit(cfg, {**common, "phase": "final", "rejected_by": None,
+                      "answer": "late success"})
+    assert audit.tasks(cfg.audit_log)[0]["status"] == audit.CANCELED
+    sql, _ = auditstore._thread_cte(
+        audit.AuditFilter(include_started=True), audit.TaskFold(), None)
+    assert "max(id) FILTER (WHERE rejected_by = 'CANCELED')" in sql

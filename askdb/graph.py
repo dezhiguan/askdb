@@ -130,6 +130,7 @@ class AskResult:
     reviews: list[dict[str, Any]] = field(default_factory=list)
     claims: list[dict[str, Any]] = field(default_factory=list)
     skill_bindings: list[dict[str, Any]] = field(default_factory=list)
+    shadow_comparison: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         d = dict(self.__dict__)
@@ -505,8 +506,8 @@ def _audit_of(result: AskResult, cfg: Config, kind: str,
         ],
         "claims": result.claims,
         "skill_bindings": result.skill_bindings,
+        "shadow_comparison": result.shadow_comparison,
     }
-
 
 
 

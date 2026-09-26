@@ -3024,7 +3024,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 or r.get("trace_id") not in done_traces]
         if not recs:
             return not_found
-        last = recs[-1]
+        last = next((r for r in reversed(recs)
+                     if r.get("rejected_by") == "CANCELED"), recs[-1])
         trace = str(last.get("trace_id") or thread_id)
         ctx = _task_context()
         stale = _audit.is_stale_run(last, ctx["stale_after_s"])
@@ -3048,7 +3049,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             out["progress"] = _checkpoint_progress(thread_id, cfg)
             return JSONResponse(out)
         # 跑完了（或停在某一档）。完整应答优先，审计结果块兜底。
-        out["result"] = _take_handoff(cfg, thread_id) or None
+        out["result"] = None if status == _audit.CANCELED else (
+            _take_handoff(cfg, thread_id) or None)
         out["result_block"] = _audit.result_block(last)
         out["rejected_by"] = last.get("rejected_by")
         out["error"] = last.get("error") or ""
@@ -3077,6 +3079,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             raise HTTPException(status_code=404, detail="任务不存在")
         if str(first.get("execution_mode") or "single") != "multi":
             raise HTTPException(status_code=409, detail="仅多智能体任务支持协作取消")
+        if any(rec.get("phase") != _audit.PHASE_STARTED for rec in recs):
+            raise HTTPException(status_code=409, detail="任务已经结束或当前不可取消")
 
         source = str(first.get("source") or "")
         scoped = _scoped(request, _cfg_for(source, request))
@@ -3205,6 +3209,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         _who = (_current_user(request) or "", tuple(_roles(request)))
 
         def _settle_detached_resume(res: Any) -> None:
+            if getattr(res, "execution_mode", "single") == "multi":
+                from .multiagent.runtime import is_canceled
+
+                if is_canceled(req.thread_id, scoped):
+                    return
             _stash_handoff(scoped, req.thread_id, res)
             _open_approval_bg(scoped, res, who=_who, kind="ask",
                               question=_q or origin_question)
@@ -3821,6 +3830,11 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             而它其实只是"等人放行"。阈值 45s 时这条路几乎不发生，10s 之后
             它是常态，人工介入那一档对长任务就整个断了。
             """
+            if getattr(res, "execution_mode", "single") == "multi":
+                from .multiagent.runtime import is_canceled
+
+                if is_canceled(_tid, scoped):
+                    return
             _stash_handoff(scoped, _tid, res)
             _open_approval_bg(scoped, res, who=_who, kind="ask", question=q_text)
             # 应答缓存也必须发生在这一路，理由与上面那两件事完全相同。
@@ -3888,7 +3902,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     lambda: _run_multi_agent(
                         q_text, scoped, org_id=req.org_id,
                         source_configs=_source_map, trace_id=shadow_id,
-                        thread_id=shadow_id, shadow_of=_tid),
+                        thread_id=shadow_id, shadow_of=_tid,
+                        shadow_baseline=primary),
                     user=scoped.user or "", per_user=_async_per_user(scoped))
             return primary
 

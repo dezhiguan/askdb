@@ -70,6 +70,25 @@ def test_allowlist_fields_only(cfg, monkeypatch):
     assert set(d) <= set(REPLAY_FIELDS) | {"snapshots"}
 
 
+def test_shadow_comparison_is_available_without_result_rows(cfg, monkeypatch):
+    from askdb.trace import write_audit
+
+    client = _client(cfg, monkeypatch, replay_api=True)
+    trace_id = "abcd1234abcd"
+    comparison = {"status": "DIFFERENT", "layers": {
+        "sql": {"same": False}, "data": {"same": True},
+        "conclusion": {"same": False}, "evidence": {"same": True}}}
+    write_audit(cfg, {"trace_id": trace_id, "thread_id": trace_id,
+                      "kind": "multi_shadow", "source": "builtin",
+                      "question": "shadow", "shadow_of": "1234abcd1234",
+                      "shadow_comparison": comparison,
+                      "rows_preview": [["must not escape"]]})
+    result = client.get(f"/api/replay?trace_id={trace_id}")
+    assert result.status_code == 200
+    assert result.json()["shadow_comparison"] == comparison
+    assert "must not escape" not in result.text
+
+
 def test_rate_limited_separately(cfg, monkeypatch):
     client = _client(cfg, monkeypatch, replay_api=True)
     monkeypatch.setattr(server, "_REPLAY_RL", server._RateLimit(limit=3))

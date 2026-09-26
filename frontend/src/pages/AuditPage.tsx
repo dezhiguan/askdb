@@ -562,6 +562,28 @@ function ReplayView({ traceId, result }: { traceId: string; result: ReplayResult
         {d.thread_id && d.thread_id !== d.trace_id && <> · 关联线程 <span className="mono">{d.thread_id}</span></>}
       </p>
 
+      {d.shadow_comparison && <>
+        <h4>影子对照 · {d.shadow_comparison.status === 'MATCH' ? '四级一致' : '发现差异'}</h4>
+        <p className="drawer-note">Single {d.shadow_comparison.single_trace_id} → Multi {d.shadow_comparison.shadow_trace_id}</p>
+        <div className="timeline">
+          {([
+            ['SQL', d.shadow_comparison.layers.sql.same,
+              `${d.shadow_comparison.layers.sql.single_count} / ${d.shadow_comparison.layers.sql.shadow_count} 条`],
+            ['数据', d.shadow_comparison.layers.data.same,
+              `${d.shadow_comparison.layers.data.single_values} / ${d.shadow_comparison.layers.data.shadow_values} 个值 · 值 ${d.shadow_comparison.layers.data.values_same ? '一致' : '不同'} · 行列结构 ${d.shadow_comparison.layers.data.structure_same ? '一致' : '不同'}`],
+            ['结论', d.shadow_comparison.layers.conclusion.same,
+              `数字 ${d.shadow_comparison.layers.conclusion.numeric_facts_same ? '一致' : '有差异'} · 数量级 ${d.shadow_comparison.layers.conclusion.magnitude_claims_same ? '一致' : '有差异'}`],
+            ['Evidence', d.shadow_comparison.layers.evidence.same,
+              `${d.shadow_comparison.layers.evidence.single.count} / ${d.shadow_comparison.layers.evidence.shadow.count} 份`],
+          ] as const).map(([label, same, detail]) => (
+            <div className={`timeline-row${same ? '' : ' bad'}`} key={label}>
+              <strong>{label} · {same ? '一致' : '有差异'}</strong>
+              <small>{detail}</small>
+            </div>
+          ))}
+        </div>
+      </>}
+
       <h4>步骤链</h4>
       {d.steps && d.steps.length > 0
         ? <div className="timeline">

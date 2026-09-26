@@ -296,6 +296,18 @@ export interface Replay {
   cost_cny: number | null
   steps: ReplayStep[] | null
   snapshots: ReplaySnapshot[]
+  shadow_of?: string
+  shadow_comparison?: {
+    status: 'MATCH' | 'DIFFERENT'
+    single_trace_id: string
+    shadow_trace_id: string
+    layers: {
+      sql: { same: boolean; single_count: number; shadow_count: number }
+      data: { same: boolean; values_same: boolean; structure_same: boolean; single_values: number; shadow_values: number }
+      conclusion: { same: boolean; numeric_facts_same: boolean; magnitude_claims_same: boolean }
+      evidence: { same: boolean; single: { count: number; unbound_claims: number; verified: boolean }; shadow: { count: number; unbound_claims: number; verified: boolean } }
+    }
+  }
 }
 
 /** 回放的三种结局都要能区分地告诉用户，不能一律报“出错了”：

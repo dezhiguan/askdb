@@ -27,6 +27,19 @@ def _cancel_event(thread_id: str) -> threading.Event:
         return _CANCEL_EVENTS.setdefault(thread_id, threading.Event())
 
 
+def is_canceled(thread_id: str, cfg: Config) -> bool:
+    """The audit cancellation record is the durable cross-process tombstone."""
+    if _cancel_event(thread_id).is_set():
+        return True
+    from contextlib import closing
+    from ..audit import AuditFilter, iter_records
+
+    stream = iter_records(cfg, AuditFilter(include_started=True,
+                                           thread_ids=(thread_id,)))
+    with closing(stream):
+        return any(record.get("rejected_by") == "CANCELED" for record in stream)
+
+
 def cancel(thread_id: str, cfg: Config) -> bool:
     """Cooperatively stop unstarted workers and persist the canceled terminal state."""
     try:
@@ -34,13 +47,21 @@ def cancel(thread_id: str, cfg: Config) -> bool:
         config = {"configurable": {"thread_id": thread_id}}
         snapshot = graph.get_state(config)
         values = snapshot.values or {}
-        if not values.get("plan") or values.get("status") in ("COMPLETED", "CANCELED"):
-            return False
-        graph.update_state(config, {"phase": "CANCELED", "status": "CANCELED"})
-        _cancel_event(thread_id).set()
-        return True
     except Exception:
         return False
+    if values.get("status") in ("COMPLETED", "CANCELED"):
+        return False
+    _cancel_event(thread_id).set()
+    # The request may arrive before the first checkpoint exists. The audit
+    # started record has already been checked by the API endpoint. A racing
+    # checkpoint write may reject update_state; the durable audit tombstone
+    # written by the endpoint remains authoritative.
+    if values.get("plan"):
+        try:
+            graph.update_state(config, {"phase": "CANCELED", "status": "CANCELED"})
+        except Exception:
+            pass
+    return True
 
 
 def settings(cfg: Config) -> dict[str, Any]:
@@ -53,6 +74,7 @@ def settings(cfg: Config) -> dict[str, Any]:
         "max_parallel": max(1, int(raw.get("max_parallel", 3))),
         "max_repair_rounds": max(0, int(raw.get("max_repair_rounds", 2))),
         "cost_cap_tokens": max(1, int(raw.get("cost_cap_tokens", 30_000))),
+        "cost_cap_cny": max(0.0, float(raw.get("cost_cap_cny", 0.0))),
         "allow_cross_source": bool(raw.get("allow_cross_source", False)),
         "join_contracts": list(raw.get("join_contracts") or []),
     }
@@ -68,6 +90,7 @@ def run_multi_agent(
     thread_id: str | None = None,
     on_span: Any = None,
     shadow_of: str = "",
+    shadow_baseline: AskResult | None = None,
 ) -> AskResult:
     opts = settings(cfg)
     trace_id = trace_id or uuid.uuid4().hex[:12]
@@ -108,17 +131,22 @@ def run_multi_agent(
 
     deps = MultiAgentDeps(
         cfg=cfg, llm=LlmClient(cfg), tracer=tracer, source_configs=sources,
-        cancel_event=_cancel_event(thread_id))
+        cancel_event=_cancel_event(thread_id),
+        cancel_check=lambda: is_canceled(thread_id, cfg))
     state = initial_state(
         question=question, run_id=trace_id, thread_id=thread_id,
         org_id=org, source_id=source_id, requested_mode="multi",
         max_workers=opts["max_workers"],
         max_repair_rounds=opts["max_repair_rounds"],
         token_cap=opts["cost_cap_tokens"],
+        cost_cap_cny=opts["cost_cap_cny"],
         scope_fingerprints=scope_fingerprints,
         join_contracts=[item.model_dump(mode="json") for item in joins],
     )
     try:
+        if deps.cancelled():
+            return _failed(question, trace_id, thread_id, org, tracer, "CANCELED",
+                           "任务已由发起人取消")
         final = ensure_graph(cfg).invoke(
             state,
             {"configurable": {"thread_id": thread_id, "deps": deps},
@@ -130,7 +158,18 @@ def run_multi_agent(
         tracer.add("multi_agent", tracer.start(), f"编排失败：{exc}", status="failed")
         result = _failed(question, trace_id, thread_id, org, tracer, "EXEC",
                          f"多智能体编排失败：{exc}")
+    if shadow_baseline is not None:
+        from .shadow_compare import compare
+
+        result.shadow_comparison = compare(shadow_baseline, result)
+    if deps.cancelled():
+        result = _failed(question, trace_id, thread_id, org, tracer, "CANCELED",
+                         "任务已由发起人取消")
     try:
+        # The cancel endpoint writes the authoritative final record. A late
+        # worker must never append a success or overwrite its handoff result.
+        if deps.cancelled():
+            return result
         record = _audit_of(result, cfg, "multi_shadow" if shadow_of else "ask")
         record.update({"shadow": bool(shadow_of), "shadow_of": shadow_of})
         write_audit(cfg, record)
@@ -162,7 +201,7 @@ def resume_multi_agent(
     values = dict(snapshot.values or {})
     if not values:
         return None
-    if values.get("status") == "CANCELED":
+    if values.get("status") == "CANCELED" or is_canceled(thread_id, cfg):
         tracer = Tracer(on_span=on_span)
         return _failed(str(values.get("question", "")),
                        str(values.get("run_id", thread_id)), thread_id,
@@ -198,7 +237,8 @@ def resume_multi_agent(
     tracer = Tracer(on_span=on_span)
     deps = MultiAgentDeps(cfg=cfg, llm=LlmClient(cfg), tracer=tracer,
                           source_configs={current_source: cfg},
-                          cancel_event=_cancel_event(thread_id))
+                          cancel_event=_cancel_event(thread_id),
+                          cancel_check=lambda: is_canceled(thread_id, cfg))
     run_id = str(values.get("run_id") or thread_id)
     try:
         final = graph.invoke(
@@ -212,7 +252,13 @@ def resume_multi_agent(
         result = _failed(str(values.get("question", "")), run_id, thread_id,
                          int(values.get("org_id", 0)), tracer, "EXEC",
                          f"多智能体恢复失败：{exc}")
+    if deps.cancelled():
+        result = _failed(str(values.get("question", "")), run_id, thread_id,
+                         int(values.get("org_id", 0)), tracer, "CANCELED",
+                         "任务已由发起人取消")
     try:
+        if deps.cancelled():
+            return result
         write_audit(cfg, _audit_of(result, cfg, "resume"))
     except Exception:
         pass
@@ -295,7 +341,9 @@ def to_result(state: dict[str, Any], cfg: Config, tracer: Tracer) -> AskResult:
         masked_columns=sorted({column for item in evidence
                                for column in item.get("masked_columns", [])}),
         mask_degraded=any(bool(item.get("mask_degraded")) for item in evidence),
-        rejected_by=None if ok else ("CANCELED" if status == "CANCELED" else "EXEC"),
+        rejected_by=None if ok else (
+            "CANCELED" if status == "CANCELED" else
+            "BUDGET" if status == "BUDGET_EXCEEDED" else "EXEC"),
         error=str(state.get("error", "")),
         tables_hit=[],
         caliber="；".join(str(contract.get(key, "")) for key in
