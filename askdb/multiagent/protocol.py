@@ -52,6 +52,7 @@ class Budget(_Contract):
     max_workers: int = Field(default=4, ge=1)
     max_repair_rounds: int = Field(default=1, ge=0)
     token_cap: int = Field(default=12_000, ge=0)
+    cost_cap_cny: float = Field(default=0.0, ge=0)
     timeout_seconds: float = Field(default=120.0, gt=0)
 
 

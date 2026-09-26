@@ -27,12 +27,17 @@ class MultiAgentState(TypedDict, total=False):
     subtasks_by_id: Annotated[dict[str, dict[str, Any]], merge_by_id]
     evidence_by_id: Annotated[dict[str, dict[str, Any]], merge_by_id]
     worker_errors: Annotated[dict[str, dict[str, Any]], merge_by_id]
+    tok_by_actor: Annotated[dict[str, int], merge_by_id]
+    budget_blocks_by_actor: Annotated[dict[str, str], merge_by_id]
+    cost_by_actor: Annotated[dict[str, float], merge_by_id]
     reviews_by_id: Annotated[dict[str, dict[str, Any]], merge_by_id]
     repair_round: int
     max_repair_rounds: int
     max_workers: int
     token_cap: int
     tok_used: int
+    cost_cap_cny: float
+    cost_used_cny: float
     answer: str
     claims: list[dict[str, Any]]
     status: str
@@ -47,6 +52,7 @@ def initial_state(*, question: str, run_id: str, thread_id: str, org_id: int,
                   source_id: str, requested_mode: str = "multi",
                   max_workers: int = 3, max_repair_rounds: int = 2,
                   token_cap: int = 30_000,
+                  cost_cap_cny: float = 0.0,
                   scope_fingerprints: dict[str, str] | None = None,
                   join_contracts: list[dict[str, Any]] | None = None) -> MultiAgentState:
     return {
@@ -65,12 +71,17 @@ def initial_state(*, question: str, run_id: str, thread_id: str, org_id: int,
         "subtasks_by_id": {},
         "evidence_by_id": {},
         "worker_errors": {},
+        "tok_by_actor": {},
+        "budget_blocks_by_actor": {},
+        "cost_by_actor": {},
         "reviews_by_id": {},
         "repair_round": 0,
         "max_repair_rounds": max_repair_rounds,
         "max_workers": max_workers,
         "token_cap": token_cap,
         "tok_used": 0,
+        "cost_cap_cny": cost_cap_cny,
+        "cost_used_cny": 0.0,
         "answer": "",
         "claims": [],
         "status": "CREATED",

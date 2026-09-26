@@ -18,6 +18,7 @@ from ..executor import Executor
 from ..llm import LlmClient
 from ..trace import Tracer
 from .policy import enforce_plan
+from .budget import BudgetExceeded, TokenBudget, estimate_tokens
 from .protocol import (
     AgentRole,
     Budget,
@@ -61,6 +62,12 @@ class MultiAgentDeps:
     llm_factory: Callable[[Config], Any] | None = None
     executor_factory: Callable[[Config], Any] | None = None
     cancel_event: threading.Event | None = None
+    cancel_check: Callable[[], bool] | None = None
+    budget: TokenBudget | None = None
+    budget_lock: threading.Lock = None  # initialized below for test-created deps
+
+    def __post_init__(self) -> None:
+        self.budget_lock = threading.Lock()
 
     def config_for(self, source_id: str) -> Config:
         if self.source_configs and source_id in self.source_configs:
@@ -78,7 +85,60 @@ class MultiAgentDeps:
         return Executor(cfg), True
 
     def cancelled(self) -> bool:
-        return bool(self.cancel_event and self.cancel_event.is_set())
+        return bool((self.cancel_event and self.cancel_event.is_set())
+                    or (self.cancel_check and self.cancel_check()))
+
+    def token_budget(self, state: MultiAgentState) -> TokenBudget:
+        with self.budget_lock:
+            if self.budget is None:
+                self.budget = TokenBudget(int(state["token_cap"]),
+                                          int(state.get("tok_used", 0)),
+                                          cost_cap_cny=float(state.get("cost_cap_cny", 0)),
+                                          cost_spent_cny=float(state.get("cost_used_cny", 0)))
+            return self.budget
+
+    def estimated_cost(self, tokens: int) -> float:
+        prices = [self.cfg.llm]
+        fallback = self.cfg.llm.get("fallback")
+        if isinstance(fallback, dict):
+            prices.append(fallback)
+        maximum = max(float(item.get(key, 0) or 0)
+                      for item in prices for key in
+                      ("price_input_per_1k", "price_output_per_1k"))
+        return tokens / 1000 * maximum
+
+    def structured(self, state: MultiAgentState, schema: Any,
+                   system: str, human: str) -> tuple[Any, Any]:
+        budget = self.token_budget(state)
+        reserved = estimate_tokens(system, human, schema.model_json_schema())
+        cost_reserved = self.estimated_cost(reserved)
+        budget.reserve(reserved, cost_reserved)
+        try:
+            result, usage = self.llm.structured(schema, system, human)
+            budget.settle(reserved, _used_tokens(usage), cost_reserved,
+                          _used_cost(usage))
+            return result, usage
+        except BaseException:
+            budget.settle(reserved, 0, cost_reserved)
+            raise
+
+    def worker_sql(self, state: MultiAgentState, llm: Any,
+                   *args: Any, **kwargs: Any) -> tuple[Any, Any]:
+        budget = self.token_budget(state)
+        # Worker prompt includes a large built-in SQL policy in LlmClient.
+        from ..llm import SYSTEM, SqlDraft
+
+        reserved = estimate_tokens(SYSTEM, args, kwargs, SqlDraft.model_json_schema())
+        cost_reserved = self.estimated_cost(reserved)
+        budget.reserve(reserved, cost_reserved)
+        try:
+            result, usage = llm.generate_sql(*args, **kwargs)
+            budget.settle(reserved, _used_tokens(usage), cost_reserved,
+                          _used_cost(usage))
+            return result, usage
+        except BaseException:
+            budget.settle(reserved, 0, cost_reserved)
+            raise
 
 
 def _deps(config: RunnableConfig) -> MultiAgentDeps:
@@ -93,15 +153,45 @@ def _usage_kwargs(usage: Any) -> dict[str, Any]:
     }
 
 
+def _used_tokens(usage: Any) -> int:
+    return int(getattr(usage, "input_tokens", 0) or 0) + int(
+        getattr(usage, "output_tokens", 0) or 0)
+
+
+def _used_cost(usage: Any) -> float:
+    return float(getattr(usage, "cost_cny", 0.0) or 0.0)
+
+
+def _total(state: MultiAgentState) -> int:
+    return max(int(state.get("tok_used", 0)),
+               sum((state.get("tok_by_actor") or {}).values()))
+
+
+def _total_cost(state: MultiAgentState) -> float:
+    return max(float(state.get("cost_used_cny", 0)),
+               sum((state.get("cost_by_actor") or {}).values()))
+
+
+def _budget_stop(state: MultiAgentState, deps: MultiAgentDeps) -> bool:
+    return bool(state.get("budget_blocks_by_actor")) or _total(state) >= int(
+        state["token_cap"]) or deps.token_budget(state).exhausted()
+
+
 def _supervisor(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     deps = _deps(config)
     started = deps.tracer.start()
-    draft, usage = deps.llm.structured(
-        SupervisorPlanDraft, SUPERVISOR_SYSTEM,
-        f"用户问题：{state['question']}\n默认数据源：{state['source_id']}\n"
-        f"本次已授权数据源：{sorted((deps.source_configs or {state['source_id']: deps.cfg}).keys())}\n"
-        f"最多创建 {state['max_workers']} 个查询子任务。",
-    )
+    if deps.cancelled():
+        return {"phase": "CANCELED", "status": "CANCELED"}
+    try:
+        draft, usage = deps.structured(
+            state, SupervisorPlanDraft, SUPERVISOR_SYSTEM,
+            f"用户问题：{state['question']}\n默认数据源：{state['source_id']}\n"
+            f"本次已授权数据源：{sorted((deps.source_configs or {state['source_id']: deps.cfg}).keys())}\n"
+            f"最多创建 {state['max_workers']} 个查询子任务。",
+        )
+    except BudgetExceeded as exc:
+        return {"phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
+                "error": str(exc), "budget_blocks_by_actor": {"supervisor": str(exc)}}
     analyses = list(draft.analyses)[:int(state["max_workers"])]
     tasks: list[SubTask] = []
     for index, item in enumerate(analyses):
@@ -123,6 +213,7 @@ def _supervisor(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any
             max_workers=int(state["max_workers"]),
             max_repair_rounds=int(state["max_repair_rounds"]),
             token_cap=int(state["token_cap"]),
+            cost_cap_cny=float(state.get("cost_cap_cny", 0)),
         ),
         subtasks=tasks,
     )
@@ -140,14 +231,17 @@ def _supervisor(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any
         "plan": plan.model_dump(mode="json"),
         "subtasks_by_id": {
             task.subtask_id: task.model_dump(mode="json") for task in tasks},
-        "tok_used": int(state.get("tok_used", 0))
-                    + int(getattr(usage, "input_tokens", 0) or 0)
-                    + int(getattr(usage, "output_tokens", 0) or 0),
+        "tok_used": _total(state) + _used_tokens(usage),
+        "tok_by_actor": {"supervisor": _used_tokens(usage)},
+        "cost_used_cny": _total_cost(state) + _used_cost(usage),
+        "cost_by_actor": {"supervisor": _used_cost(usage)},
     }
 
 
 def _resolve_roles(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     deps = _deps(config)
+    if state.get("status") in ("CANCELED", "BUDGET_EXCEEDED") or deps.cancelled():
+        return {}
     started = deps.tracer.start()
     roles = ("semantic", "verifier", "synthesizer")
     bindings: dict[str, list[dict[str, Any]]] = {}
@@ -166,6 +260,11 @@ def _resolve_roles(state: MultiAgentState, config: RunnableConfig) -> dict[str, 
 
 def _semantic(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     deps = _deps(config)
+    if state.get("status") == "CANCELED" or deps.cancelled():
+        return {"phase": "CANCELED", "status": "CANCELED"}
+    if _budget_stop(state, deps):
+        return {"phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
+                "error": "Token 预算已耗尽，未执行后续模型调用"}
     started = deps.tracer.start()
     bindings = (state.get("skill_bindings_by_role") or {}).get("semantic", [])
     report = skill.load_pinned(deps.cfg, bindings)
@@ -176,7 +275,12 @@ def _semantic(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
         f"批准的跨源契约：{json.dumps(state.get('join_contracts') or [], ensure_ascii=False)}\n"
         + ("已绑定方法：\n- " + "\n- ".join(instructions) if instructions else "")
     )
-    contract, usage = deps.llm.structured(SemanticContractDraft, SEMANTIC_SYSTEM, human)
+    try:
+        contract, usage = deps.structured(
+            state, SemanticContractDraft, SEMANTIC_SYSTEM, human)
+    except BudgetExceeded as exc:
+        return {"phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
+                "error": str(exc), "budget_blocks_by_actor": {"semantic": str(exc)}}
     payload = contract.model_dump(mode="json")
     tasks: dict[str, dict[str, Any]] = {}
     for task_id, task in (state.get("subtasks_by_id") or {}).items():
@@ -191,19 +295,24 @@ def _semantic(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
         "phase": "DISPATCHING", "status": "DISPATCHING",
         "semantic_contract": payload,
         "subtasks_by_id": tasks,
-        "tok_used": int(state.get("tok_used", 0))
-                    + int(getattr(usage, "input_tokens", 0) or 0)
-                    + int(getattr(usage, "output_tokens", 0) or 0),
+        "tok_used": _total(state) + _used_tokens(usage),
+        "tok_by_actor": {"semantic": _used_tokens(usage)},
+        "cost_used_cny": _total_cost(state) + _used_cost(usage),
+        "cost_by_actor": {"semantic": _used_cost(usage)},
         "skill_bindings_by_role": {"semantic": bindings},
     }
 
 
 def _dispatch_gate(state: MultiAgentState) -> dict[str, Any]:
-    return {"phase": "DISPATCHING", "status": "RUNNING"}
+    if state.get("status") in ("CANCELED", "BUDGET_EXCEEDED"):
+        return {}
+    return {"phase": "DISPATCHING", "status": "RUNNING",
+            "tok_used": _total(state), "cost_used_cny": _total_cost(state)}
 
 
 def _dispatch(state: MultiAgentState) -> list[Send] | str:
-    if int(state.get("tok_used", 0)) >= int(state.get("token_cap", 0)):
+    if state.get("status") in ("CANCELED", "BUDGET_EXCEEDED") or (
+            state.get("budget_blocks_by_actor")) or _total(state) >= int(state["token_cap"]):
         return "verifier"
     tasks = list((state.get("subtasks_by_id") or {}).values())
     by_id = state.get("subtasks_by_id") or {}
@@ -231,6 +340,11 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
         deps.tracer.add("verifier", started, "任务已取消，停止调度未开始的 Worker",
                         status="blocked", stage="verifier")
         return {"phase": "CANCELED", "status": "CANCELED", "pending_repairs": []}
+    if _budget_stop(state, deps):
+        return {"phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
+                "error": "Token 预算已耗尽或不足以继续取证",
+                "tok_used": _total(state), "cost_used_cny": _total_cost(state),
+                "pending_repairs": []}
     review, repairs = verify(state)
     current_round = int(state.get("repair_round", 0))
     exhausted = bool(repairs) and current_round >= int(state["max_repair_rounds"])
@@ -255,11 +369,11 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
 
 
 def _after_verify(state: MultiAgentState) -> list[Send] | str:
-    if state.get("status") == "CANCELED":
+    if state.get("status") in ("CANCELED", "BUDGET_EXCEEDED"):
         return END
     repairs = state.get("pending_repairs") or []
-    if int(state.get("tok_used", 0)) >= int(state.get("token_cap", 0)):
-        return "synthesizer"
+    if _total(state) >= int(state["token_cap"]):
+        return END
     if not repairs:
         return "synthesizer"
     sends: list[Send] = []
@@ -284,6 +398,9 @@ def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, An
     started = deps.tracer.start()
     if deps.cancelled():
         return {"phase": "CANCELED", "status": "CANCELED", "answer": "", "claims": []}
+    if _budget_stop(state, deps):
+        return {"phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
+                "error": "Token 预算已耗尽，未合成答案", "answer": "", "claims": []}
     reviews = list((state.get("reviews_by_id") or {}).values())
     latest_review = reviews[-1] if reviews else {}
     approved_ids = set(latest_review.get("evidence_ids") or [])
@@ -296,7 +413,12 @@ def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, An
         "evidence": evidence,
         "join_contracts": state.get("join_contracts") or [],
     }, ensure_ascii=False, default=str)
-    draft, usage = deps.llm.structured(SynthesisDraft, SYNTHESIS_SYSTEM, human)
+    try:
+        draft, usage = deps.structured(state, SynthesisDraft, SYNTHESIS_SYSTEM, human)
+    except BudgetExceeded as exc:
+        return {"phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
+                "error": str(exc), "budget_blocks_by_actor": {"synthesizer": str(exc)},
+                "answer": "", "claims": []}
     if deps.cancelled():
         deps.tracer.add("synthesizer", started, "任务在合成期间被取消，丢弃未返回答案",
                         status="blocked", stage="synthesizer", **_usage_kwargs(usage))
@@ -326,9 +448,10 @@ def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, An
     return {
         "phase": "COMPLETED", "status": "COMPLETED",
         "answer": draft.answer, "claims": claims,
-        "tok_used": int(state.get("tok_used", 0))
-                    + int(getattr(usage, "input_tokens", 0) or 0)
-                    + int(getattr(usage, "output_tokens", 0) or 0),
+        "tok_used": _total(state) + _used_tokens(usage),
+        "tok_by_actor": {"synthesizer": _used_tokens(usage)},
+        "cost_used_cny": _total_cost(state) + _used_cost(usage),
+        "cost_by_actor": {"synthesizer": _used_cost(usage)},
     }
 
 

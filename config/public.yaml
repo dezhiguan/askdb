@@ -155,6 +155,7 @@ multi_agent:
   max_parallel: 3
   max_repair_rounds: 2
   cost_cap_tokens: 30000
+  cost_cap_cny: 0.20                 # 单次多智能体运行的人民币费用上限
   allow_cross_source: false
   join_contracts: []
 

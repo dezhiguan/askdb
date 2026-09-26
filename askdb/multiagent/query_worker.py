@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from .. import skill, tools
+from .budget import BudgetExceeded
 from .evidence_store import from_tool_result
 
 
@@ -43,8 +44,20 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
     )
     worker_llm = deps.llm_for(cfg)
     repair = str(task.get("repair_instructions", ""))
+    usage = None
+    actor_key = f"{task_id}:attempt:{attempt}"
+
+    def tokens() -> dict[str, int]:
+        count = int(getattr(usage, "input_tokens", 0) or 0) + int(
+            getattr(usage, "output_tokens", 0) or 0)
+        return {actor_key: count} if usage is not None else {}
+
+    def cost() -> dict[str, float]:
+        return {actor_key: float(getattr(usage, "cost_cny", 0.0) or 0.0)} \
+            if usage is not None else {}
+
     try:
-        draft, usage = worker_llm.generate_sql(
+        draft, usage = deps.worker_sql(state, worker_llm,
             task.get("query", {}).get("question") or state["question"],
             context,
             dialect=cfg.dialect,
@@ -52,12 +65,15 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
             step=task.get("title", ""),
         )
         sql = str(getattr(draft, "sql", ""))
+        if deps.token_budget(state).exhausted():
+            raise BudgetExceeded("Worker 生成 SQL 后 Token 预算已耗尽，SQL 未执行")
         if not sql:
             raise ValueError(getattr(draft, "reasoning", "Worker 未生成 SQL"))
         if deps.cancelled():
             return {"subtasks_by_id": {task_id: {
                 **task, "status": "CANCELED", "attempt": attempt,
-                "error": "任务已由发起人取消；SQL 未执行"}}}
+                "error": "任务已由发起人取消；SQL 未执行"}},
+                "tok_by_actor": tokens(), "cost_by_actor": cost()}
         executor, own_executor = deps.executor_for(cfg)
         try:
             result = tools.execute_sql(sql, cfg, int(state.get("org_id", 0)), executor)
@@ -95,6 +111,8 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
             "skill_bindings_by_role": {
                 f"query_worker:{task_id}": [item.model_dump(mode="json")
                                              for item in resolved.bindings]},
+            "tok_by_actor": tokens(),
+            "cost_by_actor": cost(),
         }
     except Exception as exc:  # worker failures are artifacts, not graph crashes
         updated = {**task, "status": "FAILED", "attempt": attempt, "error": str(exc)}
@@ -104,4 +122,8 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
             "subtasks_by_id": {task_id: updated},
             "worker_errors": {task_id: {
                 "subtask_id": task_id, "attempt": attempt, "error": str(exc)}},
+            "tok_by_actor": tokens(),
+            "cost_by_actor": cost(),
+            **({"budget_blocks_by_actor": {actor_key: str(exc)}}
+               if isinstance(exc, BudgetExceeded) else {}),
         }
