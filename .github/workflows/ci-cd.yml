@@ -133,7 +133,9 @@ jobs:
   build-and-push:
     name: build-and-push
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 冷缓存或公网推送 ACR 偶尔会超过 20 分钟；历史成功构建已接近 16 分钟，
+    # 留出合理抖动空间，避免镜像已经接近推完时被 runner 强制取消。
+    timeout-minutes: 30
     # 前端也是准入条件：产物过期等于界面没上线，而它不会让任何别的关变红
     needs: [test, frontend]
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
