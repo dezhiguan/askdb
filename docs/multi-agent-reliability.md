@@ -22,6 +22,8 @@ kubectl -n askdb exec deploy/askdb -c askdb -- \
 
 - 每次模型调用前会为输入与输出预留 Token 和费用，多个并行 Worker 共用同一
   预算表；完成时按实际使用量结算。Worker 的每次尝试分别写入 Checkpoint，
+  若只是其他并行调用的临时预留占满额度，后续 Worker 最多等待 60 秒结算后
+  再判断，不会把尚未实际消耗的预留直接当成预算耗尽。
   返工不会覆盖前次成本。
 - 已用预算达到上限，或下一次调用预留失败时，图以 `BUDGET_EXCEEDED` 收敛，
   不执行后续 SQL 或合成；接口的 `rejected_by` 为 `BUDGET`。

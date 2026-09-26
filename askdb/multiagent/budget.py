@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from typing import Any
 
 
@@ -36,28 +37,44 @@ class TokenBudget:
         self.cost_spent_cny = cost_spent_cny
         self.cost_reserved_cny = 0.0
         self._lock = threading.Lock()
+        self._settled = threading.Condition(self._lock)
 
-    def reserve(self, amount: int, estimated_cost_cny: float = 0.0) -> None:
-        with self._lock:
-            if self.spent + self.reserved + amount > self.cap:
-                raise BudgetExceeded(
-                    f"Token 预算不足：已用 {self.spent}，预留 {self.reserved}，"
-                    f"本次预计 {amount}，上限 {self.cap}")
-            if (self.cost_cap_cny > 0 and self.cost_spent_cny
-                    + self.cost_reserved_cny + estimated_cost_cny > self.cost_cap_cny):
-                raise BudgetExceeded(
-                    f"费用预算不足：已用 ¥{self.cost_spent_cny:.6f}，"
-                    f"本次预计 ¥{estimated_cost_cny:.6f}，上限 ¥{self.cost_cap_cny:.6f}")
-            self.reserved += amount
-            self.cost_reserved_cny += estimated_cost_cny
+    def reserve(self, amount: int, estimated_cost_cny: float = 0.0,
+                *, wait_seconds: float = 60.0) -> None:
+        deadline = time.monotonic() + wait_seconds
+        with self._settled:
+            while True:
+                token_short = self.spent + self.reserved + amount > self.cap
+                cost_short = (self.cost_cap_cny > 0 and self.cost_spent_cny
+                              + self.cost_reserved_cny + estimated_cost_cny
+                              > self.cost_cap_cny)
+                if not token_short and not cost_short:
+                    self.reserved += amount
+                    self.cost_reserved_cny += estimated_cost_cny
+                    return
+                # Another parallel Worker may release most of its conservative
+                # reservation. Do not reject this Worker until that call settles.
+                if ((not self.reserved and not self.cost_reserved_cny)
+                        or time.monotonic() >= deadline):
+                    if token_short:
+                        raise BudgetExceeded(
+                            f"Token 预算不足：已用 {self.spent}，预留 {self.reserved}，"
+                            f"本次预计 {amount}，上限 {self.cap}")
+                    raise BudgetExceeded(
+                        f"费用预算不足：已用 ¥{self.cost_spent_cny:.6f}，"
+                        f"预留 ¥{self.cost_reserved_cny:.6f}，"
+                        f"本次预计 ¥{estimated_cost_cny:.6f}，"
+                        f"上限 ¥{self.cost_cap_cny:.6f}")
+                self._settled.wait(timeout=max(0.0, deadline - time.monotonic()))
 
     def settle(self, reserved: int, actual: int,
                reserved_cost_cny: float = 0.0, actual_cost_cny: float = 0.0) -> None:
-        with self._lock:
+        with self._settled:
             self.reserved -= reserved
             self.spent += actual
             self.cost_reserved_cny -= reserved_cost_cny
             self.cost_spent_cny += actual_cost_cny
+            self._settled.notify_all()
 
     def exhausted(self) -> bool:
         with self._lock:
