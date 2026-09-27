@@ -161,7 +161,326 @@ multi_agent:
   # 打开后仍只在每一对源都有聚合契约时才一起查。没有契约就留在当前库，
   # 或在当前库答不了时拒绝。join_contracts 用运行时数据源 id。
   allow_cross_source: true
-  join_contracts: []
+  # 云上电商 10 个运行时源（2026-09-27 从 askdb.ragforge.net 注册表读取）。
+  # careermate、ragforge、宠物医疗不在这组里。一对只登记一条聚合契约：
+  # 两边都有订单号就按 order_no，否则按 sku_id、customer_id，再否则按日统计的 stat_date。
+  # aggregate_only 保持 true，不把两边的明细行拼成一张表。
+  join_contracts:
+    - contract_id: aftersale_catalog_sku
+      left_source: src_003cf5ce5f04    # 商品中心
+      right_source: src_0695be70fada   # 售后工单
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: catalog_customer_customer
+      left_source: src_003cf5ce5f04    # 商品中心
+      right_source: src_0b259bd5f0e3   # 会员中心
+      join_keys: [customer_id]
+      grain: customer
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: catalog_order_sku
+      left_source: src_003cf5ce5f04    # 商品中心
+      right_source: src_2b806156d80d   # 交易中心
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: catalog_supply_sku
+      left_source: src_003cf5ce5f04    # 商品中心
+      right_source: src_4c17a701b727   # 供应链采购
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: catalog_review_sku
+      left_source: src_003cf5ce5f04    # 商品中心
+      right_source: src_593ecf4fc4c0   # 评价中心
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: catalog_inventory_sku
+      left_source: src_003cf5ce5f04    # 商品中心
+      right_source: src_6430bd2d2809   # 库存中心
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: catalog_logistics_day
+      left_source: src_003cf5ce5f04    # 商品中心
+      right_source: src_66730f8482b7   # 履约物流
+      join_keys: [stat_date]
+      grain: day
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: catalog_marketing_sku
+      left_source: src_003cf5ce5f04    # 商品中心
+      right_source: src_99a5ef330e8c   # 营销中心
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: catalog_payment_day
+      left_source: src_003cf5ce5f04    # 商品中心
+      right_source: src_ee91a1152ab0   # 支付结算
+      join_keys: [stat_date]
+      grain: day
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: aftersale_customer_customer
+      left_source: src_0695be70fada    # 售后工单
+      right_source: src_0b259bd5f0e3   # 会员中心
+      join_keys: [customer_id]
+      grain: customer
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: aftersale_order_order
+      left_source: src_0695be70fada    # 售后工单
+      right_source: src_2b806156d80d   # 交易中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: aftersale_supply_sku
+      left_source: src_0695be70fada    # 售后工单
+      right_source: src_4c17a701b727   # 供应链采购
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: aftersale_review_order
+      left_source: src_0695be70fada    # 售后工单
+      right_source: src_593ecf4fc4c0   # 评价中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: aftersale_inventory_order
+      left_source: src_0695be70fada    # 售后工单
+      right_source: src_6430bd2d2809   # 库存中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: aftersale_logistics_order
+      left_source: src_0695be70fada    # 售后工单
+      right_source: src_66730f8482b7   # 履约物流
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: aftersale_marketing_order
+      left_source: src_0695be70fada    # 售后工单
+      right_source: src_99a5ef330e8c   # 营销中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: aftersale_payment_order
+      left_source: src_0695be70fada    # 售后工单
+      right_source: src_ee91a1152ab0   # 支付结算
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: customer_order_customer
+      left_source: src_0b259bd5f0e3    # 会员中心
+      right_source: src_2b806156d80d   # 交易中心
+      join_keys: [customer_id]
+      grain: customer
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: customer_supply_day
+      left_source: src_0b259bd5f0e3    # 会员中心
+      right_source: src_4c17a701b727   # 供应链采购
+      join_keys: [stat_date]
+      grain: day
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: customer_review_customer
+      left_source: src_0b259bd5f0e3    # 会员中心
+      right_source: src_593ecf4fc4c0   # 评价中心
+      join_keys: [customer_id]
+      grain: customer
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: customer_inventory_day
+      left_source: src_0b259bd5f0e3    # 会员中心
+      right_source: src_6430bd2d2809   # 库存中心
+      join_keys: [stat_date]
+      grain: day
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: customer_logistics_day
+      left_source: src_0b259bd5f0e3    # 会员中心
+      right_source: src_66730f8482b7   # 履约物流
+      join_keys: [stat_date]
+      grain: day
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: customer_marketing_customer
+      left_source: src_0b259bd5f0e3    # 会员中心
+      right_source: src_99a5ef330e8c   # 营销中心
+      join_keys: [customer_id]
+      grain: customer
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: customer_payment_day
+      left_source: src_0b259bd5f0e3    # 会员中心
+      right_source: src_ee91a1152ab0   # 支付结算
+      join_keys: [stat_date]
+      grain: day
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: order_supply_sku
+      left_source: src_2b806156d80d    # 交易中心
+      right_source: src_4c17a701b727   # 供应链采购
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: order_review_order
+      left_source: src_2b806156d80d    # 交易中心
+      right_source: src_593ecf4fc4c0   # 评价中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: inventory_order_order
+      left_source: src_2b806156d80d    # 交易中心
+      right_source: src_6430bd2d2809   # 库存中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: logistics_order_order
+      left_source: src_2b806156d80d    # 交易中心
+      right_source: src_66730f8482b7   # 履约物流
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: marketing_order_order
+      left_source: src_2b806156d80d    # 交易中心
+      right_source: src_99a5ef330e8c   # 营销中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: order_payment_order
+      left_source: src_2b806156d80d    # 交易中心
+      right_source: src_ee91a1152ab0   # 支付结算
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: review_supply_sku
+      left_source: src_4c17a701b727    # 供应链采购
+      right_source: src_593ecf4fc4c0   # 评价中心
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: inventory_supply_sku
+      left_source: src_4c17a701b727    # 供应链采购
+      right_source: src_6430bd2d2809   # 库存中心
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: logistics_supply_day
+      left_source: src_4c17a701b727    # 供应链采购
+      right_source: src_66730f8482b7   # 履约物流
+      join_keys: [stat_date]
+      grain: day
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: marketing_supply_sku
+      left_source: src_4c17a701b727    # 供应链采购
+      right_source: src_99a5ef330e8c   # 营销中心
+      join_keys: [sku_id]
+      grain: sku
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: payment_supply_day
+      left_source: src_4c17a701b727    # 供应链采购
+      right_source: src_ee91a1152ab0   # 支付结算
+      join_keys: [stat_date]
+      grain: day
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: inventory_review_order
+      left_source: src_593ecf4fc4c0    # 评价中心
+      right_source: src_6430bd2d2809   # 库存中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: logistics_review_order
+      left_source: src_593ecf4fc4c0    # 评价中心
+      right_source: src_66730f8482b7   # 履约物流
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: marketing_review_order
+      left_source: src_593ecf4fc4c0    # 评价中心
+      right_source: src_99a5ef330e8c   # 营销中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: payment_review_order
+      left_source: src_593ecf4fc4c0    # 评价中心
+      right_source: src_ee91a1152ab0   # 支付结算
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: inventory_logistics_order
+      left_source: src_6430bd2d2809    # 库存中心
+      right_source: src_66730f8482b7   # 履约物流
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: inventory_marketing_order
+      left_source: src_6430bd2d2809    # 库存中心
+      right_source: src_99a5ef330e8c   # 营销中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: inventory_payment_order
+      left_source: src_6430bd2d2809    # 库存中心
+      right_source: src_ee91a1152ab0   # 支付结算
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: logistics_marketing_order
+      left_source: src_66730f8482b7    # 履约物流
+      right_source: src_99a5ef330e8c   # 营销中心
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: logistics_payment_order
+      left_source: src_66730f8482b7    # 履约物流
+      right_source: src_ee91a1152ab0   # 支付结算
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
+    - contract_id: marketing_payment_order
+      left_source: src_99a5ef330e8c    # 营销中心
+      right_source: src_ee91a1152ab0   # 支付结算
+      join_keys: [order_no]
+      grain: order
+      aggregate_only: true
+      timezone: Asia/Shanghai
 
 # 可信数据 Agent —— LLM 自主决策链路（v2，见 docs/design-trusted-data-agent-v2.html）。
 # 2026-09-11 按 @guandezhi 决定在对外实例开启验收：/api/ask 走意图预检 + LLM
