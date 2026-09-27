@@ -483,7 +483,61 @@
   .agent-span-row > span:nth-of-type(3), .agent-span-row > strong { display:none; }
 }
 
-@media (max-width: 900px) {
+/* 多智能体追踪：拓扑固定在左、当前 Agent 详情在右；视图切换只作用于下方 Span 区。 */
+.agent-workspace { display:grid; grid-template-columns:minmax(0,1fr) 270px; gap:10px; align-items:start; padding:13px; }
+.agent-workspace .agent-graph { min-width:0; padding:0; }
+.agent-sidebar { display:grid; gap:8px; min-width:0; }
+.semantic-stage { padding:0 18px; }
+.semantic-stage .agent-card { min-width:min(260px,100%); }
+.agent-sidebar .agent-inspector { display:grid; grid-template-columns:minmax(0,1fr); gap:9px; align-items:start; margin:0; padding:10px; }
+.agent-sidebar .agent-inspector p { min-width:0; margin:0; overflow:visible; color:var(--ink-2); font-size:7px; line-height:1.55; white-space:normal; overflow-wrap:anywhere; }
+.agent-sidebar .inspector-output { grid-column:1; grid-row:auto; align-self:start; }
+.agent-sidebar .inspector-facts { grid-template-columns:1fr; }
+.agent-sidebar .inspector-facts > div { padding:5px 2px 0; }
+.trace-legend { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:9px 10px; border:1px solid var(--line); border-radius:7px; background:white; color:var(--muted); font-size:6px; }
+.trace-legend > strong { grid-column:1 / -1; color:var(--ink); font-size:7px; }
+.trace-legend > span { display:flex; align-items:center; gap:5px; }
+.trace-legend .span-type { min-width:34px; justify-content:center; }
+.agent-group.selected > .agent-group-head { background:var(--green-wash); box-shadow:inset 3px 0 var(--green); }
+.agent-span-columns,.agent-span-row { display:grid; grid-template-columns:48px minmax(90px,.8fr) minmax(90px,1fr) minmax(100px,1.2fr) 48px 76px; gap:6px; align-items:center; }
+.agent-span-columns { min-height:25px; border-top:1px solid #eff0eb; color:var(--muted); font:6px var(--mono); }
+.agent-span-row { min-height:31px; border-top:1px solid #eff0eb; }
+.agent-span-row > b small { display:block; margin-top:2px; color:var(--muted); font:5px var(--mono); }
+.agent-span-row > strong { display:flex; justify-content:flex-end; align-items:center; gap:4px; }
+.agent-span-row > strong button { padding:2px 4px; border:1px solid var(--line); border-radius:3px; background:#fff; color:var(--blue); font:5px var(--sans); cursor:pointer; }
+.agent-span-detail { padding:5px 8px 8px; border-top:1px solid #eff0eb; background:#f8f9f5; }
+.agent-span-detail section + section { margin-top:6px; }
+.agent-span-detail b { color:var(--muted); font:6px var(--mono); }
+.agent-span-detail pre { max-height:220px; overflow:auto; margin:3px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--ink-2); font:6px/1.5 var(--mono); }
+.span-agent-run { min-width:110px; color:var(--blue); font-size:6px !important; overflow-wrap:anywhere; }
+.agent-timeline-view { padding:10px 13px 13px; }
+.agent-timeline-view .timeline-axis { display:flex; justify-content:space-between; margin:0 220px 5px 190px; color:var(--muted); font:6px var(--mono); }
+.agent-timeline-view .timeline-legacy { margin:4px 0 8px; padding:7px 9px; border-radius:5px; background:#fff7eb; color:#8c571b; font-size:7px; }
+.timeline-span { display:grid; grid-template-columns:170px minmax(80px,1fr) minmax(130px,.8fr) 42px 44px; gap:8px; align-items:center; min-height:33px; border-top:1px solid #eff0eb; }
+.timeline-owner b,.timeline-owner small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.timeline-owner b,.timeline-name b { font-size:7px; }
+.timeline-owner small,.timeline-name small { color:var(--muted); font:5px var(--mono); }
+.timeline-rail { position:relative; height:12px; border-radius:3px; background:repeating-linear-gradient(90deg,#f0f1ed 0,#f0f1ed 1px,transparent 1px,transparent 25%); }
+.timeline-rail i { position:absolute; top:3px; height:6px; min-width:3px; border-radius:4px; background:var(--green); }
+.timeline-rail i.soft { background:var(--amber); }
+.timeline-rail i.failed { background:var(--red); }
+.timeline-name small { display:block; }
+.timeline-kind { text-align:center; }
+.timeline-span > strong { color:var(--green); font:6px var(--mono); text-align:right; }
+.timeline-span > strong.soft { color:var(--amber); }
+.timeline-span > strong.failed { color:var(--red); }
+@media (max-width: 1180px) {
+  .agent-workspace { grid-template-columns:minmax(0,1fr) 235px; }
+  .agent-span-columns,.agent-span-row { grid-template-columns:42px minmax(75px,.8fr) minmax(70px,1fr) minmax(80px,1.2fr) 42px 70px; }
+}
+@media (max-width: 760px) {
+  .agent-workspace { grid-template-columns:1fr; }
+  .agent-span-columns,.agent-span-row { grid-template-columns:39px minmax(75px,.7fr) minmax(80px,1fr) 42px; }
+  .agent-span-columns > span:nth-of-type(3),.agent-span-row > span:nth-of-type(3) { display:none; }
+  .agent-span-row > strong { grid-column:4; display:flex !important; }
+  .timeline-span { grid-template-columns:112px minmax(50px,1fr) 38px; gap:5px; }
+  .timeline-rail,.timeline-kind { display:none; }
+  .agent-timeline-view .timeline-axis { display:none; }
 }
 
 /* ---------- 失败与回退的可见性 ----------

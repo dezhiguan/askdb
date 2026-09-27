@@ -740,38 +740,34 @@ function SpanNote({ step, open, onToggle }: {
     : <>{note || NA} {btn}{tok}</>
 }
 
-function AgentTopology({ groups, steps, mode, setMode, selected, onSelect }: {
-  groups: AgentGroup[]; steps: ReplayStep[]; mode: 'agents' | 'timeline' | 'spans'
-  setMode: (mode: 'agents' | 'timeline' | 'spans') => void
+function AgentTopology({ groups, steps, selected, onSelect }: {
+  groups: AgentGroup[]; steps: ReplayStep[]
   selected: string; onSelect: (id: string) => void
 }) {
-  const groupKey = groups.map(g => g.id).join('|')
-  const [expansion, setExpansion] = useState<{ key: string; ids: ReadonlySet<string> }>(
-    () => ({ key: groupKey, ids: new Set(groups.map(g => g.id)) }))
-  const visibleExpanded = expansion.key === groupKey ? expansion.ids : new Set(groups.map(g => g.id))
+  const supervisor = groups.filter(g => g.role === 'supervisor')
+  const semantic = groups.filter(g => g.role === 'semantic')
   const workers = groups.filter(g => g.role === 'query_worker')
-  const upstream = groups.filter(g => ['supervisor', 'semantic'].includes(g.role))
   const downstream = groups.filter(g => ['verifier', 'synthesizer'].includes(g.role))
   const groupState = (group: AgentGroup) => group.steps.some(s => stepFailed(s.status)) ? 'failed'
     : group.steps.some(s => stepSoft(s.status)) ? 'soft' : 'ok'
   const spanKind = spanTypeName
-  const range = Math.max(1, ...steps.map(s => (s.start_ms ?? 0) + s.ms))
-  const timelineAvailable = steps.some(s => s.start_ms != null)
   const selectedInfo = groups.find(g => g.id === selected) ?? groups[0]
-  const selectedStart = selectedInfo ? Math.min(...selectedInfo.steps.map(s => s.start_ms ?? 0)) : 0
-  const selectedEnd = selectedInfo ? Math.max(...selectedInfo.steps.map(s => (s.start_ms ?? 0) + s.ms)) : 0
+  const hasTiming = !!selectedInfo?.steps.length && selectedInfo.steps.every(s => s.start_ms != null)
+  const selectedStart = hasTiming ? Math.min(...selectedInfo!.steps.map(s => s.start_ms!)) : 0
+  const selectedEnd = hasTiming ? Math.max(...selectedInfo!.steps.map(s => s.start_ms! + s.ms)) : 0
   const selectedTokens = selectedInfo?.steps.reduce((sum, s) => sum + (s.tok_in ?? 0) + (s.tok_out ?? 0), 0) ?? 0
-  const events = [...steps].sort((a, b) => (a.start_ms ?? 0) - (b.start_ms ?? 0))
+  const timingComplete = steps.length > 0 && steps.every(s => s.start_ms != null)
+  const events = timingComplete
+    ? [...steps].sort((a, b) => a.start_ms! - b.start_ms!)
+    : steps
 
   const card = (group: AgentGroup) => {
     const state = groupState(group)
-    const start = Math.min(...group.steps.map(s => s.start_ms ?? 0))
-    const end = Math.max(...group.steps.map(s => (s.start_ms ?? 0) + s.ms))
     const duration = group.steps.reduce((sum, step) => sum + step.ms, 0)
     const tok = group.steps.reduce((sum, step) => sum + (step.tok_in ?? 0) + (step.tok_out ?? 0), 0)
     return <button type="button" key={group.id}
       className={`agent-card ${selected === group.id ? 'selected' : ''} ${state}`}
-      onClick={() => { onSelect(group.id); setMode('agents') }}>
+      onClick={() => onSelect(group.id)}>
       <span className={`agent-avatar ${group.role === 'query_worker' ? 'worker' : ''}`}>
         {group.role === 'query_worker' ? 'W' : group.label.slice(0, 1)}
       </span>
@@ -783,78 +779,142 @@ function AgentTopology({ groups, steps, mode, setMode, selected, onSelect }: {
             <b>{spanKind(step)}</b></i>)}</span>
       </span>
       <span className={`agent-state ${state}`}>{state === 'failed' ? '失败' : state === 'soft' ? '降级' : '成功'}</span>
-      {mode === 'timeline' && timelineAvailable && <span className="agent-timeline-track"><i style={{
-        left: `${start / range * 100}%`, width: `${Math.max(1.4, (end - start) / range * 100)}%`,
-      }} /></span>}
     </button>
   }
 
-  return <section className={`agent-topology ${mode === 'timeline' ? 'timeline-mode' : ''}`}>
+  return <section className="agent-topology">
     <header className="agent-topology-head">
       <strong>智能体协作拓扑</strong>
       <span>AGENT RUN GRAPH · 点击智能体查看其 Span</span>
       <div className="topology-legend"><i className="ok" />成功 <i className="soft" />降级 <i className="failed" />失败</div>
     </header>
-    {mode === 'timeline' ? <div className="agent-timeline">
-      {timelineAvailable && <div className="timeline-axis"><span>0ms</span><span>{Math.round(range / 2)}ms</span><span>{range}ms</span></div>}
-      {!timelineAvailable && <p className="timeline-legacy">这条历史记录没有保存 Span 开始时刻，无法还原并行关系；下方按执行记录顺序展示。</p>}
-      {[...upstream, ...workers, ...downstream].map(card)}
-    </div> : <div className="agent-graph">
-      <div className="agent-stage root-stage">{upstream.map(card)}</div>
-      <div className="graph-link"><span>派发并行子任务 · {workers.length} 个 Agent Run</span></div>
-      <div className="agent-worker-stage">
-        <div className="agent-stage-label">并行工作智能体 <small>{workers.length} 个 · 并发执行</small></div>
-        <div className="agent-workers">{workers.length ? workers.map(card) : <p>本次没有 Worker Span</p>}</div>
+    <div className="agent-workspace">
+      <div className="agent-graph">
+        <div className="agent-stage root-stage">{supervisor.map(card)}</div>
+        {semantic.length > 0 && <>
+          <div className="graph-link"><span>Supervisor 委派语义分析</span></div>
+          <div className="agent-stage semantic-stage">{semantic.map(card)}</div>
+        </>}
+        <div className="graph-link"><span>派发并行子任务 · {workers.length} 个 Agent Run</span></div>
+        <div className="agent-worker-stage">
+          <div className="agent-stage-label">并行工作智能体 <small>{workers.length} 个 · 并发执行</small></div>
+          <div className="agent-workers">{workers.length ? workers.map(card) : <p>本次没有 Worker Span</p>}</div>
+        </div>
+        {downstream.map(group => <Fragment key={group.id}>
+          <div className="graph-link"><span>{group.role === 'verifier' ? '汇总证据并验证' : '组织最终答案'}</span></div>
+          <div className="agent-stage downstream-stage">{card(group)}</div>
+        </Fragment>)}
       </div>
-      {downstream.map(group => <Fragment key={group.id}>
-        <div className="graph-link"><span>{group.role === 'verifier' ? '汇总证据并验证' : '组织最终答案'}</span></div>
-        <div className="agent-stage downstream-stage">{card(group)}</div>
-      </Fragment>)}
-      <aside className="agent-inspector">
+      <aside className="agent-sidebar">
+      <section className="agent-inspector">
         <div className="inspector-title"><i className={`agent-avatar ${selectedInfo?.role === 'query_worker' ? 'worker' : ''}`}>{selectedInfo?.role === 'query_worker' ? 'W' : selectedInfo?.label.slice(0, 1) ?? 'A'}</i>
           <span><strong>{selectedInfo?.label ?? '当前智能体'}</strong><small>{selectedInfo?.id ?? ''}</small></span><em>AGENT RUN</em></div>
         <p className="inspector-output">{selectedInfo?.steps.map(s => s.note).filter(Boolean).join(' · ') || '此 Agent 暂无输出摘要'}</p>
         <dl className="inspector-facts"><div><dt>父级智能体</dt><dd>{selectedInfo?.parent ? groups.find(g => g.id === selectedInfo.parent)?.label ?? 'Supervisor' : 'Root'}</dd></div>
-          <div><dt>执行区间</dt><dd>{selectedInfo ? `${selectedStart}–${selectedEnd}ms` : '—'}</dd></div>
+          <div><dt>{hasTiming ? '执行区间' : '累计耗时'}</dt><dd>{selectedInfo ? hasTiming ? `${selectedStart}–${selectedEnd}ms` : `${selectedInfo.steps.reduce((n, s) => n + s.ms, 0)}ms` : '—'}</dd></div>
           <div><dt>Span 数量</dt><dd>{selectedInfo?.steps.length ?? 0}</dd></div>
           <div><dt>Token 用量</dt><dd>{selectedTokens.toLocaleString()} tok</dd></div></dl>
         <div className="inspector-children"><strong>CHILD AGENTS</strong>{groups.filter(g => g.parent === selectedInfo?.id).length
           ? groups.filter(g => g.parent === selectedInfo?.id).map(g => <button key={g.id} onClick={() => onSelect(g.id)}>{g.label}</button>)
           : <span>无</span>}</div>
-        <button className="inspector-jump" type="button" onClick={() => setMode('agents')}>查看该智能体 Span ↓</button>
-      </aside>
+        <button className="inspector-jump" type="button" onClick={() => document.querySelector('.agent-span-views')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>查看该智能体 Span ↓</button>
+      </section>
       <section className="agent-events"><header><strong>执行事件</strong><span>RELATIVE TIME</span></header>
+        {!timingComplete && <p className="timeline-legacy">历史记录未保存开始时间，按 Span 记录顺序展示。</p>}
         <div className="event-list">{events.map((step, index) => {
           const group = groups.find(g => g.id === step.agent_run_id || (!step.agent_run_id && g.steps.includes(step)))
           return <button type="button" key={`${step.step}-${index}`} onClick={() => group && onSelect(group.id)}>
-            <time>+{((step.start_ms ?? 0) / 1000).toFixed(2)}s</time><i />
+            <time>{timingComplete ? `+${(step.start_ms! / 1000).toFixed(2)}s` : `#${index + 1}`}</time><i />
             <span><b>{group?.label ?? STEP_NAMES[step.step] ?? step.step}</b> · {STEP_NAMES[step.step] ?? step.step}{step.note ? ` · ${step.note}` : ''}</span>
           </button>
         })}</div>
       </section>
-    </div>}
-    {mode === 'agents' && <section className="agent-groups">
-      <header><strong>Agent Run Span 分组</strong><span>{groups.length} 个智能体 · 每个 Span 均标明类型</span>
-        <button type="button" onClick={() => setExpansion({ key: groupKey, ids: new Set(groups.map(g => g.id)) })}>全部展开</button>
-        <button type="button" onClick={() => setExpansion({ key: groupKey, ids: new Set() })}>全部收起</button></header>
-      {groups.map(group => <div className={`agent-group ${visibleExpanded.has(group.id) ? '' : 'closed'}`} key={group.id}>
-        <button className="agent-group-head" type="button" onClick={() => {
-          setExpansion(prev => {
-            const next = new Set(prev.key === groupKey ? prev.ids : groups.map(g => g.id))
-            if (next.has(group.id)) next.delete(group.id); else next.add(group.id)
-            return { key: groupKey, ids: next }
-          })
-          onSelect(group.id)
-        }}><i>{visibleExpanded.has(group.id) ? '⌄' : '›'}</i><b>{group.label}</b><em>AGENT RUN · {group.id}</em>
+        <section className="trace-legend"><strong>Span 类型</strong><span><i className="span-type model">LLM</i>模型调用</span><span><i className="span-type tool">TOOL</i>工具调用</span><span><i className="span-type db">QUERY</i>数据库查询</span><span><i className="span-type sys">SYS</i>系统操作</span></section>
+      </aside>
+    </div>
+  </section>
+}
+
+function AgentSpanGroups({ groups, selected, onSelect }: {
+  groups: AgentGroup[]; selected: string; onSelect: (id: string) => void
+}) {
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(groups.map(g => g.id)))
+  const [openDetails, setOpenDetails] = useState<ReadonlySet<string>>(() => new Set())
+  const toggle = (key: string) => setOpenDetails(prev => {
+    const next = new Set(prev)
+    if (!next.delete(key)) next.add(key)
+    return next
+  })
+  const flipGroup = (id: string) => setExpanded(prev => {
+    const next = new Set(prev)
+    if (!next.delete(id)) next.add(id)
+    return next
+  })
+  return <section className="agent-groups">
+    <header><strong>Agent Run Span 分组</strong><span>{groups.length} 个智能体 · 按运行实例归属</span>
+      <button type="button" onClick={() => setExpanded(new Set(groups.map(g => g.id)))}>全部展开</button>
+      <button type="button" onClick={() => setExpanded(new Set())}>全部收起</button></header>
+    {groups.map(group => {
+      const failed = group.steps.some(s => stepFailed(s.status))
+      const soft = group.steps.some(s => stepSoft(s.status))
+      const state = failed ? 'failed' : soft ? 'soft' : 'ok'
+      return <div className={`agent-group ${expanded.has(group.id) ? '' : 'closed'} ${selected === group.id ? 'selected' : ''}`} key={group.id}>
+        <button className="agent-group-head" type="button" aria-expanded={expanded.has(group.id)} onClick={() => { flipGroup(group.id); onSelect(group.id) }}>
+          <i>{expanded.has(group.id) ? '⌄' : '›'}</i><b>{group.label}</b><em>AGENT RUN · {group.id}</em>
           <span>{group.steps.reduce((n, s) => n + s.ms, 0)}ms</span><span>{group.steps.reduce((n, s) => n + (s.tok_in ?? 0) + (s.tok_out ?? 0), 0).toLocaleString()} tok</span>
-          <strong className={groupState(group)}>{groupState(group) === 'failed' ? '失败' : groupState(group) === 'soft' ? '降级' : '成功'}</strong></button>
-        {visibleExpanded.has(group.id) && <div className="agent-span-list">{group.steps.map((step, index) => <div className="agent-span-row" key={`${step.step}-${index}`}>
-          <span className={`span-type ${spanKind(step).toLowerCase()}`}>{spanKind(step)}</span><b>{STEP_NAMES[step.step] ?? step.step}</b>
-          <span>{step.input ? inputPeek(step.input) : NA}</span><span>{step.note || NA}</span><time>{step.ms}ms</time>
-          <strong className={stepFailed(step.status) ? 'failed' : stepSoft(step.status) ? 'soft' : ''}>{step.status.toUpperCase()}</strong>
-        </div>)}</div>}
-      </div>)}
-    </section>}
+          <strong className={state}>{failed ? '失败' : soft ? '降级' : '成功'}</strong>
+        </button>
+        {expanded.has(group.id) && <div className="agent-span-list">
+          <div className="agent-span-columns"><span>类型</span><span>Span 名称</span><span>输入摘要</span><span>输出摘要</span><span>耗时</span><span>状态 / 详情</span></div>
+          {group.steps.map((step, index) => {
+            const key = `${group.id}:${index}`
+            const open = openDetails.has(key)
+            return <Fragment key={key}>
+              <div className="agent-span-row">
+                <span className={`span-type ${spanTypeName(step).toLowerCase()}`}>{spanTypeName(step)}</span>
+                <b>{STEP_NAMES[step.step] ?? step.step}{step.tool ? <small>{step.tool}</small> : null}</b>
+                <span title={step.input ?? ''}>{step.tok_in ? `${STEP_TYPE[step.step] === 'MODEL' ? 'prompt' : 'embed'} ${step.tok_in.toLocaleString()} tok` : step.input ? inputPeek(step.input) : NA}</span>
+                <span title={step.note ?? ''}>{step.note || NA}{step.tok_out ? ` · ${step.tok_out.toLocaleString()} tok` : ''}</span>
+                <time>{step.ms}ms</time>
+                <strong className={stepFailed(step.status) ? 'failed' : stepSoft(step.status) ? 'soft' : ''}>{step.status.toUpperCase()}
+                  {(step.input || step.output) && <button type="button" aria-expanded={open} onClick={() => toggle(key)}>{open ? '收起' : '详情'}</button>}
+                </strong>
+              </div>
+              {open && <div className="agent-span-detail">
+                {step.input && <section><b>输入</b><pre>{step.input}</pre></section>}
+                {step.output && <section><b>输出</b><pre>{step.output}</pre></section>}
+                {step.error_message && <section><b>错误</b><pre>{step.error_message}</pre></section>}
+              </div>}
+            </Fragment>
+          })}
+        </div>}
+      </div>
+    })}
+  </section>
+}
+
+function AgentTimelineView({ groups, steps, traceId }: {
+  groups: AgentGroup[]; steps: ReplayStep[]; traceId: string
+}) {
+  const complete = steps.length > 0 && steps.every(s => s.start_ms != null)
+  const ordered = complete ? [...steps].sort((a, b) => a.start_ms! - b.start_ms!) : steps
+  const maxMs = Math.max(1, ...steps.map(s => (s.start_ms ?? 0) + s.ms))
+  const owner = (step: ReplayStep) => groups.find(g => g.id === step.agent_run_id
+    || (!step.agent_run_id && g.steps.includes(step)))
+  return <section className="agent-timeline-view">
+    {!complete && <p className="timeline-legacy">这条历史 Trace 未记录 Span 开始时间，按服务端记录顺序排列；不推断并行时序。</p>}
+    {complete && <div className="timeline-axis"><span>0ms</span><span>{Math.round(maxMs / 2)}ms</span><span>{maxMs}ms</span></div>}
+    {ordered.map((step, index) => {
+      const group = owner(step)
+      const start = step.start_ms ?? 0
+      return <div className="timeline-span" key={`${step.agent_run_id || step.step}:${index}`}>
+        <span className="timeline-owner"><b>{group?.label ?? STEP_NAMES[step.step] ?? step.step}</b><small>{group?.id ?? `${traceId}:${step.step}`}</small></span>
+        <span className="timeline-rail">{complete && <i className={stepFailed(step.status) ? 'failed' : stepSoft(step.status) ? 'soft' : ''} style={{ left: `${start / maxMs * 100}%`, width: `${Math.max(1, step.ms / maxMs * 100)}%` }} title={`${STEP_NAMES[step.step] ?? step.step} · ${step.ms}ms`} />}</span>
+        <span className="timeline-name"><b>{STEP_NAMES[step.step] ?? step.step}</b><small>{complete ? `+${start}ms` : `记录 #${index + 1}`} · {step.ms}ms</small></span>
+        <span className="timeline-kind"><i className={`span-type ${spanTypeName(step).toLowerCase()}`}>{spanTypeName(step)}</i></span>
+        <strong className={stepFailed(step.status) ? 'failed' : stepSoft(step.status) ? 'soft' : ''}>{step.status.toUpperCase()}</strong>
+      </div>
+    })}
   </section>
 }
 
@@ -968,7 +1028,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
   return (
     <>
       {multiAgent && (
-        <AgentTopology groups={groups} steps={steps} mode={mode} setMode={setMode}
+        <AgentTopology groups={groups} steps={steps}
           selected={selectedGroup?.id ?? ''} onSelect={setSelectedAgent} />
       )}
       {!multiAgent && steps.length > 0 && (
@@ -997,10 +1057,10 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
         </div>
       )}
 
-      <div className="span-table">
+      <div className="span-table agent-span-views">
         <div className="span-table-title">
           <strong>{multiAgent && mode === 'agents' && selectedGroup
-            ? `${selectedGroup.label} · Span 明细` : 'Span 明细'}</strong>
+            ? 'Agent Run Span 明细' : mode === 'timeline' ? 'Span 时间线' : 'Span 明细'}</strong>
           {multiAgent && <div className="trace-view-tabs" role="tablist" aria-label="Span 展示方式">
             {([['agents', '按智能体'], ['timeline', '时间线'], ['spans', '全部 Span']] as const).map(([key, label]) =>
               <button key={key} type="button" role="tab" aria-selected={mode === key}
@@ -1008,20 +1068,23 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
           </div>}
           <span>
             {multiAgent && mode === 'agents' ? `${shownSteps.length} 个 Span · ` : ''}
-            按开始时间排序 · 失败与回退默认展开
+            {mode === 'agents' ? '按智能体归属' : mode === 'timeline' ? '按开始时间排序' : '按记录顺序'} · 失败与回退默认展开
             {/* 分页只在真分了页时说一句。没过一页还写「12/12」是噪声。 */}
             {shownSteps.length > SPAN_PAGE && ` · 已铺 ${Math.min(shown, shownSteps.length)}/${shownSteps.length}`}
           </span>
         </div>
-        <div className="table-scroll span-scroll" ref={scrollRef}>
+        {multiAgent && mode === 'agents' && <AgentSpanGroups groups={groups}
+          selected={selectedGroup?.id ?? ''} onSelect={setSelectedAgent} />}
+        {multiAgent && mode === 'timeline' && <AgentTimelineView groups={groups} steps={steps} traceId={traceId} />}
+        {(!multiAgent || mode === 'spans') && <div className="table-scroll span-scroll" ref={scrollRef}>
           <table>
             <thead>
-              <tr><th>类型</th><th>Span</th><th>输入摘要</th><th>输出摘要</th>
+              <tr><th>类型</th><th>Span</th>{multiAgent && <th>Agent Run</th>}<th>输入摘要</th><th>输出摘要</th>
                   <th className="span-io-col">详情</th><th>耗时</th><th>状态</th></tr>
             </thead>
             <tbody>
               {(shownSteps.length === 0 || steps.length === 0) && (
-                <tr className="span-empty"><td colSpan={7}>{empty}</td></tr>
+                <tr className="span-empty"><td colSpan={multiAgent ? 8 : 7}>{empty}</td></tr>
               )}
               {/* 下标照原数组算（slice 从 0 起，i 不偏）—— 展开态记的是下标，
                   切片一旦不是从头切，点开的就会是另一行。 */}
@@ -1049,6 +1112,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
                         </em>
                       )}
                     </td>
+                    {multiAgent && <td className="span-agent-run">{groups.find(g => g.id === step.agent_run_id || (!step.agent_run_id && g.steps.includes(step)))?.label ?? NA}</td>}
                     {/* 原型这两列是「输入/输出摘要」。askdb 只记一条 note（该步的结果说明），
                         放在输出侧；输入侧只有 prompt token 数是真的，没有就留占位。 */}
                     {/* 缓存命中这一行的"输入"就是首跑那条记录 —— 整条链路只有这一个
@@ -1097,7 +1161,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
                       再折一层就等于没记。 */}
                   {stepFailed(step.status) && (step.error_code || step.disposition) && (
                     <tr className="span-detail span-error">
-                      <td colSpan={7}>
+                      <td colSpan={multiAgent ? 8 : 7}>
                         <dl>
                           {step.error_code && (
                             <div><dt>错误码</dt><dd><code>{step.error_code}</code></dd></div>
@@ -1116,7 +1180,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
                   )}
                   {openRows.has(i) && (step.tables ?? []).length > 0 && (
                     <tr className="span-detail">
-                      <td colSpan={7}>
+                      <td colSpan={multiAgent ? 8 : 7}>
                         <ol className="span-tables">
                           {(step.tables ?? []).map(t => <li key={t}><code>{t}</code></li>)}
                         </ol>
@@ -1127,7 +1191,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
                       三四千字，挤在一列里既读不了，也会把表格撑到横向滚动。 */}
                   {openIo.has(i) && (step.input || step.output) && (
                     <tr className="span-detail span-io">
-                      <td colSpan={7}>
+                      <td colSpan={multiAgent ? 8 : 7}>
                         <dl>
                           {step.input && (
                             <div>
@@ -1149,7 +1213,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
               ))}
               {rest > 0 && (
                 <tr className="span-more" ref={sentinelRef}>
-                  <td colSpan={7}>
+                  <td colSpan={multiAgent ? 8 : 7}>
                     <button type="button" onClick={showMore}>
                       继续铺开（还有 {rest} 行）
                     </button>
@@ -1158,7 +1222,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
               )}
             </tbody>
           </table>
-        </div>
+        </div>}
       </div>
     </>
   )
