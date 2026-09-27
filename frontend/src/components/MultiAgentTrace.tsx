@@ -68,7 +68,7 @@ function AgentExecutionDetail({ runs, steps, traceId, selected, onSelect }: {
   onSelect: (id: string) => void
 }) {
   const [view, setView] = useState<'agents' | 'timeline' | 'all'>('agents')
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set(runs.map(run => run.id)))
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
   const [openSpans, setOpenSpans] = useState<ReadonlySet<string>>(() => new Set())
   const owner = new Map<ReplayStep, RunView>()
   runs.forEach(run => run.steps.forEach(step => owner.set(step, run)))
