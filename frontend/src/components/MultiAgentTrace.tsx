@@ -36,7 +36,7 @@ const statusOf = (steps: ReplayStep[]): RunStatus => {
   return steps.some(step => stepFailed(step.status) || stepSoft(step.status)) ? 'soft' : 'ok'
 }
 const statusLabel = (status: RunStatus): string => status === 'failed' ? '失败' : status === 'soft' ? '降级' : 'OK'
-const icon = (role: string): string => ({ supervisor: 'S', semantic: 'S', query_worker: 'W', verifier: 'V', synthesizer: 'Σ' } as Record<string, string>)[role] || role.slice(0, 1).toUpperCase()
+const icon = (role: string): string => ({ supervisor: 'S', semantic: 'S', query: 'Q', query_worker: 'W', verifier: 'V', synthesizer: 'Σ' } as Record<string, string>)[role] || role.slice(0, 1).toUpperCase()
 const roleClass = (role: string): string => role === 'query_worker' ? 'worker' : role === 'verifier' ? 'gold' : role === 'synthesizer' ? 'dark' : ''
 
 function describeRun(group: AgentRunGroup): RunView {
@@ -177,6 +177,8 @@ export function MultiAgentTrace({ traceId, groups, steps }: {
   const synthesizers = runs.filter(run => run.role === 'synthesizer')
   const shown = new Set([supervisor?.id, ...semantic.map(run => run.id), ...workers.map(run => run.id), ...verifiers.map(run => run.id), ...synthesizers.map(run => run.id)])
   const other = runs.filter(run => !shown.has(run.id))
+  const solo = !supervisor && semantic.length === 0 && verifiers.length === 0
+    && synthesizers.length === 0 && workers.length + other.length === 1
   const childRuns = runs.filter(run => run.parent === active?.id)
   const parent = runs.find(run => run.id === active?.parent)
   const workerOverlap = workers.some((run, i) => workers.slice(i + 1).some(otherRun =>
@@ -208,20 +210,21 @@ export function MultiAgentTrace({ traceId, groups, steps }: {
   </button>
   const connector = (label: string) => <div className="proto-connector"><span>{label}</span></div>
   return <section className="agent-topology proto-topology">
-    <header className="agent-topology-head"><strong>智能体协作拓扑</strong><span>AGENT RUN GRAPH · Trace {traceId.slice(0, 8)} · 点击智能体查看执行明细</span><div className="topology-legend"><i className="ok" />成功 <i className="soft" />降级 <i className="failed" />失败</div></header>
+    <header className="agent-topology-head"><strong>{solo ? '智能体执行' : '智能体协作拓扑'}</strong><span>AGENT RUN GRAPH · Trace {traceId.slice(0, 8)} · 点击智能体查看执行明细</span><div className="topology-legend"><i className="ok" />成功 <i className="soft" />降级 <i className="failed" />失败</div></header>
     <div className="agent-workspace proto-workspace">
-      <div className="proto-graph"><div className="proto-flow">
-        {supervisor && card(supervisor, 'proto-root-card')}
-        {semantic.map(run => <Fragment key={run.id}>{connector('语义分析')}{card(run, 'proto-root-card')}</Fragment>)}
-        {workers.length > 0 && <>
+      <div className="proto-graph"><div className={'proto-flow' + (solo ? ' proto-flow-solo' : '')}>
+        {solo && card(runs[0], 'proto-root-card')}
+        {!solo && supervisor && card(supervisor, 'proto-root-card')}
+        {!solo && semantic.map(run => <Fragment key={run.id}>{connector('语义分析')}{card(run, 'proto-root-card')}</Fragment>)}
+        {!solo && workers.length > 0 && <>
           {connector('派发 ' + workers.length + ' 个子任务')}
           <section className="proto-worker-stage"><div className="proto-stage-head"><strong>工作智能体</strong><span><b>{workers.length} 个 Agent Run</b> · {workers.every(run => run.startMs !== null) ? workerOverlap ? '并行执行' : '按实际时序' : '开始时间未记录'}</span></div>
             <div className={'proto-worker-grid columns-' + Math.min(workers.length, 3)}>{workers.map(run => card(run, 'proto-worker-card'))}</div>
           </section>
         </>}
-        {verifiers.map(run => <Fragment key={run.id}><div className="proto-fan-in"><span>检查 Worker 输出</span></div>{card(run, 'proto-root-card proto-final-card')}</Fragment>)}
-        {synthesizers.map(run => <Fragment key={run.id}>{connector('合成答案')}{card(run, 'proto-root-card proto-final-card')}</Fragment>)}
-        {other.map(run => <Fragment key={run.id}>{connector('后续智能体')}{card(run, 'proto-root-card')}</Fragment>)}
+        {!solo && verifiers.map(run => <Fragment key={run.id}><div className="proto-fan-in"><span>检查 Worker 输出</span></div>{card(run, 'proto-root-card proto-final-card')}</Fragment>)}
+        {!solo && synthesizers.map(run => <Fragment key={run.id}>{connector('合成答案')}{card(run, 'proto-root-card proto-final-card')}</Fragment>)}
+        {!solo && other.map(run => <Fragment key={run.id}>{connector('后续智能体')}{card(run, 'proto-root-card')}</Fragment>)}
       </div>
         <div className="card proto-detail-in-graph"><AgentExecutionDetail runs={runs} steps={steps} traceId={traceId} selected={active?.id || ''} onSelect={setSelected} /></div>
       </div>
@@ -229,7 +232,7 @@ export function MultiAgentTrace({ traceId, groups, steps }: {
         {active && <section className="proto-sidecard"><header>当前智能体 <b className={active.status}>● {statusLabel(active.status)}</b></header><div className="proto-sidebody">
           <div className="proto-inspector-title"><i className={'proto-avatar ' + roleClass(active.role)}>{icon(active.role)}</i><span><strong>{active.label}</strong><small>{active.id}</small></span><em>AGENT RUN</em></div>
           <p className="proto-inspector-output">{active.task}</p>
-          <dl><div><dt>父级智能体</dt><dd>{parent?.label || (active.parent || 'Root')}</dd></div><div><dt>执行耗时</dt><dd>{duration(active.elapsedMs)}{active.startMs === null ? ' 累计' : ''}</dd></div><div><dt>Span 数量</dt><dd>{active.steps.length}</dd></div><div><dt>Token 用量</dt><dd>{active.tokens ? active.tokens.toLocaleString() + ' tok' : '—'}</dd></div></dl>
+          <dl><div><dt>父级智能体</dt><dd>{parent?.label || (active.parent || (solo ? '—' : 'Root'))}</dd></div><div><dt>执行耗时</dt><dd>{duration(active.elapsedMs)}{active.startMs === null ? ' 累计' : ''}</dd></div><div><dt>Span 数量</dt><dd>{active.steps.length}</dd></div><div><dt>Token 用量</dt><dd>{active.tokens ? active.tokens.toLocaleString() + ' tok' : '—'}</dd></div></dl>
           <small className="proto-section-label">TASK OUTPUT</small><p className="proto-output-box">{active.output}</p>
           <small className="proto-section-label">CHILD AGENTS</small><div className="proto-child-list">{childRuns.length ? childRuns.map(run => <button type="button" key={run.id} onClick={() => setSelected(run.id)}>{run.label}</button>) : <span>无</span>}</div>
         </div></section>}

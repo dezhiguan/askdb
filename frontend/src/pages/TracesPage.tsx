@@ -890,6 +890,24 @@ function agentGroups(steps: ReplayStep[], traceId: string): AgentGroup[] {
   })
 }
 
+/** 编排轨迹保持多张卡片。没有 Supervisor / 多个 Worker 时，整条链路就是一个查询智能体。 */
+function displayGroups(steps: ReplayStep[], traceId: string): AgentGroup[] {
+  const groups = agentGroups(steps, traceId)
+  const workers = groups.filter(g => g.role === 'query_worker').length
+  const orchestrated = groups.some(g =>
+    g.role === 'supervisor' || g.role === 'semantic' || g.role === 'verifier' || g.role === 'synthesizer')
+    || workers > 1
+  if (orchestrated) return groups
+  if (steps.length === 0) return []
+  return [{
+    id: `${traceId}:query`,
+    role: 'query',
+    label: 'Query Agent',
+    parent: '',
+    steps,
+  }]
+}
+
 function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
   traceId: string
   steps: ReplayStep[]
@@ -898,7 +916,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
   cachedFrom?: string | null
   onFocusTrace?: (traceId: string) => void
 }) {
-  const groups = agentGroups(steps, traceId)
+  const groups = displayGroups(steps, traceId)
   const multiAgent = groups.some(g => g.role === 'supervisor' || g.role === 'query_worker')
   const [mode, setMode] = useState<'agents' | 'timeline' | 'spans'>('agents')
   const [selectedAgent, setSelectedAgent] = useState('')
@@ -965,7 +983,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
     : result.status === 'unavailable' ? '这条链路当前不可见：记录不存在，或它命中的表不在你此刻的可见范围内。'
     : result.status === 'failed' ? `节点链读取失败：${result.message}`
     : '这条调用没有留下节点记录。'
-  if (multiAgent) return <MultiAgentTrace traceId={traceId} groups={groups} steps={steps} />
+  if (groups.length > 0) return <MultiAgentTrace traceId={traceId} groups={groups} steps={steps} />
   return (
     <>
       {!multiAgent && steps.length > 0 && (

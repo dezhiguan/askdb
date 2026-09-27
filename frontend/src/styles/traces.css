@@ -675,6 +675,7 @@
 .proto-workspace { display:grid; grid-template-columns:minmax(0,1fr) 285px; gap:12px; align-items:start; padding:15px; }
 .proto-graph { min-width:0; }
 .proto-flow { width:min(100%, 880px); margin:0 auto; }
+.proto-flow-solo { display:flex; justify-content:center; }
 .proto-agent-card { position:relative; display:grid; grid-template-columns:31px minmax(0,1fr) auto; gap:9px; width:100%; padding:11px 13px; border:1px solid #d9e1da; border-radius:9px; background:#fff; box-shadow:0 2px 7px #25392a06; color:var(--ink); text-align:left; cursor:pointer; transition:border-color .16s, box-shadow .16s, background .16s; }
 .proto-agent-card:hover,.proto-agent-card.active { border-color:#77a889; box-shadow:0 0 0 3px #17674612; }
 .proto-agent-card.active { background:#f8fcf9; }
