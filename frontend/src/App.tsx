@@ -46,7 +46,8 @@ const SKIP_LOGIN_KEY = 'askdb.skipLogin.v1'
 function App() {
   const [me, setMe] = useState<Me | null>(null)
   const [loginOpen, setLoginOpen] = useState(false)
-  const [view, setView] = useState<View>('query')
+  const [view, setView] = useState<View>(() =>
+    new URLSearchParams(window.location.search).get('local-prototype') === '1' ? 'traces' : 'query')
   /** 跳「执行追踪」时要定位的那条 trace。本站没有 URL 路由（view 是状态），
    *  参数就走这里 —— 侧栏「Agent 执行链路」按的是刚跑完的那一条，
    *  落到追踪页最近一条上等于点了个碰运气的按钮。 */

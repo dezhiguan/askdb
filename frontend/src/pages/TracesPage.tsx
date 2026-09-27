@@ -129,6 +129,8 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
   onOpenModal?: (modal: ModalName) => void
   me?: Me | null
 } = {}) {
+  // URL 开关只用于本地视觉评审：拓扑使用固定原型样例，不请求 trace 后端。
+  const prototypePreview = new URLSearchParams(window.location.search).get('local-prototype') === '1'
   /** 导出与接入向导按登录态置灰，与其余六页同一口径 ——
    *  展示（流水、节点链）匿名可见，动作要登录。 */
   const guard = writeGuard(me ?? null, '这个操作')
@@ -301,7 +303,7 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
 
       <StatTiles quality={quality} />
 
-      <div className="trace-layout">
+      <div className={`trace-layout${prototypePreview ? ' prototype-preview-layout' : ''}`}>
         <div className="card">
           <div className="card-head">
             <div><strong>最近执行</strong><p>点击查看节点级 Span</p></div>
@@ -381,11 +383,11 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
           </div>
         </div>
 
-        <div className="card trace-detail">
+        {prototypePreview ? <div className="card trace-detail"><AgentTopology preview /></div> : <div className="card trace-detail">
           <TraceDetail item={currentItem} chain={currentChain} result={currentResult}
                        finalResult={finalResult && finalResult.key === selected ? finalResult.data : null}
                        onFocusTrace={focusOn} />
-        </div>
+        </div>}
       </div>
 
     </div>
@@ -733,98 +735,153 @@ function SpanNote({ step, open, onToggle }: {
     : <>{note || NA} {btn}{tok}</>
 }
 
-function AgentTopology({ groups, steps, selected, onSelect }: {
-  groups: AgentGroup[]; steps: ReplayStep[]
-  selected: string; onSelect: (id: string) => void
-}) {
-  const supervisor = groups.filter(g => g.role === 'supervisor')
-  const semantic = groups.filter(g => g.role === 'semantic')
-  const workers = groups.filter(g => g.role === 'query_worker')
-  const downstream = groups.filter(g => ['verifier', 'synthesizer'].includes(g.role))
-  const groupState = (group: AgentGroup) => group.steps.some(s => stepFailed(s.status)) ? 'failed'
-    : group.steps.some(s => stepSoft(s.status)) ? 'soft' : 'ok'
-  const spanKind = spanTypeName
-  const selectedInfo = groups.find(g => g.id === selected) ?? groups[0]
-  const hasTiming = !!selectedInfo?.steps.length && selectedInfo.steps.every(s => s.start_ms != null)
-  const selectedStart = hasTiming ? Math.min(...selectedInfo!.steps.map(s => s.start_ms!)) : 0
-  const selectedEnd = hasTiming ? Math.max(...selectedInfo!.steps.map(s => s.start_ms! + s.ms)) : 0
-  const selectedTokens = selectedInfo?.steps.reduce((sum, s) => sum + (s.tok_in ?? 0) + (s.tok_out ?? 0), 0) ?? 0
-  const timingComplete = steps.length > 0 && steps.every(s => s.start_ms != null)
-  const events = timingComplete
-    ? [...steps].sort((a, b) => a.start_ms! - b.start_ms!)
-    : steps
+const PROTOTYPE_AGENTS = {
+  supervisor: { name: 'Supervisor', id: 'fc4273234454:supervisor', task: '把用户问题拆解为三个独立的统计任务，并发起并行 Worker。', duration: '4.21s', spans: '2', tokens: '250 tok', parent: 'Root', output: '拆分为 3 个子任务：知识库状态、文档处理状态、文档分块类型。三个任务并行执行。', spansList: [['resolve_skills', 'SYS'], ['semantic', 'LLM']], children: ['worker-0', 'worker-1', 'worker-2'] },
+  'worker-0': { name: 'Query Worker #0', id: 'fc4273234454:worker:0', task: '统计知识库状态分布，并返回可供汇总的证据。', duration: '5.72s', spans: '2', tokens: '317 tok', parent: 'Supervisor', output: '按知识库状态分组统计完成，产出 2 行证据。', spansList: [['semantic', 'LLM'], ['query_worker', 'TOOL']], children: [] },
+  'worker-1': { name: 'Query Worker #1', id: 'fc4273234454:worker:1', task: '统计文档处理状态分布，并返回可供汇总的证据。', duration: '5.37s', spans: '2', tokens: '296 tok', parent: 'Supervisor', output: '按文档处理状态分组统计完成，产出 2 行证据。', spansList: [['semantic', 'LLM'], ['query_worker', 'TOOL']], children: [] },
+  'worker-2': { name: 'Query Worker #2', id: 'fc4273234454:worker:2', task: '统计文档分块类型分布，并返回可供汇总的证据。', duration: '8.38s', spans: '2', tokens: '226 tok', parent: 'Supervisor', output: '按文档分块类型分组统计完成，产出 12 行证据。', spansList: [['semantic', 'LLM'], ['query_worker', 'TOOL']], children: [] },
+  verifier: { name: 'Verifier', id: 'fc4273234454:verifier', task: '检查各 Worker 返回证据是否完整、口径一致且互不冲突。', duration: '0ms', spans: '1', tokens: '—', parent: 'Supervisor', output: 'PASS：3 份证据均通过校验，可以进入答案合成。', spansList: [['verify_evidence', 'FLOW']], children: [] },
+  synthesizer: { name: 'Synthesizer', id: 'fc4273234454:synthesizer', task: '整合通过校验的证据，生成面向用户的最终答案。', duration: '25.79s', spans: '1', tokens: '1,571 tok', parent: 'Supervisor', output: '合成 8 条 Claim，已生成最终回答。', spansList: [['synthesizer', 'LLM']], children: [] },
+} as const
+type PrototypeAgentKey = keyof typeof PROTOTYPE_AGENTS
 
-  const card = (group: AgentGroup) => {
-    const state = groupState(group)
-    const duration = group.steps.reduce((sum, step) => sum + step.ms, 0)
-    const tok = group.steps.reduce((sum, step) => sum + (step.tok_in ?? 0) + (step.tok_out ?? 0), 0)
-    return <button type="button" key={group.id}
-      className={`agent-card ${selected === group.id ? 'selected' : ''} ${state}`}
-      onClick={() => onSelect(group.id)}>
-      <span className={`agent-avatar ${group.role === 'query_worker' ? 'worker' : ''}`}>
-        {group.role === 'query_worker' ? 'W' : group.label.slice(0, 1)}
-      </span>
-      <span className="agent-card-main">
-        <strong>{group.label}</strong><em>AGENT</em>
-        <small>{duration}ms 累计 · {tok.toLocaleString()} tok · {group.steps.length} 个 Span</small>
-        <span className="agent-children">{group.steps.map((step, i) =>
-          <i key={`${step.step}-${i}`} className={`span-type ${spanKind(step).toLowerCase()}`}>{STEP_NAMES[step.step] ?? step.step}
-            <b>{spanKind(step)}</b></i>)}</span>
-      </span>
-      <span className={`agent-state ${state}`}>{state === 'failed' ? '失败' : state === 'soft' ? '降级' : '成功'}</span>
+function AgentTopology({ preview = false }: { preview?: boolean } = {}) {
+  const [selected, setSelected] = useState<PrototypeAgentKey>('supervisor')
+  const agent = PROTOTYPE_AGENTS[selected]
+  const avatar = (id: PrototypeAgentKey) => id === 'supervisor' ? 'S' : id.startsWith('worker') ? 'W' : id === 'verifier' ? 'V' : 'Σ'
+  const kindClass = (kind: string) => kind.toLowerCase()
+  const spans = (id: PrototypeAgentKey) => PROTOTYPE_AGENTS[id].spansList.map(([name, kind]) =>
+    <span className="proto-span-pill" key={`${id}-${name}`}>{name}<b className={`proto-span-kind ${kindClass(kind)}`}>{kind}</b></span>)
+  const card = (id: PrototypeAgentKey, extra = '') => {
+    const value = PROTOTYPE_AGENTS[id]
+    return <button type="button" key={id} className={`proto-agent-card ${extra} ${selected === id ? 'active' : ''}`} onClick={() => setSelected(id)}>
+      <span className={`proto-avatar ${id.startsWith('worker') ? 'worker' : ''}`}>{avatar(id)}</span>
+      <span className="proto-agent-main"><span className="proto-agent-title">{value.name}<em>{id === 'supervisor' ? '智能体 · AGENT' : id === 'verifier' ? '校验智能体 · AGENT' : id === 'synthesizer' ? '汇总智能体 · AGENT' : 'AGENT'}</em></span>
+        <small>{value.duration} · {value.tokens}{id === 'supervisor' ? ' · 2 个内部 Span' : ''}</small>
+        {id !== 'worker-0' && id !== 'worker-1' && id !== 'worker-2' && <span className="proto-agent-task">{value.task}</span>}
+        <span className="proto-agent-spans">{spans(id)}</span>
+      </span><b className="proto-agent-status">● {id === 'verifier' ? 'PASS' : 'OK'}</b>
+      {id.startsWith('worker') && <span className="proto-agent-task worker-task">{value.task}</span>}
     </button>
   }
-
-  return <section className="agent-topology">
-    <header className="agent-topology-head">
-      <strong>智能体协作拓扑</strong>
-      <span>AGENT RUN GRAPH · 点击智能体查看其 Span</span>
-      <div className="topology-legend"><i className="ok" />成功 <i className="soft" />降级 <i className="failed" />失败</div>
-    </header>
-    <div className="agent-workspace">
-      <div className="agent-graph">
-        <div className="agent-stage root-stage">{supervisor.map(card)}</div>
-        {semantic.length > 0 && <>
-          <div className="graph-link"><span>Supervisor 委派语义分析</span></div>
-          <div className="agent-stage semantic-stage">{semantic.map(card)}</div>
-        </>}
-        <div className="graph-link"><span>派发并行子任务 · {workers.length} 个 Agent Run</span></div>
-        <div className="agent-worker-stage">
-          <div className="agent-stage-label">并行工作智能体 <small>{workers.length} 个 · 并发执行</small></div>
-          <div className="agent-workers">{workers.length ? workers.map(card) : <p>本次没有 Worker Span</p>}</div>
+  return <section className="agent-topology proto-topology">
+    <header className="agent-topology-head"><strong>智能体协作拓扑</strong><span>AGENT RUN GRAPH · 点击智能体查看执行明细</span><div className="topology-legend"><i className="ok" />成功 <i className="soft" />执行中</div></header>
+    <div className="agent-workspace proto-workspace">
+      <div className="proto-graph">
+        <div className="proto-flow">
+          {card('supervisor', 'proto-root-card')}
+          <div className="proto-connector"><span>派发 3 个子任务</span></div>
+          <section className="proto-worker-stage"><div className="proto-stage-head"><strong>并行工作智能体</strong><span><b>3 个 Agent Run</b> · 同时执行</span></div>
+            <div className="proto-worker-grid">{card('worker-0', 'proto-worker-card')}{card('worker-1', 'proto-worker-card')}{card('worker-2', 'proto-worker-card')}</div>
+          </section>
+          <div className="proto-fan-in"><span>汇总 Worker 输出</span></div>
+          {card('verifier', 'proto-root-card proto-final-card')}
+          <div className="proto-connector proto-finish"><span>校验通过</span></div>
+          {card('synthesizer', 'proto-root-card proto-final-card')}
         </div>
-        {downstream.map(group => <Fragment key={group.id}>
-          <div className="graph-link"><span>{group.role === 'verifier' ? '汇总证据并验证' : '组织最终答案'}</span></div>
-          <div className="agent-stage downstream-stage">{card(group)}</div>
-        </Fragment>)}
+        {preview && <div className="card proto-detail-in-graph"><PrototypeExecutionDetail /></div>}
       </div>
-      <aside className="agent-sidebar">
-      <section className="agent-inspector">
-        <div className="inspector-title"><i className={`agent-avatar ${selectedInfo?.role === 'query_worker' ? 'worker' : ''}`}>{selectedInfo?.role === 'query_worker' ? 'W' : selectedInfo?.label.slice(0, 1) ?? 'A'}</i>
-          <span><strong>{selectedInfo?.label ?? '当前智能体'}</strong><small>{selectedInfo?.id ?? ''}</small></span><em>AGENT RUN</em></div>
-        <p className="inspector-output">{selectedInfo?.steps.map(s => s.note).filter(Boolean).join(' · ') || '此 Agent 暂无输出摘要'}</p>
-        <dl className="inspector-facts"><div><dt>父级智能体</dt><dd>{selectedInfo?.parent ? groups.find(g => g.id === selectedInfo.parent)?.label ?? 'Supervisor' : 'Root'}</dd></div>
-          <div><dt>{hasTiming ? '执行区间' : '累计耗时'}</dt><dd>{selectedInfo ? hasTiming ? `${selectedStart}–${selectedEnd}ms` : `${selectedInfo.steps.reduce((n, s) => n + s.ms, 0)}ms` : '—'}</dd></div>
-          <div><dt>Span 数量</dt><dd>{selectedInfo?.steps.length ?? 0}</dd></div>
-          <div><dt>Token 用量</dt><dd>{selectedTokens.toLocaleString()} tok</dd></div></dl>
-        <div className="inspector-children"><strong>CHILD AGENTS</strong>{groups.filter(g => g.parent === selectedInfo?.id).length
-          ? groups.filter(g => g.parent === selectedInfo?.id).map(g => <button key={g.id} onClick={() => onSelect(g.id)}>{g.label}</button>)
-          : <span>无</span>}</div>
-        <button className="inspector-jump" type="button" onClick={() => document.querySelector('.agent-span-views')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}>查看该智能体 Span ↓</button>
-      </section>
-      <section className="agent-events"><header><strong>执行事件</strong><span>RELATIVE TIME</span></header>
-        {!timingComplete && <p className="timeline-legacy">历史记录未保存开始时间，按 Span 记录顺序展示。</p>}
-        <div className="event-list">{events.map((step, index) => {
-          const group = groups.find(g => g.id === step.agent_run_id || (!step.agent_run_id && g.steps.includes(step)))
-          return <button type="button" key={`${step.step}-${index}`} onClick={() => group && onSelect(group.id)}>
-            <time>{timingComplete ? `+${(step.start_ms! / 1000).toFixed(2)}s` : `#${index + 1}`}</time><i />
-            <span><b>{group?.label ?? STEP_NAMES[step.step] ?? step.step}</b> · {STEP_NAMES[step.step] ?? step.step}{step.note ? ` · ${step.note}` : ''}</span>
-          </button>
-        })}</div>
-      </section>
-        <section className="trace-legend"><strong>Span 类型</strong><span><i className="span-type model">LLM</i>模型调用</span><span><i className="span-type tool">TOOL</i>工具调用</span><span><i className="span-type db">QUERY</i>数据库查询</span><span><i className="span-type sys">SYS</i>系统操作</span></section>
+      <aside className="proto-sidebar">
+        <section className="proto-sidecard"><header>当前智能体 <b>● 成功</b></header><div className="proto-sidebody">
+          <div className="proto-inspector-title"><i className={`proto-avatar ${selected.startsWith('worker') ? 'worker' : ''}`}>{avatar(selected)}</i><span><strong>{agent.name}</strong><small>{agent.id}</small></span><em>AGENT RUN</em></div>
+          <p className="proto-inspector-output">{agent.task}</p>
+          <dl><div><dt>父级智能体</dt><dd>{agent.parent}</dd></div><div><dt>执行耗时</dt><dd>{agent.duration}</dd></div><div><dt>Span 数量</dt><dd>{agent.spans}</dd></div><div><dt>Token 用量</dt><dd>{agent.tokens}</dd></div></dl>
+          <small className="proto-section-label">TASK OUTPUT</small><p className="proto-output-box">{agent.output}</p>
+          <small className="proto-section-label">CHILD AGENTS</small><div className="proto-child-list">{agent.children.length ? agent.children.map(id => <button key={id} onClick={() => setSelected(id)}>{PROTOTYPE_AGENTS[id].name}</button>) : <span>无</span>}</div>
+        </div></section>
+        <section className="proto-sidecard"><header>执行事件 <small>RELATIVE TIME</small></header><div className="proto-event-list">{[
+          ['+0.00s', 'Supervisor', '开始处理用户问题'], ['+4.21s', 'Supervisor', '并行派发 3 个 Worker'], ['+12.59s', 'Query Worker', '收到最后一个 Worker 结果'], ['+12.59s', 'Verifier', '校验通过'], ['+12.59s', 'Synthesizer', '开始汇总'], ['+38.38s', 'Synthesizer', '最终答案生成完成'],
+        ].map(([time, name, text]) => <div key={`${time}-${name}-${text}`}><time>{time}</time><i /><span><b>{name}</b> {text}</span></div>)}</div></section>
+        <section className="proto-sidecard proto-legend-card"><header>标识说明</header><div><span><i>A</i> Agent Run</span><b>智能体实例</b></div><div><span><em>LLM</em></span><b>模型调用 Span</b></div><div><span><em className="tool">TOOL</em></span><b>工具调用 Span</b></div><div><span><em className="query">QUERY</em></span><b>检索 / 查询 Span</b></div><div><span><em className="sys">SYS</em></span><b>系统操作 Span</b></div></section>
       </aside>
     </div>
+  </section>
+}
+
+type PrototypeSpan = { kind: string; name: string; subtitle?: string; input: string; output: string; time: string }
+type PrototypeExecutionGroup = {
+  id: PrototypeAgentKey; label: string; suffix: string; task: string; time: string; tokens: string;
+  status: string; spans: PrototypeSpan[]
+}
+
+const PROTOTYPE_EXECUTION: PrototypeExecutionGroup[] = [
+  { id: 'supervisor', label: 'Supervisor', suffix: '· AGENT', task: '将问题拆解为三个独立统计任务', time: '4.21s', tokens: '250 tok', status: 'OK', spans: [
+    { kind: 'LLM', name: 'supervisor', subtitle: '主模型 · qwen-plus', input: 'embed 542 tok', output: '生成 3 个独立子任务', time: '4,208ms' },
+    { kind: 'SYS', name: 'resolve_skills', input: '—', output: '为 3 个角色固定 Skill 版本', time: '1ms' },
+  ] },
+  { id: 'worker-0', label: 'Query Worker', suffix: '#0', task: '知识库状态 · fc4273234454:worker:0', time: '5.72s', tokens: '317 tok', status: 'OK', spans: [
+    { kind: 'QUERY', name: 'semantic', subtitle: '知识库状态统计', input: 'embed 5,855 tok', output: '产出 2 行证据 · 296 tok', time: '5,720ms' },
+    { kind: 'TOOL', name: 'query_worker', subtitle: 'SQL 查询 · 15 行命中', input: '只读聚合查询', output: '知识库状态分布已统计', time: '1,124ms' },
+  ] },
+  { id: 'worker-1', label: 'Query Worker', suffix: '#1', task: '文档处理状态 · fc4273234454:worker:1', time: '5.37s', tokens: '296 tok', status: 'OK', spans: [
+    { kind: 'QUERY', name: 'semantic', subtitle: '文档处理状态统计', input: 'embed 6,134 tok', output: '产出 2 行证据 · 317 tok', time: '5,375ms' },
+    { kind: 'TOOL', name: 'query_worker', subtitle: 'SQL 查询 · 14 行命中', input: '只读聚合查询', output: '处理状态分布已统计', time: '986ms' },
+  ] },
+  { id: 'worker-2', label: 'Query Worker', suffix: '#2', task: '文档分块类型 · fc4273234454:worker:2', time: '8.38s', tokens: '226 tok', status: 'OK', spans: [
+    { kind: 'QUERY', name: 'semantic', subtitle: '文档分块类型统计', input: 'embed 5,682 tok', output: '产出 12 行证据 · 226 tok', time: '8,381ms' },
+    { kind: 'TOOL', name: 'query_worker', subtitle: 'SQL 查询 · 13 行命中', input: '只读聚合查询', output: '分块类型分布已统计', time: '1,412ms' },
+  ] },
+  { id: 'verifier', label: 'Verifier', suffix: '· AGENT', task: '检查 3 个 Worker 返回的证据', time: '0ms', tokens: '—', status: 'PASS', spans: [
+    { kind: 'FLOW', name: 'verify_evidence', input: '3 份证据', output: 'PASS · 证据完整且互不冲突', time: '0ms' },
+  ] },
+  { id: 'synthesizer', label: 'Synthesizer', suffix: '· AGENT', task: '合并统计结果并组织为最终答案', time: '25.79s', tokens: '1,571 tok', status: 'OK', spans: [
+    { kind: 'LLM', name: 'synthesizer', subtitle: '主模型 · qwen-plus', input: '3 份已验证证据', output: '合成 8 条 Claim · 最终回答已生成', time: '25,785ms' },
+  ] },
+]
+
+function PrototypeExecutionDetail() {
+  const [view, setView] = useState<'agents' | 'timeline' | 'all'>('agents')
+  const [expanded, setExpanded] = useState<ReadonlySet<PrototypeAgentKey>>(() => new Set(PROTOTYPE_EXECUTION.map(group => group.id)))
+  const [openSpans, setOpenSpans] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleGroup = (id: PrototypeAgentKey) => setExpanded(previous => {
+    const next = new Set(previous)
+    if (!next.delete(id)) next.add(id)
+    return next
+  })
+  const toggleSpan = (key: string) => setOpenSpans(previous => {
+    const next = new Set(previous)
+    if (!next.delete(key)) next.add(key)
+    return next
+  })
+  const spanRow = (span: PrototypeSpan, group: PrototypeExecutionGroup, index: number, flat = false) => {
+    const key = `${group.id}-${index}`
+    return <Fragment key={key}>
+      <div className={`proto-detail-spanrow ${flat ? 'flat' : ''}`}>
+        <span className={`proto-detail-kind ${span.kind.toLowerCase()}`}>{span.kind}</span>
+        <span className="proto-detail-spanname">{span.name}<small>{span.subtitle}</small></span>
+        {flat ? <span className="proto-detail-owner">{PROTOTYPE_AGENTS[group.id].id}</span> : <span className="proto-detail-io">{span.input}</span>}
+        <span className="proto-detail-io out" title={flat ? `${span.input} / ${span.output}` : span.output}>{flat ? `${span.input} / ${span.output}` : span.output}</span>
+        <time>{span.time}</time>
+        <button type="button" className="proto-detail-expand" aria-label={`${span.name} 输入输出详情`} aria-expanded={openSpans.has(key)} onClick={() => toggleSpan(key)}>{openSpans.has(key) ? '⌃' : '⌄'}</button>
+        <strong>OK</strong>
+      </div>
+      {openSpans.has(key) && <div className="proto-detail-disclosure"><div><b>输入摘要</b><span>{span.input}</span></div><div><b>输出摘要</b><span>{span.output}</span></div><div><b>所属 Agent Run</b><span>{PROTOTYPE_AGENTS[group.id].id}</span></div></div>}
+    </Fragment>
+  }
+  const lanes = [
+    { name: 'Supervisor', task: '拆分任务', time: '4.21s', left: 0, width: 10, kind: '' },
+    { name: 'Worker #0', task: '知识库状态', time: '5.72s', left: 10, width: 13.6, kind: 'blue' },
+    { name: 'Worker #1', task: '文档处理状态', time: '5.37s', left: 10, width: 12.8, kind: 'blue' },
+    { name: 'Worker #2', task: '文档分块类型', time: '8.38s', left: 10, width: 19.9, kind: 'blue' },
+    { name: 'Verifier', task: '证据校验', time: '0ms', left: 30, width: .5, kind: 'gold' },
+    { name: 'Synthesizer', task: '汇总答案', time: '25.79s', left: 30, width: 61.3, kind: 'dark' },
+  ]
+  return <section className="proto-execution-detail">
+    <header className="proto-detail-head"><div className="proto-detail-title"><h2>执行明细</h2><div className="proto-detail-tabs" role="tablist" aria-label="执行明细视图">
+      <button type="button" role="tab" aria-selected={view === 'agents'} className={view === 'agents' ? 'active' : ''} onClick={() => setView('agents')}>按智能体 <small>6</small></button>
+      <button type="button" role="tab" aria-selected={view === 'timeline'} className={view === 'timeline' ? 'active' : ''} onClick={() => setView('timeline')}>时间线</button>
+      <button type="button" role="tab" aria-selected={view === 'all'} className={view === 'all' ? 'active' : ''} onClick={() => setView('all')}>全部 Span <small>15</small></button>
+    </div></div><div className="proto-detail-tools"><button type="button" onClick={() => { setExpanded(new Set(PROTOTYPE_EXECUTION.map(group => group.id))); setView('agents') }}>全部展开</button><button type="button" onClick={() => { setExpanded(new Set()); setView('agents') }}>全部收起</button></div></header>
+    {view === 'agents' && <div className="proto-detail-groups">{PROTOTYPE_EXECUTION.map(group => <div className="proto-detail-group" key={group.id}>
+      <button type="button" className="proto-detail-grouphead" aria-expanded={expanded.has(group.id)} onClick={() => toggleGroup(group.id)}>
+        <span className="proto-detail-identity"><i className="proto-detail-chevron">{expanded.has(group.id) ? '⌄' : '›'}</i><i className={`proto-detail-role ${group.id.startsWith('worker') ? 'blue' : group.id === 'verifier' ? 'gold' : group.id === 'synthesizer' ? 'dark' : ''}`}>{group.id.startsWith('worker') ? 'W' : group.id === 'verifier' ? 'V' : group.id === 'synthesizer' ? 'Σ' : 'S'}</i><span><b>{group.label}</b><em>{group.suffix}</em></span></span>
+        <span className="proto-detail-task" title={group.task}>{group.task}</span><span className="proto-detail-metric"><b>{group.time}</b></span><span className="proto-detail-metric">{group.tokens}</span><strong className="proto-detail-ok">● {group.status}</strong>
+      </button>
+      {expanded.has(group.id) && <div className="proto-detail-spans">{group.spans.map((span, index) => spanRow(span, group, index))}</div>}
+    </div>)}</div>}
+    {view === 'timeline' && <div className="proto-detail-timeline"><div className="proto-detail-lanes">{lanes.map(lane => <div className="proto-detail-lane" key={lane.name}><span className="proto-detail-lanename">{lane.name}<small>{lane.task}</small></span><div className="proto-detail-rail"><i className={lane.kind} style={{ left: `${lane.left}%`, width: `${lane.width}%` }}>{lane.width > 2 && <span>{lane.time}</span>}</i></div><time>{lane.time}</time></div>)}</div><div className="proto-detail-axis">{['0s', '10s', '20s', '30s', '40s', '42s'].map(tick => <span key={tick}>{tick}</span>)}</div><p className="proto-detail-note">Worker #0、#1、#2 从约 4.2s 同时开始；时间轴显示实际耗时，便于快速定位最长分支。</p></div>}
+    {view === 'all' && <div className="proto-detail-all"><div className="proto-detail-spanrow flat heading"><span>类型</span><span>Span 名称</span><span>Agent Run</span><span>输入 / 输出摘要</span><span>耗时</span><span></span><span>状态</span></div>{PROTOTYPE_EXECUTION.flatMap(group => group.spans.map((span, index) => spanRow(span, group, index, true)))}</div>}
+    <footer className="proto-detail-footnote">Agent Run 是智能体的一次执行实例（如 <code>fc4273234454:worker:0</code>）；Span 归属到 Agent Run 后，同名 Worker 也能清楚区分。</footer>
   </section>
 }
 
@@ -1021,8 +1078,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
   return (
     <>
       {multiAgent && (
-        <AgentTopology groups={groups} steps={steps}
-          selected={selectedGroup?.id ?? ''} onSelect={setSelectedAgent} />
+        <AgentTopology />
       )}
       {!multiAgent && steps.length > 0 && (
         <div className="trace-flow">
