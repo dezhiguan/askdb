@@ -393,6 +393,37 @@ def test_quality_multi_agent_summary_uses_agent_run_ids(tmp_path):
     assert q["tok_total"] == 40
 
 
+def test_trace_header_five_metrics_are_derived_from_audit_records(tmp_path):
+    """同一滚动窗口内五张卡的分子和分母都来自真实收尾审计。"""
+    import json
+
+    from askdb.audit import quality
+    from askdb.trace import now_iso
+
+    p = tmp_path / "metrics.jsonl"
+    records = [
+        {"trace_id": "multi", "ts": now_iso(), "elapsed_ms": 2000,
+         "tok_in": 100, "tok_out": 50, "steps": [
+             {"step": "supervisor"}, {"step": "query_worker"}]},
+        {"trace_id": "blocked", "ts": now_iso(), "elapsed_ms": 4000,
+         "tok_in": 20, "tok_out": 10, "rejected_by": "R-02",
+         "steps": [{"step": "guard"}]},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
+
+    q = quality(p, days=1)
+    assert (q["runs"], q["multi_agent_calls"], q["success_rate"],
+            q["avg_elapsed_ms"], q["tok_total"]) == (2, 1, 0.5, 3000, 180)
+    assert q["multi_agent_rate"] == 0.5
+    assert q["multi_agent_avg_elapsed_ms"] == 2000
+
+    p.write_text("", encoding="utf-8")
+    empty = quality(p, days=1)
+    assert empty["runs"] == empty["multi_agent_calls"] == empty["tok_total"] == 0
+    assert empty["success_rate"] is None
+    assert empty["avg_elapsed_ms"] is None
+
+
 def test_quality_aggregates_by_node(tmp_path):
     """按节点聚合是这个接口存在的理由 —— 端到端慢在哪一段只能靠它回答。
 

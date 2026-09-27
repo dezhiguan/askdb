@@ -9,6 +9,16 @@
  */
 
 /* ---------- 顶部统计卡：原型 .stat ---------- */
+.traces-page {
+  /* 原型拓扑沿用旧变量名；映射到当前主题，避免标签与节点文字隐形。 */
+  --green2: var(--green-wash);
+  --blue2: var(--blue-wash);
+  --amber2: var(--amber-wash);
+  --sub: var(--ink-2);
+}
+.traces-page .trace-metric-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -3px 0 7px; color: var(--muted); font-size: 9px; }
+.traces-page .trace-metric-meta button { flex: none; padding: 2px 7px; border: 1px solid var(--line); border-radius: 4px; background: transparent; color: var(--green); font: inherit; cursor: pointer; }
+.traces-page .trace-metric-meta button:hover { background: rgba(29, 100, 63, .07); }
 /* pages.css 的 `.stats > div` 是给别的页写的，这里用 .stat 单独对齐原型 */
 .page.traces-page > .stats { grid-template-columns: 1.35fr repeat(4, minmax(0, 1fr)); gap: 0; margin-bottom: 14px; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 254, 250, .9); box-shadow: var(--shadow); }
 .page.traces-page > .stats .stat { min-width: 0; padding: 9px 11px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }

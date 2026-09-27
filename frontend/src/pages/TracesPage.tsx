@@ -138,6 +138,9 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
   const [stats, setStats] = useState<AuditStats | null>(null)
   // 顶部五项按原型使用近 24 小时运行质量窗口；审计统计仍单独提供追踪集成状态。
   const [quality, setQuality] = useState<LiveQuality | null>(null)
+  const [qualityError, setQualityError] = useState('')
+  const [qualityUpdatedAt, setQualityUpdatedAt] = useState<Date | null>(null)
+  const [qualityRefresh, setQualityRefresh] = useState(0)
   const [items, setItems] = useState<AuditItem[] | null>(null)
   /* 左栏改成"搜索 + 两个下拉 + 滚动分页"。三个筛选条件都走**服务端**：
      只筛已加载的那一页，等于"搜不到"和"这一页里没有"分不开。 */
@@ -162,10 +165,35 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
     fetchAuditStats()
       .then(s => { if (!alive) return; setStats(s) })
       .catch(e => { if (alive) setError(String(e.message || e)) })
-    fetchLiveQuality(1).then(q => { if (alive) setQuality(q) }).catch(() => {
-      // 质量汇总权限或接口暂不可用时，不阻塞追踪明细；指标保留占位符。
+    return () => { alive = false }
+  }, [])
+
+  useEffect(() => {
+    let alive = true
+    fetchLiveQuality(1).then(q => {
+      if (!alive) return
+      setQuality(q)
+      setQualityError('')
+      setQualityUpdatedAt(new Date())
+    }).catch(e => {
+      if (!alive) return
+      // 失败不能沿用旧的 0（或旧的非零值），否则看起来仍是实时数据。
+      setQuality(null)
+      setQualityError(String(e.message || e))
     })
     return () => { alive = false }
+  }, [qualityRefresh])
+
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') setQualityRefresh(value => value + 1)
+    }
+    const timer = window.setInterval(refresh, 30_000)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refresh)
+    }
   }, [])
 
   /* 输入即请求会把每个字母都打成一次查询。300ms 防抖后再落到 query 上，
@@ -302,6 +330,16 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
 
       {error && <div className="audit-error">读取追踪数据失败：{error}</div>}
 
+      <div className="trace-metric-meta" role="status" aria-live="polite">
+        <span>
+          {qualityError ? `当前环境指标读取失败（${qualityError}）` : quality
+            ? `当前环境审计流水 · ${quality.service?.config || '当前配置'} · ${qualityUpdatedAt?.toLocaleTimeString('zh-CN') || '刚刚'} 更新${quality.runs === 0 ? ' · 近 24 小时没有已收尾调用' : ''}`
+            : '正在读取当前环境审计流水…'}
+        </span>
+        <button type="button" onClick={() => setQualityRefresh(value => value + 1)}>
+          刷新指标
+        </button>
+      </div>
       <StatTiles quality={quality} />
 
       <div className={`trace-layout${prototypePreview ? ' prototype-preview-layout' : ''}`}>
@@ -408,7 +446,7 @@ function StatTiles({ quality }: { quality: LiveQuality | null }) {
     <div className="stats">
       <div className="stat stat-total">
         <span>最近 24 小时</span><strong>{quality?.runs.toLocaleString() ?? NA} 次调用</strong>
-        <small>最近执行记录</small>
+        <small>当前环境审计流水 · 全部类型</small>
       </div>
       <div className="stat">
         <span>多智能体调用</span><strong>{quality?.multi_agent_calls?.toLocaleString() ?? NA}</strong>

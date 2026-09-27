@@ -1696,7 +1696,8 @@ export interface LiveQuality {
 }
 
 export async function fetchLiveQuality(days: number): Promise<LiveQuality> {
-  const response = await request(`/api/quality/live?days=${days}`)
+  // 运行质量是滚动时间窗；浏览器缓存会把刚产生的调用继续显示为 0。
+  const response = await request(`/api/quality/live?days=${days}`, { cache: 'no-store' })
   if (!response.ok) throw new Error(`/api/quality/live ${response.status}`)
   return response.json()
 }
