@@ -228,7 +228,7 @@ def test_ask_goes_through_the_agent(client, monkeypatch):
                          thread_id="a" * 12, columns=["文件名"], rows=[["x"]],
                          row_count=1, reasoning="替身")
 
-    monkeypatch.setattr(server, "run_agent", _fake)
+    monkeypatch.setattr("askdb.agent.run_agent", _fake)
     d = client.post("/api/ask", json={"question": "有哪些文档"}).json()
     assert d["ok"] and d["columns"] == ["文件名"]
     assert seen["question"] == "有哪些文档"
@@ -247,13 +247,16 @@ def test_as_task_no_longer_switches_the_execution_path(client, monkeypatch):
 
     src = (Path(__file__).resolve().parent.parent / "askdb" / "server.py").read_text(
         encoding="utf-8")
-    # 只禁**分流**这一种用法。别的地方用它是合理的（比如任务不吃应答缓存），
-    # 所以判据钉在"有没有第二条执行链路"上，不是"这个词出现没出现"。
-    for banned in ("run_ask", "graph.ask", "from .graph import ask"):
-        assert banned not in src, (
-            f"{banned} 又回来了 —— /api/ask 只该有 agent 一条链路。"
+    code = "\n".join(line for line in src.splitlines()
+                     if not line.lstrip().startswith("#"))
+    # as_task 不能再选第二条执行链路。入口是 run_ask；老管道 graph.ask 不能回来。
+    # 任务不进应答缓存仍会写到 `not req.as_task`，那不是分流。
+    for banned in ("graph.ask", "from .graph import ask"):
+        assert banned not in code, (
+            f"{banned} 又回来了 —— /api/ask 只该走 run_ask。"
             "as_task 的契约是「只用来加严鉴权」，当路由开关用的代价是"
             "最该深挖的请求被降级到另一条链路")
+    assert "run_ask(" in code
 
     # 它该做的那件事没变：为真时要求登录。
     r = client.post("/api/ask", json={"question": "有哪些文档", "as_task": True})

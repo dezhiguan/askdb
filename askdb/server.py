@@ -40,9 +40,14 @@ from . import executor as _executor_mod
 from . import tools as _tools
 from .executor import DataSourceError, Executor, MaskUnresolved
 from . import async_runner as _async_runner
-from .agent import run_agent
-from .agentgraph import resume as run_resume
-from .agent import run_agent
+from .ask import (
+    cancel_ask,
+    progress_ask,
+    resolve_route,
+    resume_ask,
+    run_ask,
+    should_publish,
+)
 from .graph import jsonable
 from .quota import build_quota
 from . import l0 as _l0
@@ -77,14 +82,7 @@ def _checkpoint_resumable(thread_id: str, cfg: Config) -> bool | None:
 
 
 def _checkpoint_progress(thread_id: str, cfg: Config) -> dict[str, Any] | None:
-    from .multiagent.runtime import progress as multi_progress
-
-    multi = multi_progress(thread_id, cfg)
-    if multi is not None:
-        return multi
-    from .agentgraph import progress as single_progress
-
-    return single_progress(thread_id, cfg)
+    return progress_ask(thread_id, cfg)
 
 
 def _mask_pii(s: str) -> str:
@@ -3085,9 +3083,7 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         source = str(first.get("source") or "")
         scoped = _scoped(request, _cfg_for(source, request))
         _require_scope(scoped)
-        from .multiagent import runtime as multi_runtime
-
-        if not multi_runtime.cancel(thread_id, scoped):
+        if not cancel_ask(thread_id, scoped):
             raise HTTPException(status_code=409, detail="任务已经结束或当前不可取消")
 
         from .graph import AskResult, _audit_of
@@ -3130,7 +3126,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 重跑要的问题原文只在审计里。取法与 owner / source 完全同源，
         # 不额外多读一遍流水。
         origin_question = ""
-        origin_execution_mode = "single"
         origin_org: int | None = None
         # **带上发起记录**（include_started）：进程被杀那种线程只剩这一条，
         # 而归属与数据源正是从它取。滤掉它就等于"任务中心说能续跑、这里说
@@ -3157,7 +3152,6 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     # 契约，又给了"在 A 源发起、拿 B 源续跑"的可乘之机。
                     origin_source = str(rec.get("source") or "")
                     origin_question = str(rec.get("question") or "")
-                    origin_execution_mode = str(rec.get("execution_mode") or "single")
                     org_val = rec.get("org_id")
                     origin_org = int(org_val) if isinstance(org_val, int) else None
                 last_rec = rec
@@ -3209,23 +3203,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         _who = (_current_user(request) or "", tuple(_roles(request)))
 
         def _settle_detached_resume(res: Any) -> None:
-            if getattr(res, "execution_mode", "single") == "multi":
-                from .multiagent.runtime import is_canceled
-
-                if is_canceled(req.thread_id, scoped):
-                    return
+            if not should_publish(res, req.thread_id, scoped):
+                return
             _stash_handoff(scoped, req.thread_id, res)
             _open_approval_bg(scoped, res, who=_who, kind="ask",
                               question=_q or origin_question)
         try:
             def _resume_selected() -> Any:
-                if origin_execution_mode == "multi":
-                    from .multiagent.runtime import resume_multi_agent
-
-                    return resume_multi_agent(
-                        req.thread_id, scoped, clarification=clarification,
-                        question=_q, org_id=origin_org)
-                return run_resume(
+                return resume_ask(
                     req.thread_id, scoped, clarification=clarification,
                     question=_q, org_id=origin_org, handoff=_ho)
 
@@ -3716,28 +3701,17 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 缓存是优化不是护栏：qcache 把一切 Redis 异常吞成未命中，这里不会因它抛错。
         q_text = req.question.strip()
         eff_org = scoped.default_org if req.org_id is None else req.org_id
-        from .multiagent.router import decide_route as _decide_multi_route
-        from .multiagent.runtime import run_multi_agent as _run_multi_agent
-        from .multiagent.runtime import settings as _multi_settings
-
-        _ma = _multi_settings(scoped)
-        if req.mode == "multi" and (not _ma["enabled"] or _ma["mode"] == "off"):
+        _route = resolve_route(
+            q_text, scoped, requested_mode=req.mode,
+            source_count=len(scoped_sources))
+        if req.mode == "multi" and (not _route.enabled or _route.orch_mode == "off"):
             raise HTTPException(
                 status_code=409,
                 detail="当前实例未开启多智能体编排，请在 multi_agent 配置中启用。")
-        if len(scoped_sources) > 1 and not _ma["allow_cross_source"]:
+        if len(scoped_sources) > 1 and not _route.allow_cross_source:
             raise HTTPException(status_code=403, detail="当前实例未开放跨数据源编排。")
-        _route = _decide_multi_route(
-            q_text, requested_mode=req.mode, source_count=len(scoped_sources))
         # shadow 只观测路由判定，不改变线上答案；assist/enforce 才允许 auto 真正切流。
-        _use_multi = bool(
-            _ma["enabled"] and _ma["mode"] != "off"
-            and (req.mode == "multi"
-                 or (req.mode == "auto" and _ma["mode"] in ("assist", "enforce")
-                     and _route.route == "multi")))
-        _shadow_multi = bool(
-            _ma["enabled"] and _ma["mode"] == "shadow"
-            and req.mode == "auto" and _route.route == "multi")
+        _use_multi = _route.use_multi
         _source_map = {
             item.source_id or ("builtin" if index == 0 else requested_sources[index]): item
             for index, item in enumerate(scoped_sources)
@@ -3830,11 +3804,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             而它其实只是"等人放行"。阈值 45s 时这条路几乎不发生，10s 之后
             它是常态，人工介入那一档对长任务就整个断了。
             """
-            if getattr(res, "execution_mode", "single") == "multi":
-                from .multiagent.runtime import is_canceled
-
-                if is_canceled(_tid, scoped):
-                    return
+            if not should_publish(res, _tid, scoped):
+                return
             _stash_handoff(scoped, _tid, res)
             _open_approval_bg(scoped, res, who=_who, kind="ask", question=q_text)
             # 应答缓存也必须发生在这一路，理由与上面那两件事完全相同。
@@ -3887,25 +3858,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                     pass
 
         def _execute_selected() -> Any:
-            if _use_multi:
-                return _run_multi_agent(
-                    q_text, scoped, org_id=req.org_id,
-                    source_configs=_source_map, trace_id=_tid, thread_id=_tid,
-                    on_span=_on_span)
-            primary = run_agent(
-                q_text, scoped, org_id=req.org_id,
-                trace_id=_tid, thread_id=_tid, handoff=_ho,
-                on_span=_on_span)
-            if _shadow_multi:
-                shadow_id = _uuid.uuid4().hex[:12]
-                _async_runner.submit_background(
-                    lambda: _run_multi_agent(
-                        q_text, scoped, org_id=req.org_id,
-                        source_configs=_source_map, trace_id=shadow_id,
-                        thread_id=shadow_id, shadow_of=_tid,
-                        shadow_baseline=primary),
-                    user=scoped.user or "", per_user=_async_per_user(scoped))
-            return primary
+            return run_ask(
+                q_text, scoped, requested_mode=req.mode,
+                source_configs=_source_map, org_id=req.org_id,
+                trace_id=_tid, thread_id=_tid, handoff=_ho, on_span=_on_span,
+                user=scoped.user or "", per_user=_async_per_user(scoped),
+                route=_route)
 
         try:
             r, _notice = _async_runner.run_or_detach(

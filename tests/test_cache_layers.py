@@ -73,7 +73,7 @@ def test_detached_run_enters_the_answer_cache(cclient, monkeypatch):
     """D-6：交接出去的执行也要进缓存，第二次同样的提问同步直返。"""
     mem = _MemCache()
     monkeypatch.setattr(server, "build_answer_cache", lambda _c: mem)
-    monkeypatch.setattr(server, "run_agent", _ok)
+    monkeypatch.setattr("askdb.agent.run_agent", _ok)
 
     body = cclient.post("/api/ask", json={"question": "商品总共有多少条记录"}).json()
     assert body.get("async"), "async_after_ms=0 应当立即交接"
@@ -96,7 +96,7 @@ def test_blocked_result_never_enters_the_cache(cclient, monkeypatch):
     mem = _MemCache()
     monkeypatch.setattr(server, "build_answer_cache", lambda _c: mem)
     monkeypatch.setattr(
-        server, "run_agent",
+        "askdb.agent.run_agent",
         lambda q, cfg, org_id=None, **kw: AskResult(
             ok=False, question=q, trace_id=kw["trace_id"], org_id=0,
             thread_id=kw["thread_id"], rejected_by="R-11",
@@ -185,7 +185,7 @@ def test_shadow_mode_never_changes_the_response(cclient, monkeypatch):
     semcache.reset()
     mem = _MemCache()
     monkeypatch.setattr(server, "build_answer_cache", lambda _c: mem)
-    monkeypatch.setattr(server, "run_agent", _ok)
+    monkeypatch.setattr("askdb.agent.run_agent", _ok)
     monkeypatch.setattr(semcache, "enabled", lambda _c: True)
     monkeypatch.setattr(semcache, "embed_question", lambda _c, _q: [0.1, 0.2])
     monkeypatch.setattr(
@@ -204,7 +204,7 @@ def test_enforce_mode_serves_the_semantic_hit(cclient, ccfg, monkeypatch):
     ccfg.raw["semantic_cache"] = {"mode": "enforce"}
     mem = _MemCache()
     monkeypatch.setattr(server, "build_answer_cache", lambda _c: mem)
-    monkeypatch.setattr(server, "run_agent", _ok)
+    monkeypatch.setattr("askdb.agent.run_agent", _ok)
     monkeypatch.setattr(semcache, "enabled", lambda _c: True)
     monkeypatch.setattr(semcache, "embed_question", lambda _c, _q: [0.1, 0.2])
     monkeypatch.setattr(

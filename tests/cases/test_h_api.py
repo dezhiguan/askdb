@@ -61,7 +61,7 @@ def test_h08_introspect_tenant_mode(client):
 def test_h09_ask_ok(client, monkeypatch):
     from askdb.graph import AskResult
 
-    monkeypatch.setattr(server, "run_agent", lambda *a, **k: AskResult(
+    monkeypatch.setattr("askdb.agent.run_agent", lambda *a, **k: AskResult(
         ok=True, question="q", trace_id="t", org_id=65, row_count=1))
     d = client.post("/api/ask", json={"question": "有多少文档"}).json()
     assert d["ok"] and d["trace_id"]

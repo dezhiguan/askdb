@@ -590,7 +590,7 @@ def test_detached_r11_still_opens_the_approval_ticket(hclient, hcfg, monkeypatch
                          explain_rows=9_000_000,
                          error="预估扫描 9,000,000 行，超过阈值")
 
-    monkeypatch.setattr(srv, "run_agent", _fake)
+    monkeypatch.setattr("askdb.agent.run_agent", _fake)
     _login(hclient, "amy")
     body = hclient.post("/api/ask", json={"question": "把订单全部列出来",
                                           "as_task": True}).json()
@@ -638,7 +638,7 @@ def test_detached_redeem_burns_the_one_time_ticket(hclient, hcfg, monkeypatch):
         return AskResult(ok=True, question=question, trace_id=kw["trace_id"],
                          org_id=0, thread_id=kw["thread_id"], reasoning="共 4,495,834 行")
 
-    monkeypatch.setattr(srv, "run_agent", _ok)
+    monkeypatch.setattr("askdb.agent.run_agent", _ok)
     _login(hclient, "amy")
     body = hclient.post("/api/ask", json={"question": q,
                                           "approval_id": "ffffffffff01"}).json()

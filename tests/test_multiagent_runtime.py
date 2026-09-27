@@ -128,6 +128,23 @@ def test_runtime_adapter_keeps_multiagent_artifacts_and_legacy_result_shape(cfg)
     assert payload["skill_bindings"][0]["skill_id"] == "core.metric"
 
 
+def test_resume_follows_the_checkpoint_not_an_audit_mode(cfg, monkeypatch):
+    from askdb import agentgraph
+    from askdb.ask import resume_ask
+    from askdb.multiagent import runtime as multi_runtime
+    from askdb.multiagent import supervisor_graph
+
+    monkeypatch.setattr(supervisor_graph, "ensure_graph", lambda _cfg: SimpleNamespace(
+        get_state=lambda _config: SimpleNamespace(values={"plan": {"plan_id": "p"}})))
+    monkeypatch.setattr(multi_runtime, "resume_multi_agent", lambda *_a, **_k: "multi")
+    monkeypatch.setattr(agentgraph, "resume", lambda *_a, **_k: "single")
+    assert resume_ask("thread", cfg) == "multi"
+
+    monkeypatch.setattr(supervisor_graph, "ensure_graph", lambda _cfg: SimpleNamespace(
+        get_state=lambda _config: SimpleNamespace(values={"question": "有多少"})))
+    assert resume_ask("thread", cfg, question="有多少") == "single"
+
+
 def test_server_explicit_multi_mode_uses_multi_runtime(cfg, monkeypatch):
     from fastapi.testclient import TestClient
     from askdb import server
@@ -152,7 +169,7 @@ def test_server_explicit_multi_mode_uses_multi_runtime(cfg, monkeypatch):
                          thread_id="s" * 12, org_id=65, reasoning="single")
 
     monkeypatch.setattr(multi_runtime, "run_multi_agent", fake_multi)
-    monkeypatch.setattr(server, "run_agent", fake_single)
+    monkeypatch.setattr("askdb.agent.run_agent", fake_single)
     client = TestClient(server.create_app("ignored.yaml"))
     response = client.post("/api/ask", json={"question": "分析渠道", "mode": "multi"})
     assert response.status_code == 200
@@ -170,7 +187,7 @@ def test_shadow_mode_runs_multiagent_in_background_but_returns_single(cfg, monke
                                     "allow_cross_source": False}
     monkeypatch.setattr(server, "load", lambda _path: isolated)
     seen: dict[str, str] = {}
-    monkeypatch.setattr(server, "run_agent", lambda question, cfg, **kwargs: AskResult(
+    monkeypatch.setattr("askdb.agent.run_agent", lambda question, cfg, **kwargs: AskResult(
         ok=True, question=question, trace_id=kwargs["trace_id"],
         thread_id=kwargs["thread_id"], org_id=65, reasoning="single"))
 
