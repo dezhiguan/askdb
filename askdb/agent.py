@@ -139,7 +139,8 @@ FAST_SYSTEM = """你是数据查询的快速通道。给你「可用的表与业
 - 列名、类型、枚举取值一律以下方【可用的表】为准，**不要猜**。
 - 口径遵循表与列上的说明（软删除列、状态枚举、时间列含义）。
 - 结果要能直接回答问题：问总数就 COUNT(*)，问最大值就 MAX(...)，
-  问"列出前 N 个"就带 ORDER BY 与 LIMIT。不要额外多选无关列。
+  问"列出前 N 个"就带 ORDER BY 与 LIMIT。不要额外多选无关列：问题没问占比、
+  合计、总行数，就不要加 pct、total_rows、total_xxx 这类列。
 - label 填这条 SQL 查的是什么（短名词），caliber 用一句话讲清口径 ——
   这两项会原样呈现给用户，不是给你自己看的。"""
 
@@ -223,7 +224,7 @@ AGENT_SYSTEM = """你是一个可信查数 Agent。你不能直接写库，只�
      自己数。
    要一行一个汇总串的场合（例如"把这些标签列出来"）才用聚合拼接，且只在
    GROUP BY 的组内拼，不要跨整个结果集拼。
-{rule9}
+{rule9}{rule10}
 另外：表名、列名、枚举取值一律**逐字照抄**工具返回的原值，不得改写成同义词或翻译
 （例如返回的是 ANSWER 就不能写成 CHAT）；需要解释时在括号里补中文说明。"""
 
@@ -271,6 +272,22 @@ _RULES = {
                       "   COUNT(*) FILTER，别拿可见的那几行外推。",
         "rule9": "",
     },
+}
+
+
+#: 回答问题那条 SQL 的列要不要收窄到问题问到的 —— 由 agent.answer_columns_strict 选。
+#:
+#: 第 5、7、9 条教模型把比率、合计、核对列并进同一条 SQL，模型就把它们也并进了
+#: answer_step 指向的那条：2026-09-27 careermate 盲测「按匹配等级怎么分布」答成
+#: (等级, 数量, pct)，「最后一条消息是什么时候」答成 (时间, total_messages)。
+#: 数值全对，但界面渲染与回归判定看到的都是多出来的列。
+_ANSWER_COLUMNS = {
+    True: '''
+10. **回答问题的那条 SQL 只选问题问到的列。** answer_step 指向的结果就是用户看到的
+   答案表：问题没问占比、合计、总行数，就不要为了"顺手给上下文"加 pct、total_rows、
+   total_xxx 这类列。第 5、7、9 条只在**结论确实要陈述**比率、合计或总量时才适用；
+   不陈述，就不要选。''',
+    False: "",
 }
 
 
@@ -342,6 +359,15 @@ def sql_consolidation(cfg: Config) -> bool:
     return bool((cfg.raw.get("agent") or {}).get("sql_consolidation", True))
 
 
+def answer_columns_strict(cfg: Config) -> bool:
+    """回答问题的那条 SQL 只选问题问到的列。默认开。
+
+    与 sql_consolidation 同理，改的是模型选列的概率分布、不碰任何判定层；
+    真出问题就把它关掉。
+    """
+    return bool((cfg.raw.get("agent") or {}).get("answer_columns_strict", True))
+
+
 def metadata_recall_is_evidence(cfg: Config) -> bool:
     """元数据问题上，图自己那次 schema 召回算不算"有依据"。默认开。
 
@@ -374,11 +400,13 @@ def render_agent_system(cfg: Config, hide: frozenset[str] = frozenset()) -> str:
     # 构成**，掺进任何随请求变的值都会让厂商侧那 91% 的前缀命中率一起作废。
     style = answer_no_table_dump(cfg)
     rules = sql_consolidation(cfg)
-    key = f"{int(style)}|{int(rules)}|{','.join(sorted(hide))}"
+    cols = answer_columns_strict(cfg)
+    key = f"{int(style)}|{int(rules)}|{int(cols)}|{','.join(sorted(hide))}"
     return l0.memo(
         "prompt", key,
         lambda: AGENT_SYSTEM.format(tools=_render_specs(hide),
                                     answer_style=_ANSWER_STYLE[style],
+                                    rule10=_ANSWER_COLUMNS[cols],
                                     **_RULES[rules]))
 
 

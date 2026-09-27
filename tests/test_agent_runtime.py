@@ -1367,3 +1367,21 @@ def test_fast_path_handoff_to_full_chain_books_degraded_span(tmp_path):
     span = tracer.steps[-1]
     assert span.step == "fast" and span.status == "degraded"
 
+
+def test_answer_columns_strict_knob(tmp_path):
+    """第 10 条按 agent.answer_columns_strict 开关，缺配置时默认开。"""
+    cfg = _cfg(tmp_path, agent={"max_steps": 2})
+
+    cfg.raw["agent"]["answer_columns_strict"] = True
+    on = A.render_agent_system(cfg)
+    assert "10. **回答问题的那条 SQL 只选问题问到的列。**" in on
+
+    cfg.raw["agent"]["answer_columns_strict"] = False
+    off = A.render_agent_system(cfg)
+    assert "10. **回答问题的那条 SQL" not in off
+
+    for text in (on, off):
+        assert "{rule" not in text
+
+    cfg.raw["agent"].pop("answer_columns_strict")
+    assert A.answer_columns_strict(cfg) is True
