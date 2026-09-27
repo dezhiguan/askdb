@@ -1345,6 +1345,35 @@ def test_keyword_recall_books_nothing(tmp_path, monkeypatch):
     assert span.get("model", "") == ""
 
 
+def test_contact_listing_takes_the_fast_path_when_anchored():
+    """「邮箱和手机号分别是什么」在列锚点命中后是一条 SELECT，不是多轮决策。
+
+    没有锚点时仍按旧判据挡下（不含聚合词，且带着「分别」「和」）。
+    「每个」这种分组信号即使锚点填了也不放行。
+    """
+    from askdb import agentgraph as G
+
+    q = "用户的邮箱和手机号分别是什么"
+    base = {"question": q, "schema_complete": True, "tables_hit": ["users"],
+            "history": []}
+    assert "不含单次聚合" in G.simple_question(base)
+    assert G.simple_question({**base, "attr_anchor": ["users"]}) == ""
+    grouped = {**base, "question": "每个用户的邮箱分别是什么",
+               "attr_anchor": ["users"]}
+    assert "复杂信号词" in G.simple_question(grouped)
+
+
+def test_listing_fast_path_accepts_many_rows():
+    """列举题拿回 98 行就是答案。聚合题超过 20 行仍回落完整链路。"""
+    from askdb import agentgraph as G
+
+    data = {"columns": ["email", "phone"], "rows": [["a", "b"]] * 98}
+    assert G.fast_result_ok(data, listing=True) == ""
+    assert "超过" in G.fast_result_ok(data)
+    assert G.fast_result_ok({**data, "truncated": True}, listing=True) == "结果被截断"
+    assert G.fast_result_ok({"columns": ["email"], "rows": []}, listing=True) == "零行"
+
+
 def test_fast_path_handoff_to_full_chain_books_degraded_span(tmp_path):
     """快路径判定太复杂时回落完整链路，而不是让整条查询以 EXEC 失败。"""
     from types import SimpleNamespace

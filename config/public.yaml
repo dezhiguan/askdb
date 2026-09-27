@@ -662,6 +662,12 @@ schema_rag:
   # 打的是基线里那道 11 个点的缝：recall_primary@8=95.8% 而
   # recall_strict@8=84.4%，差的几乎全是 JOIN 对端那张表。
   fk_expand_max: 3
+  # 列锚点：问题点名的属性（邮箱、手机号）全部落在唯一一张表的列上时，
+  # 只注入那张表，不再按 max_k 灌满、也不再沿外键补邻居。
+  # 生产 trace 67fc0bcf4c6a「用户的邮箱和手机号分别是什么」召回了 14 张表
+  # （max_k=12 + resume_generation_run、agent_pending_actions），真正要写的
+  # SQL 只用 users。false = 退回宽召回。
+  attr_anchor: true
   # 值检索：把提问里的取值（"张三"）定位到具体的列。false = 关闭。
   # 代价见 askdb/valuelink.py 模块头：小表随便探，大表只探有索引的列，
   # 整条探测 SQL 自带 1.5 秒预算，任何异常都当没命中。

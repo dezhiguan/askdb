@@ -262,3 +262,95 @@ def test_capacity_is_cached_per_source():
     # 两条查询（行数 + 索引）各一次，之后全部走缓存
     assert calls["n"] == 2
     valuelink.reset_capacity()
+
+
+# --------------------------------------------------------------------------
+# 五、列锚点
+# 生产 trace 67fc0bcf4c6a：问邮箱和手机号，召回 14 张表。
+# --------------------------------------------------------------------------
+def _anchor_tables():
+    users = _t("users", {
+        "id": "BIGINT", "email": "VARCHAR", "phone": "VARCHAR",
+        "phone_verified": "BOOLEAN", "username": "VARCHAR",
+    })
+    runs = _t("resume_generation_run", {"id": "BIGINT", "user_id": "BIGINT"})
+    actions = _t("agent_pending_actions", {"id": "BIGINT", "user_id": "BIGINT"})
+    contacts = _t("user_contacts", {
+        "id": "BIGINT", "email": "VARCHAR", "phone": "VARCHAR",
+    })
+    fillers = [_t(f"t{i}", {"id": "BIGINT", "user_id": "BIGINT"}) for i in range(8)]
+    tabs = _tables(users, runs, actions, contacts, *fillers)
+    infer_foreign_keys(tabs)
+    return tabs
+
+
+class _AnchorCfg:
+    # _render 走 L0，key 里要这两项；没有默认源时方言取不到，scope 自己会兜。
+    source_id = ""
+    path = ""
+
+    def __init__(self, tables, **rag):
+        raw = {
+            "mode": "keyword", "top_k": 3, "max_k": 12,
+            "token_budget": 8000, "fk_expand_max": 3,
+            "value_link": False, "coverage_check": "off",
+            "attr_anchor": True,
+        }
+        raw.update(rag)
+        self.tables = tables
+        self.metrics = []
+        self.raw = {"schema_rag": raw}
+
+
+def test_phone_number_does_not_also_match_phone():
+    """「手机号」吃掉之后不能再记一次「手机」。"""
+    got = [cn for cn, _ in schema_rag.attribute_mentions("用户的邮箱和手机号分别是什么")]
+    assert got == ["邮箱", "手机号"]
+
+
+def test_verified_flag_is_not_the_phone_column():
+    """phone_verified 不是手机号。只有它、没有 phone 列时，锚点不成立。"""
+    tabs = _tables(_t("users", {"id": "BIGINT", "phone_verified": "BOOLEAN"}))
+    assert schema_rag.attribute_anchor("用户的手机号是什么", _AnchorCfg(tabs)) == ([], [])
+
+
+def test_attribute_anchor_narrows_contact_lookup():
+    """邮箱和手机号都在 users 上，且只有这一张表同时有这两列。
+
+    外键邻居（resume_generation_run、agent_pending_actions）不该再被补进来。
+    """
+    tabs = _anchor_tables()
+    # user_contacts 只留 email，避免和 users 并列成两张都能答的表
+    tabs["user_contacts"] = _t("user_contacts", {"id": "BIGINT", "email": "VARCHAR"})
+    infer_foreign_keys(tabs)
+    q = "用户的邮箱和手机号分别是什么"
+    wide = schema_rag.recall(q, _AnchorCfg(tabs, attr_anchor=False))
+    narrow = schema_rag.recall(q, _AnchorCfg(tabs))
+    assert "users" in wide.table_names and len(wide.table_names) > 1
+    assert narrow.table_names == ["users"]
+    assert narrow.fk_added == []
+    assert narrow.attr_anchor == ["users"]
+    assert narrow.attr_labels == ["邮箱", "手机号"]
+    assert "resume_generation_run" not in narrow.table_names
+    assert "agent_pending_actions" not in narrow.table_names
+
+
+def test_two_tables_covering_the_same_attributes_are_not_narrowed():
+    """users 和 user_contacts 都能答，分不出主表，保持宽召回。"""
+    tabs = _anchor_tables()
+    assert schema_rag.attribute_anchor(
+        "用户的邮箱和手机号分别是什么", _AnchorCfg(tabs)) == ([], [])
+
+
+def test_second_entity_blocks_the_anchor():
+    """「订单」不在 users 上，不能因为邮箱对上了就把订单表丢掉。"""
+    tabs = _anchor_tables()
+    tabs["orders"] = _t("orders", {"id": "BIGINT", "user_id": "BIGINT"})
+    assert schema_rag.attribute_anchor(
+        "用户的邮箱和订单数分别是多少", _AnchorCfg(tabs)) == ([], [])
+
+
+def test_grouped_question_is_not_anchored():
+    tabs = _anchor_tables()
+    assert schema_rag.attribute_anchor(
+        "每个用户的邮箱分别是什么", _AnchorCfg(tabs)) == ([], [])

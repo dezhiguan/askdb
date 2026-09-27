@@ -97,6 +97,8 @@ def search_schema(question: str, cfg: Config,
             # 靠外键补进来的、还是靠"张三就在这张表里"进来的，排查时走的是
             # 三条完全不同的路，混成一个 tables 列表就全看不出来了。
             "fk_added": list(r.fk_added),
+            "attr_anchor": list(r.attr_anchor),
+            "attr_labels": list(r.attr_labels),
             "value_hits": [str(h) for h in r.value_hits],
             "coverage_gaps": list(r.coverage_gaps),
             "degraded": bool(getattr(r, "degraded_from", None)),

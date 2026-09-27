@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import l0, valuelink
-from .config import Config, Metric, Table
+from .config import Column, Config, Metric, Table
 from .trace import embed_cost_cny
 
 log = logging.getLogger("askdb.schema_rag")
@@ -115,6 +115,12 @@ class Recall:
     #: 沿 FK 关联图补进来的表。**必须单独记**：它们不是相关度选出来的，
     #: 排查"为什么这张表在上下文里"时，走的是与召回完全不同的一条路。
     fk_added: list[str] = field(default_factory=list)
+    #: 列锚点收窄后留下的那张表。空 = 这次没有收窄。
+    #: 与 fk_added 同一类留痕：这张表留下的理由不是"相似度够高"，
+    #: 是"问题点名的属性列全在它身上，且只有它一张表满足"。
+    attr_anchor: list[str] = field(default_factory=list)
+    #: 触发收窄的那些属性词（邮箱、手机号）。Span 上要能看见收窄依据。
+    attr_labels: list[str] = field(default_factory=list)
     #: 这次召回真正烧掉的 embedding 输入 token 与金额（vector 模式才有）。
     #: 全是厂商回传的实测值，取不到就是 0 —— 不估。
     embed_tokens: int = 0
@@ -337,6 +343,100 @@ CN_HINTS: dict[str, tuple[str, ...]] = {
     "拆单": ("split",),
     "合单": ("merge",),
 }
+
+
+#: 属性词 → 列名。只收「问的是某一列的值」，不收实体。
+#:
+#: 实体（用户、订单）在 CN_HINTS 里，决定的是哪张表；属性决定的是哪一列。
+#: 混进同一本词典，一张只是带了 email 列的卫星表就会和 users 变成同一类命中。
+#:
+#: 只收列名几乎不会撞车的那几个：邮箱/手机号/用户名。生产库的列注释经常是空的
+#: （careermate 的 users.email / users.phone 就是），向量召回看得见"邮箱≈email"，
+#: 但也因此把所有沾"用户"的表一起带过 min_score，再由外键补进邻居。
+#: 列名对得上时，那张表不需要靠相似度来认。
+ATTR_HINTS: dict[str, tuple[str, ...]] = {
+    "邮箱": ("email",),
+    "手机号": ("phone", "mobile"),
+    "手机": ("phone", "mobile"),
+    "电话": ("phone", "mobile", "tel"),
+    "用户名": ("username",),
+}
+
+
+#: 问法里出现这些词，就**不许**按列锚点收窄。
+#:
+#: 与 agentgraph 里挡快路径的那组硬信号是同一批词（分组、对比、每个、趋势）。
+#: 两边不能互相 import（agentgraph → tools → schema_rag），所以各放一份。
+#: 改其中一边时对一下另一边：这里漏一个词，复杂题会被收成一张表；
+#: 那边漏一个词，收窄对了的题仍会走完整链路。
+_ANCHOR_VETO = (
+    "各", "每个", "每种", "每家", "每天", "每月", "分组", "按",
+    "对比", "相比", "比较", "同比", "环比", "占比", "比例", "百分",
+    "趋势", "变化", "增长", "分布", "排名", "排行", "top", "TOP",
+    "关联", "连表", "联表",
+    "为什么", "原因", "分析", "评估", "建议", "是否合理", "健康",
+)
+
+
+def attribute_mentions(question: str) -> list[tuple[str, tuple[str, ...]]]:
+    """提问里点名的属性。长词优先，避免「手机号」再被「手机」记一次。"""
+    occupied = [False] * len(question)
+    found: list[tuple[int, str, tuple[str, ...]]] = []
+    for cn, stems in sorted(ATTR_HINTS.items(), key=lambda kv: -len(kv[0])):
+        start = 0
+        while True:
+            i = question.find(cn, start)
+            if i < 0:
+                break
+            if not any(occupied[i:i + len(cn)]):
+                for j in range(i, i + len(cn)):
+                    occupied[j] = True
+                found.append((i, cn, stems))
+            start = i + len(cn)
+    found.sort()
+    return [(cn, stems) for _, cn, stems in found]
+
+
+def _column_has_attr(col: Column, cn: str, stems: tuple[str, ...]) -> bool:
+    """这一列是不是被问到的那个属性。
+
+    认列名全等或 `_email` 这种后缀，不认 `phone_verified`：后者多出来的
+    verified 说明它是验证标记，不是手机号本身。列注释里写出「邮箱」也认 ——
+    手写白名单靠注释，运行时扫描靠列名，两条路都要通。
+    """
+    name = col.name.lower()
+    if name in stems or any(name.endswith("_" + s) for s in stems):
+        return True
+    return bool(cn and cn in (col.desc or ""))
+
+
+def attribute_anchor(question: str, cfg: Config) -> tuple[list[str], list[str]]:
+    """唯一一张表的列能答完问题里点名的全部属性时，返回 (表名, 属性词)。
+
+    空 = 不收窄。收窄错了会把 JOIN 需要的表从提示词里拿掉，所以每一条
+    不满足都退回宽召回：
+
+      · 问法带着分组 / 对比 / 「每个」（见 _ANCHOR_VETO）；
+      · 点名的属性不是全部落在同一张表的列上；
+      · 有两张及以上的表都能答 —— 分不出主表，交给原来的排序；
+      · 提问里还有这张表兜不住的实体（「用户的邮箱和订单」里的订单）。
+    """
+    if any(w in question for w in _ANCHOR_VETO):
+        return [], []
+    mentions = attribute_mentions(question)
+    if not mentions:
+        return [], []
+    labels = [cn for cn, _ in mentions]
+    covered = []
+    for t in cfg.tables.values():
+        if all(any(_column_has_attr(c, cn, stems) for c in t.columns.values())
+               for cn, stems in mentions):
+            covered.append(t.name)
+    if len(covered) != 1:
+        return [], []
+    if coverage_gaps(question, cfg, [cfg.tables[covered[0]]]):
+        return [], []
+    return covered, labels
 
 
 def _tokens(name: str) -> set[str]:
@@ -849,13 +949,39 @@ def recall(question: str, cfg: Config, index: Any = None,
             if t is not None and t not in picked:
                 picked.insert(0, t)
 
+    # 列锚点：问题点名的属性列全落在唯一一张表上时，别的表是干扰项。
+    #
+    # 生产 trace 67fc0bcf4c6a：「用户的邮箱和手机号分别是什么」。users.email
+    # 与 users.phone 就能答，向量召回仍按 max_k=12 注入，再沿外键补进
+    # resume_generation_run、agent_pending_actions，一共 14 张。多出来的
+    # 13 张不改变该写的 SQL，只把预检和每一轮决策的提示词撑大。
+    #
+    # 放在值检索之后、外键扩展之前：取值落在另一张表上时不收窄（那是更硬的
+    # 证据）；收窄之后也不再沿外键补邻居 —— 要补的那张表正是这次多出来的。
+    # mode=all 是调用方显式要全库，不动。
+    attr_names: list[str] = []
+    attr_labels: list[str] = []
+    if mode != "all" and cfg.raw["schema_rag"].get("attr_anchor", True):
+        names, labels = attribute_anchor(question, cfg)
+        if len(names) == 1 and names[0] in cfg.tables:
+            name = names[0]
+            foreign_value = any(
+                getattr(h, "table", "") and getattr(h, "table", "") != name
+                for h in value_hits)
+            if not foreign_value:
+                picked = [cfg.tables[name]]
+                attr_names, attr_labels = names, labels
+                said = f"列锚点收窄到 {name}（{'、'.join(labels)}）"
+                note = f"{note}；{said}" if note else said
+
     # 沿关联图补回 JOIN 对端与桥接表。
     #
     # 放在这里而不是挑表那一步里：扩展的输入是**最终选中的那批表**，
     # keyword 的白名单补全若已经把全库都给了，就没有可扩展的余地了。
     # 全量注入（mode=all / 盲选兜底）同理直接跳过 —— 表已经全在上下文里。
+    # 列锚点收窄过的也不扩展：邻居表上没有被问的那几列。
     fk_added: list[str] = []
-    fk_max = int(cfg.raw["schema_rag"].get("fk_expand_max", 3))
+    fk_max = 0 if attr_names else int(cfg.raw["schema_rag"].get("fk_expand_max", 3))
     if fk_max > 0 and len(picked) < len(all_tables):
         extra = fk_expand(picked, cfg, order or [t.name for t in picked], fk_max)
         if extra:
@@ -902,6 +1028,8 @@ def recall(question: str, cfg: Config, index: Any = None,
         coverage_gaps=gaps if cov_mode != "off" else [],
         value_hits=value_hits,
         fk_added=fk_added,
+        attr_anchor=attr_names,
+        attr_labels=attr_labels,
         degraded_from=degraded_from,
         degrade_error=degrade_error,
         degrade_code=degrade_code,

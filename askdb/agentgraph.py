@@ -67,6 +67,12 @@ class AgentState(TypedDict, total=False):
     #: 少了这一位，回落路径会变成 fast + intent + decide × 2，比改动前还多
     #: 一次调用，而症状只是"偶尔更慢"，不会有任何报错。
     prechecked: bool
+    #: 列锚点收窄到的表。非空 = 问题点名的属性列全在这张表上，召回已只注入它。
+    #: simple_question 据此放行「邮箱和手机号分别是什么」这种问法，fast_result_ok
+    #: 据此把多行列举当成答案而不是"太复杂、回落完整链路"。
+    #: **必须声明在这里**，否则节点返回值会被 LangGraph 丢掉，快路径判定读到的
+    #: 永远是空，这条问法继续走预检 + 多轮决策。
+    attr_anchor: list[str]
 
     history: list[dict[str, Any]] # 回灌进下一轮提示词
     exec_results: list[dict[str, Any]] #每一次执行成功；接地校验要看全部
@@ -343,7 +349,8 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         and not rec.data.get("truncated")
     out: dict[str, Any] = {
         "tables_hit": tables_hit, "schema_prompt": schema_prompt,
-        "schema_heads": schema_heads, "schema_complete": complete}
+        "schema_heads": schema_heads, "schema_complete": complete,
+        "attr_anchor": list(rec.data.get("attr_anchor") or [])}
 
     # 简单问题分流。**判定在这里做、结论写进 state**，路由函数只读那一位 ——
     # LangGraph 的路由改不了状态，两处各判一次就会漂（见 _after_recall）。
@@ -387,13 +394,23 @@ _SIMPLE_HINTS = (
 
 #: 命中任何一条就**不走**快路径 —— 这些词意味着分组、对比、关联或解释，
 #: 一条 SELECT 说不清，或者说得清也该让完整链路去核一遍。
-_COMPLEX_HINTS = (
-    "各", "每个", "每种", "每家", "每天", "每月", "分别", "分组", "按",
+#:
+#: 「分别 / 和 / 与」不在这里。它们经常只是把同一行上的两列连起来
+#: （「邮箱和手机号分别是什么」），不是两个实体。那一类由 _SOFT_COMPLEX
+#: 单独挡，列锚点命中时放开。与 schema_rag._ANCHOR_VETO 是同一批硬词，
+#: 改这里时对一下那边。
+_HARD_COMPLEX = (
+    "各", "每个", "每种", "每家", "每天", "每月", "分组", "按",
     "对比", "相比", "比较", "同比", "环比", "占比", "比例", "百分",
     "趋势", "变化", "增长", "分布", "排名", "排行", "top", "TOP",
-    "关联", "连表", "以及", "并且", "还有", "同时", "另外",
+    "关联", "连表",
     "为什么", "原因", "分析", "评估", "建议", "是否合理", "健康",
-    "和", "与",          # "A 和 B 各多少" —— 两个实体，必然不止一条 SELECT
+)
+
+#: 没有列锚点时仍视为复杂。「A 和 B 各多少」是两个实体；有列锚点时
+#: 「和 / 分别」连接的是同一张表上的两列，一条 SELECT 就够。
+_SOFT_COMPLEX = (
+    "分别", "以及", "并且", "还有", "同时", "另外", "和", "与",
 )
 
 #: 元数据问题一律不走快路径。它们的证据来自 schema 而不是结果行，
@@ -439,21 +456,34 @@ def simple_question(state: AgentState) -> str:
         return f"问题长度 {len(q)} 超过 {FAST_MAX_QUESTION}"
     if any(w in q for w in _META_HINTS):
         return "元数据问题"
-    if not any(w in q for w in _SIMPLE_HINTS):
-        return "不含单次聚合/列举的问法"
-    hit = [w for w in _COMPLEX_HINTS if w in q]
+    # 硬信号不论有没有列锚点都挡。「每个用户的邮箱」不是一条 SELECT 能收的。
+    hit = [w for w in _HARD_COMPLEX if w in q]
     if hit:
         return f"含复杂信号词 {'/'.join(hit[:3])}"
+    # 列锚点命中：属性列都在同一张表上，「分别是什么」就是把这几列选出来。
+    # 不要求带「多少 / 列出」，「和 / 分别」也不再当成两个实体。
+    if state.get("attr_anchor"):
+        return ""
+    if not any(w in q for w in _SIMPLE_HINTS):
+        return "不含单次聚合/列举的问法"
+    soft = [w for w in _SOFT_COMPLEX if w in q]
+    if soft:
+        return f"含复杂信号词 {'/'.join(soft[:3])}"
     return ""
 
 
-def fast_result_ok(data: dict[str, Any] | None) -> str:
+def fast_result_ok(data: dict[str, Any] | None, *, listing: bool = False) -> str:
     """快路径拿回的这份结果，够不够直接成句。空串 = 够。
 
     **不够就回落完整链路，不是报错。** 这是快路径唯一的安全网：判据放行了、
     SQL 也跑通了，但结果的形状说明这题没那么简单（零行、几十行、宽表），
     那就当作没走过快路径，交回 decide 重新来 —— 代价是这一次多花一轮，
     而收益是快路径永远不会把一份说不清的结果硬编成一句话。
+
+    listing=True 是列锚点放进来的列举题（「邮箱和手机号分别是什么」）。
+    几十上百行就是答案本身，不是"这条 SQL 没把问题答成一个数"。
+    行数上限因此放开；被 R-13 截断、或一行都没有，仍然回落 —— 前者说不完，
+    后者分不清是"确实没有"还是 SQL 写错了表。
     """
     if not data:
         return "无结果"
@@ -462,7 +492,7 @@ def fast_result_ok(data: dict[str, Any] | None) -> str:
         # 零行本身可能就是答案（"有没有 X" → 没有），但也可能是 SQL 写错了
         # 表或条件。分不开，交回完整链路 —— 那边有 empty_note 那套说法。
         return "零行"
-    if len(rows) > FAST_MAX_ROWS:
+    if not listing and len(rows) > FAST_MAX_ROWS:
         return f"{len(rows)} 行超过 {FAST_MAX_ROWS}"
     if data.get("truncated"):
         return "结果被截断"
@@ -1502,7 +1532,8 @@ def _after_act(state: AgentState) -> Literal["decide", "finalize"]:
         return "finalize"
     # 快路径：结果的形状说了算，不是判据说了算。够直接成句就收尾（整条链路
     # 一次模型调用），不够就当作没走过快路径、交回 decide —— 见 fast_result_ok。
-    if state.get("fast") and not fast_result_ok(state.get("last_exec")):
+    if state.get("fast") and not fast_result_ok(
+            state.get("last_exec"), listing=bool(state.get("attr_anchor"))):
         return "finalize"
     return "finalize" if _converge_reason(state) else "decide"
 

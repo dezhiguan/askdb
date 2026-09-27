@@ -141,6 +141,9 @@ FAST_SYSTEM = """你是数据查询的快速通道。给你「可用的表与业
 - 结果要能直接回答问题：问总数就 COUNT(*)，问最大值就 MAX(...)，
   问"列出前 N 个"就带 ORDER BY 与 LIMIT。不要额外多选无关列：问题没问占比、
   合计、总行数，就不要加 pct、total_rows、total_xxx 这类列。
+- 问同一张表上某几列的取值（「用户的邮箱和手机号分别是什么」）时，一条 SELECT
+  把这几列选出来就是完整答案，too_complex=false。结果有很多行不是复杂：
+  界面会渲染结果表。不要加 COUNT、窗口函数，也不要选问题没问的列。
 - label 填这条 SQL 查的是什么（短名词），caliber 用一句话讲清口径 ——
   这两项会原样呈现给用户，不是给你自己看的。"""
 
@@ -467,6 +470,11 @@ def _brief(res: tools.ToolResult) -> str:
             out += "（盲选）"
         if d.get("fk_added"):
             out += f"；沿外键补入 {'、'.join(d['fk_added'])}"
+        if d.get("attr_anchor"):
+            labels = "、".join(d.get("attr_labels") or [])
+            out += f"；列锚点收窄到 {'、'.join(d['attr_anchor'])}"
+            if labels:
+                out += f"（{labels}）"
         if d.get("value_hits"):
             out += f"；取值定位 {'，'.join(d['value_hits'])}"
         if d.get("coverage_gaps"):
@@ -517,6 +525,11 @@ def _render_history(history: list[dict[str, Any]]) -> str:
             # 直接摆在它面前。
             if partial and h.get("stats"):
                 line += f"\n    整列统计（全部 {total} 行，非仅上面几行）：{h['stats']}"
+                # 覆盖范围（非空多少、去重多少）已经在这一行里。生产 trace
+                # 67fc0bcf4c6a 的第二轮决策就是再发一条 COUNT(email)/COUNT(phone)
+                # 去"说明覆盖范围" —— 数已经在这里，再查一次只多花一轮。
+                line += ("\n    这些非空/去重计数覆盖的是本次返回的全部行。"
+                         "要说明覆盖范围就直接引用，不要再为它单独发一条 COUNT。")
         elif h.get("columns"):
             line += f"\n    列：{'、'.join(h['columns'])}"
         out.append(line)
