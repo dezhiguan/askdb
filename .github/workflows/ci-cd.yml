@@ -133,9 +133,10 @@ jobs:
   build-and-push:
     name: build-and-push
     runs-on: ubuntu-latest
-    # 冷缓存或公网推送 ACR 偶尔会超过 20 分钟；历史成功构建已接近 16 分钟，
-    # 留出合理抖动空间，避免镜像已经接近推完时被 runner 强制取消。
-    timeout-minutes: 30
+    # 公网推 ACR 广州偶尔极慢：2026-09-27 晚单个依赖层要推 17 分钟以上，
+    # 连续两次在 30 分钟处被取消。依赖层靠下面的 buildx 缓存复用，
+    # 缓存未命中（改了依赖）时仍可能整层重推，所以这里留足余量。
+    timeout-minutes: 60
     # 前端也是准入条件：产物过期等于界面没上线，而它不会让任何别的关变红
     needs: [test, frontend]
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
@@ -167,16 +168,25 @@ jobs:
           echo "push_image=${PUSH_REGISTRY}/askdb:${TAG}" >> "${GITHUB_OUTPUT}"
           echo "pull_image=${PULL_REGISTRY}/askdb:${TAG}" >> "${GITHUB_OUTPUT}"
 
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ steps.image.outputs.server }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      # 构建缓存存在 GitHub 侧：依赖层命中缓存时层摘要不变，
+      # ACR 回 "Layer already exists"，不再每次把 pip 那层整层重推一遍。
       - name: Build and push
-        env:
-          ACR_SERVER: ${{ steps.image.outputs.server }}
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-          IMAGE: ${{ steps.image.outputs.push_image }}
-        run: |
-          printf '%s' "${ACR_PASSWORD}" | docker login "${ACR_SERVER}" -u "${ACR_USERNAME}" --password-stdin
-          docker build -t "${IMAGE}" .
-          docker push "${IMAGE}"
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: false
+          tags: ${{ steps.image.outputs.push_image }}
+          cache-from: type=gha,scope=askdb
+          cache-to: type=gha,scope=askdb,mode=max
 
   deploy:
     name: deploy-k3s-server3
