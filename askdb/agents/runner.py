@@ -220,7 +220,8 @@ def _inline_graph():
 def run_react_inline(name: str, question: str, cfg: Config, org_id: int, *,
                      llm: Any, executor: Any, tracer: Any,
                      agent_run_id: str, parent_agent_run_id: str = "",
-                     context: str = "", pinned: list[dict[str, Any]] | None = None,
+                     context: str = "", task_scope: dict[str, Any] | None = None,
+                     pinned: list[dict[str, Any]] | None = None,
                      cancel_check: Any = None,
                      max_steps: int | None = None,
                      cost_cap: int | None = None) -> tuple[Any, tuple[dict[str, Any], ...]]:
@@ -249,7 +250,8 @@ def run_react_inline(name: str, question: str, cfg: Config, org_id: int, *,
         cancel_check=cancel_check,
     )
     init = agentgraph.initial_state(
-        question, org_id, agent_run_id, agent_run_id, steps, cap, context=context)
+        question, org_id, agent_run_id, agent_run_id, steps, cap, context=context,
+        task_scope=task_scope or {})
     final = _inline_graph().invoke(
         init,
         {"configurable": {"thread_id": agent_run_id, "deps": deps},

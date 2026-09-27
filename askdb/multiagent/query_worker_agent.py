@@ -14,8 +14,29 @@ def _spent(state: dict[str, Any]) -> int:
                sum(int(v) for v in (state.get("tok_by_actor") or {}).values()))
 
 
+_LISTING_SHAPES = frozenset({"topn", "listing", "detail", "rank"})
+
+
+def _task_scope(task: dict[str, Any]) -> dict[str, Any]:
+    query = task.get("query") or {}
+    tables = [str(name).strip() for name in
+              ((query.get("constraints") or {}).get("tables") or [])
+              if str(name).strip()]
+    return {
+        "tables": tables,
+        "expected_shape": str(query.get("expected_shape") or "").strip().lower(),
+    }
+
+
 def _context(state: dict[str, Any], task: dict[str, Any]) -> str:
     parts: list[str] = []
+    scope = _task_scope(task)
+    if scope["tables"] or scope["expected_shape"]:
+        parts.append("已确定的任务范围（优先使用这些表；列名以表结构为准，不要重写指标定义）：\n"
+                     + json.dumps(scope, ensure_ascii=False))
+    if scope["expected_shape"] in _LISTING_SHAPES:
+        parts.append("这是一次取数就能回答的列举或 TopN。第一条成功返回结果行的查询就是答案，"
+                     "不要再为并列规模或总量追加查询；取值相同就按已返回的行说明。")
     contract = state.get("semantic_contract") or {}
     if contract:
         parts.append("统一语义契约（所有子任务必须遵守）：\n"
@@ -92,7 +113,8 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
             "query", question, cfg, int(state.get("org_id", 0)),
             llm=deps.llm_for(cfg), executor=executor, tracer=tracer,
             agent_run_id=task_id, parent_agent_run_id=parent,
-            context=_context(state, task), pinned=pinned or None,
+            context=_context(state, task), task_scope=_task_scope(task),
+            pinned=pinned or None,
             cancel_check=deps.cancelled, cost_cap=remaining,
         )
     except Exception as exc:  # the react loop's own failures are worker artifacts
@@ -166,6 +188,7 @@ def run_worker(state: dict[str, Any], deps: Any) -> dict[str, Any]:
         supersedes=str(task.get("previous_evidence_id", "")),
         scope_fingerprint=(state.get("scope_fingerprints") or {}).get(source_id, ""),
         semantic_contract=state.get("semantic_contract") or {},
+        answer=str(getattr(result, "reasoning", "") or ""),
     )
     return {
         "subtasks_by_id": {task_id: {**task, "status": "SUCCEEDED",

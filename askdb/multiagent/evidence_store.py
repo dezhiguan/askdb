@@ -19,7 +19,8 @@ def from_tool_result(*, run_id: str, subtask_id: str, source_id: str,
                      data: dict[str, Any], bindings: list[dict[str, Any]],
                      attempt: int, supersedes: str = "",
                      scope_fingerprint: str = "",
-                     semantic_contract: dict[str, Any] | None = None) -> Evidence:
+                     semantic_contract: dict[str, Any] | None = None,
+                     answer: str = "") -> Evidence:
     from .protocol import SkillBinding
 
     return Evidence(
@@ -42,5 +43,6 @@ def from_tool_result(*, run_id: str, subtask_id: str, source_id: str,
         skill_bindings=[SkillBinding.model_validate(item) for item in bindings],
         supersedes=supersedes,
         scope={"attempt": attempt, "scope_fingerprint": scope_fingerprint,
-               "semantic_contract": dict(semantic_contract or {})},
+               "semantic_contract": dict(semantic_contract or {}),
+               **({"answer": answer} if answer else {})},
     )

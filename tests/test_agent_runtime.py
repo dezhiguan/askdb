@@ -929,6 +929,26 @@ def test_history_preview_says_how_many_rows_are_hidden(tmp_path):
 # 东西（search_schema 换回同一批表、get_table_schema 取一张已注入的表），
 # 而三条 tool_call span 的耗时全是 0ms —— 后者是计时器起反了，不是真的快。
 # --------------------------------------------------------------------------
+def test_listing_result_stops_followup_sql():
+    """TopN 已经返回结果行就收起 execute_sql；单行聚合探查不算覆盖。"""
+    from askdb import agentgraph as G
+    base = {"schema_prompt": "x", "schema_complete": True, "metadata_only": False,
+            "task_scope": {"expected_shape": "topn", "tables": ["reviews"]}}
+    covered = {**base, "exec_results": [{
+        "columns": ["review_id", "useful_count"],
+        "rows": [[1, 260], [2, 260]],
+        "sql_final": "SELECT review_id, useful_count FROM reviews ORDER BY useful_count DESC LIMIT 10",
+    }]}
+    assert "execute_sql" in G._hidden_tools(covered)
+    probe = {**base, "exec_results": [{
+        "columns": ["max_useful", "n_at_260"],
+        "rows": [[260, 3027]],
+        "sql_final": "SELECT MAX(useful_count) AS max_useful, COUNT(*) AS n_at_260 FROM reviews",
+    }]}
+    assert "execute_sql" not in G._hidden_tools(probe)
+    assert not G._listing_covered({"task_scope": {}, "exec_results": covered["exec_results"]})
+
+
 def test_hidden_tools_drops_get_table_schema_only_when_recall_complete():
     """召回完整 → 撤 get_table_schema；盲选/裁表 → 留着；没召回 → 一个都不撤。"""
     from askdb import agentgraph as G

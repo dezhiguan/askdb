@@ -73,6 +73,11 @@ class AgentState(TypedDict, total=False):
     #: **必须声明在这里**，否则节点返回值会被 LangGraph 丢掉，快路径判定读到的
     #: 永远是空，这条问法继续走预检 + 多轮决策。
     attr_anchor: list[str]
+    #: Supervisor 写进子任务的范围：tables / expected_shape。空字典表示没有。
+    #: 必须声明在这里，否则召回节点写回的锁定结果到不了下一跳。
+    task_scope: dict[str, Any]
+    #: 召回已按 task_scope.tables 锁定，意图预检不必再跑一遍。
+    scope_grounded: bool
 
     history: list[dict[str, Any]] # 回灌进下一轮提示词
     exec_results: list[dict[str, Any]] #每一次执行成功；接地校验要看全部
@@ -296,16 +301,49 @@ def _sp_kw(sp: _LlmSpan, status: str = "") -> dict[str, Any]:
 # 顶层互相 import 会成环。
 # ---------------------------------------------------------------------------
 
-def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
-    """grounded 召回：先把可用的表结构摆到模型面前，再让它决策。
+def _pinned_tables(state: AgentState, cfg: Config) -> list[Any]:
+    """任务范围里点名、且当前配置确实有的表。一个都对不上就交回正常召回。"""
+    wanted = [str(name).strip() for name in
+              ((state.get("task_scope") or {}).get("tables") or [])
+              if str(name).strip()]
+    if not wanted:
+        return []
+    by_name = {name.lower(): table for name, table in cfg.tables.items()}
+    found: list[Any] = []
+    seen: set[str] = set()
+    for name in wanted:
+        table = by_name.get(name.lower())
+        if table is None or table.name.lower() in seen:
+            continue
+        seen.add(table.name.lower())
+        found.append(table)
+    return found
 
-    这一步**不是工具调用** —— 模型既选不了也跳不过，所以 span 类型是 RAG
-    而不是 TOOL（见 frontend/src/traceSteps.ts 那段说明）。
-    """
-    from .agent import _brief, _fastpath_mode
 
-    d = _deps(config)
-    t = d.tracer.start()
+_COVERED_SHAPES = frozenset({"topn", "listing", "detail", "rank"})
+
+
+def _listing_covered(state: AgentState) -> bool:
+    """一条列举 / TopN 已经返回了结果行，后面的查询只是在复核同一件事。"""
+    shape = str((state.get("task_scope") or {}).get("expected_shape") or "").strip().lower()
+    if shape not in _COVERED_SHAPES:
+        return False
+    for item in state.get("exec_results") or []:
+        if item.get("truncated"):
+            continue
+        cols = item.get("columns") or []
+        rows = item.get("rows") or []
+        if len(cols) < 2 or not rows:
+            continue
+        sql = str(item.get("sql_final") or "").lower()
+        if len(rows) >= 2 or "limit" in sql:
+            return True
+    return False
+
+
+def _recall_unscoped(state: AgentState, d: Deps, t: int) -> dict[str, Any]:
+    from .agent import _brief
+
     # backend 递下去，值检索才跑得起来（它要拿提问里的取值去真实数据里探一次）。
     # 复用链路已有的那个只读执行器，不另开连接。
     rec = tools.search_schema(state["question"], d.cfg,
@@ -347,10 +385,40 @@ def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     # 此时 get_table_schema 仍有用武之地（去查一张没被注入的表）。
     complete = bool(schema_prompt) and not rec.data.get("blind") \
         and not rec.data.get("truncated")
-    out: dict[str, Any] = {
+    return {
         "tables_hit": tables_hit, "schema_prompt": schema_prompt,
         "schema_heads": schema_heads, "schema_complete": complete,
-        "attr_anchor": list(rec.data.get("attr_anchor") or [])}
+        "attr_anchor": list(rec.data.get("attr_anchor") or []),
+        "scope_grounded": False}
+
+
+def _n_recall(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
+    """grounded 召回：先把可用的表结构摆到模型面前，再让它决策。
+
+    这一步**不是工具调用** —— 模型既选不了也跳不过，所以 span 类型是 RAG
+    而不是 TOOL（见 frontend/src/traceSteps.ts 那段说明）。
+    子任务已经点名表时，只注入那些表，不再做一次向量召回。
+    """
+    from .agent import _fastpath_mode
+    from . import schema_rag
+
+    d = _deps(config)
+    t = d.tracer.start()
+    pinned = _pinned_tables(state, d.cfg)
+    if pinned:
+        metrics = [m for m in d.cfg.metrics if m.matches(state["question"])]
+        tables_hit = [table.name for table in pinned]
+        schema_prompt = schema_rag._render(pinned, metrics, d.cfg)
+        schema_heads = schema_rag.render_heads(pinned, metrics)
+        d.tracer.add("schema_recall", t, f"按任务范围锁定 {len(tables_hit)} 张表",
+                     tables=tables_hit, input=state["question"], output=schema_prompt)
+        out: dict[str, Any] = {
+            "tables_hit": tables_hit, "schema_prompt": schema_prompt,
+            "schema_heads": schema_heads, "schema_complete": bool(schema_prompt),
+            "attr_anchor": [], "scope_grounded": True, "prechecked": True,
+            "metadata_only": False}
+    else:
+        out = _recall_unscoped(state, d, t)
 
     # 简单问题分流。**判定在这里做、结论写进 state**，路由函数只读那一位 ——
     # LangGraph 的路由改不了状态，两处各判一次就会漂（见 _after_recall）。
@@ -735,6 +803,9 @@ def _hidden_tools(state: AgentState) -> frozenset[str]:
     hide = {"get_table_schema"}
     if not state.get("metadata_only"):
         hide.add("search_schema")
+    # 列举 / TopN 已经有结果行：再开放 execute_sql，模型会去数并列池。
+    if _listing_covered(state):
+        hide.add("execute_sql")
     return frozenset(hide)
 
 
@@ -753,6 +824,10 @@ def _n_decide(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         schema=state.get("schema_prompt", ""), question=state["question"],
         history=_render_history(state.get("history") or []),
         steps_left=max(0, _step_cap(state) - step + 1))
+    if _listing_covered(state):
+        human += ("\n\n【任务范围已覆盖】已有一次成功查询返回了结果行。"
+                  "不要再发 SQL。finish=true，只用这些行作答；"
+                  "若返回行的取值相同，按已看到的行说明，不要再统计并列一共有多少条。")
     t = d.tracer.start()
     try:
         action, u = d.llm.structured(
@@ -980,6 +1055,18 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     if callable(cancel) and cancel():
         return {"rejected_by": "CANCELED",
                 "error": "任务已由发起人取消；SQL 未执行"}
+
+    if tool_name == "execute_sql" and _listing_covered(state):
+        rt = d.tracer.start()
+        d.tracer.add("tool_call", rt, "结果行已经覆盖子任务，未再执行",
+                     status="degraded", tool=tool_name, input=_io_json(args))
+        history = list(state.get("history") or [])
+        history.append({
+            "tool": tool_name, "args": args, "ok": False,
+            "brief": ("**已有查询返回了结果行，这条没有执行。** "
+                      "finish=true，用已返回的行作答；不要再查并列规模或总量。"),
+        })
+        return {"step_count": state.get("step_count", 0) + 1, "history": history}
 
     # ⓪′ 召回已经做过的事不做第二遍。
     #
@@ -1474,13 +1561,18 @@ def _n_finalize(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
 # 路由
 # ---------------------------------------------------------------------------
 
-def _after_recall(state: AgentState) -> Literal["fast", "intent"]:
+def _after_recall(state: AgentState) -> Literal["fast", "intent", "decide"]:
     """召回之后分流：这题走不走快路径。**判定已在 _n_recall 里落过 span。**
 
     路由函数改不了状态（LangGraph 的约束），所以判定本身在节点里做、
     结论写进 state，这里只读那一位。两处各判一次就会漂。
+    任务范围已经锁定到真实存在的表时，可答性不再另跑一次预检。
     """
-    return "fast" if state.get("fast") else "intent"
+    if state.get("fast"):
+        return "fast"
+    if state.get("scope_grounded"):
+        return "decide"
+    return "intent"
 
 
 def _after_fast(state: AgentState) -> Literal["act", "decide", "intent", "finalize"]:
@@ -1619,7 +1711,8 @@ def reset_graph() -> None:
 
 def initial_state(question: str, org: int, trace_id: str, thread_id: str,
                   max_steps: int, cost_cap: int,
-                  clarification: str = "", context: str = "") -> AgentState:
+                  clarification: str = "", context: str = "",
+                  task_scope: dict[str, Any] | None = None) -> AgentState:
     """一次新执行的起始状态。
 
     clarification 走 history 而**不是改写 question**：question 是这条线程的身份
@@ -1641,6 +1734,7 @@ def initial_state(question: str, org: int, trace_id: str, thread_id: str,
         "question": question, "org_id": org,
         "trace_id": trace_id, "thread_id": thread_id,
         "schema_prompt": "", "schema_heads": "", "tables_hit": [],
+        "task_scope": dict(task_scope or {}), "scope_grounded": False,
         "history": history, "exec_results": [],
         "last_exec": None, "scan_blocked": None, "last_error": "",
         "answer": "", "answer_step": 0, "converged": "", "step": 0, "step_count": 0,

@@ -88,6 +88,7 @@ class CheckResult:
     cost: float = 0.0
     halted: str = ""
     bindings: list[dict[str, Any]] = field(default_factory=list)
+    kind: str = ""
 
 
 def _spent(state: dict[str, Any]) -> int:
@@ -131,6 +132,14 @@ def check(state: dict[str, Any], deps: Any) -> CheckResult:
     review, repairs = verify(state)
     if repairs or not review.evidence_ids:
         return CheckResult(review, repairs)
+    # 一份完整证据已经通过规则核对。再把子任务当新问题跑一遍召回和预检，
+    # 只是把 Worker 已经写出的答案重查一次。
+    active = latest_by_subtask(state.get("evidence_by_id") or {})
+    tasks = state.get("subtasks_by_id") or {}
+    if len(tasks) == 1 and len(active) == 1:
+        only = next(iter(active.values()))
+        if only.get("sql_final") and only.get("checksum"):
+            return CheckResult(review, repairs, kind="rules")
 
     from ..agents.runner import run_react_inline
     from ..agents.spec import load_agent

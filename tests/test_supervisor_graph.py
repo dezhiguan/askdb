@@ -163,6 +163,69 @@ def test_parallel_reducer_merges_worker_artifacts_by_id():
     assert merge_by_id({"a": {"value": 1}}, {"a": {"value": 3}})["a"]["value"] == 3
 
 
+def test_single_task_passes_scope_and_skips_duplicate_agents(cfg, monkeypatch):
+    """一路、无依赖：表和形状进子任务；语义模型、预检、核对重查、再合成都不跑。"""
+    searches = {"n": 0}
+    _patch_tools(monkeypatch)
+    fake_search = tools.search_schema
+
+    def counting_search(question, cfg, backend=None):
+        searches["n"] += 1
+        return fake_search(question, cfg, backend)
+
+    monkeypatch.setattr(tools, "search_schema", counting_search)
+    _WorkerLlm.opinions = 0
+
+    class _One(_CoordinatorLlm):
+        seen: list = []
+
+        def structured(self, schema, system, human):
+            self.seen.append(schema)
+            if schema is SupervisorPlanDraft:
+                return SupervisorPlanDraft(
+                    reasoning="单表排序即可",
+                    analyses=[PlannedAnalysis(
+                        title="渠道", question="按渠道分析订单",
+                        tables=["documents", "not_a_table"],
+                        expected_shape="topn",
+                    )],
+                ), _Usage()
+            return super().structured(schema, system, human)
+
+    class _SeenWorker(_WorkerLlm):
+        schemas: list = []
+
+        def structured(self, schema, system, human):
+            type(self).schemas.append(getattr(schema, "__name__", str(schema)))
+            return super().structured(schema, system, human)
+
+    _One.seen = []
+    _SeenWorker.schemas = []
+    deps = _deps(cfg)
+    deps.llm = _One()
+    deps.llm_factory = lambda _cfg: _SeenWorker()
+    result = build_graph().invoke(initial_state(
+        question="有用数最高的评价是哪几条",
+        run_id="single", thread_id="single", org_id=65, source_id="builtin",
+        max_workers=3, max_repair_rounds=1,
+        source_catalog={"builtin": ["documents", "orgs"]},
+    ), {"configurable": {"thread_id": "single", "deps": deps}})
+
+    task = next(iter(result["subtasks_by_id"].values()))
+    assert task["query"]["constraints"] == {"tables": ["documents"]}
+    assert task["query"]["expected_shape"] == "topn"
+    assert result["semantic_contract"] == {}
+    assert SemanticContractDraft not in deps.llm.seen
+    assert SynthesisDraft not in deps.llm.seen
+    assert "IntentCheck" not in _SeenWorker.schemas
+    assert _WorkerLlm.opinions == 0
+    assert searches["n"] == 0
+    assert result["answer"] == "已取证"
+    evidence = next(iter(result["evidence_by_id"].values()))
+    assert evidence["scope"]["answer"] == "已取证"
+    assert result["claims"][0]["text"] == "已取证"
+
+
 def test_supervisor_graph_fans_out_verifies_and_binds_claims(cfg, monkeypatch):
     _patch_tools(monkeypatch)
     deps = _deps(cfg)

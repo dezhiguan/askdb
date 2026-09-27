@@ -41,6 +41,14 @@ class PlannedAnalysis(BaseModel):
     question: str
     source_id: str = ""
     depends_on: list[int] = Field(default_factory=list)
+    tables: list[str] = Field(
+        default_factory=list,
+        description="足够回答该子任务的表名。只能从本次召回命中的表里选，"
+                    "不确定就留空。只写表名，不要写列名。")
+    expected_shape: str = Field(
+        default="",
+        description="一条查询取前若干行填 topn，列举明细填 listing。"
+                    "需要对比、多步或还不确定时留空。")
 
 
 class SupervisorPlanDraft(BaseModel):
@@ -50,7 +58,12 @@ class SupervisorPlanDraft(BaseModel):
 
 SUPERVISOR_SYSTEM = """你是 askdb Supervisor。把复杂数据问题拆成最少量、可独立取证的
 查询子任务。每个子任务必须回答原问题的一部分，不能把一个 SQL 能完成的工作重复拆分。
-同一分析维度只创建一个子任务；depends_on 使用 analyses 的零基下标。不要生成 SQL。"""
+同一分析维度只创建一个子任务；depends_on 使用 analyses 的零基下标。
+已经能确定的表名写入 tables，查询形状写入 expected_shape，供下游直接使用。
+不确定的表留空，不要猜列名。不要生成 SQL。"""
+
+
+_SHAPES = frozenset({"topn", "listing", "detail", "rank", "aggregate", "compare"})
 
 
 class SupervisorDecision(BaseModel):
@@ -191,6 +204,39 @@ def _budget_stop(state: MultiAgentState, deps: MultiAgentDeps) -> bool:
         state["token_cap"]) or deps.token_budget(state).exhausted()
 
 
+def _scoped_query(state: MultiAgentState, item: PlannedAnalysis, source_id: str, *,
+                  semantic_context: dict[str, Any] | None = None) -> QuerySpec:
+    """把 Supervisor 已经确定的表和形状写进子任务，不把推理备注丢掉。"""
+    catalog = list((state.get("source_catalog") or {}).get(source_id) or [])
+    allowed = {name.lower(): name for name in catalog}
+    seen: set[str] = set()
+    tables: list[str] = []
+    for raw in item.tables:
+        name = str(raw).strip()
+        if not name:
+            continue
+        if allowed:
+            name = allowed.get(name.lower(), "")
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        tables.append(name)
+    shape = str(item.expected_shape or "").strip().lower()
+    if shape not in _SHAPES:
+        shape = ""
+    return QuerySpec(
+        question=item.question, source_id=source_id,
+        semantic_context=dict(semantic_context or {}),
+        constraints={"tables": tables} if tables else {},
+        expected_shape=shape,
+    )
+
+
+def _single_independent(state: MultiAgentState) -> bool:
+    tasks = list((state.get("subtasks_by_id") or {}).values())
+    return len(tasks) == 1 and not list(tasks[0].get("depends_on") or [])
+
+
 def _supervisor(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     deps = _deps(config)
     started = deps.tracer.start()
@@ -220,7 +266,7 @@ def _supervisor(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any
             assigned_role=AgentRole.QUERY_WORKER,
             source_id=source_id,
             depends_on=dependencies,
-            query=QuerySpec(question=item.question, source_id=source_id),
+            query=_scoped_query(state, item, source_id),
         ))
     plan = TaskPlan(
         plan_id=f"{state['run_id']}:plan",
@@ -284,6 +330,15 @@ def _semantic(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     if _budget_stop(state, deps):
         return {"phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
                 "error": "Token 预算已耗尽，未执行后续模型调用"}
+    # 语义契约是给并行 Worker 对齐口径的。一路、且没有依赖时没有第二份口径要对齐。
+    if _single_independent(state):
+        started = deps.tracer.start()
+        deps.tracer.add(
+            "semantic", started, "单任务且无依赖，未调用语义模型",
+            stage="semantic",
+            agent_run_id=f"{state['run_id']}:semantic", agent_role="semantic",
+            parent_agent_run_id=f"{state['run_id']}:supervisor")
+        return {"phase": "DISPATCHING", "status": "DISPATCHING"}
     started = deps.tracer.start()
     bindings = (state.get("skill_bindings_by_role") or {}).get("semantic", [])
     report = skill.load_pinned(deps.cfg, bindings)
@@ -389,7 +444,9 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     verifier_bindings = found.bindings or (
         (state.get("skill_bindings_by_role") or {}).get("verifier", []))
     note = f"{review.verdict}：{len(review.evidence_ids)} 份证据"
-    if found.tokens:
+    if found.kind == "rules":
+        note += "；规则已通过，未再查库"
+    elif found.tokens:
         note += "；已做只读核对"
     deps.tracer.add("verifier", started, note,
                     status="degraded" if review.verdict != "PASS" else "ok",
@@ -465,10 +522,9 @@ def _extra_workers(state: MultiAgentState, deps: MultiAgentDeps,
             title=item.title,
             assigned_role=AgentRole.QUERY_WORKER,
             source_id=source_id,
-            query=QuerySpec(
-                question=item.question, source_id=source_id,
-                semantic_context=state.get("semantic_contract") or {},
-            ),
+            query=_scoped_query(
+                state, item, source_id,
+                semantic_context=state.get("semantic_contract") or {}),
         ).model_dump(mode="json")
         next_index += 1
     sends = [Send("query_worker", {
@@ -555,6 +611,25 @@ def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, An
     approved_ids = set(latest_review.get("evidence_ids") or [])
     evidence = [item for key, item in (state.get("evidence_by_id") or {}).items()
                 if key in approved_ids]
+    adopted = ""
+    if latest_review.get("verdict") == "PASS" and len(evidence) == 1:
+        adopted = str((evidence[0].get("scope") or {}).get("answer") or "").strip()
+    if adopted:
+        claims = [Claim(
+            claim_id=f"{state['run_id']}:claim:0", text=adopted,
+            evidence_ids=sorted(approved_ids),
+            confidence=float(latest_review.get("confidence", 0.5)),
+        ).model_dump(mode="json")]
+        deps.tracer.add(
+            "synthesizer", started, "沿用 Query Worker 的答案",
+            stage="synthesizer", input=latest_review,
+            output={"answer": adopted, "claims": claims},
+            agent_run_id=f"{state['run_id']}:synthesizer", agent_role="synthesizer",
+            parent_agent_run_id=f"{state['run_id']}:supervisor")
+        return {
+            "phase": "COMPLETED", "status": "COMPLETED",
+            "answer": adopted, "claims": claims,
+        }
     human = json.dumps({
         "question": state["question"],
         "semantic_contract": state.get("semantic_contract") or {},
