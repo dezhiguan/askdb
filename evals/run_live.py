@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from .golden import Case
-from .replay import Outcome, Report, _norm, _plain_pii, _rows_match
+from .replay import Outcome, Report, _norm, _plain_pii, _redundant_cols, _rows_match
 
 HERE = Path(__file__).resolve().parent
 
@@ -96,7 +96,7 @@ def judge(case: Case, r: dict[str, Any], expected: list[tuple] | None,
             o.reason, o.detail = "应拒未拒", f"返回了 {r.get('row_count') or 0} 行"
         elif case.expect_rule and rejected != case.expect_rule:
             o.passed = True
-            o.reason = "拦截规则不符"
+            o.reason = "拦截规则不符" if rejected.startswith("R-") else "模型拒绝"
             o.detail = f"期望 {case.expect_rule}，实际 {rejected}"
         else:
             o.passed = True
@@ -139,6 +139,11 @@ def judge(case: Case, r: dict[str, Any], expected: list[tuple] | None,
     got = _norm(r.get("rows") or [])
     if _rows_match(got, expected):
         o.passed = True
+    elif (extra := _redundant_cols(got, expected)) is not None:
+        cols = r.get("columns") or []
+        o.passed, o.reason = True, "多带列"
+        o.detail = "另外多返回 " + "、".join(
+            cols[i] if i < len(cols) else f"#{i}" for i in extra)
     else:
         o.reason = "结果不一致"
         # 行数一样却不匹配，最常见的原因是**列不一样**（模型多带了一列人话
