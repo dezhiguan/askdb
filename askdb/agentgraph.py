@@ -133,6 +133,8 @@ class Deps:
     agent_role: str = ""
     agent_run_id: str = ""
     parent_agent_run_id: str = ""
+    #: 编排图把同一个 react 循环当作 Worker 调用时，用它在每个工具前停掉已取消的任务。
+    cancel_check: Any = None
 
 def _deps(config: RunnableConfig) -> Deps:
     return config["configurable"]["deps"]
@@ -944,6 +946,11 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
         })
         return {"step_count": state.get("step_count", 0) + 1, "history": history}
 
+    cancel = getattr(d, "cancel_check", None)
+    if callable(cancel) and cancel():
+        return {"rejected_by": "CANCELED",
+                "error": "任务已由发起人取消；SQL 未执行"}
+
     # ⓪′ 召回已经做过的事不做第二遍。
     #
     #    _n_recall 调的就是 tools.search_schema(question)，结果全文已注入提示词。
@@ -1581,7 +1588,7 @@ def reset_graph() -> None:
 
 def initial_state(question: str, org: int, trace_id: str, thread_id: str,
                   max_steps: int, cost_cap: int,
-                  clarification: str = "") -> AgentState:
+                  clarification: str = "", context: str = "") -> AgentState:
     """一次新执行的起始状态。
 
     clarification 走 history 而**不是改写 question**：question 是这条线程的身份
@@ -1589,6 +1596,11 @@ def initial_state(question: str, org: int, trace_id: str, thread_id: str,
     补充作为"已知条件"摆进历史，模型第一轮决策就看得到。
     """
     history: list[dict[str, Any]] = []
+    note = (context or "").strip()
+    if note:
+        history.append({
+            "tool": "(任务上下文)", "args": {},
+            "brief": note})
     extra = (clarification or "").strip()
     if extra:
         history.append({

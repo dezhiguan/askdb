@@ -26,7 +26,8 @@ class ReactBinding:
 
 
 def react_binding(cfg: Config, name: str = "query",
-                  llm: Any = None, *, question: str = "") -> ReactBinding:
+                  llm: Any = None, *, question: str = "",
+                  pinned: list[dict[str, Any]] | None = None) -> ReactBinding:
     """Resolve model, step budget, tool ceiling and pinned Skill versions."""
     from .. import skill, tools
     from .. import agent as agent_mod
@@ -50,21 +51,26 @@ def react_binding(cfg: Config, name: str = "query",
     allowed = narrow_tools(spec.tools, registry)
     bindings: tuple[dict[str, Any], ...] = ()
     try:
-        report = skill.resolve(
-            cfg, role=spec.skills_role,
-            source_id=cfg.source_id or "builtin",
-            question=question,
-            runtime_allowed_tools=registry,
-            agent_allowed_tools=allowed,
-        )
+        if pinned:
+            report = skill.load_pinned(cfg, pinned)
+            bindings = tuple(dict(item) for item in pinned)
+        else:
+            report = skill.resolve(
+                cfg, role=spec.skills_role,
+                source_id=cfg.source_id or "builtin",
+                question=question,
+                runtime_allowed_tools=registry,
+                agent_allowed_tools=allowed,
+            )
+            bindings = tuple(item.model_dump(mode="json") for item in report.bindings)
         requested = [tool for manifest in report.manifests
                      for tool in manifest.requested_tools]
         allowed = narrow_tools(spec.tools, registry, requested)
-        bindings = tuple(item.model_dump(mode="json") for item in report.bindings)
     except Exception:
         # 解析失败时保留 spec 天花板。提示词里的口径仍由 agentgraph 里的
         # skill.render 注入；这里失败不能比那条既有路径更早把查询打死。
-        pass
+        if pinned:
+            bindings = tuple(dict(item) for item in pinned)
     return ReactBinding(spec, client, max_steps, cost_cap, allowed, bindings)
 
 
@@ -171,3 +177,81 @@ def run_react(name: str, question: str, cfg: Config, org_id: int | None = None, 
         if own_exec:
             ex.close()
     return agentgraph.to_result(final, cfg, tracer)
+
+
+class _TaggedTracer:
+    """把子智能体的 span 记到父追踪上，并补上归属。"""
+
+    def __init__(self, inner: Any, *, agent_run_id: str, agent_role: str,
+                 parent_agent_run_id: str) -> None:
+        self._inner = inner
+        self._tags = {
+            "agent_run_id": agent_run_id,
+            "agent_role": agent_role,
+            "parent_agent_run_id": parent_agent_run_id,
+        }
+
+    def add(self, step: str, since: float, note: str = "", **kwargs: Any) -> Any:
+        for key, value in self._tags.items():
+            kwargs.setdefault(key, value)
+        return self._inner.add(step, since, note, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+_INLINE_GRAPH = None
+
+
+def _inline_graph():
+    """Worker 内的 react 循环不落自己的检查点。
+
+    父编排图已经按 thread_id 存了协议状态。再往同一个检查点写另一张图，
+    续跑时两套状态会叠在同一条线程上。
+    """
+    global _INLINE_GRAPH
+    from .. import agentgraph
+
+    if _INLINE_GRAPH is None:
+        _INLINE_GRAPH = agentgraph.build_skeleton().compile()
+    return _INLINE_GRAPH
+
+
+def run_react_inline(name: str, question: str, cfg: Config, org_id: int, *,
+                     llm: Any, executor: Any, tracer: Any,
+                     agent_run_id: str, parent_agent_run_id: str = "",
+                     context: str = "", pinned: list[dict[str, Any]] | None = None,
+                     cancel_check: Any = None,
+                     max_steps: int | None = None,
+                     cost_cap: int | None = None) -> tuple[Any, tuple[dict[str, Any], ...]]:
+    """Run one react agent inside an orchestration node.
+
+    No started-audit row, no handoff, no second checkpoint. The caller maps
+    the returned AskResult into its own protocol object.
+    """
+    from .. import agentgraph, tools
+
+    binding = react_binding(cfg, name, llm=llm, question=question, pinned=pinned)
+    steps = max_steps if max_steps is not None else binding.max_steps
+    cap = cost_cap if cost_cap is not None else binding.cost_cap
+    tagged = _TaggedTracer(
+        tracer, agent_run_id=agent_run_id, agent_role=binding.spec.skills_role,
+        parent_agent_run_id=parent_agent_run_id)
+    deps = agentgraph.Deps(
+        cfg=cfg, llm=binding.llm, executor=executor, tracer=tagged,
+        ctx=tools.ToolContext(cfg=cfg, org_id=org_id, executor=executor),
+        allowed_tools=binding.allowed_tools,
+        skill_bindings=binding.skill_bindings,
+        agent_name=name,
+        agent_role=binding.spec.skills_role,
+        agent_run_id=agent_run_id,
+        parent_agent_run_id=parent_agent_run_id,
+        cancel_check=cancel_check,
+    )
+    init = agentgraph.initial_state(
+        question, org_id, agent_run_id, agent_run_id, steps, cap, context=context)
+    final = _inline_graph().invoke(
+        init,
+        {"configurable": {"thread_id": agent_run_id, "deps": deps},
+         "recursion_limit": agentgraph.recursion_limit(steps)})
+    return agentgraph.to_result(final, cfg, tagged), binding.skill_bindings

@@ -25,9 +25,22 @@ SQL = "SELECT SUM(range) FROM range(400000000)"
 
 
 class _ProbeLlm:
-    def generate_sql(self, *_args, **_kwargs):
-        return SimpleNamespace(sql=SQL), SimpleNamespace(
-            input_tokens=0, output_tokens=0, cost_cny=0.0)
+    """Emit the fixed timeout SQL through the shared query agent, then stop."""
+
+    def __init__(self):
+        self._acted = False
+
+    def structured(self, schema, _system, _human):
+        usage = SimpleNamespace(input_tokens=0, output_tokens=0, cost_cny=0.0)
+        name = getattr(schema, "__name__", "")
+        if name == "IntentCheck":
+            return schema(answerable=True, out_of_scope=False, reason="探针"), usage
+        if name == "AgentAction" and not self._acted:
+            self._acted = True
+            return schema(finish=False, tool="execute_sql", args={"sql": SQL}), usage
+        if name == "AgentAction":
+            return schema(finish=True, answer="探针结束"), usage
+        raise AssertionError(name)
 
 
 def probe(db_path: str | Path = "data/sample.duckdb") -> dict:
@@ -51,7 +64,7 @@ def probe(db_path: str | Path = "data/sample.duckdb") -> dict:
     }
     original_search, original_execute = tools.search_schema, tools.execute_sql
 
-    def schema(_question, _cfg):
+    def schema(_question, _cfg, _backend=None):
         return tools.ToolResult(ok=True, tool="search_schema",
                                 data={"prompt": "range(i) 虚拟表", "tables": []})
 

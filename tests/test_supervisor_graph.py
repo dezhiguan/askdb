@@ -6,7 +6,6 @@ import os
 import signal
 import time
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 from askdb import tools
 from askdb.multiagent.router import decide_route
@@ -70,9 +69,29 @@ class _CoordinatorLlm:
 
 
 class _WorkerLlm:
-    def generate_sql(self, question, schema_prompt, **kwargs):
-        marker = "channel" if "渠道" in question else "region"
-        return SimpleNamespace(sql=f"SELECT '{marker}' AS dimension", reasoning=""), _Usage()
+    """Drive the shared query agent: one SQL, then finish.
+
+    A failed execution stays failed for this run so the verifier can schedule
+    a repair. The next worker invocation gets a fresh client.
+    """
+
+    def __init__(self):
+        self._acted = False
+
+    def structured(self, schema, system, human):
+        from askdb.agent import AgentAction, IntentCheck
+
+        if schema is IntentCheck:
+            return IntentCheck(answerable=True, out_of_scope=False, reason="可答"), _Usage()
+        if schema is AgentAction and not self._acted:
+            self._acted = True
+            marker = "channel" if "渠道" in human else "region"
+            return AgentAction(
+                finish=False, tool="execute_sql",
+                args={"sql": f"SELECT '{marker}' AS dimension"}), _Usage()
+        if schema is AgentAction:
+            return AgentAction(finish=True, answer="已取证"), _Usage()
+        raise AssertionError(getattr(schema, "__name__", schema))
 
 
 class _Executor:
@@ -91,9 +110,10 @@ def _deps(cfg):
 
 
 def _patch_tools(monkeypatch, *, fail_first_region=False):
-    monkeypatch.setattr(tools, "search_schema", lambda question, cfg: tools.ToolResult(
+    monkeypatch.setattr(tools, "search_schema", lambda question, cfg, backend=None: tools.ToolResult(
         ok=True, tool="search_schema",
-        data={"prompt": "orders(id, channel, region)", "tables": ["orders"]},
+        data={"prompt": "orders(id, channel, region)", "tables": ["orders"],
+              "prompt_heads": "orders(id, channel, region)"},
     ))
     calls = {"region": 0}
 
@@ -309,7 +329,12 @@ def test_sigkill_is_detected_as_interrupted_then_resumes_same_checkpoint(
 
         class FakeLlm(_CoordinatorLlm, _WorkerLlm):
             def __init__(self, _cfg):
-                pass
+                self._acted = False
+
+            def structured(self, schema, system, human):
+                if schema in (SupervisorPlanDraft, SemanticContractDraft, SynthesisDraft):
+                    return _CoordinatorLlm.structured(self, schema, system, human)
+                return _WorkerLlm.structured(self, schema, system, human)
 
         monkeypatch.setattr(runtime, "LlmClient", FakeLlm)
         monkeypatch.setattr("askdb.multiagent.supervisor_graph.LlmClient", FakeLlm)
