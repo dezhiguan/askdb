@@ -35,9 +35,9 @@ multi_agent:
   max_workers: 3
   max_parallel: 3
   max_repair_rounds: 2
-  cost_cap_tokens: 30000
+  cost_cap_tokens: 100000
   cost_cap_cny: 0.20
-  cross_source_cost_cap_tokens: 80000
+  cross_source_cost_cap_tokens: 100000
   cross_source_cost_cap_cny: 0.60
   allow_cross_source: true
   join_contracts: []
