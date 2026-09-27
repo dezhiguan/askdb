@@ -14,12 +14,14 @@ from askdb.multiagent.supervisor_graph import (
     MultiAgentDeps,
     PlannedAnalysis,
     SemanticContractDraft,
+    SupervisorDecision,
     SupervisorPlanDraft,
     SynthesisDraft,
     build_graph,
     ensure_graph,
     reset_graph,
 )
+from askdb.multiagent.verifier_agent import VerifierOpinion
 from askdb.trace import Tracer
 
 
@@ -65,6 +67,11 @@ class _CoordinatorLlm:
                 answer="渠道与地区证据均已核验。",
                 claims=["渠道结果已核验", "地区结果已核验"],
             ), _Usage()
+        if schema is SupervisorDecision:
+            action = "repair" if "verdict=REPAIR" in human else "finish"
+            self.decisions = getattr(self, "decisions", [])
+            self.decisions.append(action)
+            return SupervisorDecision(action=action, reasoning="按核对结果决定"), _Usage()
         raise AssertionError(schema)
 
 
@@ -75,12 +82,17 @@ class _WorkerLlm:
     a repair. The next worker invocation gets a fresh client.
     """
 
+    opinions = 0
+
     def __init__(self):
         self._acted = False
 
     def structured(self, schema, system, human):
         from askdb.agent import AgentAction, IntentCheck
 
+        if schema is VerifierOpinion:
+            _WorkerLlm.opinions += 1
+            return VerifierOpinion(verdict="PASS"), _Usage()
         if schema is IntentCheck:
             return IntentCheck(answerable=True, out_of_scope=False, reason="可答"), _Usage()
         if schema is AgentAction and not self._acted:
@@ -171,6 +183,7 @@ def test_supervisor_graph_fans_out_verifies_and_binds_claims(cfg, monkeypatch):
 
 def test_verifier_repairs_only_failed_worker_and_preserves_review_history(cfg, monkeypatch):
     _patch_tools(monkeypatch, fail_first_region=True)
+    _WorkerLlm.opinions = 0
     deps = _deps(cfg)
     state = initial_state(
         question="分析订单下降原因，分别看渠道和地区",
@@ -188,6 +201,42 @@ def test_verifier_repairs_only_failed_worker_and_preserves_review_history(cfg, m
     attempts = {task["title"]: task["attempt"]
                 for task in result["subtasks_by_id"].values()}
     assert attempts == {"渠道": 1, "地区": 2}
+    # 缺证据的那一轮只走规则，模型核对只发生在证据补齐之后。
+    assert _WorkerLlm.opinions == 1
+    assert deps.llm.decisions == ["repair", "finish"]
+
+
+def test_supervisor_can_dispatch_another_worker_after_review(cfg, monkeypatch):
+    _patch_tools(monkeypatch)
+
+    class _DispatchOnce(_CoordinatorLlm):
+        def __init__(self):
+            self._sent = False
+
+        def structured(self, schema, system, human):
+            if schema is SupervisorDecision and not self._sent:
+                self._sent = True
+                return SupervisorDecision(
+                    action="dispatch", reasoning="还要按产品取证",
+                    analyses=[PlannedAnalysis(title="产品", question="按产品分析订单")],
+                ), _Usage()
+            return super().structured(schema, system, human)
+
+    deps = _deps(cfg)
+    deps.llm = _DispatchOnce()
+    result = build_graph().invoke(initial_state(
+        question="分析订单下降原因，分别看渠道和地区",
+        run_id="dispatch", thread_id="dispatch", org_id=65, source_id="builtin",
+        max_workers=3, max_repair_rounds=1,
+    ), {"configurable": {"thread_id": "dispatch", "deps": deps}})
+
+    assert result["status"] == "COMPLETED"
+    assert {task["title"] for task in result["subtasks_by_id"].values()} == {
+        "渠道", "地区", "产品"}
+    assert len(result["evidence_by_id"]) == 3
+    assert [row["verdict"] for row in result["reviews_by_id"].values()] == ["PASS", "PASS"]
+    evidence_ids = set(result["evidence_by_id"])
+    assert all(set(claim["evidence_ids"]) == evidence_ids for claim in result["claims"])
 
 
 def test_supervisor_graph_persists_protocol_state_for_cold_resume(cfg, monkeypatch):
@@ -332,7 +381,8 @@ def test_sigkill_is_detected_as_interrupted_then_resumes_same_checkpoint(
                 self._acted = False
 
             def structured(self, schema, system, human):
-                if schema in (SupervisorPlanDraft, SemanticContractDraft, SynthesisDraft):
+                if schema in (SupervisorPlanDraft, SemanticContractDraft, SynthesisDraft,
+                              SupervisorDecision):
                     return _CoordinatorLlm.structured(self, schema, system, human)
                 return _WorkerLlm.structured(self, schema, system, human)
 

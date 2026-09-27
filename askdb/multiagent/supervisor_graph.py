@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
+from langgraph.types import Command, Send
 from pydantic import BaseModel, Field
 
 from .. import skill, tools
@@ -33,7 +33,7 @@ from .query_worker_agent import run_worker
 from .semantic_agent import SYSTEM as SEMANTIC_SYSTEM, SemanticContractDraft
 from .state import MultiAgentState
 from .synthesizer_agent import SYSTEM as SYNTHESIS_SYSTEM, SynthesisDraft
-from .verifier_agent import verify
+from .verifier_agent import check
 
 
 class PlannedAnalysis(BaseModel):
@@ -51,6 +51,20 @@ class SupervisorPlanDraft(BaseModel):
 SUPERVISOR_SYSTEM = """你是 askdb Supervisor。把复杂数据问题拆成最少量、可独立取证的
 查询子任务。每个子任务必须回答原问题的一部分，不能把一个 SQL 能完成的工作重复拆分。
 同一分析维度只创建一个子任务；depends_on 使用 analyses 的零基下标。不要生成 SQL。"""
+
+
+class SupervisorDecision(BaseModel):
+    action: Literal["dispatch", "repair", "finish"]
+    reasoning: str = ""
+    analyses: list[PlannedAnalysis] = Field(default_factory=list)
+
+
+DECIDE_SYSTEM = """你是 askdb Supervisor。这一轮查询和核对已经结束。
+根据最新 Review，只选一个下一步：
+- repair：有待返工项，把这些子任务打回去重做
+- dispatch：现有子任务覆盖不了问题，且还有名额时，用 analyses 补派新的查询
+- finish：证据已经够用，或不能再返工，交给合成
+不要生成 SQL。补派时每个分析只新增一个子任务。"""
 
 
 @dataclass
@@ -108,13 +122,13 @@ class MultiAgentDeps:
         return tokens / 1000 * maximum
 
     def structured(self, state: MultiAgentState, schema: Any,
-                   system: str, human: str) -> tuple[Any, Any]:
+                   system: str, human: str, *, llm: Any = None) -> tuple[Any, Any]:
         budget = self.token_budget(state)
         reserved = estimate_tokens(system, human, schema.model_json_schema())
         cost_reserved = self.estimated_cost(reserved)
         budget.reserve(reserved, cost_reserved)
         try:
-            result, usage = self.llm.structured(schema, system, human)
+            result, usage = (llm or self.llm).structured(schema, system, human)
             budget.settle(reserved, _used_tokens(usage), cost_reserved,
                           _used_cost(usage))
             return result, usage
@@ -316,6 +330,7 @@ def _dispatch_gate(state: MultiAgentState) -> dict[str, Any]:
 
 
 def _dispatch(state: MultiAgentState) -> list[Send] | str:
+    """Join in-flight workers. The next action is supervisor_decide, not this gate."""
     if state.get("status") in ("CANCELED", "BUDGET_EXCEEDED") or (
             state.get("budget_blocks_by_actor")) or _total(state) >= int(state["token_cap"]):
         return "verifier"
@@ -352,7 +367,16 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
                 "error": "Token 预算已耗尽或不足以继续取证",
                 "tok_used": _total(state), "cost_used_cny": _total_cost(state),
                 "pending_repairs": []}
-    review, repairs = verify(state)
+    found = check(state, deps)
+    if found.halted == "CANCELED":
+        deps.tracer.add("verifier", started, "核对期间任务已取消",
+                        status="blocked", stage="verifier",
+                        agent_run_id=f"{state['run_id']}:verifier", agent_role="verifier",
+                        parent_agent_run_id=f"{state['run_id']}:supervisor")
+        return {"phase": "CANCELED", "status": "CANCELED", "pending_repairs": [],
+                **_actor_usage(state, f"verifier:{found.review.review_id}",
+                               found.tokens, found.cost)}
+    review, repairs = found.review, found.repairs
     current_round = int(state.get("repair_round", 0))
     exhausted = bool(repairs) and current_round >= int(state["max_repair_rounds"])
     if exhausted:
@@ -360,36 +384,50 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
         review.issues.append("已达到最大返工轮次，按现有证据降级收敛")
         review.repair_tasks = []
         repairs = []
-    verifier_bindings = (state.get("skill_bindings_by_role") or {}).get("verifier", [])
-    deps.tracer.add("verifier", started,
-                    f"{review.verdict}：{len(review.evidence_ids)} 份证据",
+    verifier_bindings = found.bindings or (
+        (state.get("skill_bindings_by_role") or {}).get("verifier", []))
+    note = f"{review.verdict}：{len(review.evidence_ids)} 份证据"
+    if found.tokens:
+        note += "；已做只读核对"
+    deps.tracer.add("verifier", started, note,
                     status="degraded" if review.verdict != "PASS" else "ok",
                     stage="verifier", output={
                         "review": review.model_dump(mode="json"),
                         "skill_bindings": verifier_bindings},
                     agent_run_id=f"{state['run_id']}:verifier", agent_role="verifier",
                     parent_agent_run_id=f"{state['run_id']}:supervisor")
-    return {
+    update: dict[str, Any] = {
         "phase": "VERIFYING", "status": "VERIFYING",
         "reviews_by_id": {review.review_id: review.model_dump(mode="json")},
         "pending_repairs": repairs,
         "repair_round": current_round + (1 if repairs else 0),
+        **_actor_usage(state, f"verifier:{review.review_id}", found.tokens, found.cost),
+    }
+    if found.bindings:
+        update["skill_bindings_by_role"] = {"verifier": found.bindings}
+    return update
+
+
+def _actor_usage(state: MultiAgentState, key: str, tokens: int, cost: float) -> dict[str, Any]:
+    if not tokens and not cost:
+        return {}
+    return {
+        "tok_used": _total(state) + tokens,
+        "tok_by_actor": {key: tokens},
+        "cost_used_cny": _total_cost(state) + cost,
+        "cost_by_actor": {key: cost},
     }
 
 
-def _after_verify(state: MultiAgentState) -> list[Send] | str:
-    if state.get("status") in ("CANCELED", "BUDGET_EXCEEDED"):
-        return END
-    repairs = state.get("pending_repairs") or []
-    if _total(state) >= int(state["token_cap"]):
-        return END
-    if not repairs:
-        return "synthesizer"
+def _repair_sends(state: MultiAgentState, repairs: list[dict[str, Any]]) -> list[Send]:
     sends: list[Send] = []
     evidence = state.get("evidence_by_id") or {}
+    tasks = state.get("subtasks_by_id") or {}
     for repair in repairs:
         task_id = repair["target_subtask_id"]
-        task = dict((state.get("subtasks_by_id") or {})[task_id])
+        if task_id not in tasks:
+            continue
+        task = dict(tasks[task_id])
         previous = next((item["evidence_id"] for item in evidence.values()
                          if item.get("subtask_id") == task_id and not item.get("supersedes")), "")
         task.update({
@@ -400,6 +438,106 @@ def _after_verify(state: MultiAgentState) -> list[Send] | str:
         sends.append(Send("query_worker", {**state, "worker_task": task,
                                              "phase": "RECOVERING"}))
     return sends
+
+
+def _extra_workers(state: MultiAgentState, deps: MultiAgentDeps,
+                   analyses: list[PlannedAnalysis]) -> tuple[list[Send], dict[str, dict[str, Any]]]:
+    existing = state.get("subtasks_by_id") or {}
+    room = int(state["max_workers"]) - len(existing)
+    created: dict[str, dict[str, Any]] = {}
+    next_index = len(existing)
+    for item in analyses:
+        if len(created) >= room:
+            break
+        source_id = item.source_id or state["source_id"]
+        try:
+            deps.config_for(source_id)
+        except ValueError:
+            continue
+        task_id = f"{state['run_id']}:worker:{next_index}"
+        while task_id in existing or task_id in created:
+            next_index += 1
+            task_id = f"{state['run_id']}:worker:{next_index}"
+        created[task_id] = SubTask(
+            subtask_id=task_id,
+            title=item.title,
+            assigned_role=AgentRole.QUERY_WORKER,
+            source_id=source_id,
+            query=QuerySpec(
+                question=item.question, source_id=source_id,
+                semantic_context=state.get("semantic_contract") or {},
+            ),
+        ).model_dump(mode="json")
+        next_index += 1
+    sends = [Send("query_worker", {
+        **state, "worker_task": task, "phase": "RUNNING",
+    }) for task in created.values()]
+    return sends, created
+
+
+def _supervisor_decide(state: MultiAgentState, config: RunnableConfig) -> Command:
+    """After Evidence and Review, choose repair, another dispatch, or finish."""
+    deps = _deps(config)
+    if state.get("status") in ("CANCELED", "BUDGET_EXCEEDED"):
+        return Command(goto=END)
+    if deps.cancelled():
+        return Command(goto=END, update={
+            "phase": "CANCELED", "status": "CANCELED", "pending_repairs": []})
+    if _budget_stop(state, deps):
+        return Command(goto=END, update={
+            "phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
+            "error": "Token 预算已耗尽，停止后续调度",
+            "pending_repairs": [],
+            "tok_used": _total(state), "cost_used_cny": _total_cost(state),
+        })
+    reviews = list((state.get("reviews_by_id") or {}).values())
+    latest = reviews[-1] if reviews else {}
+    repairs = list(state.get("pending_repairs") or [])
+    room = int(state["max_workers"]) - len(state.get("subtasks_by_id") or {})
+    human = (
+        f"用户问题：{state['question']}\n"
+        f"verdict={latest.get('verdict', '')}\n"
+        f"issues={json.dumps(latest.get('issues') or [], ensure_ascii=False)}\n"
+        f"pending_repairs={json.dumps(repairs, ensure_ascii=False)}\n"
+        f"已有子任务数：{len(state.get('subtasks_by_id') or {})}\n"
+        f"还可补派：{max(0, room)}\n"
+        f"返工轮次：{int(state.get('repair_round', 0))}/{int(state['max_repair_rounds'])}\n"
+    )
+    started = deps.tracer.start()
+    try:
+        decision, usage = deps.structured(
+            state, SupervisorDecision, DECIDE_SYSTEM, human)
+    except BudgetExceeded as exc:
+        return Command(goto=END, update={
+            "phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
+            "error": str(exc),
+            "budget_blocks_by_actor": {"supervisor_decide": str(exc)},
+            "pending_repairs": [],
+        })
+    review_id = str(latest.get("review_id") or state.get("repair_round", 0))
+    update: dict[str, Any] = {
+        "pending_repairs": [],
+        **_actor_usage(state, f"supervisor:decide:{review_id}",
+                       _used_tokens(usage), _used_cost(usage)),
+    }
+    deps.tracer.add(
+        "supervisor_decide", started, decision.reasoning or decision.action,
+        stage="supervisor", output={"action": decision.action},
+        agent_run_id=f"{state['run_id']}:supervisor", agent_role="supervisor",
+        **_usage_kwargs(usage))
+    if decision.action == "repair" and repairs:
+        sends = _repair_sends(state, repairs)
+        if sends:
+            return Command(goto=sends, update=update)
+    if decision.action == "dispatch" and decision.analyses and room > 0:
+        sends, created = _extra_workers(state, deps, decision.analyses)
+        if sends:
+            plan = dict(state.get("plan") or {})
+            plan["subtasks"] = [*list(plan.get("subtasks") or []), *created.values()]
+            update["subtasks_by_id"] = created
+            update["plan"] = plan
+            return Command(goto=sends, update=update)
+    return Command(goto="synthesizer", update=update)
 
 
 def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
@@ -477,6 +615,8 @@ def build_skeleton() -> StateGraph:
     graph.add_node("dispatch_gate", _dispatch_gate)
     graph.add_node("query_worker", _worker)
     graph.add_node("verifier", _verifier)
+    graph.add_node("supervisor_decide", _supervisor_decide,
+                   destinations=("query_worker", "synthesizer", END))
     graph.add_node("synthesizer", _synthesizer)
     graph.add_edge(START, "supervisor")
     graph.add_edge("supervisor", "resolve_skills")
@@ -484,8 +624,7 @@ def build_skeleton() -> StateGraph:
     graph.add_edge("semantic", "dispatch_gate")
     graph.add_conditional_edges("dispatch_gate", _dispatch, ["query_worker", "verifier"])
     graph.add_edge("query_worker", "dispatch_gate")
-    graph.add_conditional_edges("verifier", _after_verify,
-                                ["query_worker", "synthesizer", END])
+    graph.add_edge("verifier", "supervisor_decide")
     graph.add_edge("synthesizer", END)
     return graph
 
