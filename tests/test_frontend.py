@@ -247,6 +247,18 @@ def test_only_model_chosen_tools_count_as_tool_calls():
 SOURCES_PAGE = FRONTEND_SRC / "pages" / "DataSourcesPage.tsx"
 
 
+def test_trace_metrics_use_fresh_quality_from_current_environment():
+    page = (FRONTEND_SRC / "pages" / "TracesPage.tsx").read_text(encoding="utf-8")
+    api = (FRONTEND_SRC / "api.ts").read_text(encoding="utf-8")
+    assert "fetchLiveQuality(1)" in page
+    assert "quality.service?.config" in page
+    assert "quality.runs === 0" in page
+    assert "setQuality(null)" in page  # 读取失败不可显示上一次的旧数字
+    assert "setInterval(refresh, 30_000)" in page
+    assert "visibilitychange" in page
+    assert "cache: 'no-store'" in api
+
+
 def test_sources_page_is_wired_to_real_endpoints():
     """这一页的每一块都得来自真接口，不能退回样例数据。
 

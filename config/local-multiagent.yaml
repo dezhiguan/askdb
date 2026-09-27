@@ -1,0 +1,77 @@
+# 本机多智能体验收实例：只读内置样例库，不依赖运行时数据源元数据库。
+# 仅监听 127.0.0.1；真实模型密钥只从 DEEPSEEK_API_KEY 环境变量读取。
+datasource:
+  type: duckdb
+  path: ./data/sample.duckdb
+  read_only: true
+
+tenant:
+  column: org_id
+  default_ctx: 65
+  mode: predicate
+  on_unresolved: reject
+
+guard:
+  max_rows: 500
+  max_retry: 2
+  max_scan_rows: 500000
+  statement_timeout_ms: 5000
+  allow_select_star: false
+  allowed_schemas: [main]
+  deny_functions: [read_csv, read_parquet, read_json, glob, load_file, sleep]
+
+planner:
+  enabled: false
+  max_steps: 3
+  max_carry_rows: 50
+  carry_columns_only: true
+  cost_cap_tokens: 12000
+  on_cap_reached: converge
+
+multi_agent:
+  enabled: true
+  mode: enforce
+  trigger: auto
+  max_workers: 3
+  max_parallel: 3
+  max_repair_rounds: 2
+  cost_cap_tokens: 30000
+  cost_cap_cny: 0.20
+  allow_cross_source: false
+  join_contracts: []
+
+schema_rag:
+  mode: all
+
+llm:
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  api_key_env: DEEPSEEK_API_KEY
+  temperature: 0
+  thinking: false
+  timeout_s: 20
+  max_retries: 0
+  price_input_per_1k: 0.002
+  price_output_per_1k: 0.008
+  price_cached_input_per_1k: 0.00004
+
+agent:
+  enabled: true
+
+observability:
+  store: file
+  audit_log: ./var/audit-local-multiagent.jsonl
+  checkpoint_db: ./var/checkpoints-local-multiagent.sqlite
+  daily_quota: 100
+  replay_api: false
+
+datasources:
+  allow_runtime_add: false
+
+auth:
+  enabled: false
+  required: false
+
+tables_file: ./config/schemas/sample-tables.yaml
+metrics_file: ./config/schemas/sample-metrics.yaml
