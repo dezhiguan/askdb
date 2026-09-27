@@ -625,9 +625,9 @@ agent:
   # /api/tasks/{thread_id}，跑完在原位置渲染完整结果，人不用离开这一页。
   # 交接从异常路径变成常态路径，阈值才谈得上往下压。
   #
-  # 2026-09-27 改回 60s（产品决定）。注意它与 nginx 对 /api/ask 的
-  # proxy_read_timeout 60s 相同：同步跑满 60s 的请求可能先拿到 504，
-  # 而后台照常跑完、结果在任务中心。
+  # 2026-09-27 改回 60s（产品决定）。nginx 对 /api/ask 的 proxy_read_timeout
+  # 同日调到 90s（deploy/nginx-askdb.conf）—— 它必须比这里长，否则同步跑满
+  # 60s 的请求先拿到 504，后台却照常跑完。改这里时两边一起看。
   async_after_ms: 60000
   async_pool_size: 16                # 后台池；满了不交接、同步跑到底（宁可慢不可丢）
   async_per_user: 3                  # 每账号在跑上限；满了拒绝并说明理由，不排队
