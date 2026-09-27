@@ -3,8 +3,8 @@ import { ModalShell } from '../components/Modals'
 import { ResultDetail } from '../components/ResultDetail'
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import {
-  fetchAudit, fetchAuditStats, fetchTraceChain, fetchResult, tracingLink,
-  type AuditItem, type AuditStats, type ReplayStep, type TraceChain,
+  fetchAudit, fetchAuditStats, fetchLiveQuality, fetchTraceChain, fetchResult, tracingLink,
+  type AuditItem, type AuditStats, type LiveQuality, type ReplayStep, type TraceChain,
   type TraceChainResult, type TraceResult, type Me,
 } from '../api'
 import type { ModalName, View } from '../types'
@@ -133,9 +133,8 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
    *  展示（流水、节点链）匿名可见，动作要登录。 */
   const guard = writeGuard(me ?? null, '这个操作')
   const [stats, setStats] = useState<AuditStats | null>(null)
-  // 原型第一格是「今日 Traces」。统计接口按窗口取，30 天那份不能拿来当今天讲，
-  // 所以单独再要一份 days=1 —— 其余三格仍用 30 天窗口，样本太小的 P95 没有意义。
-  const [today, setToday] = useState<AuditStats | null>(null)
+  // 顶部五项按原型使用近 24 小时运行质量窗口；审计统计仍单独提供追踪集成状态。
+  const [quality, setQuality] = useState<LiveQuality | null>(null)
   const [items, setItems] = useState<AuditItem[] | null>(null)
   /* 左栏改成"搜索 + 两个下拉 + 滚动分页"。三个筛选条件都走**服务端**：
      只筛已加载的那一页，等于"搜不到"和"这一页里没有"分不开。 */
@@ -157,9 +156,12 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
 
   useEffect(() => {
     let alive = true
-    Promise.all([fetchAuditStats(), fetchAuditStats(1)])
-      .then(([s, t]) => { if (!alive) return; setStats(s); setToday(t) })
+    fetchAuditStats()
+      .then(s => { if (!alive) return; setStats(s) })
       .catch(e => { if (alive) setError(String(e.message || e)) })
+    fetchLiveQuality(1).then(q => { if (alive) setQuality(q) }).catch(() => {
+      // 质量汇总权限或接口暂不可用时，不阻塞追踪明细；指标保留占位符。
+    })
     return () => { alive = false }
   }, [])
 
@@ -297,7 +299,7 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
 
       {error && <div className="audit-error">读取追踪数据失败：{error}</div>}
 
-      <StatTiles stats={stats} today={today} />
+      <StatTiles quality={quality} />
 
       <div className="trace-layout">
         <div className="card">
@@ -390,45 +392,36 @@ export function TracesPage({ focusTrace, onNavigate, onOpenModal, me }: {
   )
 }
 
-function StatTiles({ stats, today }: { stats: AuditStats | null; today: AuditStats | null }) {
-  if (!stats) return <div className="stats"><div className="stat"><span>读取中…</span></div></div>
-
-  /* 分母用后端的 model_calls（按 MODEL_STEPS 数的模型节点），**不再拿
-     by_model 求和**。by_model 自 2026-09-10 起按 step 归因成本，里面还多了
-     嵌入模型那一维 —— 拿它当分母的话，这一格会随成本归因口径变化而漂，
-     而两者说的本来就不是一件事：一个是"钱花在哪个模型上"，
-     一个是"平均每次模型调用多少 token"。 */
-  const modelCalls = stats.model_calls ?? 0
-  const avgTokens = modelCalls > 0 ? Math.round((stats.tok_in + stats.tok_out) / modelCalls) : null
-  const pct = (v: number | null | undefined) => v == null ? NA : `${Math.round(v * 100)}%`
+function StatTiles({ quality }: { quality: LiveQuality | null }) {
+  const pct = (v: number | null | undefined) => v == null ? NA : `${(v * 100).toFixed(1)}%`
+  const successDelta = quality?.success_rate != null && quality.prev?.success_rate != null
+    ? (quality.success_rate - quality.prev.success_rate) * 100 : null
+  const tokenTotal = quality?.tok_total
+  const formatTokens = (value: number | undefined) => value == null ? NA
+    : value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M`
+      : value >= 10_000 ? `${(value / 1_000).toFixed(1)}K` : value.toLocaleString()
 
   return (
     <div className="stats">
-      <div className="stat">
-        <span>今日 Traces</span><strong>{(today?.calls ?? 0).toLocaleString()}</strong>
-        {/* 没有调用时 trace_complete 是 null —— 那句话就不该出现，
-            「— 已关联审计」是把一个没有的比例硬写成一行字 */}
-        <small>{today?.calls ? `${pct(today.trace_complete)} 已关联审计` : '今日暂无调用'}</small>
+      <div className="stat stat-total">
+        <span>最近 24 小时</span><strong>{quality?.runs.toLocaleString() ?? NA} 次调用</strong>
+        <small>最近执行记录</small>
       </div>
       <div className="stat">
-        <span>P95 总耗时</span><strong>{secs(stats.elapsed_p95_ms)}</strong>
-        {/* 样本量必须一起给：7 次调用的 P95 基本等于最慢那次，当成稳定指标读会出错 */}
-        <small>P50 {secs(stats.elapsed_p50_ms)} · 样本 {stats.calls} 次</small>
-      </div>
-      {/* 按模型**节点**算（判定/生成/自检/反思），不是按整次调用算 ——
-          一次提问里模型可能被调三四次，其中一次失败后重试成功，
-          按调用算会把这些失败全部抹掉。 */}
-      <div className="stat">
-        <span>模型调用成功率</span><strong>{pct(stats.model_success)}</strong>
-        <small>
-          {stats.model_calls
-            ? `${stats.model_calls.toLocaleString()} 次模型节点 · ${stats.model_failed} 次失败`
-            : '窗口内没有经模型的节点'}
-        </small>
+        <span>多智能体调用</span><strong>{quality?.multi_agent_calls?.toLocaleString() ?? NA}</strong>
+        <small>占比 {pct(quality?.multi_agent_rate)}</small>
       </div>
       <div className="stat">
-        <span>平均 Token</span><strong>{avgTokens?.toLocaleString() ?? NA}</strong>
-        <small>{modelCalls > 0 ? `${modelCalls} 次经模型调用` : '窗口内没有经模型的调用'}</small>
+        <span>成功率</span><strong>{pct(quality?.success_rate)}</strong>
+        <small>{successDelta == null ? '较昨日 —' : `较昨日 ${successDelta >= 0 ? '+' : ''}${successDelta.toFixed(1)}%`}</small>
+      </div>
+      <div className="stat">
+        <span>平均耗时</span><strong>{secs(quality?.avg_elapsed_ms)}</strong>
+        <small>多智能体 {secs(quality?.multi_agent_avg_elapsed_ms)}</small>
+      </div>
+      <div className="stat">
+        <span>Token 用量</span><strong>{formatTokens(tokenTotal)}</strong>
+        <small>最近 24 小时</small>
       </div>
     </div>
   )

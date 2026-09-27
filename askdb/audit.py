@@ -1954,6 +1954,16 @@ def quality(path: Any, days: int = 1) -> dict[str, Any]:
     tok = [int(r.get("tok_in") or 0) + int(r.get("tok_out") or 0) for r in recent]
     costs = [float(r.get("cost_cny") or 0) for r in recent]
 
+    def is_multi_agent(record: dict[str, Any]) -> bool:
+        # multi_step 表示规划任务拆步，不等于多个 Agent Run。仅当 trace spans
+        # 明确记录了至少两个不同的 agent_run_id 时，才归入多智能体调用。
+        steps = record.get("steps") or []
+        run_ids = {str(step.get("agent_run_id")) for step in steps
+                   if isinstance(step, dict) and step.get("agent_run_id")}
+        return len(run_ids) > 1
+
+    multi_agent = [r for r in recent if is_multi_agent(r)]
+
     # ---- 按节点聚合 ----
     nodes = _nodes_of(recent)
 
@@ -1985,6 +1995,13 @@ def quality(path: Any, days: int = 1) -> dict[str, Any]:
         "block_rate": round(blocked / runs, 4) if runs else None,
         "p50_ms": _pctl_of(elapsed, 0.5),
         "p95_ms": _pctl_of(elapsed, 0.95),
+        "avg_elapsed_ms": round(sum(elapsed) / runs) if runs else None,
+        "multi_agent_calls": len(multi_agent),
+        "multi_agent_rate": round(len(multi_agent) / runs, 4) if runs else None,
+        "multi_agent_avg_elapsed_ms": (
+            round(sum(int(r.get("elapsed_ms") or 0) for r in multi_agent) / len(multi_agent))
+            if multi_agent else None),
+        "tok_total": sum(tok),
         "avg_tok": round(sum(tok) / runs) if runs else None,
         "cost_cny": round(sum(costs), 6),
         "avg_cost_cny": round(sum(costs) / runs, 6) if runs else None,
@@ -2004,6 +2021,8 @@ def quality(path: Any, days: int = 1) -> dict[str, Any]:
         # 上个窗口只有两三次调用时，P95 的涨跌没有意义，页面据此决定报不报。
         "prev": {
             "runs": len(previous),
+            "success_rate": (round(sum(1 for r in previous if not r.get("rejected_by")) / len(previous), 4)
+                             if previous else None),
             "p95_ms": _pctl_of([int(r.get("elapsed_ms") or 0) for r in previous], 0.95),
             # 「线上平均 Token / 单任务成本」两张卡要出环比，口径与本窗口逐字相同
             "avg_tok": (round(sum(int(r.get("tok_in") or 0) + int(r.get("tok_out") or 0)

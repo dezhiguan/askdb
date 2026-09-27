@@ -1653,6 +1653,11 @@ export interface LiveQuality {
   block_rate: number | null
   p50_ms: number | null
   p95_ms: number | null
+  avg_elapsed_ms?: number | null
+  multi_agent_calls?: number
+  multi_agent_rate?: number | null
+  multi_agent_avg_elapsed_ms?: number | null
+  tok_total?: number
   avg_tok: number | null
   cost_cny: number
   avg_cost_cny: number | null
@@ -1667,6 +1672,7 @@ export interface LiveQuality {
   /** 上一个等长窗口的同口径值，供页面算环比。runs 少时涨跌没有意义 —— 页面据此决定报不报 */
   prev?: {
     runs: number
+    success_rate?: number | null
     p95_ms: number | null
     avg_tok: number | null
     avg_cost_cny: number | null

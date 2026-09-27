@@ -363,6 +363,35 @@ def test_quality_separates_blocks_from_failures(tmp_path):
     assert q["by_rule"] == {"R-02": 1, "EXEC": 1}
 
 
+def test_quality_multi_agent_summary_uses_agent_run_ids(tmp_path):
+    import json
+
+    from askdb.audit import quality
+    from askdb.trace import now_iso
+
+    p = tmp_path / "a.jsonl"
+    records = [
+        {"trace_id": "one", "ts": now_iso(), "elapsed_ms": 1000,
+         "tok_in": 10, "tok_out": 20, "steps": [
+             {"agent_run_id": "trace:supervisor"},
+             {"agent_run_id": "trace:worker:0"},
+         ]},
+        {"trace_id": "two", "ts": now_iso(), "elapsed_ms": 3000,
+         "tok_in": 5, "tok_out": 5, "multi_step": True, "steps": [
+             {"step": "generate_sql"},
+         ]},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in records), encoding="utf-8")
+
+    q = quality(p, days=1)
+    assert q["runs"] == 2
+    assert q["multi_agent_calls"] == 1
+    assert q["multi_agent_rate"] == 0.5
+    assert q["avg_elapsed_ms"] == 2000
+    assert q["multi_agent_avg_elapsed_ms"] == 1000
+    assert q["tok_total"] == 40
+
+
 def test_quality_aggregates_by_node(tmp_path):
     """按节点聚合是这个接口存在的理由 —— 端到端慢在哪一段只能靠它回答。
 
@@ -423,4 +452,3 @@ def test_masking_also_closes_the_text_search_oracle(tmp_path: Path):
     assert audit.list_audits(log, q="知识库", with_text=False)["total"] == 0
     # trace_id 仍然搜得到 —— 它不是内容，而且没有它就没法按 id 对账
     assert audit.list_audits(log, q="t1", with_text=False)["total"] == 1
-

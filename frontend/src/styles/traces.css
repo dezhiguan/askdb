@@ -10,17 +10,14 @@
 
 /* ---------- 顶部统计卡：原型 .stat ---------- */
 /* pages.css 的 `.stats > div` 是给别的页写的，这里用 .stat 单独对齐原型 */
-.traces-page .stats { grid-template-columns: repeat(4, 1fr); gap: 9px; margin-bottom: 14px; }
-.traces-page .stats .stat {
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(250, 249, 245, .83);
-  box-shadow: var(--shadow);
-}
+.traces-page .stats { grid-template-columns: 2fr repeat(4, minmax(0, 1fr)); gap: 0; margin-bottom: 14px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 254, 250, .9); box-shadow: var(--shadow); }
+.traces-page .stats .stat { min-width: 0; padding: 12px 14px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.traces-page .stats .stat + .stat { border-left: 1px solid var(--line); }
+.traces-page .stats .stat-total strong { font: 700 12px var(--sans); }
 .traces-page .stats .stat span { display: block; color: var(--muted); font-size: 7px; }
 .traces-page .stats .stat strong { display: block; margin: 6px 0 0; font-family: var(--serif); font-size: 20px; }
 .traces-page .stats .stat small { display: block; margin-top: 3px; color: var(--green); font-size: 7px; }
+@media (max-width: 900px) { .traces-page .stats { grid-template-columns: repeat(2, minmax(0,1fr)); } .traces-page .stats .stat + .stat { border-left: 0; } .traces-page .stats .stat:nth-child(even) { border-left: 1px solid var(--line); } .traces-page .stats .stat:nth-child(n+3) { border-top: 1px solid var(--line); } }
 
 /* ---------- 两栏：原型 275px + 11px ---------- */
 .traces-page .trace-layout { grid-template-columns: 300px minmax(0, 1fr); gap: 11px; }
