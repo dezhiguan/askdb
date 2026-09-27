@@ -3789,19 +3789,21 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             scoped_sources = [_by_id[hit.source_id] for hit in _plan.selected
                               if hit.source_id in _by_id]
             scoped = scoped_sources[0]
+            # 选源已经凑出多个库时，不能拿这个数量再去判路由：source_count>1
+            # 会把「跨数据源看发货量」这种单句问题强制判成多智能体，降级就走不到。
+            # 问题本身够不够复杂，按当前这一个库来判。
+            _question_route = resolve_route(
+                q_text, scoped, requested_mode=req.mode, source_count=1)
+            if not (_question_route.use_multi or _question_route.shadow):
+                from .multiagent import source_select
+                _plan = source_select.hold_unjoined(_plan)
+                scoped_sources = [scoped]
+                scoped = scoped_sources[0]
+                if _plan.action == "reject":
+                    return _cross_source_reject(scoped, q_text, eff_org, _plan.reason)
         _route = resolve_route(
             q_text, scoped, requested_mode=req.mode,
             source_count=len(scoped_sources))
-        if (_plan is not None and _plan.action == "multi"
-                and not (_route.use_multi or _route.shadow)):
-            from .multiagent import source_select
-            _plan = source_select.hold_unjoined(_plan)
-            scoped_sources = [scoped]
-            scoped = scoped_sources[0]
-            if _plan.action == "reject":
-                return _cross_source_reject(scoped, q_text, eff_org, _plan.reason)
-            _route = resolve_route(
-                q_text, scoped, requested_mode=req.mode, source_count=1)
         if req.mode == "multi" and (not _route.enabled or _route.orch_mode == "off"):
             raise HTTPException(
                 status_code=409,

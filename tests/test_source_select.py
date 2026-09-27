@@ -79,6 +79,31 @@ def test_blind_current_source_rejects_when_the_other_source_cannot_be_joined():
     assert "订单库" in plan.reason and "事件库" in plan.reason
 
 
+def test_compare_prefers_the_source_that_names_the_missing_entity():
+    hits = {
+        "orders": RecallHit("orders", "交易中心", ("orders", "order_items", "order_daily_stats")),
+        "pay": RecallHit("pay", "支付结算", ("payments",)),
+        "catalog": RecallHit(
+            "catalog", "商品中心",
+            ("products", "skus", "categories", "brands", "product_stats_daily")),
+    }
+    contracts = [
+        {"contract_id": "op", "left_source": "orders", "right_source": "pay",
+         "join_keys": ["order_no"], "grain": "order", "aggregate_only": True},
+        {"contract_id": "oc", "left_source": "catalog", "right_source": "orders",
+         "join_keys": ["sku_id"], "grain": "sku", "aggregate_only": True},
+        {"contract_id": "cp", "left_source": "catalog", "right_source": "pay",
+         "join_keys": ["stat_date"], "grain": "day", "aggregate_only": True},
+    ]
+    plan = plan_sources(
+        "对比每天的已支付订单数和支付成功笔数", _cfg("orders", "交易中心"),
+        [_cfg("catalog", "商品中心"), _cfg("pay", "支付结算")],
+        allow_cross_source=True, contracts=contracts, max_sources=3,
+        recall=_recall(hits))
+    assert plan.action == "multi"
+    assert [hit.source_id for hit in plan.selected] == ["orders", "pay"]
+
+
 def test_extra_sources_stop_at_max_workers():
     hits = {
         "builtin": RecallHit("builtin", "当前", () , blind=True),

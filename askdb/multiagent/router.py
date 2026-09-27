@@ -19,6 +19,19 @@ _COMPLEX_MARKERS = (
 _JOIN_MARKERS = ("以及", "并且", "同时", "分别", "之间", "跨库", "跨数据源")
 
 
+def _analysis_of_cause(question: str) -> bool:
+    """「分析…原因」中间可以隔着要分析的那件事，仍是原因分析。
+
+    只看同一分句，并且「分析」到「原因」不能隔太远，避免把后文另起的
+    「原因」算进来。
+    """
+    for match in re.finditer("分析", question):
+        rest = re.split(r"[，,。；;！!？?\n]", question[match.end():], maxsplit=1)[0]
+        if "原因" in rest and len(rest) <= 30:
+            return True
+    return False
+
+
 def decide_route(question: str, *, requested_mode: str = "auto",
                  source_count: int = 1) -> RouteDecision:
     mode = (requested_mode or "auto").lower()
@@ -29,6 +42,8 @@ def decide_route(question: str, *, requested_mode: str = "auto",
     if source_count > 1:
         return RouteDecision("multi", "multiple_sources")
     hits = [marker for marker in _COMPLEX_MARKERS if marker in question]
+    if not hits and _analysis_of_cause(question):
+        hits = ["分析原因"]
     clauses = len(re.findall(r"[，,、；;]", question))
     if hits:
         return RouteDecision("multi", "complex_intent:" + hits[0])

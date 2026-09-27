@@ -289,6 +289,52 @@ def test_compare_without_contract_answers_the_current_source_and_names_the_other
     assert "事件库" in body["source_note"]
 
 
+def test_expand_marker_with_a_contract_still_stays_on_the_current_source(cfg, monkeypatch):
+    from fastapi.testclient import TestClient
+    from askdb import server
+    from askdb.multiagent import source_select
+
+    isolated = copy.deepcopy(cfg)
+    isolated.raw["multi_agent"] = {
+        "enabled": True, "mode": "assist", "allow_cross_source": True,
+        "max_workers": 3,
+        "join_contracts": [{
+            "contract_id": "orders_events_day",
+            "left_source": "builtin",
+            "right_source": "src_events",
+            "join_keys": ["date"],
+            "grain": "day",
+            "aggregate_only": True,
+        }],
+    }
+    monkeypatch.setattr(server, "load", lambda _path: isolated)
+    monkeypatch.setattr(source_select, "registered_sources", lambda _cfg: [_peer_events()])
+
+    def recall(_question, item):
+        sid = getattr(item, "source_id", None) or "builtin"
+        if sid == "src_events":
+            return source_select.RecallHit("src_events", "事件库", ("events",))
+        return source_select.RecallHit("builtin", "订单库", ("orders",))
+
+    monkeypatch.setattr(source_select, "recall_hit", recall)
+    monkeypatch.setattr(
+        "askdb.agent.run_agent",
+        lambda question, cfg, **kwargs: AskResult(
+            ok=True, question=question, trace_id=kwargs["trace_id"],
+            thread_id=kwargs["thread_id"], org_id=65, reasoning="single"))
+    monkeypatch.setattr(
+        "askdb.multiagent.runtime.run_multi_agent",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("不该汇总")))
+    client = TestClient(server.create_app("ignored.yaml"))
+    body = client.post("/api/ask", json={
+        "question": "跨数据源看访问量", "mode": "auto"}).json()
+    assert body["ok"] is True, {k: body.get(k) for k in ("rejected_by", "error", "execution_mode", "source_note")}
+    assert body["execution_mode"] == "single"
+    assert body["sources_used"] == [{"id": "builtin", "name": "订单库"}]
+    assert body["sources_omitted"] == [{"id": "src_events", "name": "事件库"}]
+    assert "事件库" in body["source_note"]
+
+
 def test_explicit_single_mode_does_not_look_at_other_sources(cfg, monkeypatch):
     from fastapi.testclient import TestClient
     from askdb import server

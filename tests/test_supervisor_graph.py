@@ -149,7 +149,10 @@ def _patch_tools(monkeypatch, *, fail_first_region=False):
 
 def test_router_keeps_simple_queries_fast_and_routes_complex_queries():
     assert decide_route("本月订单有多少").route == "single"
+    assert decide_route("分析一下这张表有哪些字段").route == "single"
     assert decide_route("分析订单下降原因，分别看渠道和地区").route == "multi"
+    assert decide_route("分析工单解决时长变长的原因，按优先级和状态看").route == "multi"
+    assert decide_route("分析工单解决时长变长的原因，按优先级和状态看").reason == "complex_intent:分析原因"
     assert decide_route("任意问题", requested_mode="multi").reason == "request_forced_multi"
     assert decide_route("任意问题", source_count=2).reason == "multiple_sources"
 

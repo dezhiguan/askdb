@@ -315,6 +315,8 @@ CN_HINTS: dict[str, tuple[str, ...]] = {
     "卖家": ("seller", "merchant", "vendor"),
     "店铺": ("shop", "store", "merchant"),
     "支付": ("payment", "pay", "transaction"),
+    "采购": ("purchase", "procure", "supplier"),
+    "点击": ("click",),
     "付款": ("payment", "pay"),
     "退款": ("refund",),
     "退货": ("return", "refund"),
