@@ -1343,3 +1343,27 @@ def test_keyword_recall_books_nothing(tmp_path, monkeypatch):
     assert span.get("tok_in", 0) == 0
     assert span.get("cost_cny", 0.0) == 0.0
     assert span.get("model", "") == ""
+
+
+def test_fast_path_handoff_to_full_chain_books_degraded_span(tmp_path):
+    """快路径判定太复杂时回落完整链路，而不是让整条查询以 EXEC 失败。"""
+    from types import SimpleNamespace
+
+    from askdb import agentgraph
+    from askdb.trace import Tracer
+
+    class _TooComplex:
+        def structured(self, schema, system, human):
+            return (schema(too_complex=True, reason="需要多表关联"),
+                    LlmUsage(input_tokens=10, output_tokens=5, cost_cny=0.0001))
+
+    tracer = Tracer()
+    deps = SimpleNamespace(cfg=_cfg(tmp_path), llm=_TooComplex(), tracer=tracer)
+    out = agentgraph._n_fast(
+        {"question": "有多少用户创建过简历但从没发起过会话", "schema_prompt": "", "tok_used": 0},
+        {"configurable": {"deps": deps}})
+
+    assert out["fast"] is False and out["prechecked"] is True
+    span = tracer.steps[-1]
+    assert span.step == "fast" and span.status == "degraded"
+

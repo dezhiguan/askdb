@@ -534,7 +534,7 @@ def _n_fast(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
     if fast.too_complex or not sql:
         why = "模型判定需要完整链路" if fast.too_complex else "未产出 SQL"
         d.tracer.add("fast", t, f"{why}，回落完整链路：{fast.reason}",
-                     status="degraded", **_sp_kw(sp))
+                     **_sp_kw(sp, status="degraded"))
         out["fast"] = False
         return out
 
