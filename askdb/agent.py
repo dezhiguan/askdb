@@ -702,69 +702,14 @@ def _drive(question: str, cfg: Config, org_id: int | None = None, *,
            trace_id: str | None = None, thread_id: str | None = None,
            clarification: str = "", handoff: Any = None,
            on_span: Any = None) -> AskResult:
-    """跑一次 agent 图。
+    """跑一次 query 智能体。
 
-    2026-09-12 从 `for step in range(...)` 改成 LangGraph（见 agentgraph）。
-    换掉的是控制流，**每一条判定都原样搬了过去**；换来的是检查点覆盖到 agent
-    链路，于是「创建任务 / 补充条件 / 换个问法」不必再为了续跑退回老管道 ——
-    那条分流的代价是：最该深挖的请求反而被送进只能猜列名的链路。
+    图仍是 agentgraph 那条 react 循环。模型、工具天花板、Skill 和步数从
+    ``agents.query`` 来，缺省与原来的 ``agent.*`` 预算一致。
     """
-    from . import agentgraph
+    from .agents.runner import run_react
 
-    trace_id = trace_id or uuid.uuid4().hex[:12]
-    thread_id = thread_id or trace_id
-    org = org_id if org_id is not None else int(
-        cfg.raw.get("tenant", {}).get("default_ctx", 0) or 0)
-    tracer = Tracer(on_span=on_span)
-
-    # 每日配额快速失败（与管道同一口径）。**进图之前判**，一个 token 都不花。
-    dq = build_quota(cfg)
-    over, used = dq.exhausted()
-    if over:
-        tracer.add("quota", tracer.start(), f"当日已用 {used}/{dq.limit}", status="blocked")
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="QUOTA", error=f"已达当日模型调用上限（{used}/{dq.limit}）",
-                       hint="明日自动恢复；直查 SQL 不受配额限制。")
-
-    # 发起记录先落盘：进程中途被杀时检查点/审计里仍有这条线程，任务中心据此
-    # 列得出、凭 thread_id 续得上（与管道 _execute 同一处理）。
-    try:
-        write_audit(cfg, {
-            "trace_id": trace_id, "ts": now_iso(), "kind": "ask",
-            "phase": PHASE_STARTED, "thread_id": thread_id, "org_id": org,
-            "question": question, "role": cfg.role or "ANONYMOUS",
-            "user": cfg.user or "",
-            "source": cfg.source_id or "builtin",
-            "source_name": cfg.source_name or cfg.path,
-        })
-    except Exception:
-        pass
-
-    own_exec = executor is None
-    ex = executor or Executor(cfg)
-    client = llm or LlmClient(cfg)
-    max_steps, cost_cap = _budget(cfg)
-    deps = agentgraph.Deps(
-        cfg=cfg, llm=client, executor=ex, tracer=tracer,
-        ctx=tools.ToolContext(cfg=cfg, org_id=org, executor=ex),
-        # 交接现场随执行走。节点边界据它判"要不要提前交接后台"（见 agentgraph）
-        handoff=handoff)
-    init = agentgraph.initial_state(question, org, trace_id, thread_id,
-                                    max_steps, cost_cap, clarification)
-    try:
-        final = agentgraph.ensure_graph(cfg).invoke(
-            init,
-            {"configurable": {"thread_id": thread_id, "deps": deps},
-             "recursion_limit": agentgraph.recursion_limit(max_steps)})
-    except Exception as e:                        # noqa: BLE001
-        # 图本身抛出来（递归上限、检查点库故障）。**不能让它变成裸 500** ——
-        # 用户看到的必须是一句能理解的话，且这条线程要如实收尾，否则它会
-        # 永远停在「运行中」（那正是 2026-09-11 那 8 条僵尸线程的来路）。
-        tracer.add("finalize", tracer.start(), f"执行图异常：{e}", status="failed")
-        return _result(cfg, question, trace_id, thread_id, org, tracer, ok=False,
-                       rejected_by="EXEC", error=f"执行链路异常：{e}",
-                       hint="这不是提问本身的问题，稍后重试；持续出现请联系运维。")
-    finally:
-        if own_exec:
-            ex.close()
-    return agentgraph.to_result(final, cfg, tracer)
+    return run_react(
+        "query", question, cfg, org_id, executor=executor, llm=llm,
+        trace_id=trace_id, thread_id=thread_id, clarification=clarification,
+        handoff=handoff, on_span=on_span)

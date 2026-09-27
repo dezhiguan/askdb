@@ -29,11 +29,11 @@ from .protocol import (
     SubTask,
     TaskPlan,
 )
-from .query_worker import run_worker
+from .query_worker_agent import run_worker
 from .semantic_agent import SYSTEM as SEMANTIC_SYSTEM, SemanticContractDraft
 from .state import MultiAgentState
-from .synthesizer import SYSTEM as SYNTHESIS_SYSTEM, SynthesisDraft
-from .verifier import verify
+from .synthesizer_agent import SYSTEM as SYNTHESIS_SYSTEM, SynthesisDraft
+from .verifier_agent import verify
 
 
 class PlannedAnalysis(BaseModel):

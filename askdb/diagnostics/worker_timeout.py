@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from .. import tools
 from ..config import load
 from ..executor import DataSourceError, Executor
-from ..multiagent.query_worker import run_worker
+from ..multiagent.query_worker_agent import run_worker
 from ..multiagent.state import initial_state
 from ..multiagent.supervisor_graph import MultiAgentDeps
 from ..trace import Tracer

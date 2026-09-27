@@ -382,6 +382,32 @@ def test_agent_step_cap_converges(tmp_path, monkeypatch):
     assert r.converged_early and "上限" in r.converged_early
 
 
+def test_agents_query_max_steps_overrides_agent_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    _patch_exec_invoke(monkeypatch)
+    llm = _FakeLLM([{"finish": False, "tool": "execute_sql", "args": {"sql": "SELECT 1"}}])
+    cfg = _cfg(tmp_path, agent={"max_steps": 6},
+               agents={"query": {"max_steps": 1}})
+    r = A.run_agent("x", cfg, 316, executor=_FakeExec(), llm=llm)
+    assert r.converged_early and "上限" in r.converged_early
+
+
+def test_query_agent_rejects_tools_outside_its_spec(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "build_quota", lambda c: _Q())
+    _patch_recall(monkeypatch)
+    llm = _FakeLLM([
+        {"finish": False, "tool": "analyze_result", "args": {}},
+        {"finish": True, "answer": "没有执行"},
+    ])
+    r = A.run_agent("x", _cfg(tmp_path, agent={"max_steps": 3}), 316,
+                    executor=_FakeExec(), llm=llm)
+    assert all(step.get("tool") != "analyze_result" or step.get("status") == "blocked"
+               for step in r.steps)
+    assert any(step.get("tool") == "analyze_result" and step.get("status") == "blocked"
+               for step in r.steps)
+
+
 def test_agent_writes_audit(tmp_path, monkeypatch):
     import json
     monkeypatch.setattr(A, "build_quota", lambda c: _Q())

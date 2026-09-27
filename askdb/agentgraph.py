@@ -125,6 +125,14 @@ class Deps:
     #: None = 这次执行不参与交接（本机 CLI、评测、单测）。图的语义不变，
     #: 检查它只是"要不要提前告诉等待者别等了"，从不改变执行结果。
     handoff: Any = None
+    #: 该智能体允许模型挑选的工具。None 表示沿用图里原有的暴露规则
+    #: （续跑以外的旧调用点）。集合一旦给出，名单之外的工具不会执行。
+    allowed_tools: frozenset[str] | None = None
+    skill_bindings: tuple[dict[str, Any], ...] = ()
+    agent_name: str = ""
+    agent_role: str = ""
+    agent_run_id: str = ""
+    parent_agent_run_id: str = ""
 
 def _deps(config: RunnableConfig) -> Deps:
     return config["configurable"]["deps"]
@@ -916,6 +924,23 @@ def _n_act(state: AgentState, config: RunnableConfig) -> dict[str, Any]:
                       "缩小范围，或改成更聚合的写法（同一条 SQL 里把总计也选出来）。"
                       "确实拿不到就 finish=true 如实说明哪一部分没拿到，"
                       "**不要拿已看到的几行去外推**。"),
+        })
+        return {"step_count": state.get("step_count", 0) + 1, "history": history}
+
+    allowed = getattr(d, "allowed_tools", None)
+    if allowed is not None and tool_name not in allowed:
+        rt = d.tracer.start()
+        d.tracer.add(
+            "tool_call", rt, f"{tool_name} 不在本智能体的工具清单里，未执行",
+            status="blocked", tool=tool_name, input=_io_json(args),
+            agent_run_id=getattr(d, "agent_run_id", ""),
+            agent_role=getattr(d, "agent_role", ""),
+            parent_agent_run_id=getattr(d, "parent_agent_run_id", ""))
+        history = list(state.get("history") or [])
+        history.append({
+            "tool": tool_name, "args": args, "ok": False,
+            "brief": (f"**{tool_name} 不在本智能体允许的工具里，没有执行**。"
+                      "改用清单内的工具，或 finish=true 说明缺哪一项能力。"),
         })
         return {"step_count": state.get("step_count", 0) + 1, "history": history}
 
@@ -1763,12 +1788,21 @@ def resume(thread_id: str, cfg: Config,
         except Exception:             # noqa: BLE001
             pass                      # 写不进去照样能续，那是原有语义
 
-    client = llm or LlmClient(cfg)
+    from .agents.runner import react_binding
+
+    binding = react_binding(cfg, "query", llm=llm, question=q)
+    client = binding.llm
     deps = Deps(cfg=cfg, llm=client, executor=ex, tracer=tracer,
                 ctx=tools.ToolContext(cfg=cfg, org_id=org, executor=ex),
                 # 续跑同样要能交接：它恢复的本来就是一条已经证明自己跑得久的
                 # 线程，而这条路不经过入口等待 —— 节点边界是它唯一的交接点。
-                handoff=handoff)
+                handoff=handoff,
+                allowed_tools=binding.allowed_tools,
+                skill_bindings=binding.skill_bindings,
+                agent_name="query",
+                agent_role=binding.spec.skills_role,
+                agent_run_id=f"{trace_id}:query",
+                parent_agent_run_id="")
     try:
         final = g.invoke(None, {
             "configurable": {"thread_id": thread_id, "deps": deps},
