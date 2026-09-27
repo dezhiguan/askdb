@@ -309,11 +309,12 @@ def test_graph_hands_write_audit_the_config_not_the_path():
     from askdb import graph
 
     # 2026-09-12：固定管道删除后，写审计的调用点搬去了 agent / agentgraph。
-    # 判据因此扫**所有写审计的模块**，钉的是"没有人再把 Path 传进去" ——
-    # 而不是"某一个文件里必须有几处"（那个数字会随重构漂）。
+    # 查询入口的 started 记录后来进了 agents.runner。判据扫这些写审计的模块，
+    # 钉的是"没有人再把 Path 传进去"，而不是"某一个文件里必须有几处"。
     from askdb import agent, agentgraph
+    from askdb.agents import runner
 
-    src = "\n".join(inspect.getsource(m) for m in (graph, agent, agentgraph))
+    src = "\n".join(inspect.getsource(m) for m in (graph, agent, agentgraph, runner))
     assert "write_audit(cfg.audit_log" not in src, (
         "graph.py 又把 Path 传给了 write_audit —— 审计会写进文件而读侧读库，"
         "两边分裂且没有任何报错")
