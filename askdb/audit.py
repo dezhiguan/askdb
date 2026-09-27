@@ -1956,11 +1956,19 @@ def quality(path: Any, days: int = 1) -> dict[str, Any]:
 
     def is_multi_agent(record: dict[str, Any]) -> bool:
         # multi_step 表示规划任务拆步，不等于多个 Agent Run。仅当 trace spans
-        # 明确记录了至少两个不同的 agent_run_id 时，才归入多智能体调用。
+        # 明确记录了至少两个不同的 agent_run_id，或旧 trace 中出现至少两个
+        # 明确的 Agent 角色时，才归入多智能体调用。普通业务步骤不参与推断。
         steps = record.get("steps") or []
         run_ids = {str(step.get("agent_run_id")) for step in steps
                    if isinstance(step, dict) and step.get("agent_run_id")}
-        return len(run_ids) > 1
+        if len(run_ids) > 1:
+            return True
+        agent_roles = {str(step.get("agent_role") or step.get("step") or "").lower()
+                       for step in steps if isinstance(step, dict)}
+        agent_roles.intersection_update({
+            "supervisor", "semantic", "query_worker", "verifier", "synthesizer",
+        })
+        return len(agent_roles) > 1
 
     multi_agent = [r for r in recent if is_multi_agent(r)]
 

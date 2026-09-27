@@ -373,8 +373,9 @@ def test_quality_multi_agent_summary_uses_agent_run_ids(tmp_path):
     records = [
         {"trace_id": "one", "ts": now_iso(), "elapsed_ms": 1000,
          "tok_in": 10, "tok_out": 20, "steps": [
-             {"agent_run_id": "trace:supervisor"},
-             {"agent_run_id": "trace:worker:0"},
+             {"step": "semantic"},
+             {"step": "query_worker"},
+             {"step": "verifier"},
          ]},
         {"trace_id": "two", "ts": now_iso(), "elapsed_ms": 3000,
          "tok_in": 5, "tok_out": 5, "multi_step": True, "steps": [
