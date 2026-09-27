@@ -576,7 +576,7 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
 
       {/* key 挂 trace_id：换一条链路要连展开态和铺开行数一起归零。不挂的话
           组件被复用，上一条展开到第 4 行、铺开 60 行的状态会套在新链路上。 */}
-      <TraceNodes key={item.trace_id} traceId={item.trace_id} steps={steps} result={result}
+      <TraceNodes key={item.trace_id} traceId={item.trace_id} kind={item.kind} steps={steps} result={result}
                   cachedFrom={chain?.cached_from} onFocusTrace={onFocusTrace} />
 
       {showResult && finalResult && (
@@ -898,8 +898,10 @@ function agentGroups(steps: ReplayStep[], traceId: string): AgentGroup[] {
   })
 }
 
-/** 编排轨迹保持多张卡片。没有 Supervisor / 多个 Worker 时，整条链路就是一个查询智能体。 */
-function displayGroups(steps: ReplayStep[], traceId: string): AgentGroup[] {
+/** 编排轨迹保持多张卡片。没有 Supervisor / 多个 Worker 时，整条链路就是一个查询智能体。
+ *  直查（kind=sql）不经过任何智能体，只有 护栏 → 干跑 → 执行 三步，不套智能体卡片。 */
+function displayGroups(steps: ReplayStep[], traceId: string, kind?: string): AgentGroup[] {
+  if (kind === 'sql') return []
   const groups = agentGroups(steps, traceId)
   const workers = groups.filter(g => g.role === 'query_worker').length
   const orchestrated = groups.some(g =>
@@ -916,15 +918,16 @@ function displayGroups(steps: ReplayStep[], traceId: string): AgentGroup[] {
   }]
 }
 
-function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
+function TraceNodes({ traceId, kind, steps, result, cachedFrom, onFocusTrace }: {
   traceId: string
+  kind?: string
   steps: ReplayStep[]
   result: TraceChainResult | { status: 'loading' }
   /** 命中缓存时，答案出自哪一次真跑。空/缺省表示不是缓存命中，或旧格式缓存没记 */
   cachedFrom?: string | null
   onFocusTrace?: (traceId: string) => void
 }) {
-  const groups = displayGroups(steps, traceId)
+  const groups = displayGroups(steps, traceId, kind)
   const multiAgent = groups.some(g => g.role === 'supervisor' || g.role === 'query_worker')
   const [mode, setMode] = useState<'agents' | 'timeline' | 'spans'>('agents')
   const [selectedAgent, setSelectedAgent] = useState('')
@@ -1031,7 +1034,7 @@ function TraceNodes({ traceId, steps, result, cachedFrom, onFocusTrace }: {
           </div>}
           <span>
             {multiAgent && mode === 'agents' ? `${shownSteps.length} 个 Span · ` : ''}
-            {mode === 'agents' ? '按智能体归属' : mode === 'timeline' ? '按开始时间排序' : '按记录顺序'} · 失败与回退默认展开
+            {multiAgent && mode === 'agents' ? '按智能体归属' : mode === 'timeline' ? '按开始时间排序' : '按记录顺序'} · 失败与回退默认展开
             {/* 分页只在真分了页时说一句。没过一页还写「12/12」是噪声。 */}
             {shownSteps.length > SPAN_PAGE && ` · 已铺 ${Math.min(shown, shownSteps.length)}/${shownSteps.length}`}
           </span>
