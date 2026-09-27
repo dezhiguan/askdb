@@ -216,6 +216,12 @@ export interface ReplayStep {
   step: string
   status: string
   ms: number
+  /** Span 相对 trace 起点的开始时间；旧记录可能没有。 */
+  start_ms?: number
+  /** 多智能体归属及其父级；没有这些字段的历史链路仍按单智能体展示。 */
+  agent_run_id?: string
+  agent_role?: string
+  parent_agent_run_id?: string
   tok_in?: number
   tok_out?: number
   note?: string

@@ -36,6 +36,13 @@ export const STEP_NAMES: Record<string, string> = {
   connect: '数据源建连',
   // 续跑前置校验：权限收窄 / 库连不上 / 表结构变了。同样漏登记过。
   resume_precheck: '续跑前校验',
+  supervisor: '任务拆解',
+  resolve_skills: 'Skill 绑定',
+  semantic: '语义契约',
+  worker_sql: 'SQL 生成',
+  query_worker: 'Query Worker',
+  verifier: '证据校验',
+  synthesizer: '答案合成',
 }
 
 /** `decide` 这一次担的是哪一档活（后端 StepTrace.stage）。
@@ -100,6 +107,13 @@ export const STEP_TYPE: Record<string, string> = {
   grounding: 'GUARD',
   // 续跑前置校验：权限、连接、表结构三项，都不过才放行。判的是能不能接着跑。
   resume_precheck: 'GUARD',
+  supervisor: 'MODEL',
+  semantic: 'MODEL',
+  worker_sql: 'MODEL',
+  synthesizer: 'MODEL',
+  resolve_skills: 'SYS',
+  verifier: 'SYS',
+  query_worker: 'SYS',
   finalize: 'SYS',
   interrupted: 'SYS',
 }

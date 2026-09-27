@@ -224,7 +224,9 @@ def _supervisor(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any
         deps.config_for(task.source_id or state["source_id"])
     deps.tracer.add("supervisor", started, draft.reasoning or f"拆分为 {len(tasks)} 个子任务",
                     stage="supervisor", input=state["question"],
-                    output=plan.model_dump(mode="json"), **_usage_kwargs(usage))
+                    output=plan.model_dump(mode="json"),
+                    agent_run_id=f"{state['run_id']}:supervisor", agent_role="supervisor",
+                    **_usage_kwargs(usage))
     return {
         "phase": "PLANNING",
         "status": "PLANNING",
@@ -254,7 +256,8 @@ def _resolve_roles(state: MultiAgentState, config: RunnableConfig) -> dict[str, 
         bindings[role] = [item.model_dump(mode="json") for item in report.bindings]
     deps.tracer.add("resolve_skills", started,
                     f"为 {len(roles)} 个角色固定 Skill 版本", stage="runtime",
-                    output=bindings)
+                    output=bindings, agent_run_id=f"{state['run_id']}:supervisor",
+                    agent_role="supervisor")
     return {"skill_bindings_by_role": bindings}
 
 
@@ -290,6 +293,8 @@ def _semantic(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     deps.tracer.add("semantic", started, contract.metric_definition,
                     stage="semantic", input=state["plan"],
                     output={"contract": payload, "skill_bindings": bindings},
+                    agent_run_id=f"{state['run_id']}:semantic", agent_role="semantic",
+                    parent_agent_run_id=f"{state['run_id']}:supervisor",
                     **_usage_kwargs(usage))
     return {
         "phase": "DISPATCHING", "status": "DISPATCHING",
@@ -338,7 +343,9 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
     started = deps.tracer.start()
     if deps.cancelled():
         deps.tracer.add("verifier", started, "任务已取消，停止调度未开始的 Worker",
-                        status="blocked", stage="verifier")
+                        status="blocked", stage="verifier",
+                        agent_run_id=f"{state['run_id']}:verifier", agent_role="verifier",
+                        parent_agent_run_id=f"{state['run_id']}:supervisor")
         return {"phase": "CANCELED", "status": "CANCELED", "pending_repairs": []}
     if _budget_stop(state, deps):
         return {"phase": "BUDGET_EXCEEDED", "status": "BUDGET_EXCEEDED",
@@ -359,7 +366,9 @@ def _verifier(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any]:
                     status="degraded" if review.verdict != "PASS" else "ok",
                     stage="verifier", output={
                         "review": review.model_dump(mode="json"),
-                        "skill_bindings": verifier_bindings})
+                        "skill_bindings": verifier_bindings},
+                    agent_run_id=f"{state['run_id']}:verifier", agent_role="verifier",
+                    parent_agent_run_id=f"{state['run_id']}:supervisor")
     return {
         "phase": "VERIFYING", "status": "VERIFYING",
         "reviews_by_id": {review.review_id: review.model_dump(mode="json")},
@@ -421,7 +430,10 @@ def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, An
                 "answer": "", "claims": []}
     if deps.cancelled():
         deps.tracer.add("synthesizer", started, "任务在合成期间被取消，丢弃未返回答案",
-                        status="blocked", stage="synthesizer", **_usage_kwargs(usage))
+                        status="blocked", stage="synthesizer",
+                        agent_run_id=f"{state['run_id']}:synthesizer", agent_role="synthesizer",
+                        parent_agent_run_id=f"{state['run_id']}:supervisor",
+                        **_usage_kwargs(usage))
         return {"phase": "CANCELED", "status": "CANCELED", "answer": "", "claims": []}
     caveats = list(draft.caveats)
     if latest_review.get("verdict") != "PASS":
@@ -444,6 +456,8 @@ def _synthesizer(state: MultiAgentState, config: RunnableConfig) -> dict[str, An
                         "answer": draft.answer, "claims": claims,
                         "skill_bindings": (state.get("skill_bindings_by_role") or {}).get(
                             "synthesizer", [])},
+                    agent_run_id=f"{state['run_id']}:synthesizer", agent_role="synthesizer",
+                    parent_agent_run_id=f"{state['run_id']}:supervisor",
                     **_usage_kwargs(usage))
     return {
         "phase": "COMPLETED", "status": "COMPLETED",

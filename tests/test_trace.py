@@ -17,6 +17,18 @@ def test_steps_are_recorded_in_order():
     assert tr.as_list()[1]["status"] == "blocked"
 
 
+def test_spans_keep_relative_timing_and_agent_ownership():
+    tr = Tracer()
+    since = tr.start()
+    step = tr.add("worker_sql", since, agent_run_id="trace:worker:0",
+                  agent_role="query_worker", parent_agent_run_id="trace:supervisor")
+    saved = tr.as_list()[0]
+    assert saved["start_ms"] >= 0
+    assert saved["agent_run_id"] == "trace:worker:0"
+    assert saved["agent_role"] == "query_worker"
+    assert saved["parent_agent_run_id"] == "trace:supervisor"
+
+
 def test_tokens_are_summed_across_steps():
     tr = Tracer()
     tr.add("x", tr.start(), tok_in=10, tok_out=4)

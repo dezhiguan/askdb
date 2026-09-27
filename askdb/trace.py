@@ -68,6 +68,7 @@ def clip_io(text: object, cap: int = IO_CAP) -> str:
 class StepTrace:
     step: str
     ms: int = 0
+    start_ms: int = 0            # 相对 trace 起点的开始时间，用于并行泳道
     tok_in: int = 0
     tok_out: int = 0
     cached_in: int = 0          # tok_in 中命中前缀缓存的部分（含在 tok_in 里，不另计）
@@ -128,6 +129,9 @@ class StepTrace:
     #:
     #: 不含内容，可随 /api/trace 出接口。
     stage: str = ""
+    agent_run_id: str = ""
+    agent_role: str = ""
+    parent_agent_run_id: str = ""
     #: 该步涉及的表名。目前只有 schema_recall 填：note 里的"命中 N 张表"是个
     #: 数字，而看的人真正要判断的是**哪 N 张** —— 召回偏了与召回对了，在那个
     #: 数字上完全一样。放结构化字段而不是拼进 note，是因为界面要能逐张列出，
@@ -160,6 +164,7 @@ class Tracer:
         attempt: int = 0, attempts_total: int = 0, model: str = "",
         error_code: str = "", error_message: str = "", disposition: str = "",
         tool: str = "", stage: str = "", input: object = None, output: object = None,
+        agent_run_id: str = "", agent_role: str = "", parent_agent_run_id: str = "",
     ) -> StepTrace:
         """ms 显式传入时不按 since 算 —— 一个节点落多条 span（每次尝试一条）
         时，since 是**整个节点**的起点，拿它算每一条就等于给每次尝试都记上
@@ -168,12 +173,15 @@ class Tracer:
         st = StepTrace(
             step=step,
             ms=int((time.perf_counter() - since) * 1000) if ms is None else int(ms),
+            start_ms=max(0, int((since - self._t0) * 1000)),
             tok_in=tok_in, tok_out=tok_out, cached_in=cached_in,
             cost_cny=cost_cny, note=note, status=status,
             tables=list(tables or []),
             attempt=attempt, attempts_total=attempts_total, model=model,
             error_code=error_code, error_message=error_message,
             disposition=disposition, tool=tool, stage=stage,
+            agent_run_id=agent_run_id, agent_role=agent_role,
+            parent_agent_run_id=parent_agent_run_id,
             # 截断在**入口**做，不在出接口时做：这里截一次，审计记录、
             # /api/trace、/api/replay 三条路自动同口径。放到出口去截，
             # 三个地方各截一次，迟早有一处漏掉或截出不同长度。
@@ -219,10 +227,11 @@ class Tracer:
         out = []
         for s in self.steps:
             d = asdict(s)
-            # 同理，新增的五个字段绝大多数步骤都用不上（只跑一次、没失败），
+            # 同理，多智能体归属字段只在对应执行上落盘，
             # 空值一律不落盘，免得每条审计凭空胖五个键。
             for k in ("tables", "attempt", "attempts_total", "model",
                       "error_code", "error_message", "disposition", "tool",
+                      "agent_run_id", "agent_role", "parent_agent_run_id",
                       # 输入/输出同理：GUARD 之类的步骤两者都空，落盘会白胖两个键。
                       # **空串与"没记"在这里是同一件事** —— 前端据此显示占位符。
                       "input", "output"):
