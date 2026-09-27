@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import multiprocessing
 import os
@@ -311,7 +312,8 @@ def test_parallel_worker_tokens_are_merged_in_checkpoint(cfg, monkeypatch):
     usage = result["tok_by_actor"]
     assert len([key for key in usage if ":attempt:" in key]) == 2
     assert result["tok_used"] == sum(usage.values())
-    assert result["cost_used_cny"] == sum(result["cost_by_actor"].values())
+    assert math.isclose(
+        result["cost_used_cny"], sum(result["cost_by_actor"].values()), rel_tol=1e-9)
 
 
 def test_currency_budget_denies_model_call_before_spending(cfg, monkeypatch):
