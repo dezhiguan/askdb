@@ -81,6 +81,14 @@ function AnswerCard({ result, onGoTab }: {
           {result.reasoning && <p>{result.reasoning}</p>}
           {/* 口径是必出字段：这个数到底数的是什么，不该让人去读 SQL 才知道。 */}
           {result.caliber && <p className="answer-caliber"><b>口径</b>：{result.caliber}</p>}
+          {(result.sources_used?.length ?? 0) > 1 && (
+            <p className="answer-caliber"><b>数据源</b>：这次查了 {result.sources_used!.map(item => item.name || item.id).join('、')}</p>
+          )}
+          {!!result.sources_omitted?.length && (
+            <p className="answer-warning">
+              {result.source_note || `另有相关表在${result.sources_omitted.map(item => item.name || item.id).join('、')}，未参与汇总`}
+            </p>
+          )}
           {warning && <p className="answer-warning">{warning}</p>}
           {/* 命中缓存要说出来。不说的话页面显示「耗时 0ms · ¥0.0000」，
               读起来像"这次查询又快又免费"，而实际上它根本没查 ——
@@ -197,6 +205,12 @@ export function ResultTabs({ result, active, dialect, onChange, onResumed, onOpe
   )
 }
 
+function sourceLabel(result: AskResult, sourceId: string | undefined): string {
+  const known = [...(result.sources_used ?? []), ...(result.sources_omitted ?? [])]
+  const hit = known.find(item => item.id === sourceId)
+  return hit?.name || sourceId || '当前数据源'
+}
+
 function CollaborationPanel({ result }: { result: AskResult }) {
   const isMulti = result.execution_mode === 'multi'
   const tasks = result.plan?.subtasks ?? result.sub_steps ?? []
@@ -223,7 +237,7 @@ function CollaborationPanel({ result }: { result: AskResult }) {
             {tasks.map((task, index) => (
               <article className={`agent-task status-${task.status.toLowerCase()}`} key={task.subtask_id}>
                 <span className="agent-task-index">{String(index + 1).padStart(2, '0')}</span>
-                <div><strong>{task.title}</strong><small>{task.assigned_role || 'query_worker'} · {task.source_id || 'builtin'}</small></div>
+                <div><strong>{task.title}</strong><small>{task.assigned_role || 'query_worker'} · {sourceLabel(result, task.source_id)}</small></div>
                 <em>{statusLabel[task.status] || task.status}{task.attempt && task.attempt > 1 ? ` · ${task.attempt} 次` : ''}</em>
                 {task.error && <p>{task.error}</p>}
               </article>
@@ -266,7 +280,7 @@ function CollaborationPanel({ result }: { result: AskResult }) {
           <div className="collaboration-section-head"><b>Evidence 账本</b><span>展开查看来源、校验和与 SQL</span></div>
           <div className="evidence-ledger">{evidence.map(item => (
             <details key={item.evidence_id}>
-              <summary><b>{item.source_id}</b><span>{item.row_count ?? 0} 行</span><code>{item.checksum?.slice(0, 18) || '—'}…</code></summary>
+              <summary><b>{sourceLabel(result, item.source_id)}</b><span>{item.row_count ?? 0} 行</span><code>{item.checksum?.slice(0, 18) || '—'}…</code></summary>
               <div>
                 <small>{item.evidence_id}{item.as_of ? ` · 数据截至 ${fmtStamp(item.as_of)}` : ''}{item.supersedes ? ` · supersedes ${item.supersedes}` : ''}</small>
                 <pre>{item.sql_final}</pre>
@@ -382,8 +396,28 @@ function tokenizeSql(sql: string) {
 
 function SqlPane({ result, dialect }: { result: AskResult; dialect: string }) {
   const [copied, setCopied] = useState(false)
+  const grouped = (result.evidence ?? []).filter(item => item.sql_final)
+  const bySource = grouped.length > 1 && new Set(grouped.map(item => item.source_id)).size > 1
   const sql = result.sql_final || result.sql_raw || ''
-  const hash = useSqlDigest(sql)
+  const hash = useSqlDigest(bySource ? grouped.map(item => item.sql_final).join('\n') : sql)
+
+  if (bySource) {
+    return (
+      <div className="result-pane active pane">
+        {grouped.map(item => (
+          <section key={item.evidence_id}>
+            <div className="sql-toolbar">
+              <span>数据源：{sourceLabel(result, item.source_id)} · {item.row_count ?? 0} 行</span>
+            </div>
+            <pre className="sql-code">
+              {tokenizeSql(item.sql_final).map((tok, i) =>
+                tok.cls ? <span className={tok.cls} key={i}>{tok.text}</span> : tok.text)}
+            </pre>
+          </section>
+        ))}
+      </div>
+    )
+  }
 
   if (!sql) return <div className="result-pane active pane"><p className="drawer-note">这次没有产出 SQL。</p></div>
 

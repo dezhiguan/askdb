@@ -245,6 +245,112 @@ def test_assist_mode_sends_complex_questions_to_multi_and_simple_ones_to_single(
     assert calls == {"multi": 1, "single": 1}
 
 
+def _peer_events():
+    from askdb.sources import Source
+
+    return Source(
+        id="src_events", name="事件库", type="duckdb", dsn=":memory:",
+        tables=[{"name": "events", "columns": {}}],
+    )
+
+
+def test_compare_without_contract_answers_the_current_source_and_names_the_other(cfg, monkeypatch):
+    from fastapi.testclient import TestClient
+    from askdb import server
+    from askdb.multiagent import source_select
+
+    isolated = copy.deepcopy(cfg)
+    isolated.raw["multi_agent"] = {
+        "enabled": True, "mode": "assist", "allow_cross_source": True,
+        "join_contracts": [], "max_workers": 3,
+    }
+    monkeypatch.setattr(server, "load", lambda _path: isolated)
+    monkeypatch.setattr(source_select, "registered_sources", lambda _cfg: [_peer_events()])
+
+    def recall(_question, item):
+        sid = getattr(item, "source_id", None) or "builtin"
+        if sid == "src_events":
+            return source_select.RecallHit("src_events", "事件库", ("events",))
+        return source_select.RecallHit("builtin", "订单库", ("orders",))
+
+    monkeypatch.setattr(source_select, "recall_hit", recall)
+    monkeypatch.setattr(
+        "askdb.agent.run_agent",
+        lambda question, cfg, **kwargs: AskResult(
+            ok=True, question=question, trace_id=kwargs["trace_id"],
+            thread_id=kwargs["thread_id"], org_id=65, reasoning="single"))
+    client = TestClient(server.create_app("ignored.yaml"))
+    body = client.post("/api/ask", json={
+        "question": "跨数据源看访问量", "mode": "auto"}).json()
+    assert body["ok"] is True, {k: body.get(k) for k in ("rejected_by", "error", "execution_mode", "source_note")}
+    assert body["execution_mode"] == "single"
+    assert body["sources_used"] == [{"id": "builtin", "name": "订单库"}]
+    assert body["sources_omitted"] == [{"id": "src_events", "name": "事件库"}]
+    assert "事件库" in body["source_note"]
+
+
+def test_explicit_single_mode_does_not_look_at_other_sources(cfg, monkeypatch):
+    from fastapi.testclient import TestClient
+    from askdb import server
+    from askdb.multiagent import source_select
+
+    isolated = copy.deepcopy(cfg)
+    isolated.raw["multi_agent"] = {
+        "enabled": True, "mode": "assist", "allow_cross_source": True,
+        "join_contracts": [], "max_workers": 3,
+    }
+    monkeypatch.setattr(server, "load", lambda _path: isolated)
+    monkeypatch.setattr(source_select, "registered_sources", lambda _cfg: [_peer_events()])
+    monkeypatch.setattr(
+        source_select, "plan_sources",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("mode=single 不该选源")))
+    monkeypatch.setattr(
+        "askdb.agent.run_agent",
+        lambda question, cfg, **kwargs: AskResult(
+            ok=True, question=question, trace_id=kwargs["trace_id"],
+            thread_id=kwargs["thread_id"], org_id=65, reasoning="single"))
+    client = TestClient(server.create_app("ignored.yaml"))
+    body = client.post("/api/ask", json={
+        "question": "对比订单和访问", "mode": "single"}).json()
+    assert body["ok"] is True
+    assert body.get("source_note", "") == ""
+
+
+def test_blind_current_source_rejects_instead_of_merging(cfg, monkeypatch):
+    from fastapi.testclient import TestClient
+    from askdb import server
+    from askdb.multiagent import source_select
+
+    isolated = copy.deepcopy(cfg)
+    isolated.raw["multi_agent"] = {
+        "enabled": True, "mode": "assist", "allow_cross_source": False,
+        "join_contracts": [], "max_workers": 3,
+    }
+    monkeypatch.setattr(server, "load", lambda _path: isolated)
+    monkeypatch.setattr(source_select, "registered_sources", lambda _cfg: [_peer_events()])
+
+    def recall(_question, item):
+        sid = getattr(item, "source_id", None) or "builtin"
+        if sid == "src_events":
+            return source_select.RecallHit("src_events", "事件库", ("events",))
+        return source_select.RecallHit("builtin", "订单库", (), blind=True)
+
+    monkeypatch.setattr(source_select, "recall_hit", recall)
+    called = {"agent": 0}
+
+    def fake_single(*args, **kwargs):
+        called["agent"] += 1
+        return AskResult(ok=True, question="x", trace_id="t", thread_id="t", org_id=65)
+
+    monkeypatch.setattr("askdb.agent.run_agent", fake_single)
+    client = TestClient(server.create_app("ignored.yaml"))
+    body = client.post("/api/ask", json={"question": "访问有多少", "mode": "auto"}).json()
+    assert body["ok"] is False
+    assert body["rejected_by"] == "P12"
+    assert "订单库" in body["error"] and "事件库" in body["error"]
+    assert called["agent"] == 0
+
+
 def test_resume_blocks_when_current_scope_fingerprint_changed(cfg, monkeypatch):
     expected = scope_fingerprint(cfg)
     fake_graph = SimpleNamespace(get_state=lambda _config: SimpleNamespace(values={

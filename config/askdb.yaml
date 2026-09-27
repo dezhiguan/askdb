@@ -148,8 +148,11 @@ multi_agent:
   max_parallel: 3
   max_repair_rounds: 2
   cost_cap_tokens: 30000
-  allow_cross_source: false
-  # 跨源打开后仍需为每一对源登记聚合 JoinContract；没有契约一律 P12 拒绝。
+  # 跨源至少两个 Worker，沿用上面的 30000 会在合成前被截断。
+  cross_source_cost_cap_tokens: 80000
+  cross_source_cost_cap_cny: 0.60
+  # 打开后仍只在每一对源都有聚合契约时才一起查。契约用运行时数据源 id。
+  allow_cross_source: true
   join_contracts: []
 
 skills:

@@ -155,7 +155,12 @@ multi_agent:
   max_repair_rounds: 2
   cost_cap_tokens: 30000
   cost_cap_cny: 0.20                 # 单次多智能体运行的人民币费用上限
-  allow_cross_source: false
+  # 跨源至少两个 Worker，沿用上面的 30000 会在合成前被截断。
+  cross_source_cost_cap_tokens: 80000
+  cross_source_cost_cap_cny: 0.60
+  # 打开后仍只在每一对源都有聚合契约时才一起查。没有契约就留在当前库，
+  # 或在当前库答不了时拒绝。join_contracts 用运行时数据源 id。
+  allow_cross_source: true
   join_contracts: []
 
 # 可信数据 Agent —— LLM 自主决策链路（v2，见 docs/design-trusted-data-agent-v2.html）。

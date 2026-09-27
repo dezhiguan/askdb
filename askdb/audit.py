@@ -38,7 +38,7 @@ log = logging.getLogger("askdb.audit")
 SUMMARY_FIELDS = (
     "trace_id", "ts", "kind", "thread_id", "org_id", "role", "user", "question", "rejected_by",
     "attempts", "rows_returned", "elapsed_ms", "cost_cny",
-    "step_count", "multi_step", "source", "source_name", "execution_mode",
+    "step_count", "multi_step", "source", "source_name", "sources", "execution_mode",
     # 命中应答缓存的那条记录，耗时/成本/token 全是 0 —— 不标一句"命中缓存"，
     # 流水上它和一次真跑长得一样，只是快得离谱。
     "cached",
@@ -64,7 +64,7 @@ SUMMARY_FIELDS = (
 TRACE_FIELDS = (
     "trace_id", "ts", "kind", "thread_id", "role", "model",
     "tok_in", "tok_out", "step_count", "multi_step", "attempts",
-    "elapsed_ms", "cost_cny", "rejected_by", "source", "source_name",
+    "elapsed_ms", "cost_cny", "rejected_by", "source", "source_name", "sources",
     "cached", "cached_from", "saved_cny", "saved_ms",
     # 结果可信度那枚角标要判的痕迹。原来是四条机械护栏标志，2026-09-10 之后
     # 加了三条语义信号（猜测措辞、缓存计数列、纯指代追问）—— 那次跑测里

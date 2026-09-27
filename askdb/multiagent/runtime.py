@@ -75,6 +75,10 @@ def settings(cfg: Config) -> dict[str, Any]:
         "max_repair_rounds": max(0, int(raw.get("max_repair_rounds", 2))),
         "cost_cap_tokens": max(1, int(raw.get("cost_cap_tokens", 30_000))),
         "cost_cap_cny": max(0.0, float(raw.get("cost_cap_cny", 0.0))),
+        "cross_source_cost_cap_tokens": max(1, int(raw.get(
+            "cross_source_cost_cap_tokens", raw.get("cost_cap_tokens", 80_000)))),
+        "cross_source_cost_cap_cny": max(0.0, float(raw.get(
+            "cross_source_cost_cap_cny", raw.get("cost_cap_cny", 0.0)))),
         "allow_cross_source": bool(raw.get("allow_cross_source", False)),
         "join_contracts": list(raw.get("join_contracts") or []),
     }
@@ -86,6 +90,8 @@ def run_multi_agent(
     org_id: int | None = None,
     *,
     source_configs: dict[str, Config] | None = None,
+    source_catalog: dict[str, list[str]] | None = None,
+    source_names: dict[str, str] | None = None,
     trace_id: str | None = None,
     thread_id: str | None = None,
     on_span: Any = None,
@@ -123,7 +129,9 @@ def run_multi_agent(
             "shadow": bool(shadow_of), "shadow_of": shadow_of,
             "thread_id": thread_id, "org_id": org, "question": question,
             "role": cfg.role or "ANONYMOUS", "user": cfg.user or "",
-            "source": source_id, "sources": sorted(sources),
+            "source": source_id, "sources": [
+                {"id": sid, "name": (source_names or {}).get(sid) or sid}
+                for sid in sorted(sources)],
             "source_name": cfg.source_name or cfg.path,
         })
     except Exception:
@@ -138,10 +146,14 @@ def run_multi_agent(
         org_id=org, source_id=source_id, requested_mode="multi",
         max_workers=opts["max_workers"],
         max_repair_rounds=opts["max_repair_rounds"],
-        token_cap=opts["cost_cap_tokens"],
-        cost_cap_cny=opts["cost_cap_cny"],
+        token_cap=(opts["cross_source_cost_cap_tokens"] if len(sources) > 1
+                   else opts["cost_cap_tokens"]),
+        cost_cap_cny=(opts["cross_source_cost_cap_cny"] if len(sources) > 1
+                      else opts["cost_cap_cny"]),
         scope_fingerprints=scope_fingerprints,
         join_contracts=[item.model_dump(mode="json") for item in joins],
+        source_catalog=source_catalog,
+        source_names=source_names,
     )
     try:
         if deps.cancelled():
@@ -360,6 +372,13 @@ def to_result(state: dict[str, Any], cfg: Config, tracer: Tracer) -> AskResult:
         tok_out=tracer.tok_out,
         cost_cny=tracer.cost_cny,
         execution_mode="multi",
+        sources_used=[
+            {"id": sid, "name": (state.get("source_names") or {}).get(sid) or sid}
+            for sid in (state.get("source_catalog") or {})
+        ] or [
+            {"id": sid, "name": (state.get("source_names") or {}).get(sid) or sid}
+            for sid in (state.get("source_names") or {})
+        ],
         plan=plan,
         evidence=evidence,
         reviews=reviews,

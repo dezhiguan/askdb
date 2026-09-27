@@ -37,7 +37,9 @@ multi_agent:
   max_repair_rounds: 2
   cost_cap_tokens: 30000
   cost_cap_cny: 0.20
-  allow_cross_source: false
+  cross_source_cost_cap_tokens: 80000
+  cross_source_cost_cap_cny: 0.60
+  allow_cross_source: true
   join_contracts: []
 
 schema_rag:

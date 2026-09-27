@@ -55,7 +55,9 @@ def run_ask(question: str, cfg: Config, *, requested_mode: str,
             org_id: int | None, trace_id: str, thread_id: str,
             handoff: Any = None, on_span: Any = None,
             user: str = "", per_user: int | None = None,
-            route: AskRoute | None = None) -> Any:
+            route: AskRoute | None = None,
+            source_catalog: dict[str, list[str]] | None = None,
+            source_names: dict[str, str] | None = None) -> Any:
     """Run the routed question. Shadow keeps the query-agent answer in front."""
     from . import agent as agent_mod
     from . import async_runner
@@ -67,6 +69,7 @@ def run_ask(question: str, cfg: Config, *, requested_mode: str,
     if chosen.use_multi:
         return multi_runtime.run_multi_agent(
             question, cfg, org_id=org_id, source_configs=source_configs,
+            source_catalog=source_catalog, source_names=source_names,
             trace_id=trace_id, thread_id=thread_id, on_span=on_span)
     primary = agent_mod.run_agent(
         question, cfg, org_id=org_id, trace_id=trace_id, thread_id=thread_id,
@@ -76,6 +79,7 @@ def run_ask(question: str, cfg: Config, *, requested_mode: str,
         async_runner.submit_background(
             lambda: multi_runtime.run_multi_agent(
                 question, cfg, org_id=org_id, source_configs=source_configs,
+                source_catalog=source_catalog, source_names=source_names,
                 trace_id=shadow_id, thread_id=shadow_id, shadow_of=trace_id,
                 shadow_baseline=primary),
             user=user, per_user=per_user if per_user is not None else 1)

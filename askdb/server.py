@@ -3663,6 +3663,63 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                          "note": "命中语义计划缓存，复用上次的 SQL 重新执行，未调用模型"}]
         return out
 
+    def _peer_sources(request: Request, current: Config) -> list[Config]:
+        """其他已授权、且开放了表的数据源。注册表读不到时就是没有其他源。"""
+        from .multiagent.source_select import registered_sources
+
+        current_id = current.source_id or "builtin"
+        found: list[Config] = []
+        seen = {current_id}
+        if current_id != "builtin" and cfg.has_default_source:
+            try:
+                builtin = _scoped(request, cfg)
+                _require_scope(builtin)
+                bid = builtin.source_id or "builtin"
+                if bid not in seen:
+                    found.append(builtin)
+                    seen.add(bid)
+            except HTTPException:
+                pass
+        for src in registered_sources(cfg):
+            if not src.tables or src.id in seen:
+                continue
+            try:
+                peer = _scoped(request, _derived(src))
+                _require_scope(peer)
+            except HTTPException:
+                continue
+            pid = peer.source_id or src.id
+            if pid in seen:
+                continue
+            seen.add(pid)
+            found.append(peer)
+        return found
+
+    def _cross_source_reject(scoped_cfg: Config, question: str, org: int,
+                             reason: str) -> JSONResponse:
+        import uuid as _uuid
+
+        from .graph import AskResult
+        from .trace import now_iso, write_audit
+
+        tid = _uuid.uuid4().hex[:12]
+        result = AskResult(
+            ok=False, question=question, trace_id=tid, thread_id=tid,
+            org_id=org, rejected_by="P12", error=reason, execution_mode="single")
+        try:
+            write_audit(scoped_cfg, {
+                "trace_id": tid, "ts": now_iso(), "kind": "ask",
+                "thread_id": tid, "org_id": org, "question": question,
+                "role": scoped_cfg.role or "", "user": scoped_cfg.user or "",
+                "source": scoped_cfg.source_id or "builtin",
+                "source_name": scoped_cfg.source_name or scoped_cfg.path,
+                "rejected_by": "P12", "elapsed_ms": 0,
+                "tok_in": 0, "tok_out": 0, "cost_cny": 0.0, "steps": [],
+            })
+        except Exception:  # noqa: BLE001
+            pass
+        return JSONResponse(result.to_dict())
+
     @app.post("/api/ask")
     def ask(req: AskRequest, request: Request, _on_span: Any = None) -> JSONResponse:
         # 按角色收窄后再进链路。护栏、执行器、Schema 召回全部从配置取值，
@@ -3702,9 +3759,49 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         # 缓存是优化不是护栏：qcache 把一切 Redis 异常吞成未命中，这里不会因它抛错。
         q_text = req.question.strip()
         eff_org = scoped.default_org if req.org_id is None else req.org_id
+        # 自动选源只发生在「这次只点了一个当前空间」时。客户端显式带了多个
+        # sources 时仍走原来的名单，不在那份名单之外再补。
+        _plan = None
+        _peers: list[Config] = []
+        if req.mode != "single" and len(scoped_sources) == 1:
+            _peers = _peer_sources(request, scoped)
+            if _peers:
+                try:
+                    from .multiagent import source_select
+                    from .multiagent.runtime import settings as _ma_settings
+                    _ma = _ma_settings(scoped)
+                    _plan = source_select.plan_sources(
+                        q_text, scoped, _peers,
+                        allow_cross_source=_ma["allow_cross_source"],
+                        contracts=_ma["join_contracts"],
+                        max_sources=_ma["max_workers"],
+                        recall=source_select.recall_hit)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning("跨源选源失败，留在当前数据源：%s", exc)
+                    _plan = None
+        if _plan is not None and _plan.action == "reject":
+            return _cross_source_reject(scoped, q_text, eff_org, _plan.reason)
+        if _plan is not None and _plan.action == "multi":
+            _by_id = {
+                (item.source_id or "builtin"): item
+                for item in (scoped, *_peers)
+            }
+            scoped_sources = [_by_id[hit.source_id] for hit in _plan.selected
+                              if hit.source_id in _by_id]
+            scoped = scoped_sources[0]
         _route = resolve_route(
             q_text, scoped, requested_mode=req.mode,
             source_count=len(scoped_sources))
+        if (_plan is not None and _plan.action == "multi"
+                and not (_route.use_multi or _route.shadow)):
+            from .multiagent import source_select
+            _plan = source_select.hold_unjoined(_plan)
+            scoped_sources = [scoped]
+            scoped = scoped_sources[0]
+            if _plan.action == "reject":
+                return _cross_source_reject(scoped, q_text, eff_org, _plan.reason)
+            _route = resolve_route(
+                q_text, scoped, requested_mode=req.mode, source_count=1)
         if req.mode == "multi" and (not _route.enabled or _route.orch_mode == "off"):
             raise HTTPException(
                 status_code=409,
@@ -3721,7 +3818,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         ckey: str | None = None
         cacheable = (not _use_multi and len(scoped_sources) == 1
                      and not req.as_task and not req.approval_id
-                     and not scoped.scan_waiver)
+                     and not scoped.scan_waiver
+                     and (_plan is None or _plan.action == "single"))
         if cache.enabled and cacheable:
             # scope_fp：源白名单 / 脱敏列 / 护栏参数的指纹。少了它，改完配置
             # 之后旧答案（含旧脱敏口径）还会被返回最长一个 TTL —— 而改配置的人
@@ -3858,13 +3956,28 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
                 except Exception:     # noqa: BLE001
                     pass
 
+        _catalog: dict[str, list[str]] = {}
+        _names: dict[str, str] = {}
+        if _plan is not None and _plan.action == "multi":
+            _catalog = {hit.source_id: list(hit.tables) for hit in _plan.selected}
+            _names = {hit.source_id: hit.name for hit in _plan.selected}
+
         def _execute_selected() -> Any:
-            return run_ask(
+            result = run_ask(
                 q_text, scoped, requested_mode=req.mode,
                 source_configs=_source_map, org_id=req.org_id,
                 trace_id=_tid, thread_id=_tid, handoff=_ho, on_span=_on_span,
                 user=scoped.user or "", per_user=_async_per_user(scoped),
-                route=_route)
+                route=_route, source_catalog=_catalog, source_names=_names)
+            # 交接出去的那一路不再回到下面的同步赋值。降级说明和「这次查了」
+            # 必须写在结果对象上，后台收尾才能带进最终审计。
+            if _plan is not None and _plan.action == "degrade":
+                result.sources_used = _plan.as_used()
+                result.sources_omitted = _plan.as_omitted()
+                result.source_note = _plan.reason
+            elif _plan is not None and _plan.action == "multi" and _route.use_multi:
+                result.sources_used = _plan.as_used()
+            return result
 
         try:
             r, _notice = _async_runner.run_or_detach(

@@ -131,6 +131,11 @@ class AskResult:
     claims: list[dict[str, Any]] = field(default_factory=list)
     skill_bindings: list[dict[str, Any]] = field(default_factory=list)
     shadow_comparison: dict[str, Any] = field(default_factory=dict)
+    #: 这次实际读取的数据源。只有多于一个时页面才展示。
+    sources_used: list[dict[str, str]] = field(default_factory=list)
+    #: 召回到了相关表、但没有聚合契约所以没有查的源。
+    sources_omitted: list[dict[str, str]] = field(default_factory=list)
+    source_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         d = dict(self.__dict__)

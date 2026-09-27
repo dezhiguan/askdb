@@ -23,6 +23,8 @@ class MultiAgentState(TypedDict, total=False):
     semantic_contract: dict[str, Any]
     scope_fingerprints: dict[str, str]
     join_contracts: list[dict[str, Any]]
+    source_catalog: dict[str, list[str]]
+    source_names: dict[str, str]
     skill_bindings_by_role: Annotated[dict[str, list[dict[str, Any]]], merge_by_id]
     subtasks_by_id: Annotated[dict[str, dict[str, Any]], merge_by_id]
     evidence_by_id: Annotated[dict[str, dict[str, Any]], merge_by_id]
@@ -54,7 +56,9 @@ def initial_state(*, question: str, run_id: str, thread_id: str, org_id: int,
                   token_cap: int = 30_000,
                   cost_cap_cny: float = 0.0,
                   scope_fingerprints: dict[str, str] | None = None,
-                  join_contracts: list[dict[str, Any]] | None = None) -> MultiAgentState:
+                  join_contracts: list[dict[str, Any]] | None = None,
+                  source_catalog: dict[str, list[str]] | None = None,
+                  source_names: dict[str, str] | None = None) -> MultiAgentState:
     return {
         "question": question,
         "run_id": run_id,
@@ -67,6 +71,8 @@ def initial_state(*, question: str, run_id: str, thread_id: str, org_id: int,
         "semantic_contract": {},
         "scope_fingerprints": dict(scope_fingerprints or {}),
         "join_contracts": list(join_contracts or []),
+        "source_catalog": dict(source_catalog or {}),
+        "source_names": dict(source_names or {}),
         "skill_bindings_by_role": {},
         "subtasks_by_id": {},
         "evidence_by_id": {},

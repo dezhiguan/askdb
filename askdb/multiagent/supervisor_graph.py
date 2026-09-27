@@ -201,6 +201,8 @@ def _supervisor(state: MultiAgentState, config: RunnableConfig) -> dict[str, Any
             state, SupervisorPlanDraft, SUPERVISOR_SYSTEM,
             f"用户问题：{state['question']}\n默认数据源：{state['source_id']}\n"
             f"本次已授权数据源：{sorted((deps.source_configs or {state['source_id']: deps.cfg}).keys())}\n"
+            f"各源本次召回命中的表：{json.dumps(state.get('source_catalog') or {}, ensure_ascii=False)}\n"
+            f"子任务的 source_id 必须是已授权数据源之一。\n"
             f"最多创建 {state['max_workers']} 个查询子任务。",
         )
     except BudgetExceeded as exc:

@@ -140,6 +140,8 @@ export interface AuditItem {
   /** 这次调用打在哪个数据源上。builtin 表示配置里的默认源 */
   source: string | null
   source_name: string | null
+  /** 跨源那次实际读过的源。旧记录没有这个字段。 */
+  sources?: { id: string; name: string }[] | string[]
   ok: boolean
   /** 命中应答缓存的那次调用：没跑模型、没执行 SQL，耗时与成本都是 0。
    *  不标出来的话，流水上它和一次真跑长得一样，只是快得离谱。 */
@@ -381,6 +383,7 @@ export interface TraceChain {
   rejected_by: string | null
   source: string | null
   source_name: string | null
+  sources?: { id: string; name: string }[] | string[]
   steps: ReplayStep[]
   sql_hash: string | null
   /** 这次调用是不是命中了应答缓存 —— 命中时整条链路只有一个 cache 节点 */
@@ -970,6 +973,11 @@ export interface AskResult {
   claims?: AgentClaim[]
   skill_bindings?: SkillBinding[]
   sub_steps?: AgentSubTask[]
+  /** 这次实际读取的数据源。多于一个时，答案上写「这次查了 A、B」。 */
+  sources_used?: { id: string; name: string }[]
+  /** 召回到相关表、但没有聚合契约所以没有查的源。 */
+  sources_omitted?: { id: string; name: string }[]
+  source_note?: string
 }
 
 export interface SkillBinding {

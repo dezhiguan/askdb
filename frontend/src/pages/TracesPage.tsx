@@ -468,6 +468,14 @@ function StatTiles({ quality }: { quality: LiveQuality | null }) {
   )
 }
 
+function sourceFact(item: AuditItem): string {
+  const raw = item.sources
+  if (Array.isArray(raw) && raw.length > 1) {
+    return raw.map(entry => typeof entry === 'string' ? entry : (entry.name || entry.id)).join('、')
+  }
+  return item.source_name || NA
+}
+
 function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
   item: AuditItem | null
   chain: TraceChain | null
@@ -563,7 +571,7 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
           )}
         </div>
         <div className="trace-fact"><span>成本</span><strong title={costTitle(cost)}>{money(cost)}</strong></div>
-        <div className="trace-fact"><span>数据源</span><strong title={item.source_name ?? ''}>{item.source_name || NA}</strong></div>
+        <div className="trace-fact"><span>数据源</span><strong title={sourceFact(item)}>{sourceFact(item)}</strong></div>
       </div>
 
       {/* key 挂 trace_id：换一条链路要连展开态和铺开行数一起归零。不挂的话
@@ -607,7 +615,7 @@ function TraceDetail({ item, chain, result, finalResult, onFocusTrace }: {
                     ? `已脱敏 ${finalResult.masked_columns?.join('、')}` : '',
                 ].filter(Boolean).join(' · ')}
                 facts={[
-                  `数据源 · ${item.source_name || NA}`,
+                  `数据源 · ${sourceFact(item)}`,
                   `耗时 · ${secs(item.elapsed_ms)}`,
                   ...(model ? [`模型 · ${model}`] : []),
                 ]}
