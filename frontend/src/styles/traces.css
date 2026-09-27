@@ -846,6 +846,24 @@
 .proto-detail-in-graph .proto-detail-spanrow > strong { font-size:8px; }
 .proto-detail-in-graph .proto-detail-spanrow.heading { font-size:8px; }
 .proto-detail-in-graph .proto-detail-footnote { font-size:9px; }
+.proto-agent-card.soft { border-color:#dfc39d; background:#fffbf4; }
+.proto-agent-card.failed { border-color:#dcb0a9; background:#fff9f8; }
+.proto-agent-status.soft,.proto-sidecard > header b.soft,.proto-detail-ok.soft,.proto-detail-spanrow > strong.soft { color:var(--amber); }
+.proto-agent-status.failed,.proto-sidecard > header b.failed,.proto-detail-ok.failed,.proto-detail-spanrow > strong.failed { color:var(--red); }
+.proto-topology .topology-legend i.failed { background:var(--red); }
+.proto-worker-grid.columns-1 { grid-template-columns:minmax(0,1fr); }
+.proto-worker-grid.columns-2 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+.proto-worker-grid.columns-3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.proto-detail-group.selected > .proto-detail-grouphead { box-shadow:inset 3px 0 var(--green); }
+.proto-detail-time-note { margin:0 0 12px; color:var(--amber); font-size:9px; }
+.proto-detail-lanename small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.proto-detail-lane time { white-space:nowrap; }
+.proto-sidebody .proto-output-box,.proto-detail-disclosure span { overflow-wrap:anywhere; white-space:pre-wrap; }
+.proto-event-list i.soft { background:var(--amber); }
+.proto-event-list i.failed { background:var(--red); }
+.proto-span-kind.query { background:var(--amber2); color:var(--amber); }
+.proto-span-kind.guard { background:#edf0eb; color:#718077; }
+@container (max-width:430px) { .proto-worker-grid.columns-2,.proto-worker-grid.columns-3 { grid-template-columns:minmax(0,1fr); } }
 @media (max-width:960px) {
   .traces-page .prototype-preview-layout { grid-template-columns:minmax(0,1fr); }
   .prototype-preview-layout > .card:first-child .trace-list { max-height:190px; }
