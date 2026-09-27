@@ -209,6 +209,42 @@ def test_shadow_mode_runs_multiagent_in_background_but_returns_single(cfg, monke
     assert seen["baseline_trace"] == body["trace_id"]
 
 
+def test_assist_mode_sends_complex_questions_to_multi_and_simple_ones_to_single(cfg, monkeypatch):
+    from fastapi.testclient import TestClient
+    from askdb import server
+    from askdb.multiagent import runtime as multi_runtime
+
+    isolated = copy.deepcopy(cfg)
+    isolated.raw["multi_agent"] = {"enabled": True, "mode": "assist",
+                                    "allow_cross_source": False}
+    monkeypatch.setattr(server, "load", lambda _path: isolated)
+    calls = {"multi": 0, "single": 0}
+
+    def fake_multi(question, cfg, **kwargs):
+        calls["multi"] += 1
+        return AskResult(ok=True, question=question, trace_id=kwargs["trace_id"],
+                         thread_id=kwargs["thread_id"], org_id=65,
+                         reasoning="multi", execution_mode="multi")
+
+    def fake_single(question, cfg, **kwargs):
+        calls["single"] += 1
+        return AskResult(ok=True, question=question, trace_id=kwargs["trace_id"],
+                         thread_id=kwargs["thread_id"], org_id=65, reasoning="single")
+
+    monkeypatch.setattr(multi_runtime, "run_multi_agent", fake_multi)
+    monkeypatch.setattr("askdb.agent.run_agent", fake_single)
+    client = TestClient(server.create_app("ignored.yaml"))
+
+    complex_q = client.post("/api/ask", json={
+        "question": "分析订单下降原因，分别看渠道和地区", "mode": "auto"}).json()
+    assert complex_q["execution_mode"] == "multi"
+
+    simple_q = client.post("/api/ask", json={
+        "question": "documents 有多少行", "mode": "auto"}).json()
+    assert simple_q.get("execution_mode", "single") == "single"
+    assert calls == {"multi": 1, "single": 1}
+
+
 def test_resume_blocks_when_current_scope_fingerprint_changed(cfg, monkeypatch):
     expected = scope_fingerprint(cfg)
     fake_graph = SimpleNamespace(get_state=lambda _config: SimpleNamespace(values={

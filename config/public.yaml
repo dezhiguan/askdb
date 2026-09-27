@@ -143,13 +143,12 @@ planner:
   cost_cap_tokens: 12000
   on_cap_reached: converge
 
-# 多智能体编排先以 shadow 档在生产启用：普通 auto 请求仍返回现有单 Agent
-# 结果，只有显式选择 multi 才把多智能体结果返回给用户。这样可以先验证
-# Supervisor / Semantic / Worker / Verifier / Synthesizer、Checkpoint 与审计，
-# 不在尚未完成生产 A/B 前改变默认流量。
+# 提问不再手选编排。简单问题走查询智能体；路由器判成复杂（分别看、对比、
+# 归因、多数据源等）时直接走编排图。assist 是这一档：auto 会真的切流。
+# shadow 只在后台对照、不改变用户看到的答案；enforce 与 assist 在这条路上相同。
 multi_agent:
   enabled: true
-  mode: shadow                       # off | shadow | assist | enforce
+  mode: assist                       # off | shadow | assist | enforce
   trigger: auto
   max_workers: 3
   max_parallel: 3

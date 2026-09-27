@@ -138,11 +138,11 @@ agent:
 #     - "JD 文档数按 documents.chunk_type='JD' 判定，不是 file_type"
 #     - "营收口径以 finance.revenue 为准，排除 status='REFUNDED' 的订单"
 
-# 顶层多智能体编排。shadow 只记录 Router 会不会切流，不改变现有答案；
-# 显式传 mode=multi 仍可做受控验证。验证通过后切 assist 或 enforce。
+# 顶层多智能体编排。assist：auto 按问题复杂度切流，简单问题仍走查询智能体。
+# shadow 只在后台对照；显式 mode=single / mode=multi 仍可压过自动判断。
 multi_agent:
   enabled: true
-  mode: shadow                       # off | shadow | assist | enforce
+  mode: assist                       # off | shadow | assist | enforce
   trigger: auto
   max_workers: 3
   max_parallel: 3

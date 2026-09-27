@@ -1,6 +1,4 @@
 /* Skill 中心与多智能体证据面板。沿用 askdb 的纸张、墨绿与单色编号语言。 */
-.agent-mode-picker { display:flex; align-items:center; gap:7px; margin-left:auto; color:var(--muted); font:7px var(--mono); }
-.agent-mode-picker select { padding:7px 24px 7px 8px; border:1px solid var(--line); border-radius:6px; background:var(--paper); font-size:7px; }
 
 .collaboration-panel { margin:10px 0; border:1px solid var(--line); border-radius:9px; background:rgba(250,249,245,.9); overflow:hidden; }
 .collaboration-panel.is-multi { border-color:#9fbea9; box-shadow:0 12px 30px rgba(11,97,57,.08); }
