@@ -63,27 +63,31 @@ def run_ask(question: str, cfg: Config, *, requested_mode: str,
     from . import async_runner
     from .multiagent import runtime as multi_runtime
 
-    chosen = route or resolve_route(
-        question, cfg, requested_mode=requested_mode,
-        source_count=len(source_configs or {cfg.source_id or "builtin": cfg}))
-    if chosen.use_multi:
-        return multi_runtime.run_multi_agent(
-            question, cfg, org_id=org_id, source_configs=source_configs,
-            source_catalog=source_catalog, source_names=source_names,
-            trace_id=trace_id, thread_id=thread_id, on_span=on_span)
-    primary = agent_mod.run_agent(
-        question, cfg, org_id=org_id, trace_id=trace_id, thread_id=thread_id,
-        handoff=handoff, on_span=on_span)
-    if chosen.shadow:
-        shadow_id = uuid.uuid4().hex[:12]
-        async_runner.submit_background(
-            lambda: multi_runtime.run_multi_agent(
+    from .keel_shadow import agent_span, invocation
+
+    with invocation(trace_id):
+        with agent_span("router", trace_id):
+            chosen = route or resolve_route(
+                question, cfg, requested_mode=requested_mode,
+                source_count=len(source_configs or {cfg.source_id or "builtin": cfg}))
+        if chosen.use_multi:
+            return multi_runtime.run_multi_agent(
                 question, cfg, org_id=org_id, source_configs=source_configs,
                 source_catalog=source_catalog, source_names=source_names,
-                trace_id=shadow_id, thread_id=shadow_id, shadow_of=trace_id,
-                shadow_baseline=primary),
-            user=user, per_user=per_user if per_user is not None else 1)
-    return primary
+                trace_id=trace_id, thread_id=thread_id, on_span=on_span)
+        primary = agent_mod.run_agent(
+            question, cfg, org_id=org_id, trace_id=trace_id, thread_id=thread_id,
+            handoff=handoff, on_span=on_span)
+        if chosen.shadow:
+            shadow_id = uuid.uuid4().hex[:12]
+            async_runner.submit_background(
+                lambda: multi_runtime.run_multi_agent(
+                    question, cfg, org_id=org_id, source_configs=source_configs,
+                    source_catalog=source_catalog, source_names=source_names,
+                    trace_id=shadow_id, thread_id=shadow_id, shadow_of=trace_id,
+                    shadow_baseline=primary),
+                user=user, per_user=per_user if per_user is not None else 1)
+        return primary
 
 
 def _orchestration_checkpoint(thread_id: str, cfg: Config) -> bool:

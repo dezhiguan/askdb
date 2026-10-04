@@ -159,11 +159,15 @@ def run_multi_agent(
         if deps.cancelled():
             return _failed(question, trace_id, thread_id, org, tracer, "CANCELED",
                            "任务已由发起人取消")
+        from ..keel_shadow import with_callback
+
         final = ensure_graph(cfg).invoke(
             state,
-            {"configurable": {"thread_id": thread_id, "deps": deps},
-             "recursion_limit": max(25, opts["max_repair_rounds"] * 8 + 20),
-             "max_concurrency": opts["max_parallel"]},
+            with_callback({
+                "configurable": {"thread_id": thread_id, "deps": deps},
+                "recursion_limit": max(25, opts["max_repair_rounds"] * 8 + 20),
+                "max_concurrency": opts["max_parallel"],
+            }),
         )
         result = to_result(final, cfg, tracer)
     except Exception as exc:  # graph/checkpoint errors become structured failures
@@ -253,11 +257,15 @@ def resume_multi_agent(
                           cancel_check=lambda: is_canceled(thread_id, cfg))
     run_id = str(values.get("run_id") or thread_id)
     try:
+        from ..keel_shadow import with_callback
+
         final = graph.invoke(
             None,
-            {"configurable": {"thread_id": thread_id, "deps": deps},
-             "recursion_limit": max(25, opts["max_repair_rounds"] * 8 + 20),
-             "max_concurrency": opts["max_parallel"]},
+            with_callback({
+                "configurable": {"thread_id": thread_id, "deps": deps},
+                "recursion_limit": max(25, opts["max_repair_rounds"] * 8 + 20),
+                "max_concurrency": opts["max_parallel"],
+            }),
         )
         result = to_result(final, cfg, tracer)
     except Exception as exc:

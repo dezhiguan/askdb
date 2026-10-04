@@ -452,14 +452,23 @@ class LlmClient:
         #
         # 备选客户端沿用同一份 llm_cfg（_fallback_client 里 merge），因此这两个
         # 值对它同样生效；要给备选单独放宽，在 fallback 段里覆写即可。
+        import os
+
+        gateway = os.environ.get("KEEL_LLM_BASE_URL")
+        gateway_key = os.environ.get("KEEL_LLM_KEY")
+        if gateway and gateway_key:
+            # 薄网关不接受厂商私有的思考参数。影子期只在这两个变量都存在时改道。
+            base_url, api_key, extra = gateway, gateway_key, {}
+        else:
+            base_url, api_key, extra = self.llm_cfg["base_url"], key, kwargs
         self._model = ChatOpenAI(
             model=self.llm_cfg["model"],
-            base_url=self.llm_cfg["base_url"],
-            api_key=key,
+            base_url=base_url,
+            api_key=api_key,
             temperature=float(self.llm_cfg.get("temperature", 0)),
             timeout=float(self.llm_cfg.get("timeout_s", 20)),
             max_retries=int(self.llm_cfg.get("max_retries", 0)),
-            **kwargs,
+            **extra,
         )
         return self._model
 

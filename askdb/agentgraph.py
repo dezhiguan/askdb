@@ -1941,9 +1941,11 @@ def resume(thread_id: str, cfg: Config,
                 agent_run_id=f"{trace_id}:query",
                 parent_agent_run_id="")
     try:
-        final = g.invoke(None, {
+        from .keel_shadow import with_callback
+
+        final = g.invoke(None, with_callback({
             "configurable": {"thread_id": thread_id, "deps": deps},
-            "recursion_limit": recursion_limit(int(values.get("max_steps", 6)))})
+            "recursion_limit": recursion_limit(int(values.get("max_steps", 6)))}))
     finally:
         if own_exec:
             ex.close()

@@ -1,0 +1,57 @@
+apiVersion: keel/v1
+kind: Agent
+metadata:
+  name: askdb
+  displayName: 问数
+  owner: 数据平台组 / zhou
+spec:
+  runtime:
+    type: code
+    language: python
+    endpoint: http://askdb.agents.svc:8000
+    liveness: http
+  auth:
+    audience: askdb
+    roles: [analyst]
+  models:
+    default: qwen-plus
+    fallback: [deepseek-v3]
+    budget: { dailyCny: 30, maxSteps: 6 }
+  tools: []
+  delegates: []
+  guardrails:
+    inputInjection: enforce
+    grounding: shadow
+    pii: mask
+  audit:
+    retentionDays: 180
+    captureFields:
+      - trace_id
+      - ts
+      - kind
+      - thread_id
+      - org_id
+      - role
+      - user
+      - question
+      - rejected_by
+      - attempts
+      - rows_returned
+      - elapsed_ms
+      - cost_cny
+      - step_count
+      - multi_step
+      - source
+      - source_name
+      - sources
+      - execution_mode
+      - cached
+      - saved_cny
+      - saved_ms
+  prompts:
+    source: langfuse
+    label: production
+  eval:
+    dataset: askdb/nl2sql
+    evaluators: [llm_judge]
+    gate: { minScore: 0.85, maxRegression: 0.02, byTag: false }

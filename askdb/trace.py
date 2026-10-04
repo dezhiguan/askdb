@@ -343,6 +343,7 @@ def write_audit(target: Any, record: dict[str, Any]) -> None:
 
         if auditstore.enabled(target):
             auditstore.append_audit(record)
+            _mirror_keel_audit(record)
             return
         target = target.audit_log
 
@@ -360,6 +361,17 @@ def write_audit(target: Any, record: dict[str, Any]) -> None:
         finally:
             os.close(fd)
     except OSError:
+        return
+    _mirror_keel_audit(record)
+
+
+def _mirror_keel_audit(record: dict[str, Any]) -> None:
+    """影子镜像失败不影响已经落盘的旧审计。"""
+    try:
+        from .keel_shadow import mirror_audit
+
+        mirror_audit(record)
+    except Exception:
         pass
 
 

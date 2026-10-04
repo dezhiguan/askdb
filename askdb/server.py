@@ -753,6 +753,9 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         pool_size=int((cfg.raw.get("agent", {}) or {}).get(
             "async_pool_size", _async_runner.DEFAULT_POOL_SIZE)))
     app = FastAPI(title="askdb", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    from .keel_shadow import mount as _mount_keel
+
+    _mount_keel(app)
 
     @app.exception_handler(_sources.StoreUnavailable)
     async def _store_unavailable(_request: Request, exc: _sources.StoreUnavailable):

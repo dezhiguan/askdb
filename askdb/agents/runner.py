@@ -163,10 +163,14 @@ def run_react(name: str, question: str, cfg: Config, org_id: int | None = None, 
         question, org, trace_id, thread_id,
         binding.max_steps, binding.cost_cap, clarification)
     try:
+        from ..keel_shadow import with_callback
+
         final = agentgraph.ensure_graph(cfg).invoke(
             init,
-            {"configurable": {"thread_id": thread_id, "deps": deps},
-             "recursion_limit": agentgraph.recursion_limit(binding.max_steps)})
+            with_callback({
+                "configurable": {"thread_id": thread_id, "deps": deps},
+                "recursion_limit": agentgraph.recursion_limit(binding.max_steps),
+            }))
     except Exception as exc:  # noqa: BLE001
         tracer.add("finalize", tracer.start(), f"执行图异常：{exc}", status="failed")
         return agent_mod._result(
@@ -252,8 +256,12 @@ def run_react_inline(name: str, question: str, cfg: Config, org_id: int, *,
     init = agentgraph.initial_state(
         question, org_id, agent_run_id, agent_run_id, steps, cap, context=context,
         task_scope=task_scope or {})
+    from ..keel_shadow import with_callback
+
     final = _inline_graph().invoke(
         init,
-        {"configurable": {"thread_id": agent_run_id, "deps": deps},
-         "recursion_limit": agentgraph.recursion_limit(steps)})
+        with_callback({
+            "configurable": {"thread_id": agent_run_id, "deps": deps},
+            "recursion_limit": agentgraph.recursion_limit(steps),
+        }))
     return agentgraph.to_result(final, cfg, tagged), binding.skill_bindings
