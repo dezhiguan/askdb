@@ -151,7 +151,13 @@ def mount(app, cfg=None) -> None:
         agent = Agent.from_manifest(_mount_manifest(manifest))
         if cfg is not None:
             _bind_entry(agent, cfg)
-        agent.mount_to(app)
+        # SDK 只认 LANGFUSE_*。临时换成控制台那套 Key，装完导出器再改回去，
+        # 问数自己的追踪仍走原来的 LANGFUSE_*。
+        previous = _use_keel_langfuse()
+        try:
+            agent.mount_to(app)
+        finally:
+            _restore_env(previous)
     except Exception:
         log.warning("keel mount skipped", exc_info=True)
 
@@ -188,10 +194,13 @@ def _bind_entry(agent, cfg) -> None:
 
         from .ask import run_ask
 
+        _mark_io(text, None)
         result = await asyncio.to_thread(
             run_ask, text, cfg, requested_mode="auto", source_configs=None,
             org_id=None, trace_id=ctx.trace_id, thread_id=uuid.uuid4().hex)
-        return ctx.final(_reply(result))
+        reply = _reply(result)
+        _mark_io(text, reply)
+        return ctx.final(reply)
 
 
 def _reply(result) -> str:
@@ -203,6 +212,51 @@ def _reply(result) -> str:
     if rows is not None:
         parts.append(f"返回 {rows} 行")
     return "\n".join(parts) or "没有结果"
+
+
+_LANGFUSE_FROM_KEEL = (
+    ("LANGFUSE_HOST", "KEEL_LANGFUSE_HOST"),
+    ("LANGFUSE_PUBLIC_KEY", "KEEL_LANGFUSE_PUBLIC_KEY"),
+    ("LANGFUSE_SECRET_KEY", "KEEL_LANGFUSE_SECRET_KEY"),
+)
+
+
+def _use_keel_langfuse() -> dict[str, str | None] | None:
+    """三件套都在才换。缺一件就保持现状，避免导出器拿到半套密钥。"""
+    values = {target: os.environ.get(source) for target, source in _LANGFUSE_FROM_KEEL}
+    if not all(values.values()):
+        return None
+    previous = {key: os.environ.get(key) for key in values}
+    for key, value in values.items():
+        if value:
+            os.environ[key] = value
+    return previous
+
+
+def _restore_env(previous: dict[str, str | None] | None) -> None:
+    if not previous:
+        return
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def _mark_io(question: str, answer: str | None) -> None:
+    """控制台从 Langfuse 的 input/output 读原文。写失败不影响回答。"""
+    try:
+        from opentelemetry import trace
+
+        from keel.tracing import attrs
+
+        span = trace.get_current_span()
+        if question:
+            span.set_attribute(attrs.OBSERVATION_INPUT, question)
+        if answer is not None:
+            span.set_attribute(attrs.OBSERVATION_OUTPUT, answer)
+    except Exception:
+        return
 
 
 def _capture(record: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:

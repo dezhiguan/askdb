@@ -1,9 +1,12 @@
 """影子接入在开关关闭时不改变旧审计，打开时按白名单镜像。"""
 
+import os
 from pathlib import Path
 
 from askdb.audit import SUMMARY_FIELDS
-from askdb.keel_shadow import keel_status, mirror_audit, with_callback
+from askdb.keel_shadow import (
+    _restore_env, _use_keel_langfuse, keel_status, mirror_audit, with_callback,
+)
 from askdb.trace import write_audit
 
 
@@ -41,6 +44,31 @@ def test_shadow_mirror_keeps_only_summary_fields(tmp_path, monkeypatch):
     assert event["payload"]["question"] == "订单有多少"
     assert "sql" not in event["payload"]
     assert set(event["payload"]) <= set(SUMMARY_FIELDS)
+
+
+def test_keel_langfuse_keys_replace_the_sdk_env_only_while_mounting(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_HOST", "http://self-hosted")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-old")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-old")
+    monkeypatch.setenv("KEEL_LANGFUSE_HOST", "https://jp.cloud.langfuse.com")
+    monkeypatch.setenv("KEEL_LANGFUSE_PUBLIC_KEY", "pk-console")
+    monkeypatch.setenv("KEEL_LANGFUSE_SECRET_KEY", "sk-console")
+
+    previous = _use_keel_langfuse()
+    assert os.environ["LANGFUSE_HOST"] == "https://jp.cloud.langfuse.com"
+    assert os.environ["LANGFUSE_PUBLIC_KEY"] == "pk-console"
+    _restore_env(previous)
+    assert os.environ["LANGFUSE_HOST"] == "http://self-hosted"
+    assert os.environ["LANGFUSE_SECRET_KEY"] == "sk-old"
+
+
+def test_incomplete_keel_langfuse_keys_leave_the_existing_env(monkeypatch):
+    monkeypatch.setenv("LANGFUSE_HOST", "http://self-hosted")
+    monkeypatch.setenv("KEEL_LANGFUSE_HOST", "https://jp.cloud.langfuse.com")
+    monkeypatch.delenv("KEEL_LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("KEEL_LANGFUSE_SECRET_KEY", raising=False)
+    assert _use_keel_langfuse() is None
+    assert os.environ["LANGFUSE_HOST"] == "http://self-hosted"
 
 
 def test_callback_is_absent_until_shadow_is_on(monkeypatch):

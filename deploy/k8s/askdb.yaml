@@ -50,6 +50,10 @@ spec:
     spec:
       imagePullSecrets:
         - name: acr-cred
+      # 节点出网到 Langfuse 日本站不通，和 keel-server 一样经数据机上的中继。
+      hostAliases:
+        - ip: 172.25.90.183
+          hostnames: ["jp.cloud.langfuse.com"]
       # /api/ask 的上游超时是 60s（入口 nginx）。默认 30s 的优雅停机会在
       # 滚动更新时把还在等模型返回的请求直接掐断，用户看到的是一次莫名其妙的
       # 502。给到 75s，比那条 60s 长。

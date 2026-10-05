@@ -26,6 +26,22 @@ COPY askdb/__init__.py ./askdb/
 # 而错误落在数据源那一侧，很容易被当成库或网络的问题去查。
 RUN pip install --no-cache-dir ".[web,redis,postgres]"
 
+# Keel SDK 不在 PyPI，而且构建时要读仓库根的 contracts/。
+# 只在 KEEL_SHADOW=1 时用来挂 /v1/invoke；缺它时挂载会被跳过，控制台调用进不来。
+ARG KEEL_SDK_REF=8380e772c1bc0f1c2eff621e333192dd6927e3fd
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && git init /tmp/keel \
+ && git -C /tmp/keel remote add origin https://github.com/dezhiguan/keel.git \
+ && git -C /tmp/keel fetch --depth 1 origin "${KEEL_SDK_REF}" \
+ && git -C /tmp/keel checkout --detach FETCH_HEAD \
+ && pip install --no-cache-dir /tmp/keel/sdk-python \
+ && python -c "from keel.agent import Agent; from importlib.resources import files; assert files('keel').joinpath('_schemas','manifest.schema.json').is_file()" \
+ && rm -rf /tmp/keel \
+ && apt-get purge -y git \
+ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY askdb ./askdb
 COPY config ./config
 COPY data/__init__.py data/seed.py ./data/
