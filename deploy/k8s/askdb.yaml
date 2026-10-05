@@ -258,7 +258,7 @@ data:
         type: code
         language: python
         endpoint: http://askdb.askdb.svc.cluster.local:8000
-        liveness: http
+        liveness: k8s
       auth:
         audience: askdb
       audit:
