@@ -5,7 +5,7 @@ from pathlib import Path
 
 from askdb.audit import SUMMARY_FIELDS
 from askdb.keel_shadow import (
-    _restore_env, _use_keel_langfuse, keel_status, mirror_audit, with_callback,
+    _query_cfg, _restore_env, _use_keel_langfuse, keel_status, mirror_audit, with_callback,
 )
 from askdb.trace import write_audit
 
@@ -69,6 +69,46 @@ def test_incomplete_keel_langfuse_keys_leave_the_existing_env(monkeypatch):
     monkeypatch.delenv("KEEL_LANGFUSE_SECRET_KEY", raising=False)
     assert _use_keel_langfuse() is None
     assert os.environ["LANGFUSE_HOST"] == "http://self-hosted"
+
+
+class _Cfg:
+    def __init__(self, *, builtin=False, ref=""):
+        self.has_default_source = builtin
+        self.default_source_ref = ref
+
+
+class _Source:
+    def __init__(self, id, name, tables):
+        self.id = id
+        self.name = name
+        self.tables = tables
+
+
+def test_builtin_config_is_used_as_is():
+    cfg = _Cfg(builtin=True)
+    got, why = _query_cfg(cfg)
+    assert got is cfg and why is None
+
+
+def test_missing_default_source_is_explained():
+    got, why = _query_cfg(_Cfg())
+    assert got is None and "数据源" in why
+
+
+def test_named_default_source_is_derived(monkeypatch):
+    derived = object()
+
+    def list_sources(cfg):
+        return [_Source("ragforge", "ragforge 生产库", [{"name": "documents"}])]
+
+    def derive_config(cfg, src):
+        assert src.id == "ragforge"
+        return derived
+
+    monkeypatch.setattr("askdb.sources.list_sources", list_sources)
+    monkeypatch.setattr("askdb.sources.derive_config", derive_config)
+    got, why = _query_cfg(_Cfg(ref="ragforge 生产库"))
+    assert got is derived and why is None
 
 
 def test_callback_is_absent_until_shadow_is_on(monkeypatch):

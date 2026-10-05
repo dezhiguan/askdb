@@ -194,13 +194,55 @@ def _bind_entry(agent, cfg) -> None:
 
         from .ask import run_ask
 
+        query_cfg, why = _query_cfg(cfg)
+        if query_cfg is None:
+            return ctx.final(why or "没有可用的数据源")
+        source_id = getattr(query_cfg, "source_id", "") or "builtin"
         _mark_io(text, None)
-        result = await asyncio.to_thread(
-            run_ask, text, cfg, requested_mode="auto", source_configs=None,
-            org_id=None, trace_id=ctx.trace_id, thread_id=uuid.uuid4().hex)
+        try:
+            result = await asyncio.to_thread(
+                run_ask, text, query_cfg, requested_mode="auto",
+                source_configs={source_id: query_cfg},
+                org_id=None, trace_id=ctx.trace_id, thread_id=uuid.uuid4().hex)
+        except Exception as exc:
+            log.warning("keel invoke failed", exc_info=True)
+            return ctx.final(_public_error(exc))
         reply = _reply(result)
         _mark_io(text, reply)
         return ctx.final(reply)
+
+
+def _query_cfg(cfg):
+    """跟问数页面一样：没有内置库时用 datasources.default 指向的注册源。
+
+    启动配置经常不写 datasource。直接拿它去查会报「没有声明 datasource」，
+    而页面上同一句话是能查的。
+    """
+    if cfg.has_default_source:
+        return cfg, None
+    ref = cfg.default_source_ref
+    if not ref:
+        return None, "本实例未配置默认数据源，查询必须指定数据源。"
+    from . import sources
+
+    try:
+        items = sources.list_sources(cfg)
+    except Exception as exc:
+        return None, _public_error(exc)
+    hit = [item for item in items if item.id == ref] or [item for item in items if item.name == ref]
+    if len(hit) != 1:
+        return None, f"配置指定的默认数据源「{ref}」取不到。"
+    if not hit[0].tables:
+        return None, "该数据源还没有开放任何表。"
+    return sources.derive_config(cfg, hit[0]), None
+
+
+def _public_error(exc: Exception) -> str:
+    line = str(exc).splitlines()[0][:200]
+    lowered = line.lower()
+    if any(mark in lowered for mark in ("password", "postgres://", "sk-", "api_key")):
+        return "查询失败"
+    return line or "查询失败"
 
 
 def _reply(result) -> str:
