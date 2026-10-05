@@ -146,6 +146,17 @@ _WRITE_EXEMPT_PATHS = frozenset({
 })
 #: 「会真的去查库」的那几条 POST。auth.query_requires_login 只作用于这张表。
 _QUERY_PATHS = frozenset({"/api/ask", "/api/ask/stream", "/api/sql", "/api/resume"})
+
+
+def _keel_protocol(path: str) -> bool:
+    """控制台经 keel-server 调这些路径，请求上没有 askdb 会话。
+
+    不放进 _WRITE_EXEMPT_PATHS：那张表只允许认证和问数自己的查询。
+    这里放行的是底座协议，问数自己的 /api 仍然要登录。
+    """
+    if path in {"/v1/invoke", "/v1/feedback"}:
+        return True
+    return path.startswith("/v1/runs/") and path.endswith("/resume")
 _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 #: 被写门拦下时，用来把话说到**这一次点的那个动作**上。
@@ -811,6 +822,8 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
         角色成员增删走的是 ASKDB_ADMIN_TOKEN，那也是一种身份，只是不来自浏览器。
         """
         path = request.url.path
+        if _keel_protocol(path):
+            return await call_next(request)
         exempt = path in _WRITE_EXEMPT_PATHS
         # 查询三条的豁免是有条件的：auth.query_requires_login 的实例上，
         # 未登录的查询不豁免，落回下面同一套 401（含管理员令牌通道）——

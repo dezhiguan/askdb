@@ -352,6 +352,12 @@ def _write_calls(c):
     )
 
 
+def test_keel_invoke_is_not_the_askdb_login_gate(client):
+    """底座调用不带问数会话。登录门若拦下它，控制台只能看到 401。"""
+    response = client.post("/v1/invoke", json={"input": {"text": "ping"}})
+    assert response.status_code != 401
+
+
 def test_writes_are_refused_without_a_session(client):
     for method, path, call in _write_calls(client):
         r = call()
