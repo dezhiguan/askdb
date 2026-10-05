@@ -8,7 +8,7 @@ spec:
   runtime:
     type: code
     language: python
-    endpoint: http://askdb.agents.svc:8000
+    endpoint: http://askdb.askdb.svc.cluster.local:8000
     liveness: http
   auth:
     audience: askdb

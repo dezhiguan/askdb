@@ -137,7 +137,7 @@ def agent_span(name: str, trace_id: str) -> Iterator[None]:
             span.__exit__(None, None, None)
 
 
-def mount(app) -> None:
+def mount(app, cfg=None) -> None:
     """在原有 HTTP 之外挂上 /v1/invoke。缺配置就跳过，不挡现有接口。"""
     if not enabled():
         return
@@ -148,9 +148,61 @@ def mount(app) -> None:
     try:
         from keel.agent import Agent
 
-        Agent.from_manifest(manifest).mount_to(app)
+        agent = Agent.from_manifest(_mount_manifest(manifest))
+        if cfg is not None:
+            _bind_entry(agent, cfg)
+        agent.mount_to(app)
     except Exception:
         log.warning("keel mount skipped", exc_info=True)
+
+
+def _mount_manifest(path: str) -> str:
+    """没有薄网关密钥时先拿掉 models，避免启动校验把现有接口一起挡住。"""
+    if os.environ.get("KEEL_LLM_BASE_URL") and os.environ.get("KEEL_LLM_KEY"):
+        return path
+    try:
+        import yaml
+    except ImportError:
+        return path
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    spec = data.get("spec") if isinstance(data, dict) else None
+    if not isinstance(spec, dict) or "models" not in spec:
+        return path
+    spec.pop("models", None)
+    target = Path("/tmp/keel-agent-runtime.yaml")
+    target.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return str(target)
+
+
+def _bind_entry(agent, cfg) -> None:
+    @agent.entry
+    async def chat(request, ctx):
+        text = ""
+        incoming = getattr(request, "input", None) or {}
+        if isinstance(incoming, dict):
+            text = str(incoming.get("text") or "")
+        if not text.strip():
+            return ctx.final("")
+        import asyncio
+        import uuid
+
+        from .ask import run_ask
+
+        result = await asyncio.to_thread(
+            run_ask, text, cfg, requested_mode="auto", source_configs=None,
+            org_id=None, trace_id=ctx.trace_id, thread_id=uuid.uuid4().hex)
+        return ctx.final(_reply(result))
+
+
+def _reply(result) -> str:
+    error = getattr(result, "error", "") or ""
+    sql = getattr(result, "sql_final", "") or getattr(result, "sql_raw", "") or ""
+    reasoning = getattr(result, "reasoning", "") or ""
+    rows = getattr(result, "row_count", None)
+    parts = [part for part in (error, sql, reasoning) if part]
+    if rows is not None:
+        parts.append(f"返回 {rows} 行")
+    return "\n".join(parts) or "没有结果"
 
 
 def _capture(record: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
@@ -192,9 +244,9 @@ def _ensure_tracing() -> None:
     global _tracing_ready
     if _tracing_ready:
         return
-    host = os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL")
-    public = os.environ.get("LANGFUSE_PUBLIC_KEY")
-    secret = os.environ.get("LANGFUSE_SECRET_KEY")
+    host = os.environ.get("KEEL_LANGFUSE_HOST") or os.environ.get("LANGFUSE_HOST") or os.environ.get("LANGFUSE_BASE_URL")
+    public = os.environ.get("KEEL_LANGFUSE_PUBLIC_KEY") or os.environ.get("LANGFUSE_PUBLIC_KEY")
+    secret = os.environ.get("KEEL_LANGFUSE_SECRET_KEY") or os.environ.get("LANGFUSE_SECRET_KEY")
     buffer_path = os.environ.get("KEEL_TRACE_BUFFER_PATH")
     if not host or not public or not secret or not buffer_path:
         return

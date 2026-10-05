@@ -6,7 +6,7 @@
 
 | 变量 | 作用 |
 |---|---|
-| `LANGFUSE_HOST` 或 `LANGFUSE_BASE_URL` | `https://jp.cloud.langfuse.com` |
+| `KEEL_LANGFUSE_HOST` / `KEEL_LANGFUSE_PUBLIC_KEY` / `KEEL_LANGFUSE_SECRET_KEY` | 影子追踪打到 Keel 控制台用的 Langfuse。不设则沿用 `LANGFUSE_*` |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | 对应环境的项目密钥。dev 用 `dev-keel`，staging 用 `staging-keel`，prod 用 `prod-keel` |
 | `KEEL_TRACE_BUFFER_PATH` | 上报失败时的本地缓冲 |
 | `KEEL_AUDIT_URL` / `KEEL_AUDIT_TOKEN` / `KEEL_AUDIT_SPOOL_PATH` | 审计镜像。影子期写失败不拒绝查询 |

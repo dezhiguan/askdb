@@ -67,6 +67,9 @@ spec:
           hostPath:
             path: /opt/askdb/var
             type: DirectoryOrCreate
+        - name: keel-manifest
+          configMap:
+            name: askdb-keel-manifest
       # hostPath 由 kubelet 以 root 创建（0755），而容器以 uid 10001 运行，
       # 不改属主就写不进审计日志与检查点库 —— 失败复现、回放归因全落空。
       # 放在 initContainer 里做，换台机器重建也能自愈，不依赖手工准备。
@@ -90,9 +93,49 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8000
+          env:
+            - name: KEEL_SHADOW
+              value: "1"
+            - name: KEEL_ENV
+              value: dev
+            - name: KEEL_MANIFEST
+              value: /etc/keel/agent.yaml
+            - name: KEEL_TRACE_BUFFER_PATH
+              value: /tmp/keel-traces
+            - name: KEEL_AUDIT_SPOOL_PATH
+              value: /tmp/keel-audit.jsonl
+            - name: KEEL_AUDIT_URL
+              value: http://keel-server.keel-system.svc.cluster.local:8080
+            - name: KEEL_AUDIT_TOKEN
+              value: shadow
+            - name: KEEL_LANGFUSE_HOST
+              value: https://jp.cloud.langfuse.com
+            - name: KEEL_LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: askdb-keel
+                  key: LANGFUSE_PUBLIC_KEY
+                  optional: true
+            - name: KEEL_LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: askdb-keel
+                  key: LANGFUSE_SECRET_KEY
+                  optional: true
+            - name: KEEL_LLM_BASE_URL
+              value: http://keel-llm.keel-system.svc.cluster.local:8088
+            - name: KEEL_LLM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: askdb-keel
+                  key: KEEL_LLM_KEY
+                  optional: true
           volumeMounts:
             - name: var
               mountPath: /app/var
+            - name: keel-manifest
+              mountPath: /etc/keel
+              readOnly: true
           # 模型密钥来自 k8s Secret，**不进镜像、不进仓库**。
           # 该 Secret 由运维一次性创建（见 deploy/README.md），
           # 不随 CI 重建 —— 密钥不必经过 GitHub。
@@ -192,6 +235,32 @@ spec:
             capabilities: { drop: ["ALL"] }
             # 样例库与依赖都在镜像里，运行期只有 /app/data 需要写（审计日志）
             readOnlyRootFilesystem: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: askdb-keel-manifest
+  namespace: askdb
+data:
+  agent.yaml: |
+    apiVersion: keel/v1
+    kind: Agent
+    metadata:
+      name: askdb
+      displayName: 问数
+      owner: 数据平台组 / zhou
+    spec:
+      runtime:
+        type: code
+        language: python
+        endpoint: http://askdb.askdb.svc.cluster.local:8000
+        liveness: http
+      auth:
+        audience: askdb
+      audit:
+        captureFields: [question, kind, trace_id, rows_returned, elapsed_ms, source]
+      eval:
+        dataset: askdb/nl2sql
 ---
 apiVersion: v1
 kind: Service
