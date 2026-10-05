@@ -128,6 +128,10 @@ spec:
                   optional: true
             - name: KEEL_LLM_BASE_URL
               value: http://keel-llm.keel-system.svc.cluster.local:8088
+            - name: KEEL_LLM_MODEL
+              value: qwen-plus
+            - name: KEEL_LLM_FALLBACK
+              value: deepseek-v3
             - name: KEEL_LLM_KEY
               valueFrom:
                 secretKeyRef:

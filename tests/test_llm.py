@@ -7,6 +7,22 @@ import pytest
 from askdb.llm import LlmClient, LlmNotConfigured, LlmUsage, SqlDraft, _usage_of
 
 
+def test_gateway_uses_v1_and_gateway_model_names(monkeypatch):
+    from askdb.llm import _gateway_endpoint, _gateway_model
+
+    monkeypatch.delenv("KEEL_LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("KEEL_LLM_KEY", raising=False)
+    assert _gateway_endpoint() is None
+
+    monkeypatch.setenv("KEEL_LLM_BASE_URL", "http://keel-llm:8088/")
+    monkeypatch.setenv("KEEL_LLM_KEY", "vk")
+    monkeypatch.setenv("KEEL_LLM_MODEL", "qwen-plus")
+    monkeypatch.setenv("KEEL_LLM_FALLBACK", "deepseek-v3")
+    assert _gateway_endpoint() == ("http://keel-llm:8088/v1", "vk")
+    assert _gateway_model("qwen3.8-flash", fallback=False) == "qwen-plus"
+    assert _gateway_model("deepseek-v4-flash", fallback=True) == "deepseek-v3"
+
+
 def test_missing_key_gives_step_by_step_fix(cfg, monkeypatch):
     monkeypatch.delenv(cfg.llm["api_key_env"], raising=False)
     with pytest.raises(LlmNotConfigured) as e:

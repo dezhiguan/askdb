@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -20,6 +21,23 @@ from .trace import call_cost_cny
 
 __all__ = ["LlmAttempt", "LlmClient", "LlmNotConfigured", "LlmUsage", "SqlDraft",
            "QuotaExceeded"]
+
+
+def _gateway_endpoint() -> tuple[str, str] | None:
+    """薄网关的 OpenAI 兼容地址。两个变量缺一就继续走原来的厂商端点。"""
+    base = os.environ.get("KEEL_LLM_BASE_URL", "").rstrip("/")
+    key = os.environ.get("KEEL_LLM_KEY", "")
+    if not base or not key:
+        return None
+    if not base.endswith("/v1"):
+        base += "/v1"
+    return base, key
+
+
+def _gateway_model(configured: str, *, fallback: bool) -> str:
+    """网关只认别名。没指定时仍用配置里的型号，让缺配在调用时暴露出来。"""
+    chosen = os.environ.get("KEEL_LLM_FALLBACK" if fallback else "KEEL_LLM_MODEL", "")
+    return chosen or configured
 
 
 class LlmNotConfigured(RuntimeError):
@@ -452,17 +470,18 @@ class LlmClient:
         #
         # 备选客户端沿用同一份 llm_cfg（_fallback_client 里 merge），因此这两个
         # 值对它同样生效；要给备选单独放宽，在 fallback 段里覆写即可。
-        import os
-
-        gateway = os.environ.get("KEEL_LLM_BASE_URL")
-        gateway_key = os.environ.get("KEEL_LLM_KEY")
-        if gateway and gateway_key:
+        gateway = _gateway_endpoint()
+        if gateway is not None:
             # 薄网关不接受厂商私有的思考参数。影子期只在这两个变量都存在时改道。
-            base_url, api_key, extra = gateway, gateway_key, {}
+            # 网关只认自己的模型别名，问数配置里的厂商型号要用 KEEL_LLM_MODEL 换掉。
+            base_url, api_key = gateway
+            extra = {}
+            model = _gateway_model(self.llm_cfg["model"], fallback=self.is_fallback)
         else:
             base_url, api_key, extra = self.llm_cfg["base_url"], key, kwargs
+            model = self.llm_cfg["model"]
         self._model = ChatOpenAI(
-            model=self.llm_cfg["model"],
+            model=model,
             base_url=base_url,
             api_key=api_key,
             temperature=float(self.llm_cfg.get("temperature", 0)),
