@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -252,11 +253,14 @@ def _seed(path: Path, rows: list[dict]) -> None:
 
 @pytest.fixture
 def seeded(zcfg):
+    # 统计接口默认只看最近 30 天。日期写死在窗口起点那天，过了那天 calls 会变成 0，
+    # 列表接口却仍返回全部行，用例就分不清是范围收窄还是记录滑出窗口。
+    now = datetime.now(timezone(timedelta(hours=8)))
     _seed(Path(zcfg.audit_log), [
-        {"trace_id": "a" * 12, "ts": "2026-09-05T10:00:00+08:00", "kind": "sql",
+        {"trace_id": "a" * 12, "ts": now.strftime("%Y-%m-%dT%H:%M:%S+08:00"), "kind": "sql",
          "user": "lin", "role": "PRODUCT", "question": "产品问的", "elapsed_ms": 5},
-        {"trace_id": "b" * 12, "ts": "2026-09-05T10:01:00+08:00", "kind": "sql",
-         "user": "owner", "role": "DATA_OWNER", "question": "负责人问的", "elapsed_ms": 5},
+        {"trace_id": "b" * 12, "ts": (now + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S+08:00"),
+         "kind": "sql", "user": "owner", "role": "DATA_OWNER", "question": "负责人问的", "elapsed_ms": 5},
     ])
     return zcfg
 
