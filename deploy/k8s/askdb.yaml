@@ -36,7 +36,7 @@ spec:
   # ⚠️ 应用前先确认节点装得下：`kubectl describe node <node> | grep -A6 Allocated`。
   #    上一版注释记录节点内存已用 75%。这里把 requests 压得很低（4×256Mi=1Gi）
   #    正是为了好调度，limits 才是真正的上限。
-  replicas: 4
+  replicas: 2
   strategy:
     type: RollingUpdate
     # maxSurge 保持 0：节点内存紧，滚动期间不额外撑起第五个 Pod。
