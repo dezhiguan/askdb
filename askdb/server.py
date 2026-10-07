@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import os
 import secrets
 import time
@@ -755,6 +756,12 @@ def fallback_status(cfg: Config) -> dict[str, Any]:
     }
 
 
+def skip_health_telemetry(scope: dict) -> bool:
+    """探针不进追踪。FastAPI 会给每个请求建 span，副本上的健康检查会把 Langfuse 挤满。"""
+    path = scope.get("path") or ""
+    return path == "/api/health" or path.startswith("/api/health/") or path == "/v1/health" or path.startswith("/v1/health/")
+
+
 def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     cfg: Config = load(config_path)
     # 后台池按配置定容。交接是常态路径（阈值 10s、实测 p50 9.6s），
@@ -763,7 +770,14 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
     _async_runner.configure(
         pool_size=int((cfg.raw.get("agent", {}) or {}).get(
             "async_pool_size", _async_runner.DEFAULT_POOL_SIZE)))
-    app = FastAPI(title="askdb", docs_url="/api/docs", openapi_url="/api/openapi.json")
+    app_kwargs: dict[str, Any] = {
+        "title": "askdb",
+        "docs_url": "/api/docs",
+        "openapi_url": "/api/openapi.json",
+    }
+    if "telemetry" in inspect.signature(FastAPI).parameters:
+        app_kwargs["telemetry"] = {"exclude": skip_health_telemetry}
+    app = FastAPI(**app_kwargs)
     from .keel_shadow import mount as _mount_keel
 
     _mount_keel(app, cfg)

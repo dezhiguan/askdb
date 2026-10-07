@@ -34,6 +34,16 @@ def test_index_serves_page(client):
     assert '<div id="root"></div>' in r.text
 
 
+def test_health_probe_is_left_out_of_telemetry(client):
+    exclude = getattr(client.app, "_telemetry", {}).get("exclude")
+    assert exclude is not None
+    assert exclude({"path": "/api/health"}) is True
+    assert exclude({"path": "/api/health/"}) is True
+    assert exclude({"path": "/v1/health"}) is True
+    assert exclude({"path": "/api/ask"}) is False
+    assert client.get("/api/health").status_code == 200
+
+
 def test_health_reports_datasource_and_llm(client, cfg, monkeypatch):
     monkeypatch.delenv(cfg.llm["api_key_env"], raising=False)
     d = client.get("/api/health").json()
