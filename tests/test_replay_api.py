@@ -89,6 +89,22 @@ def test_shadow_comparison_is_available_without_result_rows(cfg, monkeypatch):
     assert "must not escape" not in result.text
 
 
+def test_empty_shadow_comparison_is_not_a_comparison(cfg, monkeypatch):
+    """普通提问把 shadow_comparison 落成 {}。复放若原样送出，前端会当对照去读
+    layers.sql，渲染抛错，审计行一点就整页空白。"""
+    from askdb.trace import write_audit
+
+    client = _client(cfg, monkeypatch, replay_api=True)
+    trace_id = "abcd1234abce"
+    write_audit(cfg, {"trace_id": trace_id, "thread_id": trace_id,
+                      "kind": "ask", "source": "builtin",
+                      "question": "有用数最高的评价是哪几条",
+                      "shadow_comparison": {}})
+    result = client.get(f"/api/replay?trace_id={trace_id}")
+    assert result.status_code == 200
+    assert result.json()["shadow_comparison"] is None
+
+
 def test_rate_limited_separately(cfg, monkeypatch):
     client = _client(cfg, monkeypatch, replay_api=True)
     monkeypatch.setattr(server, "_REPLAY_RL", server._RateLimit(limit=3))

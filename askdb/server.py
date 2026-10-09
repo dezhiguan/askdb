@@ -2509,6 +2509,12 @@ def create_app(config_path: str = "config/askdb.yaml") -> FastAPI:
             except Exception:
                 snapshots = []
         out["snapshots"] = snapshots
+        # 普通提问也会把 shadow_comparison 写成 {}（Result 字段的默认空字典），
+        # 那不是一次影子对照。空对象到了前端仍是真值，复放抽屉去读 layers.sql
+        # 会抛，整页白屏。没有 layers 就不要发出去。
+        shadow = out.get("shadow_comparison")
+        if not isinstance(shadow, dict) or not isinstance(shadow.get("layers"), dict):
+            out["shadow_comparison"] = None
         return JSONResponse(out)
 
     # ---------- 身份与权限 ----------
