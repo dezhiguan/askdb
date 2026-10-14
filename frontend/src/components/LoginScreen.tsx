@@ -225,6 +225,9 @@ export function LoginScreen({ me, onClose, onDone, onSkip, notify, dismissible =
           </form>
         </section>
       </div>
+      <footer className="icp-footer">
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">闽ICP备2026020389号-1</a>
+      </footer>
     </div>
   )
 }
