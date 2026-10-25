@@ -248,3 +248,19 @@ def test_contract_input_is_fixed_whitelist_and_full_prompt_coverage():
     assert parse('ordinary question') is None
     with pytest.raises(ValueError):
         parse(json.dumps({'keel_eval': 'structured-contract-v1', 'prompt': 'arbitrary', 'human': 'x'}))
+
+
+def test_contract_numeric_scoring_handles_format_without_accepting_wrong_numbers():
+    from evals.scorers import contains
+    assert contains('共有 94,976 行', '94976')
+    assert contains('共有94976行', '94976')
+    for value in ['194976', '949760', '-94976', '94976.1']:
+        assert not contains(value, '94976')
+
+
+def test_dataset_archives_only_the_exact_builtin_protocol_scaffold():
+    from evals.prepare_dataset import protocol_placeholder
+    scaffold = {'input': 'probe', 'expectedOutput': 'probe ok', 'metadata': {'source': 'keel-builtin', 'case': 'protocol'}}
+    assert protocol_placeholder(scaffold)
+    assert not protocol_placeholder({**scaffold, 'metadata': {'source': 'user'}})
+    assert not protocol_placeholder({**scaffold, 'input': 'real user question'})

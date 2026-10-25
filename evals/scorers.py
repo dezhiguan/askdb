@@ -1,6 +1,7 @@
 """Platform scorer: verify actual result cells, never accept SQL alone as an answer."""
 from collections import Counter
 import json
+import re
 
 
 def answer_correctness(expected, answer, tags):
@@ -17,7 +18,7 @@ def answer_correctness(expected, answer, tags):
                     actual = actual[int(part)] if isinstance(actual, list) else actual[part]
                 if "equals" in check and actual != check["equals"]:
                     return 0.0
-                if "contains" in check and check["contains"] not in actual:
+                if "contains" in check and not contains(actual, check["contains"]):
                     return 0.0
                 if check.get("nonEmpty") and not actual:
                     return 0.0
@@ -39,3 +40,15 @@ def answer_correctness(expected, answer, tags):
             return 0.0
         rows.pop(match)
     return 1.0
+
+
+def contains(actual, expected):
+    if not isinstance(actual, str) or not isinstance(expected, str):
+        return False
+    if not expected.isdigit():
+        return expected in actual
+    # Thousand separators are presentation. Compare complete numeric tokens,
+    # so 94,976 passes while 194976, -94976 or 94976.1 do not.
+    normalized = re.sub(r"(?<![\d,])\d{1,3}(?:,\d{3})+(?![\d,])",
+                        lambda match: match.group().replace(",", ""), actual)
+    return re.search(r"(?<![\d.\-])" + re.escape(expected) + r"(?![\d.])", normalized) is not None
