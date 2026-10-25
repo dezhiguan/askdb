@@ -1,0 +1,90 @@
+# Synthetic evaluation only; never consult production sources.
+datasource:
+  type: duckdb
+  path: ./data/sample.duckdb
+  read_only: true
+tenant:
+  column: org_id
+  default_ctx: 65
+  mode: predicate
+  on_unresolved: reject
+guard:
+  max_rows: 1000
+  max_sql_chars: 6000
+  max_nesting_depth: 100
+  max_scan_rows: 500000
+  statement_timeout_ms: 8000
+  max_retry: 2
+  allow_select_star: false
+  allowed_schemas:
+  - public
+  - main
+  deny_functions:
+  - read_csv
+  - read_parquet
+  - read_json
+  - glob
+  - pg_read_file
+  - pg_ls_dir
+  - lo_import
+  - dblink
+  - pg_sleep
+  - sleep
+  - benchmark
+  - load_file
+  - get_lock
+  - master_pos_wait
+planner:
+  enabled: false
+  max_steps: 3
+  max_carry_rows: 50
+  carry_columns_only: true
+  cost_cap_tokens: 12000
+  on_cap_reached: converge
+schema_rag:
+  mode: keyword
+  top_k: 3
+  max_k: 5
+  fk_expand_max: 3
+  value_link: true
+  coverage_check: shadow
+  token_budget: 12000
+  embedding_model: text-embedding-v4
+  embedding_price_per_1k: 0.0005
+  min_score: 0.35
+  max_metrics: 2
+llm:
+  provider: keel
+  model: chat-default
+  api_key_env: KEEL_LLM_KEY
+  temperature: 0
+observability:
+  store: file
+  audit_log: ./var/keel-eval-audit.jsonl
+  checkpoint_db: ./var/keel-eval-checkpoints.sqlite
+answer_cache:
+  enabled: true
+  ttl_seconds: 60
+  key_prefix: askdb:qcache:dev
+  redis_url_env: ASKDB_REDIS_URL
+tables_file: ./config/schemas/sample-tables.yaml
+metrics_file: ./config/schemas/sample-metrics.yaml
+datasources:
+  allow_runtime_add: true
+  strict_account_check: false
+semantic_cache:
+  mode: shadow
+  answer_threshold: 0.82
+  plan_threshold: 0.75
+  answer_ttl_seconds: 600
+  plan_ttl_seconds: 86400
+  max_entries_per_scope: 500
+  probe_limit: 5
+identity:
+  enabled: true
+  password_env: ASKDB_IDENTITY_PG_PASSWORD
+agent:
+  enabled: true
+multi_agent:
+  enabled: false
+  mode: 'off'

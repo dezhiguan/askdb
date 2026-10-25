@@ -24,7 +24,7 @@ COPY askdb/__init__.py ./askdb/
 # 这一项漏掉的表现与上面两项同类且更隐蔽 —— 镜像照常构建、Pod 照常起、
 # 页面照常开，只在第一次查询时报"缺少 PostgreSQL 驱动"，
 # 而错误落在数据源那一侧，很容易被当成库或网络的问题去查。
-RUN pip install --no-cache-dir ".[web,redis,postgres]"
+RUN pip install --no-cache-dir ".[web,redis,postgres,legacy-observe]"
 
 # Keel SDK 不在 PyPI，而且构建时要读仓库根的 contracts/。
 # 只在 KEEL_SHADOW=1 时用来挂 /v1/invoke；缺它时挂载会被跳过，控制台调用进不来。

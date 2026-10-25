@@ -1,0 +1,24 @@
+# Build the SDK wheel from the pinned Keel checkout; never install a same-name
+# public PyPI package. The build context contains wheel/keel_sdk-*.whl.
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+COPY wheel/ /tmp/wheel/
+COPY pyproject.toml README.md ./
+COPY askdb/__init__.py ./askdb/
+RUN pip install '.[web,redis,postgres]' /tmp/wheel/keel_sdk-*.whl \
+ && pip install 'langfuse>=4.7.0' \
+ && rm -rf /tmp/wheel
+COPY askdb ./askdb
+COPY config ./config
+COPY data/__init__.py data/seed.py ./data/
+COPY prompts ./prompts
+COPY agent.yaml ./agent.yaml
+COPY evals ./evals
+RUN python -m data.seed \
+ && useradd --system --uid 10001 askdb \
+ && mkdir -p /app/var /app/.keel \
+ && chown -R 10001:10001 /app/var /app/data /app/.keel
+USER 10001
+EXPOSE 8000
+CMD ["python", "-m", "askdb.cli", "serve", "-c", "config/public.yaml", "--host", "0.0.0.0", "--port", "8000"]

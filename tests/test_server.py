@@ -36,7 +36,14 @@ def test_index_serves_page(client):
 
 def test_health_probe_is_left_out_of_telemetry(client):
     exclude = getattr(client.app, "_telemetry", {}).get("exclude")
-    assert exclude is not None
+    # create_app installs the FastAPI telemetry filter only on versions exposing
+    # that API. Older versions create no FastAPI telemetry spans at all.
+    import inspect
+    if "telemetry" in inspect.signature(server.FastAPI).parameters:
+        assert exclude is not None
+    else:
+        assert exclude is None
+        exclude = server.skip_health_telemetry
     assert exclude({"path": "/api/health"}) is True
     assert exclude({"path": "/api/health/"}) is True
     assert exclude({"path": "/v1/health"}) is True

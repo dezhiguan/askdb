@@ -188,13 +188,19 @@ class VectorIndex:
     # ---------- 嵌入 ----------
 
     def _embedder(self):
-        key = self.cfg.api_key()
+        import os
+        from .llm import _gateway_endpoint
+        gateway = _gateway_endpoint()
+        key = gateway[1] if gateway else self.cfg.api_key()
+        if os.environ.get("KEEL_ENABLED") == "1" and gateway is None:
+            raise EmbeddingUnavailable("Keel embedding requires the model gateway")
         if not key:
             raise EmbeddingUnavailable(
                 f"未配置 {self.cfg.llm['api_key_env']}，无法生成向量。"
             )
         model = self.cfg.raw["schema_rag"].get("embedding_model", "text-embedding-v4")
-        base_url = self.cfg.llm["base_url"]
+        base_url = gateway[0] if gateway else self.cfg.llm["base_url"]
+        model = os.environ.get("KEEL_EMBEDDING_MODEL", model) if gateway else model
         ck = (model, base_url, key)
         with _embed_lock:
             hit = _embedders.get(ck)

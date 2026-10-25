@@ -55,7 +55,8 @@ jobs:
         run: |
           # dev extra 里已包含 fastapi/uvicorn/httpx/pytest —— 之前只装
           # postgres，fastapi 落在 web extra 里没被装上，测试直接 collect 失败
-          uv pip install -e ".[postgres,dev]"
+          uv pip install -e ".[postgres,dev,legacy-observe]"
+          uv pip install "git+https://github.com/dezhiguan/keel.git@$(cat .keel-sdk-ref)#subdirectory=sdk-python"
           echo "${VIRTUAL_ENV}/bin" >> "${GITHUB_PATH}"
 
       - name: Seed sample database

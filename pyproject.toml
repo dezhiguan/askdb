@@ -18,7 +18,6 @@ dependencies = [
     "langchain-core>=0.3",
     "langchain-openai>=0.3",
     # LLM 观测（自托管 Langfuse，v2 服务端配 v2 SDK；import 路径在 v3 有变，锁大版本）
-    "langfuse>=2.60,<3",
     # 锁大版本：guard 的判定直接依赖 AST 的类层次，而这层会在大版本间无声地变。
     # 实测 25 → 30 动了两处：Except / Intersect 从 Union 的子类改挂到新的
     # SetOperation 之下（把 R-02 白名单收严成拒 EXCEPT），CTE 的 args 键从
@@ -49,6 +48,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+legacy-observe = ["langfuse>=2.60,<3"]
 # 保留为兼容别名：psycopg 自 2026-09-06 起是主依赖（数据源注册表要用）。
 # 不删是因为 CI 与部署文档里到处都是 ".[postgres,dev]"，删了会一起红。
 postgres = []
