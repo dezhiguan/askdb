@@ -117,7 +117,8 @@ def test_real_sdk_invoke_has_auth_environment_steps_and_result(governed, cfg, mo
         assert active.get() is not None
         assert query_cfg.db_type == "duckdb"
         assert query_cfg.path == "config/keel-eval.yaml"
-        kwargs["on_span"]({"name": "execute_sql"})
+        from askdb.trace import StepTrace
+        kwargs["on_span"](StepTrace("execute_sql", status="degraded"))
         return AskResult(True, text, kwargs["trace_id"], 65, reasoning="共 5 条", columns=["count"], rows=[[5]], row_count=1)
     monkeypatch.setattr("askdb.ask.run_ask", query)
     app = FastAPI()
@@ -137,6 +138,8 @@ def test_real_sdk_invoke_has_auth_environment_steps_and_result(governed, cfg, mo
         assert "event: final" in response.text and "event: step" in response.text, response.text
         assert "count" in response.text and "5" in response.text
         assert "prompt_versions" in response.text
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        assert any(event.get("name") == "execute_sql" and event.get("status") == "fallback" for event in events)
 
 
 def test_startup_does_not_silently_remove_models(cfg, monkeypatch):

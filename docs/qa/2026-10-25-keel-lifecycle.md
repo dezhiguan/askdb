@@ -20,7 +20,8 @@
 3. 把方法论追加块纳入命名提示词模板，保留完整模板和动态变量；相邻 SQL 规则变量合并以避免歧义。
 4. 真实 Qwen 思考模式返回额外括号导致工具参数 JSON 无效。已把 askdb-staging / askdb-prod 的关闭思考配置合并到网关 request-defaults，并成功滚动更新两副本网关；保留其他智能体条目。原配置备份于节点 `/tmp/askdb-request-defaults-before.json`。结构化格式错误最多重试一次，授权/预算等错误不按格式错误重试。
 5. 评分器逐行核对实际表格，允许额外核对列；SQL 或叙述里出现答案不计通过，调换分组计数也不计通过。
-6. 测试 Key `askdb-staging` 与早期 `askdb-verify-20261025-staging` 均已 block；没有把测试凭据写入仓库。正式注册时应由底座创建/轮换自己的凭据。
+6. 使用实际 StepTrace 对象补测调试 SSE，准确保留节点名称与 ok/fallback/failed 状态。
+7. 测试 Key `askdb-staging` 与早期 `askdb-verify-20261025-staging` 均已 block；没有把测试凭据写入仓库。正式注册时应由底座创建/轮换自己的凭据。
 
 ## 待完成
 

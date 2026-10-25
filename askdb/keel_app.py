@@ -104,12 +104,15 @@ async def invoke(request, ctx, cfg):
     binding = active.set(invocation)
 
     def progress(span):
-        name = getattr(span, "name", None)
-        if name is None and isinstance(span, dict):
-            name = span.get("name") or span.get("step")
+        from .keel_shadow import keel_status
+        name = getattr(span, "step", None) or getattr(span, "name", None)
+        status = getattr(span, "status", "ok")
+        if isinstance(span, dict):
+            name = span.get("step") or span.get("name")
+            status = span.get("status", "ok")
         name = str(name or "query")
         name = re.sub(r"[^a-zA-Z0-9_.:-]", "_", name)[:100]
-        invocation.loop.call_soon_threadsafe(ctx.step, name)
+        invocation.loop.call_soon_threadsafe(ctx.step, name, keel_status(status))
 
     try:
         result = await asyncio.to_thread(
