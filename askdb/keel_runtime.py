@@ -51,13 +51,19 @@ class Invocation:
         finally:
             tool_context.reset(binding)
 
-    async def structured(self, schema, system: str, human: str, *, timeout: float = 20):
+    async def structured(self, schema, system: str, human: str, *, timeout: float = 20, temperature: float = 0):
         from .keel_prompts import resolve
         from keel.llm.client import ChatResult
         from .llm import LlmUsage
 
         name, variables = resolve(system)
         prompt = await self.ctx.prompt(name)
+        # Keep AskDB's configured sampling when the managed prompt has no
+        # override. Copy the reference so another invocation's cached prompt
+        # keeps its original versioned configuration.
+        from copy import copy
+        prompt = copy(prompt)
+        prompt.config = {"temperature": temperature, **prompt.config}
         messages = [{"role": "system", "content": prompt.compile(**variables)},
                     {"role": "user", "content": human}]
         tool = {"type": "function", "function": {

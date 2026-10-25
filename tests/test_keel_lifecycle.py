@@ -40,20 +40,21 @@ class Draft(BaseModel):
     sql: str
 
 
-def test_structured_uses_ctx_model_prompt_and_schema_validation(cfg):
+@pytest.mark.parametrize("managed_config,configured,expected", [({}, 0, 0), ({}, 0.15, 0.15), ({"temperature": 0.35}, 0, 0.35)])
+def test_structured_uses_ctx_model_prompt_and_schema_validation(cfg, managed_config, configured, expected):
     from askdb.llm import LlmClient
     from keel.llm.client import ChatResult, ToolCall
     from keel.prompts import Prompt
 
     async def execute():
-        prompt = Prompt("askdb/fast", 2, "text", False, {}, "managed instructions")
+        prompt = Prompt("askdb/fast", 2, "text", False, dict(managed_config), "managed instructions")
         ctx = SimpleNamespace(prompt=AsyncMock(return_value=prompt),
                               llm=SimpleNamespace(chat=AsyncMock(return_value=ChatResult(
                                   "", (ToolCall("call-1", "Draft", {"sql": "SELECT 1"}),)))))
         invocation = Invocation(ctx, asyncio.get_running_loop())
         binding = active.set(invocation)
         try:
-            client = LlmClient(cfg)
+            client = LlmClient(cfg, llm_cfg={**cfg.llm, "temperature": configured})
             # A platform invocation needs no vendor key, no legacy quota and no ChatOpenAI.
             client._build = lambda: pytest.fail("legacy model was used")
             client.quota.reserve = lambda: pytest.fail("legacy quota was used")
@@ -61,7 +62,10 @@ def test_structured_uses_ctx_model_prompt_and_schema_validation(cfg):
             value, _ = await asyncio.to_thread(client.structured, Draft, system, "question")
             assert value.sql == "SELECT 1"
             kwargs = ctx.llm.chat.call_args.kwargs
-            assert kwargs["prompt"] is prompt and kwargs["emit_tokens"] is False
+            assert kwargs["prompt"].name == prompt.name and kwargs["prompt"].version == prompt.version
+            assert kwargs["prompt"].config["temperature"] == expected
+            assert prompt.config == managed_config
+            assert kwargs["emit_tokens"] is False
             assert ctx.llm.chat.call_args.args[0][0]["content"] == "managed instructions"
             ctx.llm.chat.return_value = ChatResult("", (ToolCall("bad", "Draft", {}),))
             with pytest.raises(ValueError):
