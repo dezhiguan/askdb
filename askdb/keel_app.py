@@ -115,6 +115,15 @@ async def invoke(request, ctx, cfg):
         invocation.loop.call_soon_threadsafe(ctx.step, name, keel_status(status))
 
     try:
+        if ctx.eval_run_id:
+            from .keel_evaluation import parse, run
+            contract = parse(text)
+            if contract is not None:
+                output = await asyncio.to_thread(run, contract, query_cfg)
+                await ctx.audit.record("eval.contract", "low", "allowed",
+                                       payload={"source": source, "kind": contract["prompt"]},
+                                       trace_id=ctx.trace_id, run_id=ctx.run_id)
+                return ctx.final(output)
         result = await asyncio.to_thread(
             run_ask, text, query_cfg, requested_mode="auto", source_configs={source: query_cfg},
             org_id=None, trace_id=ctx.trace_id, thread_id=uuid.uuid4().hex,

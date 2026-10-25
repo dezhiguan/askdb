@@ -56,7 +56,11 @@ jobs:
           # dev extra 里已包含 fastapi/uvicorn/httpx/pytest —— 之前只装
           # postgres，fastapi 落在 web extra 里没被装上，测试直接 collect 失败
           uv pip install -e ".[postgres,dev,legacy-observe]"
-          uv pip install "git+https://github.com/dezhiguan/keel.git@$(cat .keel-sdk-ref)#subdirectory=sdk-python"
+          mkdir -p wheel
+          SDK_TAG="$(cat .keel-sdk-version)"
+          SDK_VERSION="${SDK_TAG#sdk-v}"
+          curl --fail --location --retry 3 "https://github.com/dezhiguan/keel/releases/download/${SDK_TAG}/keel_sdk-${SDK_VERSION}-py3-none-any.whl" -o "wheel/keel_sdk-${SDK_VERSION}-py3-none-any.whl"
+          uv pip install wheel/keel_sdk-*.whl
           echo "${VIRTUAL_ENV}/bin" >> "${GITHUB_PATH}"
 
       - name: Seed sample database
@@ -169,6 +173,15 @@ jobs:
           echo "push_image=${PUSH_REGISTRY}/askdb:${TAG}" >> "${GITHUB_OUTPUT}"
           echo "pull_image=${PULL_REGISTRY}/askdb:${TAG}" >> "${GITHUB_OUTPUT}"
 
+      - name: Download pinned governed SDK
+        id: sdk
+        run: |
+          mkdir -p wheel
+          SDK_TAG="$(cat .keel-sdk-version)"
+          SDK_VERSION="${SDK_TAG#sdk-v}"
+          curl --fail --location --retry 3 "https://github.com/dezhiguan/keel/releases/download/${SDK_TAG}/keel_sdk-${SDK_VERSION}-py3-none-any.whl" -o "wheel/keel_sdk-${SDK_VERSION}-py3-none-any.whl"
+          echo "version=${SDK_VERSION}" >> "${GITHUB_OUTPUT}"
+
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -183,6 +196,8 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile.keel
+          build-args: KEEL_SDK_VERSION=${{ steps.sdk.outputs.version }}
           push: true
           provenance: false
           tags: ${{ steps.image.outputs.push_image }}
@@ -244,10 +259,12 @@ jobs:
           if [[ -z "${ACR_REGISTRY}" ]]; then echo "ACR_REGISTRY must be set"; exit 1; fi
           echo "将部署镜像 tag: ${GITHUB_SHA::12}"
           # 占位符在 CI 侧替换，服务器上不做字符串拼接 —— 少一处出错的地方
-          sed "s|PLACEHOLDER_IMAGE|${IMAGE}|" deploy/k8s/askdb.yaml > /tmp/askdb.rendered.yaml
+          sed "s|PLACEHOLDER_IMAGE|${IMAGE}|" deploy/k8s/askdb-keel.yaml > /tmp/askdb.rendered.yaml
           grep -q "PLACEHOLDER_IMAGE" /tmp/askdb.rendered.yaml && { echo "镜像占位符未被替换"; exit 1; }
           grep -q "image: .\+askdb:" /tmp/askdb.rendered.yaml || { echo "渲染后的 manifest 没有镜像名"; exit 1; }
-          scp -F ~/.ssh/config /tmp/askdb.rendered.yaml askdb-app:/tmp/askdb.yaml
+          scp -F ~/.ssh/config /tmp/askdb.rendered.yaml askdb-app:/tmp/askdb-keel-runtime.yaml
+          scp -F ~/.ssh/config deploy/k8s/askdb-keel-public.yaml askdb-app:/tmp/askdb-keel-public.yaml
+          scp -F ~/.ssh/config scripts/deploy_keel_runtime.py askdb-app:/tmp/askdb-deploy-keel-runtime.py
           ACR_PASSWORD_B64="$(printf '%s' "${ACR_PASSWORD}" | base64 -w0)"
           timeout 15m ssh "${SSH_OPTS[@]}" askdb-app \
             "ACR_REGISTRY='${ACR_REGISTRY}' ACR_USERNAME='${ACR_USERNAME}' ACR_PASSWORD_B64='${ACR_PASSWORD_B64}' bash -s" <<'EOF'
@@ -259,9 +276,7 @@ jobs:
             --docker-username="${ACR_USERNAME}" \
             --docker-password="${ACR_PASSWORD}" \
             --dry-run=client -o yaml | kubectl apply -f -
-          kubectl apply -f /tmp/askdb.yaml
-          kubectl -n askdb rollout status deployment/askdb --timeout=180s
-          rm -f /tmp/askdb.yaml
+          python3 /tmp/askdb-deploy-keel-runtime.py --runtime /tmp/askdb-keel-runtime.yaml --public /tmp/askdb-keel-public.yaml
           EOF
 
   smoke-test:

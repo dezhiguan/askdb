@@ -230,3 +230,21 @@ def test_native_gateway_and_semantic_trace_share_the_actual_otel_id(governed, cf
         assert keel_runtime.run_native("question", cfg, operation=query, trace_id="legacy-query-id") == "ok"
     finally:
         provider.shutdown()
+
+
+def test_contract_scorer_validates_typed_results_and_sql_rows():
+    from evals.scorers import answer_correctness
+    expected = {'checks': [{'path': 'execution.ok', 'equals': True},
+                           {'path': 'execution.data.rows.0.0', 'equals': 94976}]}
+    assert answer_correctness(expected, json.dumps({'execution': {'ok': True, 'data': {'rows': [[94976]]}}}), []) == 1
+    assert answer_correctness(expected, json.dumps({'execution': {'ok': True, 'data': {'rows': [[1]]}}}), []) == 0
+    assert answer_correctness(expected, '94976', []) == 0
+
+
+def test_contract_input_is_fixed_whitelist_and_full_prompt_coverage():
+    from askdb.keel_evaluation import CONTRACTS, parse
+    from askdb.keel_prompts import DEFINITIONS
+    assert set(CONTRACTS) | {'intent', 'query-agent'} == set(DEFINITIONS)
+    assert parse('ordinary question') is None
+    with pytest.raises(ValueError):
+        parse(json.dumps({'keel_eval': 'structured-contract-v1', 'prompt': 'arbitrary', 'human': 'x'}))

@@ -1,5 +1,6 @@
 """Platform scorer: verify actual result cells, never accept SQL alone as an answer."""
 from collections import Counter
+import json
 
 
 def answer_correctness(expected, answer, tags):
@@ -7,6 +8,22 @@ def answer_correctness(expected, answer, tags):
         return 0.0
     if expected.get("errorCode"):
         return float(expected["errorCode"] in answer)
+    if "checks" in expected:
+        try:
+            value = json.loads(answer)
+            for check in expected["checks"]:
+                actual = value
+                for part in check["path"].split("."):
+                    actual = actual[int(part)] if isinstance(actual, list) else actual[part]
+                if "equals" in check and actual != check["equals"]:
+                    return 0.0
+                if "contains" in check and check["contains"] not in actual:
+                    return 0.0
+                if check.get("nonEmpty") and not actual:
+                    return 0.0
+            return float(bool(expected["checks"]))
+        except (ValueError, TypeError, KeyError, IndexError):
+            return 0.0
     # The SQL and narrative may include the expected number by coincidence.
     # Require every expected cell in the returned Markdown table.
     table = "\n".join(line for line in answer.splitlines() if line.lstrip().startswith("|"))

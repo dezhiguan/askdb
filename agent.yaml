@@ -102,3 +102,8 @@ spec:
       minScore: 0.95
       maxRegression: 0.02
       byTag: true
+  kind: agent
+  capabilities:
+    toolCalling: true
+    loop: true
+    memory: true
