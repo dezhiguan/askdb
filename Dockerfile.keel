@@ -1,5 +1,5 @@
-# Build the SDK wheel from the pinned Keel checkout; never install a same-name
-# public PyPI package. The build context contains wheel/keel_sdk-*.whl.
+# Install the pinned official Keel release wheel from wheel/.
+# Never install a same-name public PyPI package.
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 WORKDIR /app

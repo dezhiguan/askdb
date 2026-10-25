@@ -63,7 +63,7 @@ observability:
   audit_log: ./var/keel-eval-audit.jsonl
   checkpoint_db: ./var/keel-eval-checkpoints.sqlite
 answer_cache:
-  enabled: true
+  enabled: false
   ttl_seconds: 60
   key_prefix: askdb:qcache:dev
   redis_url_env: ASKDB_REDIS_URL
@@ -73,7 +73,7 @@ datasources:
   allow_runtime_add: true
   strict_account_check: false
 semantic_cache:
-  mode: shadow
+  mode: off
   answer_threshold: 0.82
   plan_threshold: 0.75
   answer_ttl_seconds: 600
