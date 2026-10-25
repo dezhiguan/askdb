@@ -251,11 +251,11 @@ def test_contract_input_is_fixed_whitelist_and_full_prompt_coverage():
 
 
 def test_contract_numeric_scoring_handles_format_without_accepting_wrong_numbers():
-    from evals.scorers import contains
-    assert contains('共有 94,976 行', '94976')
-    assert contains('共有94976行', '94976')
+    from evals.scorers import _contains
+    assert _contains('共有 94,976 行', '94976')
+    assert _contains('共有94976行', '94976')
     for value in ['194976', '949760', '-94976', '94976.1']:
-        assert not contains(value, '94976')
+        assert not _contains(value, '94976')
 
 
 def test_dataset_archives_only_the_exact_builtin_protocol_scaffold():
@@ -264,3 +264,12 @@ def test_dataset_archives_only_the_exact_builtin_protocol_scaffold():
     assert protocol_placeholder(scaffold)
     assert not protocol_placeholder({**scaffold, 'metadata': {'source': 'user'}})
     assert not protocol_placeholder({**scaffold, 'input': 'real user question'})
+
+
+def test_sdk_loads_only_the_three_argument_answer_scorer():
+    from keel.eval.run import load_scorers
+    scorers = load_scorers(ROOT / "evals/scorers.py")
+    assert [scorer.__name__ for scorer in scorers] == ["answer_correctness"]
+    expected = {"checks": [{"path": "parsed.answer", "contains": "94976"}]}
+    assert [scorer(expected, json.dumps({"parsed": {"answer": "94,976行"}}), ["contract"]) for scorer in scorers] == [1.0]
+    assert [scorer(expected, json.dumps({"parsed": {"answer": "194976行"}}), ["contract"]) for scorer in scorers] == [0.0]
