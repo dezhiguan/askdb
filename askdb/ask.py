@@ -59,6 +59,14 @@ def run_ask(question: str, cfg: Config, *, requested_mode: str,
             source_catalog: dict[str, list[str]] | None = None,
             source_names: dict[str, str] | None = None) -> Any:
     """Run the routed question. Shadow keeps the query-agent answer in front."""
+    import os
+    from .keel_runtime import active, run_native
+    if os.environ.get("KEEL_ENABLED") == "1" and active.get() is None:
+        return run_native(question, cfg, requested_mode=requested_mode,
+                          source_configs=source_configs, org_id=org_id, trace_id=trace_id,
+                          thread_id=thread_id, handoff=handoff, on_span=on_span,
+                          user=user, per_user=per_user, route=route,
+                          source_catalog=source_catalog, source_names=source_names)
     from . import agent as agent_mod
     from . import async_runner
     from .multiagent import runtime as multi_runtime
@@ -109,6 +117,11 @@ def resume_ask(thread_id: str, cfg: Config, *, clarification: str = "",
     from . import agentgraph
     from .multiagent import runtime as multi_runtime
 
+    import os
+    from .keel_runtime import active, run_native
+    if os.environ.get("KEEL_ENABLED") == "1" and active.get() is None:
+        return run_native(thread_id, cfg, operation=resume_ask, clarification=clarification,
+                          question=question, org_id=org_id, handoff=handoff)
     if _orchestration_checkpoint(thread_id, cfg):
         return multi_runtime.resume_multi_agent(
             thread_id, cfg, clarification=clarification, question=question,

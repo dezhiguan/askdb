@@ -358,7 +358,9 @@ class LlmClient:
         备选模型也照扣 —— 主模型失败后切备选是**又一次**真实的厂商调用，
         不扣就等于失败重试不要钱。
         """
-        self.quota.reserve()
+        from .keel_runtime import active
+        if active.get() is None:
+            self.quota.reserve()
 
     # ---- 备选模型 ----
 
@@ -423,7 +425,8 @@ class LlmClient:
     def _build(self):
         if self._model is not None:
             return self._model
-        key = self._api_key()
+        gateway = _gateway_endpoint()
+        key = gateway[1] if gateway else self._api_key()
         if not key:
             env = self.llm_cfg["api_key_env"]
             raise LlmNotConfigured(
@@ -493,6 +496,20 @@ class LlmClient:
 
     def structured(self, schema, system: str, human: str) -> tuple[Any, LlmUsage]:
         """通用的结构化调用 —— 规划与评估节点共用，不重复一套调用逻辑。"""
+        from .keel_runtime import active
+        invocation = active.get()
+        if invocation is not None:
+            t0 = time.perf_counter()
+            prompt = _prompt_text(system, human)
+            try:
+                parsed, usage = invocation.call(invocation.structured(
+                    schema, system, human, timeout=float(self.llm_cfg.get("timeout_s", 20))))
+            except Exception as exc:
+                invocation.failure = exc
+                self._note_fail(t0, exc, "平台调用失败", prompt=prompt)
+                raise
+            self._note_ok(t0, usage, prompt=prompt)
+            return parsed, usage
         self._reserve()
         model = self._build().with_structured_output(
             schema, method="function_calling", include_raw=True
@@ -555,10 +572,6 @@ class LlmClient:
         #   默认可能落到 JSON mode（response_format=json_object），而百炼要求
         #   该模式下消息里必须出现 "json" 字样，否则直接 400。
         #   Tool Calls 在 DashScope 与 DeepSeek 两边都支持，且比 JSON mode 更稳。
-        self._reserve()
-        model = self._build().with_structured_output(
-            SqlDraft, method="function_calling", include_raw=True
-        )
         system = SYSTEM.format(
             dialect=dialect,
             interval_example=INTERVAL_EXAMPLE.get(dialect, DEFAULT_INTERVAL_EXAMPLE))
@@ -572,6 +585,13 @@ class LlmClient:
         else:
             human = USER.format(schema=schema_prompt, question=question,
                                 step=step, now=now)
+
+        from .keel_runtime import active
+        if active.get() is not None:
+            return self.structured(SqlDraft, system, human)
+        self._reserve()
+        model = self._build().with_structured_output(
+            SqlDraft, method="function_calling", include_raw=True)
 
         prompt = _prompt_text(system, human)
         t0 = time.perf_counter()

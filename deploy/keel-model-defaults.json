@@ -1,0 +1,10 @@
+{
+  "askdb-staging": {
+    "qwen3.8-flash": {"enable_thinking": false},
+    "deepseek-flash": {"thinking": {"type": "disabled"}}
+  },
+  "askdb-prod": {
+    "qwen3.8-flash": {"enable_thinking": false},
+    "deepseek-flash": {"thinking": {"type": "disabled"}}
+  }
+}

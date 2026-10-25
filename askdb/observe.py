@@ -40,6 +40,8 @@ def _lf():
 
 def report(record: dict[str, Any]) -> None:
     """按审计记录的形状上报一条 trace。异常一律吞掉。"""
+    if os.environ.get("KEEL_ENABLED") == "1":
+        return  # The SDK owns governed generation spans. Legacy files remain intact.
     lf = _lf()
     if lf is None:
         return

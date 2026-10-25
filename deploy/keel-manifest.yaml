@@ -4,20 +4,37 @@ metadata:
   name: askdb
   displayName: 问数
   owner: 数据平台组 / zhou
+  category: data
 spec:
   runtime:
     type: code
     language: python
-    endpoint: http://askdb.askdb.svc.cluster.local:8000
+    endpoint: http://askdb.agents.svc.cluster.local:8000
     liveness: k8s
   auth:
     audience: askdb
-    roles: [analyst]
+    roles:
+    - analyst
   models:
-    default: qwen-plus
-    fallback: [deepseek-v3]
-    budget: { dailyCny: 30, maxSteps: 6 }
-  tools: []
+    default: chat-default
+    budget:
+      dailyCny: 30
+      maxSteps: 12
+    fallback:
+    - deepseek-flash
+  tools:
+  - name: search_schema
+    access: read
+    risk: low
+  - name: get_table_schema
+    access: read
+    risk: low
+  - name: execute_sql
+    access: read
+    risk: low
+  - name: analyze_result
+    access: read
+    risk: low
   delegates: []
   guardrails:
     inputInjection: enforce
@@ -26,32 +43,67 @@ spec:
   audit:
     retentionDays: 180
     captureFields:
-      - trace_id
-      - ts
-      - kind
-      - thread_id
-      - org_id
-      - role
-      - user
-      - question
-      - rejected_by
-      - attempts
-      - rows_returned
-      - elapsed_ms
-      - cost_cny
-      - step_count
-      - multi_step
-      - source
-      - source_name
-      - sources
-      - execution_mode
-      - cached
-      - saved_cny
-      - saved_ms
+    - trace_id
+    - ts
+    - kind
+    - thread_id
+    - org_id
+    - role
+    - user
+    - question
+    - rejected_by
+    - attempts
+    - rows_returned
+    - elapsed_ms
+    - cost_cny
+    - step_count
+    - multi_step
+    - source
+    - source_name
+    - sources
+    - execution_mode
+    - cached
+    - saved_cny
+    - saved_ms
   prompts:
     source: langfuse
     label: production
+    items:
+    - name: assess
+      type: text
+    - name: fast
+      type: text
+    - name: intent
+      type: text
+    - name: plan
+      type: text
+    - name: query-agent
+      type: text
+    - name: replan
+      type: text
+    - name: semantic
+      type: text
+    - name: sql
+      type: text
+    - name: supervisor-decide
+      type: text
+    - name: supervisor
+      type: text
+    - name: synthesizer
+      type: text
+    - name: verifier
+      type: text
   eval:
     dataset: askdb/nl2sql
-    evaluators: [llm_judge]
-    gate: { minScore: 0.85, maxRegression: 0.02, byTag: false }
+    evaluators:
+    - answer_correctness
+    - safety
+    gate:
+      minScore: 0.95
+      maxRegression: 0.02
+      byTag: true
+  kind: agent
+  capabilities:
+    toolCalling: true
+    loop: true
+    memory: true

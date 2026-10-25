@@ -448,6 +448,10 @@ def invoke(name: str, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
             ok=False, tool=name,
             error="副作用工具必须经人工确认闸，不能由 LLM 直接触发",
             note="HITL required")
+    from .keel_runtime import active
+    invocation = active.get()
+    if invocation is not None:
+        return invocation.call(invocation.tool(name, args, ctx))
     return t.call(args, ctx)
 
 

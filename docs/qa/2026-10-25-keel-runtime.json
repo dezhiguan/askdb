@@ -1,0 +1,241 @@
+{
+  "date": "2026-10-25",
+  "scope": "real Keel model gateway and synthetic database; local prompt copies; not a release gate",
+  "cases": [
+    {
+      "id": "keel-all-rows",
+      "traceId": "cd567f394bd0a0a5b749bd069af0a118",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 1,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "68c1908fe61e448dbe17e89dde045594"
+      }
+    },
+    {
+      "id": "keel-completed",
+      "traceId": "1930821d7fd364aa67fcff3d8cfd15f4",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 1,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "15850f1c836a4b808b819c688c54f493"
+      }
+    },
+    {
+      "id": "keel-failed",
+      "traceId": "5e8e5e14d6bc96927ceb5ce38ca12398",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 1,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "d0f9c0be7faf4dec8fd7c89bcbec3194"
+      }
+    },
+    {
+      "id": "keel-pending",
+      "traceId": "524f555669f6c6d8d9aba58a8733a112",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 1,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "0e0c1af11f6e431f8c4cb9624c4b781c"
+      }
+    },
+    {
+      "id": "keel-processing",
+      "traceId": "1c2155558c340d227b80350ac8feb366",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 4,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "9e91ca394afd4b2d90fbf9ec9e3103cc"
+      }
+    },
+    {
+      "id": "keel-kbs",
+      "traceId": "411f8a859fb1fda1c27cf6c9bf6a9aeb",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 1,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "7f80f2c8dd7b4204a9f89c65f611cb8b"
+      }
+    },
+    {
+      "id": "keel-usage",
+      "traceId": "80551619c180c6b34f76bc6fa7669c58",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 1,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "17ac01b0cfc54095bdbae8938cb4bf32"
+      }
+    },
+    {
+      "id": "keel-pdf",
+      "traceId": "126a7980fd06c6a91057d2564e6d0020",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 1,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "381bd5cb5e9f41d0a5ebc2ef71eca2aa"
+      }
+    },
+    {
+      "id": "keel-docx",
+      "traceId": "cc2e6fdd4c644fba552d317f63a6ca2e",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 1,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "5e32ad38ba344928b4de3618d2e708f8"
+      }
+    },
+    {
+      "id": "keel-states",
+      "traceId": "cfaca11d6936ecee11f62e5ae5ec7bb8",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 4,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "08fefe8774c74f92aa6ba13c06633ee1"
+      }
+    },
+    {
+      "id": "keel-types",
+      "traceId": "930b4223a4b88e99664cb6c57f37b6cc",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 6,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "aeacf4c37bf74a3b84e4d339dd1358b1"
+      }
+    },
+    {
+      "id": "keel-models",
+      "traceId": "3ae60a58ae5caa8ebaa338bf1c8a1cae",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 4,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "0cb2f06efcf345d78ca2b144f5442ccf"
+      }
+    },
+    {
+      "id": "keel-stages",
+      "traceId": "03d3bc2d57fea3eacd6d6fee5dc4210f",
+      "score": 1.0,
+      "error": null,
+      "promptFallback": true,
+      "promptVersions": {},
+      "result": {
+        "ok": true,
+        "row_count": 4,
+        "rejected_by": null,
+        "execution_mode": "single",
+        "source": "builtin",
+        "thread_id": "185ae9b2c8694fb8b2156b5fe7890f8a"
+      }
+    },
+    {
+      "id": "keel-injection",
+      "traceId": "46cef39b1ea95a9f8796691efd3a285b",
+      "score": 1.0,
+      "error": "GUARD_INJECTION_BLOCKED",
+      "promptFallback": null,
+      "promptVersions": {},
+      "result": null
+    }
+  ],
+  "passed": 14,
+  "total": 14,
+  "evidence": {
+    "langfuseObservations": 28,
+    "trace": "cd567f394bd0a0a5b749bd069af0a118",
+    "types": [
+      "AGENT",
+      "GENERATION",
+      "GUARDRAIL",
+      "TOOL"
+    ],
+    "settledAttemptsIncludingDiagnostics": 46,
+    "costCnyIncludingDiagnostics": 0.055442,
+    "auditStatus": 200,
+    "auditEventsOnQueriedReplica": 3,
+    "auditPayloadsEmpty": true
+  },
+  "formalLifecycleAcceptance": "pending valid console session"
+}

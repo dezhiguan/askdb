@@ -64,3 +64,6 @@ evals/*.json
 # 结果文件只含逐题通过与否、失败原因、trace_id、耗时与成本，**不含任何数据行**。
 evals/results/*
 !evals/results/*.json
+
+# Governed image build input; generated from the pinned Keel SDK checkout.
+wheel/

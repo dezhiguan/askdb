@@ -19,7 +19,7 @@ _tracing_ready = False
 
 
 def enabled() -> bool:
-    return os.environ.get("KEEL_SHADOW") == "1"
+    return os.environ.get("KEEL_SHADOW") == "1" or os.environ.get("KEEL_ENABLED") == "1"
 
 
 def keel_status(status: str) -> str:
@@ -35,6 +35,17 @@ def keel_status(status: str) -> str:
 
 def mirror_audit(record: dict[str, Any]) -> None:
     """旧审计写成功之后再镜像一条。KEEL_SHADOW 未打开时什么都不做。"""
+    from .keel_runtime import active
+    invocation = active.get()
+    if invocation is not None:
+        invocation.call(invocation.ctx.audit.record(
+            "legacy." + str(record.get("kind") or "ask"), "low", "allowed",
+            payload=record, trace_id=invocation.ctx.trace_id, run_id=invocation.ctx.run_id))
+        return
+    if os.environ.get("KEEL_ENABLED") == "1":
+        from .keel_runtime import mirror_native_audit
+        mirror_native_audit(record)
+        return
     if not enabled():
         return
     spool = os.environ.get("KEEL_AUDIT_SPOOL_PATH")
@@ -80,17 +91,21 @@ def with_callback(config: dict[str, Any]) -> dict[str, Any]:
 @contextmanager
 def invocation(trace_id: str) -> Iterator[None]:
     """把一次问答收进同一个 OTel trace，子 span 共用这个 trace_id。"""
-    if not enabled():
+    from .keel_runtime import active
+    if not enabled() or active.get() is not None:
         yield
         return
-    _ensure_tracing()
+    from .keel_runtime import active
+    invocation = active.get()
+    if invocation is None:
+        _ensure_tracing()
     span = None
     try:
         from opentelemetry import trace
 
         from keel.tracing import attrs
 
-        tracer = trace.get_tracer("askdb.keel")
+        tracer = invocation.ctx._tracer if invocation else trace.get_tracer("askdb.keel")
         span = tracer.start_as_current_span("askdb", attributes={
             attrs.OBSERVATION_TYPE: "agent",
             attrs.AGENT: "askdb",
@@ -113,14 +128,17 @@ def agent_span(name: str, trace_id: str) -> Iterator[None]:
     if not enabled():
         yield
         return
-    _ensure_tracing()
+    from .keel_runtime import active
+    invocation = active.get()
+    if invocation is None:
+        _ensure_tracing()
     span = None
     try:
         from opentelemetry import trace
 
         from keel.tracing import attrs
 
-        tracer = trace.get_tracer("askdb.keel")
+        tracer = invocation.ctx._tracer if invocation else trace.get_tracer("askdb.keel")
         span = tracer.start_as_current_span(name, attributes={
             attrs.OBSERVATION_TYPE: "agent",
             attrs.AGENT: "askdb",
@@ -139,6 +157,10 @@ def agent_span(name: str, trace_id: str) -> Iterator[None]:
 
 def mount(app, cfg=None) -> None:
     """在原有 HTTP 之外挂上 /v1/invoke。缺配置就跳过，不挡现有接口。"""
+    if os.environ.get("KEEL_ENABLED") == "1":
+        from .keel_app import mount
+        mount(app, cfg)
+        return
     if not enabled():
         return
     manifest = os.environ.get("KEEL_MANIFEST")
@@ -331,7 +353,9 @@ def _callback():
 
         from keel.tracing.langgraph import LangGraphCallback
 
-        return LangGraphCallback("askdb", trace.get_tracer("askdb.keel"))
+        from .keel_runtime import active
+        invocation = active.get()
+        return LangGraphCallback("askdb", invocation.ctx._tracer if invocation else trace.get_tracer("askdb.keel"))
     except Exception:
         return None
 

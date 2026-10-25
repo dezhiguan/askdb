@@ -1,0 +1,79 @@
+# Register agent.yaml in staging first; provisioning creates agents/keel-askdb.
+# Copy only AskDB's business auth/source/DB/Redis Secrets into agents. The governed
+# runtime does not mount askdb-llm or any vendor API credentials.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: askdb
+  namespace: agents
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: askdb-keel}
+  template:
+    metadata:
+      labels: {app: askdb-keel, keel.io/agent: askdb, keel.io/env: staging}
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets: [{name: acr-cred}]
+      hostAliases:
+        - ip: 172.25.90.183
+          hostnames: [jp.cloud.langfuse.com]
+      containers:
+        - name: askdb
+          image: PLACEHOLDER_IMAGE
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8000}]
+          envFrom:
+            - secretRef: {name: keel-askdb}
+            - secretRef: {name: askdb-db}
+            - secretRef: {name: askdb-auth}
+            - secretRef: {name: askdb-sources}
+            - secretRef: {name: askdb-redis, optional: true}
+          env:
+            - {name: KEEL_ENABLED, value: '1'}
+            - {name: KEEL_SHADOW, value: '0'}
+            - {name: KEEL_MANIFEST, value: /app/agent.yaml}
+            - {name: KEEL_TRACE_BUFFER_PATH, value: /app/.keel/traces}
+            - name: KEEL_ASKDB_TOKEN
+              valueFrom:
+                secretKeyRef: {name: askdb-bridge, key: token}
+            - name: KEEL_BRIDGE_TOKEN
+              valueFrom:
+                secretKeyRef: {name: askdb-bridge, key: token}
+          volumeMounts:
+            - {name: state, mountPath: /app/var}
+            - {name: state, mountPath: /app/.keel}
+          readinessProbe:
+            httpGet: {path: /v1/health, port: 8000}
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: {path: /v1/health, port: 8000}
+            initialDelaySeconds: 20
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: '1', memory: 768Mi}
+          securityContext:
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+      securityContext: {fsGroup: 10001}
+      volumes:
+        - name: state
+          persistentVolumeClaim: {claimName: askdb-keel-state}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: askdb-keel-state, namespace: agents}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 2Gi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: askdb, namespace: agents}
+spec:
+  selector: {app: askdb-keel}
+  ports: [{port: 8000, targetPort: 8000}]
