@@ -503,7 +503,8 @@ class LlmClient:
             prompt = _prompt_text(system, human)
             try:
                 parsed, usage = invocation.call(invocation.structured(
-                    schema, system, human, timeout=float(self.llm_cfg.get("timeout_s", 20))))
+                    schema, system, human, timeout=float(self.llm_cfg.get("timeout_s", 20)),
+                    temperature=float(self.llm_cfg.get("temperature", 0))))
             except Exception as exc:
                 invocation.failure = exc
                 self._note_fail(t0, exc, "平台调用失败", prompt=prompt)
