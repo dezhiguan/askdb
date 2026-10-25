@@ -18,7 +18,7 @@ def answer_correctness(expected, answer, tags):
                     actual = actual[int(part)] if isinstance(actual, list) else actual[part]
                 if "equals" in check and actual != check["equals"]:
                     return 0.0
-                if "contains" in check and not contains(actual, check["contains"]):
+                if "contains" in check and not _contains(actual, check["contains"]):
                     return 0.0
                 if check.get("nonEmpty") and not actual:
                     return 0.0
@@ -42,7 +42,7 @@ def answer_correctness(expected, answer, tags):
     return 1.0
 
 
-def contains(actual, expected):
+def _contains(actual, expected):
     if not isinstance(actual, str) or not isinstance(expected, str):
         return False
     if not expected.isdigit():
