@@ -1,0 +1,89 @@
+{
+  "agent": "askdb",
+  "env": "staging",
+  "release": {
+    "version": "v2",
+    "env": "staging",
+    "gatePassed": true,
+    "image": "crpi-toaiinjjt6d90mg6-vpc.cn-guangzhou.personal.cr.aliyuncs.com/my_opc_image/askdb:bcdc05439903",
+    "ciRunUrl": "ev_dd17bc2ce54d4a0b9bb6c13d6c52ae0b"
+  },
+  "runtimeStatus": "ONLINE",
+  "eval": {
+    "runId": "ev_dd17bc2ce54d4a0b9bb6c13d6c52ae0b",
+    "passed": true,
+    "complete": true,
+    "caseCount": 24,
+    "scoreTotal": 1.0,
+    "promptVersions": {
+      "sql": 1,
+      "fast": 1,
+      "plan": 1,
+      "assess": 1,
+      "intent": 1,
+      "replan": 1,
+      "semantic": 1,
+      "verifier": 1,
+      "supervisor": 1,
+      "query-agent": 1,
+      "synthesizer": 1,
+      "supervisor-decide": 1
+    },
+    "newFailures": []
+  },
+  "debug": {
+    "url": "https://keel.ragforge.net/agents/askdb/debug",
+    "http": [
+      {
+        "status": 200,
+        "path": "/api/v1/agents/askdb/chat/stream"
+      }
+    ],
+    "pageErrors": [],
+    "traceId": "8b4b9f24a7e6e7e1f4975d4bb1d1e00b",
+    "ok": true,
+    "rowsReturned": 1,
+    "promptFallback": false
+  },
+  "audit": {
+    "platformChain": {
+      "checked": 140,
+      "intact": true,
+      "brokenAt": null,
+      "elapsedMs": 2
+    },
+    "businessPostgreSQL": {
+      "verifiedTraceIds": [
+        "1fff1a202a14a0c7f2a38d256c01a4ae",
+        "cce379ec2f3800b719af8084fa7900e4"
+      ],
+      "recordsPerTrace": 2,
+      "questionAttemptsResultsPresent": true,
+      "centralBusinessPayload": "kept in AskDB; platform records invocation events"
+    }
+  },
+  "gateway": {
+    "alias": "askdb-staging",
+    "env": "staging",
+    "status": "ACTIVE",
+    "dailyBudgetCny": 30.0,
+    "spentCny": 0.414171
+  },
+  "ci": "https://github.com/dezhiguan/askdb/actions/runs/40189423924",
+  "sdkVersion": "1.0.21",
+  "otherChecks": {
+    "multiTurn": true,
+    "injectionBlocked": "GUARD_INJECTION_BLOCKED",
+    "publicSitePostDeploySmoke": true,
+    "independentTraceBrowserPageNoErrors": true,
+    "originalDeploymentRetainedForRollback": true
+  },
+  "runtime": {
+    "ready": 2,
+    "desired": 2,
+    "legacyReplicas": 0,
+    "statePvc": "askdb-keel-state",
+    "stateCapacity": "2Gi",
+    "stateReclaimPolicy": "Retain"
+  }
+}
