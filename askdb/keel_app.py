@@ -28,6 +28,17 @@ def mount(app, cfg):
         if value:
             os.environ["LANGFUSE_" + suffix] = value
     agent = Agent.from_manifest(manifest)
+    models = agent.manifest.spec.models
+    if models is None:
+        raise RuntimeError("AskDB requires a governed model declaration")
+    # Native health checks and source-derived configs describe the same gateway
+    # credentials as the protocol runtime, without requiring a vendor key.
+    gateway = os.environ.get("KEEL_LLM_BASE_URL")
+    cfg.raw = {**cfg.raw, "llm": {**cfg.llm, "provider": "keel",
+               "model": models.default_, "base_url": gateway, "api_key_env": "KEEL_LLM_KEY",
+               "fallback": ({"model": models.fallback[0], "provider": "keel",
+                             "base_url": gateway, "api_key_env": "KEEL_LLM_KEY"}
+                            if models.fallback else None)}}
     from .keel_runtime import register_tools
     register_tools(agent)
     agent.validate_config()

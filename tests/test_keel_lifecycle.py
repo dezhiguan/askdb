@@ -122,6 +122,10 @@ def test_real_sdk_invoke_has_auth_environment_steps_and_result(governed, cfg, mo
     monkeypatch.setattr("askdb.ask.run_ask", query)
     app = FastAPI()
     mount(app, cfg)
+    from askdb.server import fallback_status
+    assert cfg.llm["provider"] == "keel"
+    assert cfg.llm["api_key_env"] == "KEEL_LLM_KEY"
+    assert fallback_status(cfg)["key_present"] is True
     with TestClient(app) as client:
         assert client.get("/v1/health").status_code == 200
         assert client.post("/v1/invoke", json={"input": {"text": "count"}}).status_code == 401
@@ -185,3 +189,17 @@ def test_scorer_requires_matching_rows_and_rejects_sql_or_swapped_counts():
     assert answer_correctness(expected, "SQL: SELECT 30, 70; FAILED COMPLETED", []) == 0
     assert answer_correctness(expected, "| FAILED | 70 |\n| COMPLETED | 30 |", []) == 0
     assert answer_correctness(expected, "| FAILED | 30 |\n| COMPLETED | 70 |", []) == 1
+
+
+def test_native_sql_audit_uses_canonical_sdk_event_builder(governed, monkeypatch):
+    from askdb import keel_runtime
+    from askdb.keel_shadow import mirror_audit
+    from keel.agent import Agent
+    from keel.manifest import load_manifest
+    audit = SimpleNamespace(record=AsyncMock(), aclose=AsyncMock())
+    monkeypatch.setattr(keel_runtime, "_native_agent", Agent(load_manifest(ROOT / "agent.yaml")))
+    monkeypatch.setattr("keel.audit.reporter.AuditReporter", lambda *args, **kwargs: audit)
+    mirror_audit({"kind": "sql", "trace_id": "native-trace", "sql": "SELECT 1"})
+    assert audit.record.await_args.args == ("legacy.sql", "low", "allowed")
+    assert audit.record.await_args.kwargs["trace_id"] == "native-trace"
+    audit.aclose.assert_awaited_once()

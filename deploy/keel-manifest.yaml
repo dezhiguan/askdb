@@ -20,6 +20,8 @@ spec:
     budget:
       dailyCny: 30
       maxSteps: 12
+    fallback:
+    - deepseek-flash
   tools:
   - name: search_schema
     access: read

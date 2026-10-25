@@ -39,8 +39,12 @@ def mirror_audit(record: dict[str, Any]) -> None:
     invocation = active.get()
     if invocation is not None:
         invocation.call(invocation.ctx.audit.record(
-            str(record.get("kind") or "ask"), "low", "allowed",
+            "legacy." + str(record.get("kind") or "ask"), "low", "allowed",
             payload=record, trace_id=invocation.ctx.trace_id, run_id=invocation.ctx.run_id))
+        return
+    if os.environ.get("KEEL_ENABLED") == "1":
+        from .keel_runtime import mirror_native_audit
+        mirror_native_audit(record)
         return
     if not enabled():
         return

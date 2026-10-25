@@ -85,7 +85,8 @@ class Invocation:
             try:
                 result = await asyncio.wait_for(self.ctx.llm.chat(
                     messages, tools=[tool], tool_choice={"type": "function", "function": {"name": schema.__name__}},
-                    prompt=prompt, emit_tokens=False, max_tokens=4096), timeout=timeout)
+                    prompt=prompt, emit_tokens=False,
+                    max_tokens=min(int(prompt.config.get("max_tokens", 4096)), 4096)), timeout=timeout)
                 if not isinstance(result, ChatResult) or len(result.tool_calls) != 1:
                     raise ValueError("模型未返回唯一的结构化结果")
                 call = result.tool_calls[0]
@@ -159,3 +160,22 @@ def register_tools(agent):
     for name, tool in REGISTRY.items():
         if tool.tier is not Tier.SIDE_EFFECT:
             agent.tool(name=name)(create_callback(name))
+
+
+def mirror_native_audit(record):
+    """Native read-only SQL/cache paths also use the canonical SDK audit event."""
+    if _native_agent is None:
+        raise RuntimeError("Keel runtime has not been initialized")
+
+    async def record_event():
+        from keel.audit.reporter import AuditReporter
+        audit = AuditReporter("askdb", os.environ["KEEL_ENV"],
+                              _native_agent.manifest.spec.audit.captureFields or ())
+        try:
+            return await audit.record("legacy." + str(record.get("kind") or "ask"),
+                                      "low", "allowed", payload=record,
+                                      trace_id=record.get("trace_id"))
+        finally:
+            await audit.aclose()
+
+    return asyncio.run(record_event())

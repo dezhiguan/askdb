@@ -125,7 +125,8 @@ def run_react(name: str, question: str, cfg: Config, org_id: int | None = None, 
     tracer = Tracer(on_span=on_span)
 
     dq = agent_mod.build_quota(cfg)
-    over, used = dq.exhausted()
+    from ..keel_runtime import active
+    over, used = (False, 0) if active.get() is not None else dq.exhausted()
     if over:
         tracer.add("quota", tracer.start(), f"当日已用 {used}/{dq.limit}", status="blocked")
         return agent_mod._result(

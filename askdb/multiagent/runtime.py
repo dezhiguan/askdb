@@ -108,7 +108,8 @@ def run_multi_agent(
     sources = source_configs or {source_id: cfg}
 
     quota = build_quota(cfg)
-    over, used = quota.exhausted()
+    from ..keel_runtime import active
+    over, used = (False, 0) if active.get() is not None else quota.exhausted()
     if over:
         return _failed(question, trace_id, thread_id, org, tracer, "QUOTA",
                        f"已达当日模型调用上限（{used}/{quota.limit}）")
