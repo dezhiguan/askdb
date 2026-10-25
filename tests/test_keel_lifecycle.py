@@ -206,3 +206,27 @@ def test_native_sql_audit_uses_canonical_sdk_event_builder(governed, monkeypatch
     assert audit.record.await_args.args == ("legacy.sql", "low", "allowed")
     assert audit.record.await_args.kwargs["trace_id"] == "native-trace"
     audit.aclose.assert_awaited_once()
+
+
+def test_native_gateway_and_semantic_trace_share_the_actual_otel_id(governed, cfg, monkeypatch):
+    from askdb import keel_runtime
+    from keel.agent import Agent
+    from keel.manifest import load_manifest
+    from opentelemetry import trace
+    from opentelemetry.sdk.trace import TracerProvider
+    provider = TracerProvider()
+    monkeypatch.setattr(keel_runtime, "_native_tracer", provider.get_tracer("native-test"))
+    monkeypatch.setattr(keel_runtime, "_native_agent", Agent(load_manifest(ROOT / "agent.yaml")))
+    monkeypatch.setattr("keel.context.Context", lambda agent, run, trace_id, *args, **kwargs:
+                        SimpleNamespace(trace_id=trace_id, aclose=AsyncMock()))
+
+    def query(subject, config, **kwargs):
+        actual = trace.get_current_span().get_span_context()
+        assert actual.is_valid
+        assert active.get().ctx.trace_id == f"{actual.trace_id:032x}"
+        assert kwargs["trace_id"] == "legacy-query-id"
+        return "ok"
+    try:
+        assert keel_runtime.run_native("question", cfg, operation=query, trace_id="legacy-query-id") == "ok"
+    finally:
+        provider.shutdown()

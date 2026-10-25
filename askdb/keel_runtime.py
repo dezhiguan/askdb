@@ -126,23 +126,25 @@ def run_native(subject, cfg, *, operation=None, **kwargs):
         from keel.context import Context
         from .ask import run_ask
         import uuid
-        trace_id = kwargs.get("trace_id") or uuid.uuid4().hex
+        legacy_trace_id = kwargs.get("trace_id") or uuid.uuid4().hex
         run_id = kwargs.get("thread_id") or uuid.uuid4().hex
-        ctx = Context("askdb", run_id, trace_id, asyncio.Queue(),
-                      _native_tracer, manifest=_native_agent.manifest,
-                      env=os.environ["KEEL_ENV"], user_id=cfg.user,
-                      tool_functions=_native_agent._tools)
-        invocation = Invocation(ctx, asyncio.get_running_loop())
-        binding = active.set(invocation)
-        try:
-            with _native_tracer.start_as_current_span("askdb.native", attributes={
-                    "langfuse.observation.type": "agent", "keel.agent": "askdb",
-                    "keel.env": ctx.env, "askdb.trace_id": trace_id}):
+        with _native_tracer.start_as_current_span("askdb.native", attributes={
+                "langfuse.observation.type": "agent", "keel.agent": "askdb",
+                "keel.env": os.environ["KEEL_ENV"], "askdb.trace_id": legacy_trace_id}) as span:
+            identity = span.get_span_context()
+            trace_id = f"{identity.trace_id:032x}" if identity.is_valid else legacy_trace_id
+            ctx = Context("askdb", run_id, trace_id, asyncio.Queue(),
+                          _native_tracer, manifest=_native_agent.manifest,
+                          env=os.environ["KEEL_ENV"], user_id=cfg.user,
+                          tool_functions=_native_agent._tools)
+            invocation = Invocation(ctx, asyncio.get_running_loop())
+            binding = active.set(invocation)
+            try:
                 return await asyncio.to_thread(operation or run_ask, subject, cfg, **kwargs)
-        finally:
-            invocation.stopped = True
-            active.reset(binding)
-            await ctx.aclose()
+            finally:
+                invocation.stopped = True
+                active.reset(binding)
+                await ctx.aclose()
 
     return asyncio.run(execute())
 

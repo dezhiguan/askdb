@@ -7,7 +7,7 @@
 - Keel Java 23 项：独立内部凭据、用户名转发、候选配置、自检认证、护栏运行接口；通过。
 - SDK 73 项：模型客户端、实际 token、结构化输出证据、桥接请求、评测与上下文预算；通过。
 - AskDB 在不含开发 `.env` 的干净工作树运行完整回归，1349 通过 / 14 跳过，退出码 0，覆盖率 81.86%，超过 81% 门禁。首次在开发目录运行暴露出 .env 重新注入真实元库的干扰，已改为专用 UTF-8 PostgreSQL 测试库与干净工作树；没有把开发库混进测试。另修正已有 telemetry 测试在 FastAPI 不提供该接口时的兼容断言。
-- 后续提示词/工具审计/模型/健康配置等定向 40 项通过，运行入口与多智能体回归 135 项通过。完整回归基线为 f5a87bb；后续小修单独定向验证。
+- 后续提示词/工具审计/模型/健康配置等定向 41 项通过，运行入口与多智能体回归 135 项通过。完整回归基线为 f5a87bb；后续小修单独定向验证。
 - linux/amd64 治理镜像构建通过。容器内实际只读 SQL 返回 94976；租户护栏、受保护的 SDK invoke、自检 final、未认证 401 冒烟通过。
 - 集群中以临时独立进程运行新代码，调用真实 keel-llm 与合成 DuckDB，移除进程的厂商 Key：14/14 用例通过。它没有替换正在服务的 askdb Deployment，没有向生产数据源发查询。诊断使用 KEEL_LOCAL_PROMPTS=1，所有有模型调用的结果都标记 prompt_fallback，不作为正式发布门禁。
 - Langfuse v2 observations 读取同一 trace 返回 28 个 observation，含 AGENT / GENERATION / GUARDRAIL / TOOL；账单接口返回 46 个 SETTLED 尝试、14 个 trace，诊断总计 0.055442 元。详情见 `2026-10-25-keel-runtime.json`。
@@ -20,7 +20,7 @@
 3. 把方法论追加块纳入命名提示词模板，保留完整模板和动态变量；相邻 SQL 规则变量合并以避免歧义。
 4. 真实 Qwen 思考模式返回额外括号导致工具参数 JSON 无效。已把 askdb-staging / askdb-prod 的关闭思考配置合并到网关 request-defaults，并成功滚动更新两副本网关；保留其他智能体条目。原配置备份于节点 `/tmp/askdb-request-defaults-before.json`。结构化格式错误最多重试一次，授权/预算等错误不按格式错误重试。
 5. 评分器逐行核对实际表格，允许额外核对列；SQL 或叙述里出现答案不计通过，调换分组计数也不计通过。
-6. 使用实际 StepTrace 对象补测调试 SSE，准确保留节点名称与 ok/fallback/failed 状态。
+6. 使用实际 StepTrace 对象补测调试 SSE，准确保留节点名称与 ok/fallback/failed 状态；原生调用的 SDK 网关与语义追踪共用实际 OTel trace_id，旧业务 ID 留作关联。
 7. 测试 Key `askdb-staging` 与早期 `askdb-verify-20261025-staging` 均已 block；没有把测试凭据写入仓库。正式注册时应由底座创建/轮换自己的凭据。
 
 ## 待完成
